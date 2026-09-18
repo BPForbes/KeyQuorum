@@ -1,0 +1,43 @@
+# Merges every Dependabot PR (github-actions ecosystem, per .github/dependabot.yml)
+# automatically once its checks pass, so a pinned Action or reusable-workflow
+# SHA never sits stale waiting on a human to click merge.
+#
+# `pull_request_target` (not `pull_request`) so the workflow runs with the base
+# repository's token and permissions even though Dependabot's default token
+# would otherwise be read-only for this event -- this only calls `gh pr merge`
+# on the existing PR, it never checks out or executes the PR's own code, so the
+# usual pull_request_target "runs untrusted code with elevated permissions"
+# risk does not apply here.
+#
+# `--auto` enables GitHub's native auto-merge: the actual merge waits for any
+# required status checks and branch-protection rules configured on `main`
+# before completing, rather than merging immediately. This job only requests
+# that merge; it does not bypass any check.
+#
+# One-time repo setup this depends on (cannot be done from a workflow file):
+#   - Settings -> General -> Pull Requests -> "Allow auto-merge"
+#   - Settings -> Actions -> General -> Workflow permissions -> "Read and
+#     write permissions" (or leave `permissions:` below sufficient if the repo
+#     default is already read/write)
+
+name: Dependabot auto-merge
+
+on:
+  pull_request_target:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Enable auto-merge for this Dependabot PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"

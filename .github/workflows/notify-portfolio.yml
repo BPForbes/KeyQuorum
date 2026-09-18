@@ -1,0 +1,54 @@
+# Tells bailey-forbes.com that KeyQuorum changed, so it refreshes the metadata
+# it displays and redeploys.
+#
+# Waits for Test, not Compile. KeyQuorum publishes nothing — it is a CLI, and
+# the portfolio says so — but the portfolio prints its repository statistics and
+# language balance, so a commit that does not build should not move them.
+#
+# Test is the stronger of the two gates and makes a separate Compile check
+# unnecessary: `cargo test --locked --all-targets --all-features` compiles every
+# target under every feature, which is a superset of what Compile's
+# `cargo build --locked --all-targets --all-features` covers. Test passing
+# therefore implies Compile would.
+#
+# Both KeyQuorum workflows run on every push and every pull request, so the
+# `branches` filter and the `event == 'push'` check below are what keep this to
+# landed main commits.
+#
+# The dispatch itself lives in the portfolio repository so all projects share
+# one implementation — see
+# BPForbes/Bailey-Forbes-Portfolio-Site.github.io/docs/project-metadata.md.
+
+name: Notify portfolio
+
+on:
+  workflow_run:
+    workflows: ["Test"]
+    types: [completed]
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: notify-portfolio
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    # Pinned to a commit rather than @main: this job hands PORTFOLIO_DISPATCH_TOKEN
+    # to the called workflow, and a branch reference would let a change pushed to
+    # that branch see the token before anyone reviewed it. The reusable workflow
+    # has not merged to the portfolio repo's main yet (it lives on
+    # claude/portfolio-metadata-automation-4r522m); re-pin this to the commit on
+    # main once that PR merges, then keep pinning on every subsequent change.
+    uses: BPForbes/Bailey-Forbes-Portfolio-Site.github.io/.github/workflows/notify-portfolio.yml@52b4093c6ddb4b6a4dddd220a3284b87cdcbbc14
+    with:
+      project: keyquorum
+      sha: ${{ github.event.workflow_run.head_sha }}
+      ref: ${{ github.event.workflow_run.head_branch }}
+      source-workflow: ${{ github.event.workflow_run.name }}
+    secrets:
+      PORTFOLIO_DISPATCH_TOKEN: ${{ secrets.PORTFOLIO_DISPATCH_TOKEN }}
