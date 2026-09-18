@@ -1,0 +1,48 @@
+# Tells bailey-forbes.com that KeyQuorum changed, so it refreshes the metadata
+# it displays and redeploys.
+#
+# Waits for Test, not Compile. KeyQuorum publishes nothing — it is a CLI, and
+# the portfolio says so — but the portfolio prints its repository statistics and
+# language balance, so a commit that does not build should not move them.
+#
+# Test is the stronger of the two gates and makes a separate Compile check
+# unnecessary: `cargo test --locked --all-targets --all-features` compiles every
+# target under every feature, which is a superset of what Compile's
+# `cargo build --locked --all-targets --all-features` covers. Test passing
+# therefore implies Compile would.
+#
+# Both KeyQuorum workflows run on every push and every pull request, so the
+# `branches` filter and the `event == 'push'` check below are what keep this to
+# landed main commits.
+#
+# The dispatch itself lives in the portfolio repository so all projects share
+# one implementation — see
+# BPForbes/Bailey-Forbes-Portfolio-Site.github.io/docs/project-metadata.md.
+
+name: Notify portfolio
+
+on:
+  workflow_run:
+    workflows: ["Test"]
+    types: [completed]
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: notify-portfolio
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    uses: BPForbes/Bailey-Forbes-Portfolio-Site.github.io/.github/workflows/notify-portfolio.yml@main
+    with:
+      project: keyquorum
+      sha: ${{ github.event.workflow_run.head_sha }}
+      ref: ${{ github.event.workflow_run.head_branch }}
+      source-workflow: ${{ github.event.workflow_run.name }}
+    secrets:
+      PORTFOLIO_DISPATCH_TOKEN: ${{ secrets.PORTFOLIO_DISPATCH_TOKEN }}
