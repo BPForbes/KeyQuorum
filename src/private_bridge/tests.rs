@@ -604,3 +604,85 @@ fn replace_registered_signing_key(conn: &Connection, label: &str) {
     let (_, replacement) = keys::generate_signing_keypair();
     keys::register_key(conn, label, KeyType::Signing, &replacement).expect("register replacement");
 }
+
+#[test]
+fn is_ancestor_or_self_follows_the_dotted_label_hierarchy() {
+    assert!(is_ancestor_or_self("M", "M.S.2"));
+    assert!(is_ancestor_or_self("M.S", "M.S.2"));
+    assert!(is_ancestor_or_self("M.S.2", "M.S.2"));
+
+    assert!(!is_ancestor_or_self("M.A", "M.S.2"));
+    assert!(!is_ancestor_or_self("M.S.3", "M.S.2"));
+    assert!(!is_ancestor_or_self("M.S.2", "M.S"));
+    // A shared prefix is not a shared lineage.
+    assert!(!is_ancestor_or_self("M.S", "M.SALES.1"));
+    assert!(!is_ancestor_or_self("", "M.S.2"));
+    assert!(!is_ancestor_or_self("M", ""));
+}
+
+#[test]
+fn bridge_notify_targets_lists_every_party_of_every_live_bridge_a_label_is_on() {
+    let conn = db::open_in_memory().expect("schema");
+    let [(_, pk_s2), (_, pk_s3), (_, pk_a2), (_, pk_s), (_, pk_a)] = five_party_keys(&conn);
+    let [(_, spk_s2), (_, spk_s3), (_, spk_a2)] = [
+        sign_key(&conn, "M.S.2"),
+        sign_key(&conn, "M.S.3"),
+        sign_key(&conn, "M.A.2"),
+    ];
+    create(
+        &conn,
+        None,
+        None,
+        &[
+            party("M.S.2", pk_s2, spk_s2),
+            party("M.S.3", pk_s3, spk_s3),
+            party("M.A.2", pk_a2, spk_a2),
+        ],
+        &[supervisor("M.S", pk_s), supervisor("M.A", pk_a)],
+        Some("M.S.2"),
+    )
+    .expect("create");
+
+    let mut targets = bridge_notify_targets(&conn, "M.S.2").expect("targets");
+    targets.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        targets,
+        vec![
+            ("M.A".to_string(), pk_a),
+            ("M.A.2".to_string(), pk_a2),
+            ("M.S".to_string(), pk_s),
+            ("M.S.2".to_string(), pk_s2),
+            ("M.S.3".to_string(), pk_s3),
+        ],
+        "every roster entry on the bridge, subject included"
+    );
+
+    assert!(bridge_notify_targets(&conn, "nobody")
+        .expect("targets")
+        .is_empty());
+}
+
+#[test]
+fn bridge_notify_targets_skips_a_destroyed_bridges_roster() {
+    let conn = db::open_in_memory().expect("schema");
+    let (sk_s3, pk_s3) = enc(&conn, "M.S.3");
+    let (_, pk_a1) = enc(&conn, "M.A.1");
+    let (_, pk_s) = enc(&conn, "M.S");
+    let (_, pk_a) = enc(&conn, "M.A");
+    let (_, spk_s3) = sign_key(&conn, "M.S.3");
+    let (_, spk_a1) = sign_key(&conn, "M.A.1");
+    let created = create(
+        &conn,
+        None,
+        None,
+        &[party("M.S.3", pk_s3, spk_s3), party("M.A.1", pk_a1, spk_a1)],
+        &[supervisor("M.S", pk_s), supervisor("M.A", pk_a)],
+        Some("M.S.3"),
+    )
+    .expect("create");
+    remove_member(&conn, &created.uid, "M.A.1", "M.S.3", &sk_s3.to_bytes()).expect("destroy");
+
+    assert!(bridge_notify_targets(&conn, "M.S.3")
+        .expect("targets")
+        .is_empty());
+}

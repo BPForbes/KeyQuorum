@@ -97,6 +97,23 @@ pub fn parent_node_label(label: &str) -> Option<&str> {
     label.rsplit_once('.').map(|(parent, _)| parent)
 }
 
+/// `M` and `M.S` both have standing over `M.S.2` — ancestor-or-self in
+/// the same dotted hierarchy [`parent_node_label`] walks one step at a
+/// time; `M.A` and `M.S.3` do not. Segment-wise, so `M.S` never covers
+/// `M.SALES.1`. `org_update` uses this to decide who may authorize a
+/// hardware-key reissue or key-tree restructure for a label.
+pub fn is_ancestor_or_self(authorizer: &str, subject: &str) -> bool {
+    if authorizer.is_empty() || subject.is_empty() {
+        return false;
+    }
+    if authorizer == subject {
+        return true;
+    }
+    subject
+        .strip_prefix(authorizer)
+        .is_some_and(|rest| rest.starts_with('.'))
+}
+
 /// Members plus each distinct direct parent. For `M.S.2`, `M.S.3`, `M.A.2`
 /// this is five labels: those three and `M.S`, `M.A` — not `M`.
 pub fn notify_labels<'a, I>(member_labels: I) -> Vec<String>
@@ -811,6 +828,34 @@ pub fn on_leaf_removed(
         }
     }
     Ok(changes)
+}
+
+/// Every distinct party — member or supervisor — of every live private
+/// bridge `node_label` belongs to, as `(label, encryption_public_key)`.
+/// These are the stores that hold a roster entry naming `node_label`'s
+/// key, so a hardware-key reissue for that label must notify them too,
+/// the same way `on_member_revoked` finds the bridges a revocation
+/// touches.
+pub fn bridge_notify_targets(
+    conn: &Connection,
+    node_label: &str,
+) -> Result<Vec<(String, [u8; 32])>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT peer.node_label, peer.encryption_public_key
+         FROM private_bridge_members subject
+         JOIN private_bridges b ON b.id = subject.bridge_id
+         JOIN private_bridge_members peer ON peer.bridge_id = subject.bridge_id
+         WHERE b.destroyed_at IS NULL AND subject.node_label = ?1
+         ORDER BY peer.node_label",
+    )?;
+    let rows = stmt
+        .query_map(params![node_label], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter()
+        .map(|(label, pk)| Ok((label, vec_to_32(&pk)?)))
+        .collect()
 }
 
 /// Drop a revoked employee from every live private bridge they belong to,

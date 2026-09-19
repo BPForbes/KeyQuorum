@@ -34,7 +34,18 @@ exactly one past the last for that subject; a restructure strictly past
 the stored public generation). Accepted updates land in `org_updates`,
 whose UNIQUE key is the last-resort replay guard. Keep the producers
 plan-then-commit like `private_bridge::create`, and never widen the
-authorization rule without updating the tests that pin it.
+authorization rule without updating the tests that pin it. `org_update.rs`
+itself stays orchestration: `key_tree.rs` is the only place in the crate
+that ever mutates `key_nodes` (`adopt_reissued_hardware_key` sits next to
+`rebind_leaf`; `active_encryption_leaves` next to `active_leaves_for_hardware`;
+`load_for_visibility` backs `visible_labels` itself now, not just the
+restructure loop), `private_bridge.rs` owns the dotted-label hierarchy
+(`is_ancestor_or_self` next to `parent_node_label`) and bridge-roster
+queries (`bridge_notify_targets`), and `keys.rs` owns the hardware-key
+registry (`active_keys_for`, `get_or_register`, `revoke_superseded`,
+`unrevoke_key`). A new authenticated-update primitive belongs in the
+module that owns the table it reads or writes, not in `org_update.rs`,
+even when `org_update.rs` is its only caller today.
 
 The mailbox relay (`src/relay/`) stores opaque `.kqpb` envelopes and
 the canonical *public* split-tree as JSON documents (full context). It must never

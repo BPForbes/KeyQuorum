@@ -46,6 +46,7 @@ use crate::envelope::{
 use crate::error::{Error, Result};
 use crate::key_tree::{self, PublicTree};
 use crate::keys::{self, KeyType};
+pub use crate::private_bridge::is_ancestor_or_self;
 use crate::private_bridge::{self, BridgeSummary};
 use crate::signing;
 use ed25519_dalek::SigningKey;
@@ -138,20 +139,6 @@ pub struct PlannedTreeRestructure {
     key_id: i64,
     previous_generation: u32,
     authorizer_label: String,
-}
-
-/// `M` and `M.S` both authorize over `M.S.2`; `M.A` and `M.S.3` do not.
-/// Labels are compared segment-wise so `M.S` never covers `M.SALES.1`.
-pub fn is_ancestor_or_self(authorizer: &str, subject: &str) -> bool {
-    if authorizer.is_empty() || subject.is_empty() {
-        return false;
-    }
-    if authorizer == subject {
-        return true;
-    }
-    subject
-        .strip_prefix(authorizer)
-        .is_some_and(|rest| rest.starts_with('.'))
 }
 
 // ---------------------------------------------------------------------
@@ -450,10 +437,15 @@ fn apply_reissue(conn: &Connection, letter: &ReissueLetter) -> Result<AppliedUpd
         let new_id =
             register_reissued_key(conn, &letter.subject_label, KeyType::Encryption, new_pk)?;
         match scope {
-            LeafScope::EveryTree => repoint_tree_leaves(conn, &letter.subject_label, None, new_id)?,
-            LeafScope::Tree(key_id) => {
-                repoint_tree_leaves(conn, &letter.subject_label, Some(key_id), new_id)?
+            LeafScope::EveryTree => {
+                key_tree::adopt_reissued_hardware_key(conn, &letter.subject_label, None, new_id)?
             }
+            LeafScope::Tree(key_id) => key_tree::adopt_reissued_hardware_key(
+                conn,
+                &letter.subject_label,
+                Some(key_id),
+                new_id,
+            )?,
             LeafScope::NoSuchTree => {}
         }
         conn.execute(
@@ -506,27 +498,6 @@ fn apply_reissue(conn: &Connection, letter: &ReissueLetter) -> Result<AppliedUpd
 /// A leaf's sealed share was wrapped to the retired key, so it is dropped
 /// rather than carried onto a token that cannot open it. The holder
 /// recovers it from the quorum (or a `bind --public-key-file` reseal).
-fn repoint_tree_leaves(
-    conn: &Connection,
-    subject_label: &str,
-    scope_key_id: Option<i64>,
-    new_id: i64,
-) -> Result<()> {
-    conn.execute(
-        "UPDATE key_nodes SET wrapped_share = NULL
-         WHERE label = ?1 AND hardware_key_id IS NOT NULL AND hardware_key_id != ?2
-           AND (?3 IS NULL OR key_id = ?3)",
-        params![subject_label, new_id, scope_key_id],
-    )?;
-    conn.execute(
-        "UPDATE key_nodes SET hardware_key_id = ?2
-         WHERE label = ?1 AND hardware_key_id IS NOT NULL
-           AND (?3 IS NULL OR key_id = ?3)",
-        params![subject_label, new_id, scope_key_id],
-    )?;
-    Ok(())
-}
-
 /// Register the announced key, un-retiring it if this store had revoked
 /// those same bytes before — the authority is stating it is current now.
 fn register_reissued_key(
@@ -601,20 +572,7 @@ fn reissue_recipients(
         }
     }
 
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT peer.node_label, peer.encryption_public_key
-         FROM private_bridge_members subject
-         JOIN private_bridges b ON b.id = subject.bridge_id
-         JOIN private_bridge_members peer ON peer.bridge_id = subject.bridge_id
-         WHERE b.destroyed_at IS NULL AND subject.node_label = ?1
-         ORDER BY peer.node_label",
-    )?;
-    let rows = stmt
-        .query_map(params![subject_label], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (label, pk) in rows {
+    for (label, pk) in private_bridge::bridge_notify_targets(conn, subject_label)? {
         insert_recipient(&mut found, label, &pk)?;
     }
 
@@ -624,13 +582,12 @@ fn reissue_recipients(
 fn insert_recipient(
     found: &mut std::collections::BTreeMap<String, [u8; 32]>,
     label: String,
-    public_key: &[u8],
+    public_key: &[u8; 32],
 ) -> Result<()> {
-    let pk: [u8; 32] = public_key.try_into().map_err(|_| Error::InvalidPublicKey)?;
-    if is_weak_x25519_public_key(&pk) {
+    if is_weak_x25519_public_key(public_key) {
         return Err(Error::InvalidPublicKey);
     }
-    found.entry(label).or_insert(pk);
+    found.entry(label).or_insert(*public_key);
     Ok(())
 }
 
@@ -672,12 +629,7 @@ pub fn plan_tree_restructure(
     // The export and the arena load are the expensive parts and do not
     // vary by recipient, so they happen once here rather than inside the
     // loop — `visible_labels` would redo both for every leaf.
-    let tree = key_tree::KeyQuorumTree::load(conn, key_id)?;
-    let links: Vec<(String, String)> = key_tree::list_bridges(conn, key_id)?
-        .established
-        .into_iter()
-        .map(|edge| (edge.from, edge.to))
-        .collect();
+    let (tree, links) = key_tree::load_for_visibility(conn, key_id)?;
 
     let mut packages = Vec::new();
     let mut skipped = Vec::new();
@@ -905,22 +857,13 @@ fn import_tree_update(
 }
 
 /// Every active leaf of the tree that has an unrevoked encryption key: the
-/// stores that need a slice of the new topology.
+/// stores that need a slice of the new topology. Goes through
+/// [`insert_recipient`] rather than trusting `key_tree::active_encryption_leaves`'s
+/// rows to already be one-per-label — that uniqueness is an application
+/// invariant, not a database constraint.
 fn tree_recipients(conn: &Connection, key_id: i64) -> Result<Vec<(String, [u8; 32])>> {
-    let mut stmt = conn.prepare(
-        "SELECT n.label, h.public_key FROM key_nodes n
-         JOIN hardware_keys h ON h.id = n.hardware_key_id
-         WHERE n.key_id = ?1 AND n.is_active = 1
-           AND h.key_type = 'encryption' AND h.revoked_at IS NULL
-         ORDER BY n.label",
-    )?;
-    let rows = stmt
-        .query_map(params![key_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut found = std::collections::BTreeMap::new();
-    for (label, pk) in rows {
+    for (label, pk) in key_tree::active_encryption_leaves(conn, key_id)? {
         insert_recipient(&mut found, label, &pk)?;
     }
     Ok(found.into_iter().collect())
@@ -1004,17 +947,15 @@ fn require_addressed_here(
     recipient_label: &str,
     recipient_public_key: &[u8; 32],
 ) -> Result<()> {
-    let found: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM hardware_keys
-         WHERE label = ?1 AND key_type = 'encryption' AND revoked_at IS NULL
-           AND public_key = ?2",
-        params![recipient_label, recipient_public_key.as_slice()],
-        |row| row.get(0),
-    )?;
-    if found == 0 {
-        return Err(Error::UpdateRecipientMismatch);
+    let held = keys::active_keys_for(conn, recipient_label, KeyType::Encryption)?;
+    if held
+        .iter()
+        .any(|key| key.public_key == recipient_public_key)
+    {
+        Ok(())
+    } else {
+        Err(Error::UpdateRecipientMismatch)
     }
-    Ok(())
 }
 
 fn authorizer_signing_key(conn: &Connection, authorizer_label: &str) -> Result<[u8; 32]> {

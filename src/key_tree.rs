@@ -815,6 +815,40 @@ pub fn rebind_leaf(
     Ok(())
 }
 
+/// Repoint every leaf labeled `subject_label` onto `new_hardware_id`,
+/// dropping `wrapped_share` wherever it pointed at a different key.
+///
+/// Unlike [`rebind_leaf`], the caller here does not hold the retired
+/// key's private key — it is applying someone else's authenticated
+/// hardware-key reissue, not resealing a share it already holds — so
+/// nothing can re-encrypt the old share under the new key; it can only
+/// stop referencing a token that no longer opens it.
+///
+/// `scope_key_id`: `None` repoints the label wherever it appears (a
+/// reissue with no split-tree scope, e.g. a private-bridge-only change);
+/// `Some(key_id)` limits it to that one tree, so a reissue scoped to one
+/// tree leaves a same-named leaf under a different tree untouched.
+pub(crate) fn adopt_reissued_hardware_key(
+    conn: &Connection,
+    subject_label: &str,
+    scope_key_id: Option<i64>,
+    new_hardware_id: i64,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE key_nodes SET wrapped_share = NULL
+         WHERE label = ?1 AND hardware_key_id IS NOT NULL AND hardware_key_id != ?2
+           AND (?3 IS NULL OR key_id = ?3)",
+        params![subject_label, new_hardware_id, scope_key_id],
+    )?;
+    conn.execute(
+        "UPDATE key_nodes SET hardware_key_id = ?2
+         WHERE label = ?1 AND hardware_key_id IS NOT NULL
+           AND (?3 IS NULL OR key_id = ?3)",
+        params![subject_label, new_hardware_id, scope_key_id],
+    )?;
+    Ok(())
+}
+
 /// Recover a parent split, dealer `n+1` shares at the same threshold,
 /// reseal existing active leaf children in place, and insert the new
 /// leaf. Survivor node ids are unchanged so their binds survive.
@@ -1122,6 +1156,27 @@ pub fn list_trees(conn: &Connection) -> Result<Vec<TreeListing>> {
 }
 
 /// Active leaves sealed to this hardware key, across every tree.
+/// Every active leaf of `key_id` backed by an unrevoked encryption key,
+/// as `(label, public_key)`. The stores a key-tree restructure or a
+/// tree-scoped hardware-key reissue must notify.
+pub fn active_encryption_leaves(conn: &Connection, key_id: i64) -> Result<Vec<(String, [u8; 32])>> {
+    let mut stmt = conn.prepare(
+        "SELECT n.label, h.public_key FROM key_nodes n
+         JOIN hardware_keys h ON h.id = n.hardware_key_id
+         WHERE n.key_id = ?1 AND n.is_active = 1
+           AND h.key_type = 'encryption' AND h.revoked_at IS NULL
+         ORDER BY n.label",
+    )?;
+    let rows = stmt
+        .query_map(params![key_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter()
+        .map(|(label, pk)| Ok((label, pk.try_into().map_err(|_| Error::InvalidPublicKey)?)))
+        .collect()
+}
+
 pub fn active_leaves_for_hardware(
     conn: &Connection,
     hardware_key_id: i64,
@@ -1337,14 +1392,25 @@ pub fn public_slice_for(conn: &Connection, key_id: i64, as_label: &str) -> Resul
 /// a later pull after a bridge reaches them. Whitelist-only pairs do
 /// not expand visibility.
 pub fn visible_labels(conn: &Connection, key_id: i64, as_label: &str) -> Result<HashSet<String>> {
-    let tree = KeyQuorumTree::load(conn, key_id)?;
-    let listing = list_bridges(conn, key_id)?;
-    let links: Vec<(String, String)> = listing
-        .established
-        .iter()
-        .map(|edge| (edge.from.clone(), edge.to.clone()))
-        .collect();
+    let (tree, links) = load_for_visibility(conn, key_id)?;
     visible_labels_for_links(&tree, &links, as_label)
+}
+
+/// Loads what [`visible_labels_for_links`] needs — the arena tree and its
+/// established links — once. [`visible_labels`] does this same loading on
+/// every call; call this instead when computing visibility for many
+/// labels in a loop, so the tree is not reloaded per label.
+pub fn load_for_visibility(
+    conn: &Connection,
+    key_id: i64,
+) -> Result<(KeyQuorumTree, Vec<(String, String)>)> {
+    let tree = KeyQuorumTree::load(conn, key_id)?;
+    let links = list_bridges(conn, key_id)?
+        .established
+        .into_iter()
+        .map(|edge| (edge.from, edge.to))
+        .collect();
+    Ok((tree, links))
 }
 
 /// Visibility using established undirected links (not whitelist-only).
