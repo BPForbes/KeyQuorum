@@ -635,7 +635,6 @@ fn provider_host_identity_and_certify_parse() {
         "host",
         "keys",
         "rotate",
-        "--id",
         "1",
         "--cert",
         "provider.kqcert",

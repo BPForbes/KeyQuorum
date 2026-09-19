@@ -408,7 +408,8 @@ pub fn bootstrap_licensee_if_empty(conn: &Connection) -> Result<Option<CreatedLi
 
 /// Confirms the caller holds the licensee issuer. Does not stamp API-key use.
 pub fn authenticate_licensee(conn: &Connection, token: &str) -> Result<()> {
-    let token_hash = hash_prefixed(token, LICENSEE_PREFIX).map_err(|_| Error::InvalidLicenseeKey)?;
+    let token_hash =
+        hash_prefixed(token, LICENSEE_PREFIX).map_err(|_| Error::InvalidLicenseeKey)?;
     let found: Option<i64> = conn
         .query_row(
             "SELECT id FROM licensee_issuer WHERE id = 1 AND key_hash = ?1",
