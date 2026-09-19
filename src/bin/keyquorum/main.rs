@@ -18,7 +18,7 @@ use keyquorum::{
     db, export, key_tree, keys, locked_files, org_update, pin, private_bridge, provider, quorum,
     relay, sharing, signing, vault,
 };
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::{self, Write};
@@ -1219,7 +1219,7 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
         }) => {
             let label = match (label, key_id) {
                 (Some(label), _) => label,
-                (None, Some(id)) => key_label(conn, id)?,
+                (None, Some(id)) => key_tree::tree_label(conn, id)?,
                 (None, None) => {
                     fatal_usage_error("tree fetch requires a key id or --label");
                 }
@@ -1314,16 +1314,6 @@ fn run_reissue(conn: &Connection, args: ReissueArgs) -> Result<()> {
         println!("No other store in this database holds that key.");
     }
     Ok(())
-}
-
-fn key_label(conn: &Connection, key_id: i64) -> Result<String> {
-    conn.query_row(
-        "SELECT label FROM keys WHERE id = ?1",
-        rusqlite::params![key_id],
-        |row| row.get(0),
-    )
-    .optional()?
-    .ok_or(Error::TreeNotFound)
 }
 
 fn run_bridge(conn: &Connection, command: BridgeCommand) -> Result<()> {

@@ -105,9 +105,7 @@ fn bare_store(org: &Org, label: &str) -> Connection {
 }
 
 fn slice_for(org: &Org, label: &str) -> PublicTree {
-    let full = key_tree::export_public_tree(&org.conn, org.key_id).expect("export");
-    let visible = key_tree::visible_labels(&org.conn, org.key_id, label).expect("visible");
-    key_tree::filter_public_tree(&full, &visible)
+    key_tree::public_slice_for(&org.conn, org.key_id, label).expect("slice")
 }
 
 fn node_labels(conn: &Connection) -> HashSet<String> {
@@ -158,15 +156,17 @@ fn package_for<'a>(packages: &'a [Addressed], label: &str) -> &'a Addressed {
         .unwrap_or_else(|| panic!("no envelope addressed to {label}"))
 }
 
-fn fingerprint_for(conn: &Connection, label: &str, key_type: &str) -> Option<String> {
-    conn.query_row(
-        "SELECT fingerprint FROM hardware_keys
-         WHERE label = ?1 AND key_type = ?2 AND revoked_at IS NULL",
-        params![label, key_type],
-        |row| row.get(0),
-    )
-    .optional()
-    .expect("fingerprint")
+/// The fingerprint of the one unrevoked key of that purpose, or `None`
+/// when the store holds none — the same question `current_fingerprint`
+/// asks in production, through the same registry helper.
+fn fingerprint_for(conn: &Connection, label: &str, key_type: KeyType) -> Option<String> {
+    match keys::active_keys_for(conn, label, key_type)
+        .expect("registry")
+        .as_slice()
+    {
+        [one] => Some(one.fingerprint.clone()),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -435,7 +435,7 @@ fn reissuing_a_token_converges_every_store_on_the_new_key() {
     // never named that person.
     let notified = ["M.S.1", "M.S.2"];
     let old_fingerprint =
-        fingerprint_for(&stores["M.S.1"], "M.S.2", "encryption").expect("old fingerprint");
+        fingerprint_for(&stores["M.S.1"], "M.S.2", KeyType::Encryption).expect("old fingerprint");
 
     // M.S.2's replacement token. Their own device registers the new key
     // when it generates it, which is also what lets them open the copy
@@ -490,7 +490,7 @@ fn reissuing_a_token_converges_every_store_on_the_new_key() {
     let expected = keys::fingerprint(&new_public);
     for label in notified {
         assert_eq!(
-            fingerprint_for(&stores[label], "M.S.2", "encryption"),
+            fingerprint_for(&stores[label], "M.S.2", KeyType::Encryption),
             Some(expected.clone()),
             "{label} should hold M.S.2's new key"
         );
@@ -504,12 +504,12 @@ fn reissuing_a_token_converges_every_store_on_the_new_key() {
         assert_eq!(still_live, 0, "{label} should have retired the old key");
     }
     assert_eq!(
-        fingerprint_for(&org.conn, "M.S.2", "encryption"),
+        fingerprint_for(&org.conn, "M.S.2", KeyType::Encryption),
         Some(expected)
     );
     // Accounting was never told, and never had anything to tell.
     assert_eq!(
-        fingerprint_for(&stores["M.A.1"], "M.S.2", "encryption"),
+        fingerprint_for(&stores["M.A.1"], "M.S.2", KeyType::Encryption),
         None
     );
 
@@ -643,7 +643,7 @@ fn a_reissue_naming_a_key_this_store_already_replaced_is_refused() {
         import_update(&conn, &bytes, &org.secrets["M.S.1"].to_bytes()),
         Err(Error::StaleUpdate)
     ));
-    let unchanged = fingerprint_for(&conn, "M.S.2", "encryption").expect("still there");
+    let unchanged = fingerprint_for(&conn, "M.S.2", KeyType::Encryption).expect("still there");
     assert_eq!(
         unchanged,
         keys::fingerprint(org.secrets["M.S.2"].public_key().as_bytes())
@@ -984,7 +984,7 @@ fn a_tree_scoped_reissue_leaves_another_trees_leaf_alone() {
     // The new key is still registered, and the retired one retired: the
     // announcement itself is not tree-scoped, only the leaf repointing is.
     assert_eq!(
-        fingerprint_for(&conn, "M.S.2", "encryption"),
+        fingerprint_for(&conn, "M.S.2", KeyType::Encryption),
         Some(keys::fingerprint(&new_public))
     );
 }

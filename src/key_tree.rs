@@ -1289,6 +1289,48 @@ pub fn export_public_tree(conn: &Connection, key_id: i64) -> Result<PublicTree> 
     })
 }
 
+/// The tree registered under `label`, as `(key_id, public_generation)`,
+/// or `None` when this store has never seen it. Nothing stops two trees
+/// sharing a label, so the oldest wins — the same rule
+/// [`apply_public_tree`] merges under.
+pub fn tree_by_label(conn: &Connection, label: &str) -> Result<Option<(i64, u32)>> {
+    let row: Option<(i64, i64)> = conn
+        .query_row(
+            "SELECT id, public_generation FROM keys WHERE label = ?1 ORDER BY id",
+            params![label],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    Ok(row.map(|(id, generation)| (id, u32::try_from(generation).unwrap_or(1))))
+}
+
+/// A tree's `keys.label` — the name the relay and every update envelope
+/// identify it by, as opposed to the local row id.
+pub fn tree_label(conn: &Connection, key_id: i64) -> Result<String> {
+    conn.query_row(
+        "SELECT label FROM keys WHERE id = ?1",
+        params![key_id],
+        |row| row.get(0),
+    )
+    .optional()?
+    .ok_or(Error::TreeNotFound)
+}
+
+/// The public tree as `as_label` is allowed to see it: the export, that
+/// label's visible set, and the filter in one step. This is the slice
+/// `relay pull` hands that person and the one a restructure envelope
+/// carries, so building it in one place keeps the two identical.
+///
+/// Callers slicing for *many* labels at once should export and load the
+/// tree once and pair [`visible_labels_for_links`] with
+/// [`filter_public_tree`] themselves, rather than paying for a fresh
+/// export and tree load per recipient.
+pub fn public_slice_for(conn: &Connection, key_id: i64, as_label: &str) -> Result<PublicTree> {
+    let full = export_public_tree(conn, key_id)?;
+    let visible = visible_labels(conn, key_id, as_label)?;
+    Ok(filter_public_tree(&full, &visible))
+}
+
 /// Labels this person needs locally: own lineage, own descendants,
 /// siblings of the seed, and the fixpoint of established bridge peers
 /// (peer + peer ancestors). A peer's unrelated siblings stay out until
@@ -1455,10 +1497,9 @@ pub fn filter_public_tree(full: &PublicTree, visible: &HashSet<String>) -> Publi
 /// Keep only the subgraph `as_label` needs. Sealed shares on remaining
 /// leaves are preserved.
 pub fn project_local(conn: &Connection, key_id: i64, as_label: &str) -> Result<HashSet<String>> {
-    let full = export_public_tree(conn, key_id)?;
     let visible = visible_labels(conn, key_id, as_label)?;
-    let slice = filter_public_tree(&full, &visible);
-    apply_public_tree(conn, Some(key_id), &slice)?;
+    let full = export_public_tree(conn, key_id)?;
+    apply_public_tree(conn, Some(key_id), &filter_public_tree(&full, &visible))?;
     Ok(visible)
 }
 
@@ -1493,25 +1534,16 @@ fn apply_public_tree_inner(
             }
             id
         }
-        None => {
-            let existing: Option<i64> = conn
-                .query_row(
-                    "SELECT id FROM keys WHERE label = ?1",
+        None => match tree_by_label(conn, &snapshot.label)? {
+            Some((id, _)) => id,
+            None => {
+                conn.execute(
+                    "INSERT INTO keys (label) VALUES (?1)",
                     params![snapshot.label],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            match existing {
-                Some(id) => id,
-                None => {
-                    conn.execute(
-                        "INSERT INTO keys (label) VALUES (?1)",
-                        params![snapshot.label],
-                    )?;
-                    conn.last_insert_rowid()
-                }
+                )?;
+                conn.last_insert_rowid()
             }
-        }
+        },
     };
 
     let stored_generation: i64 = conn.query_row(

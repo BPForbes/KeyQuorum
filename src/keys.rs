@@ -15,7 +15,9 @@ pub enum KeyType {
 }
 
 impl KeyType {
-    fn as_str(self) -> &'static str {
+    /// The `hardware_keys.key_type` spelling, for callers that filter on
+    /// that column in SQL.
+    pub fn as_str(self) -> &'static str {
         match self {
             KeyType::Encryption => "encryption",
             KeyType::Signing => "signing",
@@ -134,18 +136,54 @@ pub fn get_key_by_fingerprint(conn: &Connection, fingerprint: &str) -> Result<Ha
     .ok_or(Error::InvalidPublicKey)
 }
 
-pub fn get_or_register_encryption(
+/// Every unrevoked key of one purpose registered under `label`, oldest
+/// first. Callers decide what an empty or ambiguous result means: a
+/// person normally has exactly one key of each purpose, but nothing in
+/// the schema enforces that, so "which one did you mean" is a question
+/// only the caller can answer.
+pub fn active_keys_for(
     conn: &Connection,
     label: &str,
+    key_type: KeyType,
+) -> Result<Vec<HardwareKey>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {SELECT_COLUMNS} FROM hardware_keys
+         WHERE label = ?1 AND key_type = ?2 AND revoked_at IS NULL
+         ORDER BY id"
+    ))?;
+    let rows = stmt.query_map(params![label, key_type.as_str()], row_to_key)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// The id of the key with these bytes, registering it under `label` if
+/// this store has not seen it. Refuses to hand back a key registered for
+/// the *other* purpose: the same bytes cannot be both an encryption key
+/// and a signing key, and returning one where the other was asked for
+/// would only be caught later by the `key_nodes` trigger, as a raw SQL
+/// abort instead of [`Error::WrongKeyType`].
+pub fn get_or_register(
+    conn: &Connection,
+    label: &str,
+    key_type: KeyType,
     public_key: &[u8],
 ) -> Result<i64> {
     if public_key.len() != 32 {
         return Err(Error::InvalidPublicKey);
     }
-    if let Ok(existing) = get_key_by_public_key(conn, public_key) {
-        return Ok(existing.id);
+    match get_key_by_public_key(conn, public_key) {
+        Ok(existing) if existing.key_type != key_type => Err(Error::WrongKeyType),
+        Ok(existing) => Ok(existing.id),
+        Err(Error::InvalidPublicKey) => register_key(conn, label, key_type, public_key),
+        Err(err) => Err(err),
     }
-    register_key(conn, label, KeyType::Encryption, public_key)
+}
+
+pub fn get_or_register_encryption(
+    conn: &Connection,
+    label: &str,
+    public_key: &[u8],
+) -> Result<i64> {
+    get_or_register(conn, label, KeyType::Encryption, public_key)
 }
 
 /// Raw 32-byte public or private key material from a hex dump, PEM, or
@@ -278,6 +316,36 @@ fn read_ssh_string<'a>(data: &mut &'a [u8]) -> Option<&'a [u8]> {
 pub fn revoke_key(conn: &Connection, id: i64) -> Result<()> {
     conn.execute(
         "UPDATE hardware_keys SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?1",
+        params![id],
+    )?;
+    Ok(())
+}
+
+/// Retire every unrevoked key of one purpose under `label` except the one
+/// with `keep_public_key` — what a hardware-key reissue does to the token
+/// it replaces. Re-revoking an already-revoked row is a no-op, so this is
+/// safe to apply twice.
+pub fn revoke_superseded(
+    conn: &Connection,
+    label: &str,
+    key_type: KeyType,
+    keep_public_key: &[u8],
+) -> Result<()> {
+    conn.execute(
+        "UPDATE hardware_keys
+         SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE label = ?1 AND key_type = ?2 AND revoked_at IS NULL AND public_key != ?3",
+        params![label, key_type.as_str(), keep_public_key],
+    )?;
+    Ok(())
+}
+
+/// Clear a revocation, for a key an authority has announced as current
+/// again. Separate from [`register_key`] because un-retiring a key is a
+/// decision, not a side effect of seeing its bytes.
+pub fn unrevoke_key(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE hardware_keys SET revoked_at = NULL WHERE id = ?1",
         params![id],
     )?;
     Ok(())

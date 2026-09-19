@@ -940,33 +940,17 @@ pub fn encryption_public_for_label(
             return vec_to_32(&pk);
         }
     }
-    let mut stmt = conn.prepare(
-        "SELECT public_key FROM hardware_keys
-         WHERE label = ?1 AND key_type = 'encryption' AND revoked_at IS NULL
-         ORDER BY id",
-    )?;
-    let keys: Vec<Vec<u8>> = stmt
-        .query_map(params![label], |row| row.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    match keys.as_slice() {
-        [pk] => vec_to_32(pk),
+    match keys::active_keys_for(conn, label, keys::KeyType::Encryption)?.as_slice() {
+        [key] => vec_to_32(&key.public_key),
         [] => Err(Error::NodeNotFound),
         _ => Err(Error::InvalidBridge),
     }
 }
 
 pub fn signing_public_for_label(conn: &Connection, label: &str) -> Result<[u8; 32]> {
-    let mut stmt = conn.prepare(
-        "SELECT public_key FROM hardware_keys
-         WHERE label = ?1 AND key_type = 'signing' AND revoked_at IS NULL
-         ORDER BY id",
-    )?;
-    let keys: Vec<Vec<u8>> = stmt
-        .query_map(params![label], |row| row.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    match keys.as_slice() {
-        [pk] => {
-            let pk = vec_to_32(pk)?;
+    match keys::active_keys_for(conn, label, keys::KeyType::Signing)?.as_slice() {
+        [key] => {
+            let pk = vec_to_32(&key.public_key)?;
             VerifyingKey::from_bytes(&pk).map_err(|_| Error::InvalidPublicKey)?;
             Ok(pk)
         }

@@ -49,7 +49,7 @@ use crate::keys::{self, KeyType};
 use crate::private_bridge::{self, BridgeSummary};
 use crate::signing;
 use ed25519_dalek::SigningKey;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
@@ -208,7 +208,7 @@ pub fn plan_key_reissue(
     }
 
     let tree_label = match key_id {
-        Some(id) => tree_label_for(conn, id)?,
+        Some(id) => key_tree::tree_label(conn, id)?,
         None => String::new(),
     };
     let sequence = last_sequence(conn, KIND_REISSUE_STR, &tree_label, subject_label)? + 1;
@@ -445,7 +445,7 @@ fn apply_reissue(conn: &Connection, letter: &ReissueLetter) -> Result<AppliedUpd
 
     if let Some(new_pk) = letter.new_encryption_public_key.as_ref() {
         if letter.revoke_previous {
-            revoke_superseded_keys(conn, &letter.subject_label, KeyType::Encryption, new_pk)?;
+            keys::revoke_superseded(conn, &letter.subject_label, KeyType::Encryption, new_pk)?;
         }
         let new_id =
             register_reissued_key(conn, &letter.subject_label, KeyType::Encryption, new_pk)?;
@@ -466,7 +466,7 @@ fn apply_reissue(conn: &Connection, letter: &ReissueLetter) -> Result<AppliedUpd
 
     if let Some(new_pk) = letter.new_signing_public_key.as_ref() {
         if letter.revoke_previous {
-            revoke_superseded_keys(conn, &letter.subject_label, KeyType::Signing, new_pk)?;
+            keys::revoke_superseded(conn, &letter.subject_label, KeyType::Signing, new_pk)?;
         }
         register_reissued_key(conn, &letter.subject_label, KeyType::Signing, new_pk)?;
         conn.execute(
@@ -527,45 +527,20 @@ fn repoint_tree_leaves(
     Ok(())
 }
 
+/// Register the announced key, un-retiring it if this store had revoked
+/// those same bytes before — the authority is stating it is current now.
 fn register_reissued_key(
     conn: &Connection,
     label: &str,
     key_type: KeyType,
     public_key: &[u8; 32],
 ) -> Result<i64> {
-    match keys::get_key_by_public_key(conn, public_key) {
-        Ok(existing) => {
-            // Re-registering the same bytes under the other purpose would
-            // let a signing key become a quorum leaf (or the reverse).
-            if existing.key_type != key_type {
-                return Err(Error::WrongKeyType);
-            }
-            if existing.revoked_at.is_some() {
-                conn.execute(
-                    "UPDATE hardware_keys SET revoked_at = NULL WHERE id = ?1",
-                    params![existing.id],
-                )?;
-            }
-            Ok(existing.id)
+    if let Ok(existing) = keys::get_key_by_public_key(conn, public_key) {
+        if existing.key_type == key_type && existing.revoked_at.is_some() {
+            keys::unrevoke_key(conn, existing.id)?;
         }
-        Err(Error::InvalidPublicKey) => keys::register_key(conn, label, key_type, public_key),
-        Err(err) => Err(err),
     }
-}
-
-fn revoke_superseded_keys(
-    conn: &Connection,
-    label: &str,
-    key_type: KeyType,
-    keep_public_key: &[u8; 32],
-) -> Result<()> {
-    conn.execute(
-        "UPDATE hardware_keys
-         SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE label = ?1 AND key_type = ?2 AND revoked_at IS NULL AND public_key != ?3",
-        params![label, key_type_str(key_type), keep_public_key.as_slice()],
-    )?;
-    Ok(())
+    keys::get_or_register(conn, label, key_type, public_key)
 }
 
 fn require_previous_matches(
@@ -596,24 +571,9 @@ fn require_previous_matches(
 /// an empty string when this store holds none. Several unrevoked keys mean
 /// the store cannot say which one is being retired, so nothing is stated.
 fn current_fingerprint(conn: &Connection, label: &str, key_type: KeyType) -> Result<String> {
-    let mut stmt = conn.prepare(
-        "SELECT fingerprint FROM hardware_keys
-         WHERE label = ?1 AND key_type = ?2 AND revoked_at IS NULL
-         ORDER BY id",
-    )?;
-    let found: Vec<String> = stmt
-        .query_map(params![label, key_type_str(key_type)], |row| row.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    match found.as_slice() {
-        [one] => Ok(one.clone()),
+    match keys::active_keys_for(conn, label, key_type)?.as_slice() {
+        [one] => Ok(one.fingerprint.clone()),
         _ => Ok(String::new()),
-    }
-}
-
-fn key_type_str(key_type: KeyType) -> &'static str {
-    match key_type {
-        KeyType::Encryption => "encryption",
-        KeyType::Signing => "signing",
     }
 }
 
@@ -709,6 +669,16 @@ pub fn plan_tree_restructure(
     full.generation = generation;
     let tree_label = full.label.clone();
 
+    // The export and the arena load are the expensive parts and do not
+    // vary by recipient, so they happen once here rather than inside the
+    // loop — `visible_labels` would redo both for every leaf.
+    let tree = key_tree::KeyQuorumTree::load(conn, key_id)?;
+    let links: Vec<(String, String)> = key_tree::list_bridges(conn, key_id)?
+        .established
+        .into_iter()
+        .map(|edge| (edge.from, edge.to))
+        .collect();
+
     let mut packages = Vec::new();
     let mut skipped = Vec::new();
     for (label, recipient_public_key) in tree_recipients(conn, key_id)? {
@@ -716,7 +686,7 @@ pub fn plan_tree_restructure(
             skipped.push(label);
             continue;
         }
-        let visible = key_tree::visible_labels(conn, key_id, &label)?;
+        let visible = key_tree::visible_labels_for_links(&tree, &links, &label)?;
         let slice = key_tree::filter_public_tree(&full, &visible);
         let letter = TreeLetter {
             tree_label: tree_label.clone(),
@@ -897,7 +867,7 @@ fn import_tree_update(
         _ => return Err(Error::UpdateRecipientMismatch),
     }
 
-    let existing = local_tree(conn, &letter.tree_label)?;
+    let existing = key_tree::tree_by_label(conn, &letter.tree_label)?;
     if let Some((_, stored_generation)) = existing {
         if letter.generation <= stored_generation {
             return Err(Error::StaleUpdate);
@@ -1056,27 +1026,6 @@ fn authorizer_signing_key(conn: &Connection, authorizer_label: &str) -> Result<[
     })
 }
 
-fn tree_label_for(conn: &Connection, key_id: i64) -> Result<String> {
-    conn.query_row(
-        "SELECT label FROM keys WHERE id = ?1",
-        params![key_id],
-        |row| row.get(0),
-    )
-    .optional()?
-    .ok_or(Error::TreeNotFound)
-}
-
-fn local_tree(conn: &Connection, tree_label: &str) -> Result<Option<(i64, u32)>> {
-    let row: Option<(i64, i64)> = conn
-        .query_row(
-            "SELECT id, public_generation FROM keys WHERE label = ?1 ORDER BY id",
-            params![tree_label],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    Ok(row.map(|(id, gen)| (id, u32::try_from(gen).unwrap_or(1))))
-}
-
 /// Which of this store's leaves a reissue may repoint.
 enum LeafScope {
     /// The letter names no tree — a bridge-only reissue. This person's
@@ -1095,7 +1044,7 @@ fn leaf_scope(conn: &Connection, tree_label: &str) -> Result<LeafScope> {
     if tree_label.is_empty() {
         return Ok(LeafScope::EveryTree);
     }
-    Ok(match local_tree(conn, tree_label)? {
+    Ok(match key_tree::tree_by_label(conn, tree_label)? {
         Some((key_id, _)) => LeafScope::Tree(key_id),
         None => LeafScope::NoSuchTree,
     })
