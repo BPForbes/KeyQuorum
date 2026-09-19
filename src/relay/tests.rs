@@ -215,6 +215,53 @@ fn mailbox_list_hides_expired_envelopes() {
 }
 
 #[test]
+fn bootstrap_licensee_only_when_empty() {
+    let conn = relay::open_in_memory().expect("schema");
+    let first = relay::bootstrap_licensee_if_empty(&conn)
+        .expect("bootstrap")
+        .expect("created");
+    assert!(first.token.starts_with("kql_"));
+    assert!(relay::bootstrap_licensee_if_empty(&conn)
+        .expect("second")
+        .is_none());
+    relay::authenticate_licensee(&conn, &first.token).expect("licensee works");
+    assert!(matches!(
+        relay::authenticate_licensee(&conn, "kq_notarealtokenvalue0123456789ABCD"),
+        Err(Error::InvalidLicenseeKey)
+    ));
+}
+
+#[test]
+fn supplied_licensee_key_does_not_bootstrap_an_empty_issuer_store() {
+    let conn = relay::open_in_memory().expect("schema");
+    assert!(matches!(
+        relay::authorize_licensee_or_bootstrap(
+            &conn,
+            Some("kql_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        ),
+        Err(Error::InvalidLicenseeKey)
+    ));
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM licensee_issuer", [], |row| row.get(0))
+        .expect("count");
+    assert_eq!(n, 0);
+    assert!(matches!(
+        relay::authorize_licensee_or_bootstrap(&conn, Some("")),
+        Err(Error::InvalidLicenseeKey)
+    ));
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM licensee_issuer", [], |row| row.get(0))
+        .expect("count after empty");
+    assert_eq!(n, 0);
+    let created = relay::authorize_licensee_or_bootstrap(&conn, None)
+        .expect("bootstrap")
+        .expect("created");
+    let again = relay::authorize_licensee_or_bootstrap(&conn, Some(&created.token))
+        .expect("supplied key authenticates");
+    assert!(again.is_none());
+}
+
+#[test]
 fn mailbox_rejects_truncated_and_wrong_magic() {
     let conn = relay::open_in_memory().expect("schema");
     assert!(matches!(

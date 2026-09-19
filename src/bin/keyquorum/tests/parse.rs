@@ -469,6 +469,19 @@ fn provider_host_keys_list_parses() {
         Cli::try_parse_from(["keyquorum", "host", "serve", "--scan-interval-seconds", "0",])
             .is_err()
     );
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "keys",
+        "create",
+        "--scope",
+        "inbox.push",
+        "--cert",
+        "provider.kqcert",
+        "--relay-key",
+        "relay.key",
+    ])
+    .is_ok());
 }
 
 #[cfg(feature = "provider")]
@@ -611,9 +624,24 @@ fn provider_host_identity_and_certify_parse() {
         "create",
         "--scope",
         "inbox.push",
+        "--cert",
+        "provider.kqcert",
+        "--relay-key",
+        "relay.key",
     ])
-    .is_err());
-    assert!(Cli::try_parse_from(["keyquorum", "host", "keys", "rotate", "--id", "1"]).is_err());
+    .is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "keys",
+        "rotate",
+        "1",
+        "--cert",
+        "provider.kqcert",
+        "--relay-key",
+        "relay.key",
+    ])
+    .is_ok());
 }
 
 #[cfg(feature = "provider")]
