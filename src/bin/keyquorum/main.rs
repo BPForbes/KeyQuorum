@@ -235,7 +235,10 @@ enum Command {
         /// Ed25519 private key file for --as
         #[arg(long)]
         signing_key_file: PathBuf,
-        /// Also retire the replaced key in every store that applies this
+        /// Also retire the replaced ENCRYPTION key in every store that
+        /// applies this. A replaced signing key is always retired,
+        /// regardless of this flag — it doubles as an authorization
+        /// identity, and leaving two active would make that ambiguous.
         #[arg(long)]
         revoke_previous: bool,
         /// Directory for the per-recipient `.kqpb` envelopes

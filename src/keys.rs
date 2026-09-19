@@ -161,6 +161,15 @@ pub fn active_keys_for(
 /// and a signing key, and returning one where the other was asked for
 /// would only be caught later by the `key_nodes` trigger, as a raw SQL
 /// abort instead of [`Error::WrongKeyType`].
+///
+/// Deliberately does **not** check `label` against the existing row's own
+/// registry label: `apply_public_node` calls this with a tree node's
+/// label (e.g. `M.A.1`), which is an independent naming space from
+/// whatever label a key was first registered under (e.g. `a1`, a
+/// person's own name) — the same physical key legitimately backs a node
+/// under a different label than its registry entry. A caller for whom
+/// `label` *is* meant to be a stable identity (see
+/// `org_update::register_reissued_key`) must check that itself.
 pub fn get_or_register(
     conn: &Connection,
     label: &str,

@@ -84,6 +84,9 @@ pub enum Error {
     /// A replayed update, one that skips a sequence, or one whose stated
     /// previous key is not the key this store currently holds.
     StaleUpdate,
+    /// These public-key bytes are already registered in this store, under
+    /// a different label than the one they were just presented under.
+    PublicKeyLabelMismatch,
 }
 
 impl fmt::Display for Error {
@@ -283,6 +286,10 @@ impl fmt::Display for Error {
             Error::StaleUpdate => write!(
                 f,
                 "update is stale, replayed, or out of order for this store"
+            ),
+            Error::PublicKeyLabelMismatch => write!(
+                f,
+                "this public key is already registered in this store under a different label"
             ),
         }
     }

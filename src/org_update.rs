@@ -157,6 +157,15 @@ pub struct PlannedTreeRestructure {
 /// one is being issued: that is the key their replacement token holds, and
 /// the old one may already be gone.
 ///
+/// `revoke_previous` governs the **encryption** key only: whether the
+/// retired token is formally revoked everywhere this reissue reaches, or
+/// left active alongside the new one. A **signing** key reissue always
+/// retires every other active signing key for `subject_label`, regardless
+/// of this flag — that key doubles as an authorization identity
+/// (`private_bridge::signing_public_for_label`, which every authorizer
+/// check in this module and bridge sign/verify go through), and that
+/// lookup errors the moment a label has more than one active signing key.
+///
 /// The caller writes the envelopes, then calls
 /// [`commit_planned_key_reissue`], matching how `private_bridge::create`
 /// keeps files and database state in step.
@@ -437,16 +446,13 @@ fn apply_reissue(conn: &Connection, letter: &ReissueLetter) -> Result<AppliedUpd
         let new_id =
             register_reissued_key(conn, &letter.subject_label, KeyType::Encryption, new_pk)?;
         match scope {
-            LeafScope::EveryTree => {
-                key_tree::adopt_reissued_hardware_key(conn, &letter.subject_label, None, new_id)?
-            }
             LeafScope::Tree(key_id) => key_tree::adopt_reissued_hardware_key(
                 conn,
                 &letter.subject_label,
                 Some(key_id),
                 new_id,
             )?,
-            LeafScope::NoSuchTree => {}
+            LeafScope::NoTree | LeafScope::NoSuchTree => {}
         }
         conn.execute(
             "UPDATE private_bridge_members SET encryption_public_key = ?1
@@ -457,9 +463,17 @@ fn apply_reissue(conn: &Connection, letter: &ReissueLetter) -> Result<AppliedUpd
     }
 
     if let Some(new_pk) = letter.new_signing_public_key.as_ref() {
-        if letter.revoke_previous {
-            keys::revoke_superseded(conn, &letter.subject_label, KeyType::Signing, new_pk)?;
-        }
+        // Unlike the encryption case, a subject's signing key is also an
+        // identity used to authorize *other* updates
+        // (`private_bridge::signing_public_for_label`, used by
+        // `plan_key_reissue`/`plan_tree_restructure`'s authorizer check and
+        // by bridge sign/verify) — and that lookup errors the moment a
+        // label has more than one active signing key. `--revoke-previous`
+        // stays optional for encryption, where leaving an old token active
+        // has no such effect, but a signing reissue always retires every
+        // other active signing key for this subject so that identity never
+        // becomes ambiguous, whatever the flag says.
+        keys::revoke_superseded(conn, &letter.subject_label, KeyType::Signing, new_pk)?;
         register_reissued_key(conn, &letter.subject_label, KeyType::Signing, new_pk)?;
         conn.execute(
             "UPDATE private_bridge_members SET signing_public_key = ?1
@@ -500,6 +514,15 @@ fn apply_reissue(conn: &Connection, letter: &ReissueLetter) -> Result<AppliedUpd
 /// recovers it from the quorum (or a `bind --public-key-file` reseal).
 /// Register the announced key, un-retiring it if this store had revoked
 /// those same bytes before — the authority is stating it is current now.
+///
+/// Unlike `keys::get_or_register`'s general contract, `label` here *is*
+/// this subject's identity: every other lookup this module makes for them
+/// (`active_keys_for`, `current_fingerprint`, and — if they go on to
+/// authorize something — `signing_public_for_label`) is keyed on it.
+/// Silently adopting a key already registered under a *different* label
+/// would merge that other identity's row onto this subject without
+/// renaming it, so those label-keyed lookups would then find nothing for
+/// either person.
 fn register_reissued_key(
     conn: &Connection,
     label: &str,
@@ -507,8 +530,13 @@ fn register_reissued_key(
     public_key: &[u8; 32],
 ) -> Result<i64> {
     if let Ok(existing) = keys::get_key_by_public_key(conn, public_key) {
-        if existing.key_type == key_type && existing.revoked_at.is_some() {
-            keys::unrevoke_key(conn, existing.id)?;
+        if existing.key_type == key_type {
+            if existing.label != label {
+                return Err(Error::PublicKeyLabelMismatch);
+            }
+            if existing.revoked_at.is_some() {
+                keys::unrevoke_key(conn, existing.id)?;
+            }
         }
     }
     keys::get_or_register(conn, label, key_type, public_key)
@@ -969,9 +997,13 @@ fn authorizer_signing_key(conn: &Connection, authorizer_label: &str) -> Result<[
 
 /// Which of this store's leaves a reissue may repoint.
 enum LeafScope {
-    /// The letter names no tree — a bridge-only reissue. This person's
-    /// leaf is repointed wherever it appears.
-    EveryTree,
+    /// The letter names no tree — a bridge-only reissue. `reissue_recipients`
+    /// never adds tree leaves to the notify set for this scope (only the
+    /// subject's private-bridge peers get an envelope), so no leaf may be
+    /// touched here either: repointing one would drop its sealed share and
+    /// diverge this store's tree topology from every other store holding
+    /// the same tree, none of which received anything to apply.
+    NoTree,
     /// The letter names a tree this store has.
     Tree(i64),
     /// The letter names a tree this store does not have. Registering the
@@ -983,7 +1015,7 @@ enum LeafScope {
 
 fn leaf_scope(conn: &Connection, tree_label: &str) -> Result<LeafScope> {
     if tree_label.is_empty() {
-        return Ok(LeafScope::EveryTree);
+        return Ok(LeafScope::NoTree);
     }
     Ok(match key_tree::tree_by_label(conn, tree_label)? {
         Some((key_id, _)) => LeafScope::Tree(key_id),

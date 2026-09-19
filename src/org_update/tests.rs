@@ -988,3 +988,238 @@ fn a_tree_scoped_reissue_leaves_another_trees_leaf_alone() {
         Some(keys::fingerprint(&new_public))
     );
 }
+
+#[test]
+fn a_bridge_only_reissue_leaves_every_key_nodes_row_untouched() {
+    // A regression test for a real convergence bug: a reissue with no
+    // `--key-id` only sends envelopes to the subject's private-bridge
+    // peers (via `reissue_recipients`), never to a tree's other leaves.
+    // `apply_reissue` must not repoint or drop the share of a `key_nodes`
+    // leaf that happens to share the subject's label either, or the
+    // coordinator's own tree diverges from every other store holding it
+    // without anyone else having been told anything changed.
+    let mut org = coordinator();
+    let (new_id, new_secret) = register_encryption(&org.conn, "M.S.3-token");
+    let presented = raw_shares(&org, &["M.S.1", "M.S.2"]);
+    key_tree::add_leaf_and_reshare(
+        &mut org.conn,
+        org.key_id,
+        "M.S",
+        "M.S.3",
+        new_id,
+        &presented,
+    )
+    .expect("add leaf M.S.3");
+    org.secrets.insert("M.S.3".to_string(), new_secret);
+
+    let leaf_before = leaf_id(&org.conn, org.key_id, "M.S.3");
+    let node_state = |conn: &Connection, node_id: i64| -> (i64, bool) {
+        conn.query_row(
+            "SELECT hardware_key_id, wrapped_share IS NOT NULL FROM key_nodes WHERE id = ?1",
+            params![node_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("leaf row")
+    };
+    let (hardware_key_before, had_share) = node_state(&org.conn, leaf_before);
+    assert!(had_share);
+
+    // A bridge naming the same label "M.S.3", entirely separate from the
+    // tree leaf above — this is what `key_id: None` is documented for.
+    // Both members' implied parent "M.S" needs a supervisor party.
+    let (_, bridge_pk) = keys::generate_encryption_keypair();
+    let (_, bridge_sign) = register_signing(&org.conn, "M.S.3");
+    let (_, peer_pk) = keys::generate_encryption_keypair();
+    let (_, peer_sign) = register_signing(&org.conn, "M.S.2-peer");
+    let (_, supervisor_pk) = keys::generate_encryption_keypair();
+    private_bridge::create(
+        &org.conn,
+        None,
+        Some("eng"),
+        &[
+            BridgePartyInput {
+                label: "M.S.3".into(),
+                encryption_public_key: bridge_pk,
+                signing_public_key: Some(bridge_sign),
+            },
+            BridgePartyInput {
+                label: "M.S.2-peer".into(),
+                encryption_public_key: peer_pk,
+                signing_public_key: Some(peer_sign),
+            },
+        ],
+        &[BridgePartyInput {
+            label: "M.S".into(),
+            encryption_public_key: supervisor_pk,
+            signing_public_key: None,
+        }],
+        None,
+    )
+    .expect("bridge");
+
+    let (_, new_pk) = keys::generate_encryption_keypair();
+    let planned = plan_key_reissue(
+        &org.conn,
+        None, // bridge-only: no tree leaf should be touched
+        "M.S.3",
+        Some(new_pk),
+        None,
+        true,
+        "M",
+        &org.authority,
+    )
+    .expect("plan");
+    // The bridge peer and its supervisor get an envelope — no tree leaf
+    // does.
+    let addressed: Vec<&str> = planned.packages.iter().map(|p| p.label.as_str()).collect();
+    assert_eq!(addressed, vec!["M.S", "M.S.2-peer", "M.S.3"]);
+    commit_planned_key_reissue(&org.conn, &planned).expect("commit");
+
+    // The tree leaf is byte-for-byte unchanged.
+    let leaf_after = leaf_id(&org.conn, org.key_id, "M.S.3");
+    assert_eq!(leaf_before, leaf_after);
+    let (hardware_key_after, still_has_share) = node_state(&org.conn, leaf_after);
+    assert_eq!(
+        hardware_key_before, hardware_key_after,
+        "a bridge-only reissue must not repoint a same-labeled tree leaf"
+    );
+    assert!(still_has_share, "and must not drop its share either");
+
+    // The bridge roster did update — bridge-only reissues still work.
+    let roster: Vec<u8> = org
+        .conn
+        .query_row(
+            "SELECT encryption_public_key FROM private_bridge_members WHERE node_label = 'M.S.3'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("roster");
+    assert_eq!(roster, new_pk.to_vec());
+}
+
+#[test]
+fn a_signing_reissue_always_retires_the_previous_signing_key() {
+    // A regression test: `--revoke-previous` is documented (and only
+    // meaningful) for the encryption key. Leaving a subject with two
+    // active signing keys breaks every lookup that treats their signing
+    // key as an identity — this asserts that never happens, whatever the
+    // flag says.
+    let org = coordinator();
+    let conn = db::open_in_memory().expect("schema");
+    let (_, sk_s3) = register_encryption(&conn, "M.S.3");
+    let pk_s3 = *sk_s3.public_key().as_bytes();
+    let (_, sk_s9) = register_encryption(&conn, "M.S.9");
+    let pk_s9 = *sk_s9.public_key().as_bytes();
+    let (_, sign_s3) = register_signing(&conn, "M.S.3");
+    let (_, sign_s9) = register_signing(&conn, "M.S.9");
+    keys::register_key(&conn, "M", KeyType::Signing, &org.authority_public).expect("authority");
+    // Both members' implied parent "M.S" needs a supervisor party.
+    let (_, supervisor_pk) = keys::generate_encryption_keypair();
+    private_bridge::create(
+        &conn,
+        None,
+        None,
+        &[
+            BridgePartyInput {
+                label: "M.S.3".into(),
+                encryption_public_key: pk_s3,
+                signing_public_key: Some(sign_s3),
+            },
+            BridgePartyInput {
+                label: "M.S.9".into(),
+                encryption_public_key: pk_s9,
+                signing_public_key: Some(sign_s9),
+            },
+        ],
+        &[BridgePartyInput {
+            label: "M.S".into(),
+            encryption_public_key: supervisor_pk,
+            signing_public_key: None,
+        }],
+        None,
+    )
+    .expect("bridge");
+
+    let (new_sign_secret, new_sign) = keys::generate_signing_keypair();
+    let planned = plan_key_reissue(
+        &conn,
+        None,
+        "M.S.3",
+        None,
+        Some(new_sign),
+        false, // explicitly NOT revoking the previous key
+        "M",
+        &org.authority,
+    )
+    .expect("plan");
+    commit_planned_key_reissue(&conn, &planned).expect("commit");
+
+    let active = keys::active_keys_for(&conn, "M.S.3", KeyType::Signing).expect("active");
+    assert_eq!(
+        active.len(),
+        1,
+        "the previous signing key must be retired even with revoke_previous: false"
+    );
+    assert_eq!(active[0].public_key, new_sign.to_vec());
+
+    // The subject's signing identity is unambiguous again: they can now
+    // authorize a reissue for themselves with their new key. Before the
+    // fix, two active signing rows made `signing_public_for_label`
+    // return `Err(InvalidBridge)` here.
+    let (_, self_reissue_pk) = keys::generate_encryption_keypair();
+    plan_key_reissue(
+        &conn,
+        None,
+        "M.S.3",
+        Some(self_reissue_pk),
+        None,
+        true,
+        "M.S.3",
+        &new_sign_secret,
+    )
+    .expect("M.S.3 can authorize with its own unambiguous signing key");
+}
+
+#[test]
+fn a_reissue_naming_a_key_already_registered_under_another_label_is_refused() {
+    // A regression test: silently reusing another identity's hardware-key
+    // row (matched by bytes alone) would merge that person's row onto the
+    // subject without renaming it, so label-keyed lookups for either
+    // person then find nothing.
+    let org = coordinator();
+    let conn = db::open_in_memory().expect("schema");
+    let (_, sk_s2) = register_encryption(&conn, "M.S.2");
+    let pk_s2 = *sk_s2.public_key().as_bytes();
+    keys::register_key(&conn, "M", KeyType::Signing, &org.authority_public).expect("authority");
+
+    // "M.A.9" already holds this key under its own label.
+    let (_, collide_pk) = keys::generate_encryption_keypair();
+    keys::register_key(&conn, "M.A.9", KeyType::Encryption, &collide_pk).expect("register");
+    let before = keys::get_key_by_public_key(&conn, &collide_pk).expect("row");
+    assert_eq!(before.label, "M.A.9");
+
+    let planned = plan_key_reissue(
+        &conn,
+        None,
+        "M.S.2",
+        Some(collide_pk), // someone else's key bytes, reused
+        None,
+        true,
+        "M",
+        &org.authority,
+    )
+    .expect("plan (the collision is only checked on apply)");
+    assert!(matches!(
+        commit_planned_key_reissue(&conn, &planned),
+        Err(Error::PublicKeyLabelMismatch)
+    ));
+
+    // Nothing moved: M.S.2 kept its own key, and M.A.9's row was not
+    // renamed or otherwise disturbed by the failed attempt.
+    assert_eq!(
+        fingerprint_for(&conn, "M.S.2", KeyType::Encryption),
+        Some(keys::fingerprint(&pk_s2))
+    );
+    let after = keys::get_key_by_public_key(&conn, &collide_pk).expect("row still there");
+    assert_eq!(after.label, "M.A.9");
+}
