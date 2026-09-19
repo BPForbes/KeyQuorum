@@ -3,18 +3,18 @@
 //! and bearer they were given.
 //!
 //! `--features provider` compiles these commands; it does not authorize a
-//! host. `serve` and customer-API-key minting require a KeyQuorum-signed
-//! `provider.kqcert` and the matching relay private key. Customers never
-//! mint keys: they receive a `kq_…` bearer. The `kql_…` issuer is an
-//! internal operator lock created only after that identity check.
+//! host. `serve` requires a KeyQuorum-signed `provider.kqcert` and the
+//! matching relay private key. API keys are not minted here.
 
 use clap::Subcommand;
 use keyquorum::db;
 use keyquorum::error::{Error, Result};
-use keyquorum::keys;
+use keyquorum::keys::{self, KeyType};
 use keyquorum::locked_files;
+use keyquorum::provider::hardware_auth::HardwareAuthority;
+use keyquorum::provider::policy::{self, HardwareAuthorityEntry, NewPolicy};
 use keyquorum::provider::{self, NewCertificate, KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY};
-use keyquorum::relay::{self, ApiKeyScope, AppState, NewApiKey, ProviderIdentity};
+use keyquorum::relay::{self, AppState, ProviderIdentity};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -84,10 +84,61 @@ pub enum HostCommand {
         #[arg(long)]
         out: PathBuf,
     },
-    /// Mint, list, rotate, or revoke API keys on this host (not over HTTP)
+    /// List or revoke API keys on this host (not over HTTP)
     Keys {
         #[command(subcommand)]
         command: KeysCommand,
+    },
+    /// Seller-root keypair.
+    Root {
+        #[command(subcommand)]
+        command: RootCommand,
+    },
+    /// Issue a provider-root-signed hardware policy.
+    Policy {
+        #[command(subcommand)]
+        command: PolicyCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum RootCommand {
+    /// Print the root private key once.
+    Generate {
+        #[arg(long)]
+        public_key_out: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PolicyCommand {
+    /// Write `provider-policy.kqpolicy` signed by the offline provider root.
+    Issue {
+        #[arg(long)]
+        root_key: Option<PathBuf>,
+        #[arg(long)]
+        relay_public_key: PathBuf,
+        #[arg(long)]
+        provider_id: String,
+        #[arg(long)]
+        policy_id: String,
+        #[arg(long)]
+        issued_at: Option<String>,
+        #[arg(long)]
+        expires_at: String,
+        #[arg(long, default_value = "provider")]
+        capabilities: String,
+        /// hex(SHA-256(pubkey)) of an authorized signing token (repeatable)
+        #[arg(long = "hardware-fingerprint", required = true)]
+        hardware_fingerprints: Vec<String>,
+        #[arg(long = "revoked-hardware")]
+        revoked_hardware: Vec<String>,
+        #[arg(long, default_value_t = 1)]
+        hardware_threshold: u8,
+        #[arg(long = "permission", default_value = "api-root.generate")]
+        permissions: Vec<String>,
+        #[arg(long)]
+        out: PathBuf,
     },
 }
 
@@ -101,44 +152,8 @@ pub enum IdentityCommand {
 
 #[derive(Subcommand)]
 pub enum KeysCommand {
-    Create {
-        #[arg(long)]
-        scope: String,
-        /// Required for inbox.pull: hex SHA-256 of the recipient X25519 public key
-        #[arg(long)]
-        fingerprint: Option<String>,
-        #[arg(long)]
-        label: Option<String>,
-        #[arg(long)]
-        ttl_seconds: Option<i64>,
-        /// `provider.kqcert` (or KEYQUORUM_PROVIDER_CERT)
-        #[arg(long)]
-        cert: Option<PathBuf>,
-        /// Relay Ed25519 private key file (or KEYQUORUM_RELAY_KEY)
-        #[arg(long)]
-        relay_key: Option<PathBuf>,
-        /// Optional signed revocation list (or KEYQUORUM_PROVIDER_KRL)
-        #[arg(long)]
-        krl: Option<PathBuf>,
-        /// Internal operator lock (`kql_…`). Prompted or KEYQUORUM_LICENSEE_KEY if omitted.
-        #[arg(long)]
-        licensee_key: Option<String>,
-    },
     List,
-    Revoke {
-        id: i64,
-    },
-    Rotate {
-        id: i64,
-        #[arg(long)]
-        cert: Option<PathBuf>,
-        #[arg(long)]
-        relay_key: Option<PathBuf>,
-        #[arg(long)]
-        krl: Option<PathBuf>,
-        #[arg(long)]
-        licensee_key: Option<String>,
-    },
+    Revoke { id: i64 },
 }
 
 pub fn run(mailbox_db: &Path, org_db: &Path, command: HostCommand) -> Result<()> {
@@ -199,86 +214,13 @@ pub fn run(mailbox_db: &Path, org_db: &Path, command: HostCommand) -> Result<()>
             let conn = relay::open(db_path)?;
             run_keys(&conn, command)
         }
+        HostCommand::Root { command } => run_root(command),
+        HostCommand::Policy { command } => run_policy(command),
     }
-}
-
-fn print_new_licensee(issuer: &relay::CreatedLicensee) {
-    eprintln!("Created internal operator key (shown once):");
-    eprintln!("  {}", issuer.token);
-    eprintln!("This mints customer API keys on this host. It is not a customer credential.");
-    eprintln!("Store this; it cannot be recovered from the database.");
-}
-
-fn licensee_secret(explicit: Option<String>) -> Result<String> {
-    if let Some(key) = explicit.filter(|s| !s.is_empty()) {
-        return Ok(key);
-    }
-    match std::env::var("KEYQUORUM_LICENSEE_KEY") {
-        Ok(key) if !key.is_empty() => Ok(key),
-        _ => rpassword::prompt_password("Licensee key: ").map_err(Error::from),
-    }
-}
-
-fn require_licensee(conn: &rusqlite::Connection, explicit: Option<String>) -> Result<()> {
-    relay::authenticate_licensee(conn, &licensee_secret(explicit)?)
-}
-
-fn authorize_mint(
-    conn: &rusqlite::Connection,
-    cert: Option<PathBuf>,
-    relay_key: Option<PathBuf>,
-    krl: Option<PathBuf>,
-    licensee_key: Option<String>,
-) -> Result<()> {
-    load_serve_identity(cert, relay_key, krl)?;
-    let supplied = licensee_key.filter(|s| !s.is_empty()).or_else(|| {
-        match std::env::var("KEYQUORUM_LICENSEE_KEY") {
-            Ok(key) if !key.is_empty() => Some(key),
-            _ => None,
-        }
-    });
-    if let Some(issuer) = relay::authorize_licensee_or_bootstrap(conn, supplied.as_deref())? {
-        print_new_licensee(&issuer);
-        return Ok(());
-    }
-    if supplied.is_none() {
-        require_licensee(conn, None)?;
-    }
-    Ok(())
 }
 
 fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
     match command {
-        KeysCommand::Create {
-            scope,
-            fingerprint,
-            label,
-            ttl_seconds,
-            cert,
-            relay_key,
-            krl,
-            licensee_key,
-        } => {
-            authorize_mint(conn, cert, relay_key, krl, licensee_key)?;
-            let created = relay::create_api_key(
-                conn,
-                &NewApiKey {
-                    scope: ApiKeyScope::parse(&scope)?,
-                    recipient_fingerprint: fingerprint,
-                    label,
-                    ttl_seconds,
-                },
-            )?;
-            println!("Created API key {}", created.info.id);
-            println!("scope: {}", created.info.scope);
-            if let Some(fp) = &created.info.recipient_fingerprint {
-                println!("fingerprint: {fp}");
-            }
-            if let Some(expires) = &created.info.expires_at {
-                println!("expires: {expires}");
-            }
-            println!("token (shown once): {}", created.token);
-        }
         KeysCommand::List => {
             let keys = relay::list_api_keys(conn)?;
             if keys.is_empty() {
@@ -300,20 +242,118 @@ fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
             relay::revoke_api_key(conn, id)?;
             println!("Revoked API key {id}");
         }
-        KeysCommand::Rotate {
-            id,
-            cert,
-            relay_key,
-            krl,
-            licensee_key,
-        } => {
-            authorize_mint(conn, cert, relay_key, krl, licensee_key)?;
-            let created = relay::rotate_api_key(conn, id)?;
-            println!("Rotated API key {id} -> {}", created.info.id);
-            println!("token (shown once): {}", created.token);
-        }
     }
     Ok(())
+}
+
+fn run_root(command: RootCommand) -> Result<()> {
+    match command {
+        RootCommand::Generate { public_key_out } => {
+            let (secret, public) = provider::generate_relay_identity();
+            locked_files::write_owner_only(&public_key_out, hex::encode(public).as_bytes())?;
+            println!("{}", hex::encode(*secret));
+            eprintln!("Public key written to {}", public_key_out.display());
+            eprintln!("Root private key printed to stdout above — this tool keeps no copy of it.");
+            Ok(())
+        }
+    }
+}
+
+fn run_policy(command: PolicyCommand) -> Result<()> {
+    match command {
+        PolicyCommand::Issue {
+            root_key,
+            relay_public_key,
+            provider_id,
+            policy_id,
+            issued_at,
+            expires_at,
+            capabilities,
+            hardware_fingerprints,
+            revoked_hardware,
+            hardware_threshold,
+            permissions,
+            out,
+        } => run_policy_issue(
+            root_key,
+            &relay_public_key,
+            &provider_id,
+            &policy_id,
+            issued_at,
+            &expires_at,
+            &capabilities,
+            &hardware_fingerprints,
+            &revoked_hardware,
+            hardware_threshold,
+            &permissions,
+            &out,
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_policy_issue(
+    root_key: Option<PathBuf>,
+    relay_public_key: &Path,
+    provider_id: &str,
+    policy_id: &str,
+    issued_at: Option<String>,
+    expires_at: &str,
+    capabilities: &str,
+    hardware_fingerprints: &[String],
+    revoked_hardware: &[String],
+    hardware_threshold: u8,
+    permissions: &[String],
+    out: &Path,
+) -> Result<()> {
+    let root = read_root_key(root_key)?;
+    let relay_public = read_key_array_32(relay_public_key)?;
+    let issued_at = match issued_at.filter(|s| !s.is_empty()) {
+        Some(value) => value,
+        None => provider::system_now_utc()?,
+    };
+    let capabilities = provider::parse_capabilities(capabilities)?;
+    let hardware = collect_hardware(hardware_fingerprints, revoked_hardware)?;
+    let bytes = policy::issue_policy(
+        &root,
+        &NewPolicy {
+            provider_id,
+            policy_id,
+            relay_public_key: &relay_public,
+            issued_at: &issued_at,
+            expires_at,
+            capabilities,
+            hardware_threshold,
+            hardware: &hardware,
+            networks: &[],
+            permissions,
+        },
+    )?;
+    locked_files::write_owner_only(out, &bytes)?;
+    eprintln!("Wrote provider policy to {}", out.display());
+    Ok(())
+}
+
+fn collect_hardware(
+    fingerprints: &[String],
+    revoked: &[String],
+) -> Result<Vec<HardwareAuthorityEntry>> {
+    let revoked: std::collections::HashSet<String> = revoked
+        .iter()
+        .map(|fp| policy::normalize_fingerprint(fp))
+        .collect::<Result<std::collections::HashSet<_>>>()?;
+    let mut out = Vec::new();
+    for raw in fingerprints {
+        let fingerprint = policy::normalize_fingerprint(raw)?;
+        let is_revoked = revoked.contains(&fingerprint);
+        out.push(HardwareAuthorityEntry {
+            fingerprint,
+            key_type: KeyType::Signing,
+            authority: HardwareAuthority::ProviderApiRoot,
+            revoked: is_revoked,
+        });
+    }
+    Ok(out)
 }
 
 fn run_identity(command: IdentityCommand) -> Result<()> {
@@ -445,7 +485,6 @@ fn load_serve_identity(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn serve(
     mailbox_db: &Path,
     bind: &str,
@@ -462,9 +501,6 @@ async fn serve(
     let identity = load_serve_identity(cert, relay_key, krl)?;
     let db_path = mailbox_db.to_str().ok_or(Error::InvalidPath)?;
     let conn = relay::open(db_path)?;
-    if let Some(issuer) = relay::bootstrap_licensee_if_empty(&conn)? {
-        print_new_licensee(&issuer);
-    }
 
     let addr: SocketAddr = bind
         .parse()

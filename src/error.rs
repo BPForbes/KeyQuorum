@@ -51,6 +51,7 @@ pub enum Error {
     ApiKeyScopeDenied,
     ApiKeyNotFound,
     InvalidLicenseeKey,
+    UnknownProvider,
     OrganizationDatabase,
     InvalidInboxPage,
     RelayRequest(String),
@@ -64,6 +65,13 @@ pub enum Error {
     InvalidProviderChallenge,
     UntrustedRelay,
     ProviderIdentityMissing,
+    ProviderPolicyMissing,
+    InvalidProviderPolicy,
+    ProviderPolicyExpired,
+    ProviderHardwareDenied,
+    ProviderHardwareRevoked,
+    ApiRootMissing,
+    ApiRootAlreadyExists,
 }
 
 impl fmt::Display for Error {
@@ -181,6 +189,7 @@ impl fmt::Display for Error {
                     "invalid licensee key; only the licensee can mint or rotate API keys"
                 )
             }
+            Error::UnknownProvider => write!(f, "provider id does not match this mailbox"),
             Error::OrganizationDatabase => write!(
                 f,
                 "this SQLite file is an organization database; the mailbox needs a separate database"
@@ -222,6 +231,32 @@ impl fmt::Display for Error {
                     f,
                     "mailbox host is not configured with a provider identity"
                 )
+            }
+            Error::ProviderPolicyMissing => {
+                write!(
+                    f,
+                    "mailbox host is not configured with a provider policy"
+                )
+            }
+            Error::InvalidProviderPolicy => {
+                write!(f, "provider policy is missing or invalid")
+            }
+            Error::ProviderPolicyExpired => write!(f, "provider policy has expired"),
+            Error::ProviderHardwareDenied => {
+                write!(
+                    f,
+                    "provider hardware is missing, unauthorized, or failed the possession challenge"
+                )
+            }
+            Error::ProviderHardwareRevoked => {
+                write!(f, "provider hardware has been revoked")
+            }
+            Error::ApiRootMissing => write!(
+                f,
+                "API root has not been generated"
+            ),
+            Error::ApiRootAlreadyExists => {
+                write!(f, "API root already exists on this mailbox")
             }
         }
     }
