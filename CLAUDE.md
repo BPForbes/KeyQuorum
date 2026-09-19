@@ -17,10 +17,20 @@ The two must stay in step in both directions: if the commit fails, the CLI delet
 the `.kqpb` files it just wrote, because `write_owner_only` refuses to overwrite and
 leftovers would block the retry.
 
-The `.kqpb` outer envelope (magic, version, kind byte, recipient X25519
-public key, sealed length) lives in `src/envelope.rs` and is shared by
-every kind the relay carries, so routing code never needs to know which
-letter is inside. `src/org_update.rs` adds the two authenticated update
+`src/envelope.rs` is the crate's **only** sealed-envelope framing (magic,
+version, kind byte, recipient X25519 public key, sealed length) and the
+only copy of the length-prefixed byte codec and preimage hashing that go
+with it. Two formats share it, named by `envelope::Format`: `PACKAGE`
+(`KQPB`, the `.kqpb` files the relay carries, for `private_bridge` and
+`org_update`) and `EXPORT_BUNDLE` (`KQXB`, `export`'s portable bundles).
+Do not re-roll either in a new module — add a `Format`. Those bytes are
+wire format. `.kqbn` eviction notices and the `KQBS` signature artifact
+have their own magic and version because they are not sealed envelopes,
+and `key_tree`/`private_bridge` seal raw blobs into database columns with
+no header at all; none of those belong in `envelope.rs`. The provider
+`KQPC`/`KQRL`/`KQPL` blobs are signed certificates, not envelopes, and
+keep their own offset-cursor parsers and error variants.
+`src/org_update.rs` adds the two authenticated update
 kinds from issue #10 — hardware-key reissue and key-tree restructure. A
 store applies one only when it is addressed to a label that store holds
 under the sealed-to key, signed by the subject or a dotted-label ancestor

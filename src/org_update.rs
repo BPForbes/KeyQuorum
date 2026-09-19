@@ -39,9 +39,9 @@
 //! restructures still lands on the newest topology in one step.
 
 use crate::envelope::{
-    is_weak_x25519_public_key, push_len_prefixed, push_len_prefixed_u32, take_array,
-    take_len_prefixed, take_len_prefixed_u32, take_u32, take_u8, utf8, Addressed, KIND_KEY_REISSUE,
-    KIND_TREE_UPDATE,
+    hash_len_prefixed, is_weak_x25519_public_key, push_len_prefixed, push_len_prefixed_u32,
+    take_array, take_len_prefixed, take_len_prefixed_u32, take_u32, take_u8, utf8, Addressed,
+    KIND_KEY_REISSUE, KIND_TREE_UPDATE,
 };
 use crate::error::{Error, Result};
 use crate::key_tree::{self, PublicTree};
@@ -294,12 +294,12 @@ impl ReissueLetter {
     fn preimage(&self, recipient_public_key: &[u8; 32]) -> Result<[u8; 32]> {
         let mut hasher = Sha256::new();
         hasher.update(REISSUE_DOMAIN);
-        hash_field(&mut hasher, self.tree_label.as_bytes())?;
-        hash_field(&mut hasher, self.subject_label.as_bytes())?;
+        hash_len_prefixed(&mut hasher, self.tree_label.as_bytes())?;
+        hash_len_prefixed(&mut hasher, self.subject_label.as_bytes())?;
         hasher.update(self.sequence.to_be_bytes());
-        hash_field(&mut hasher, self.recipient_label.as_bytes())?;
+        hash_len_prefixed(&mut hasher, self.recipient_label.as_bytes())?;
         hasher.update(recipient_public_key);
-        hash_field(&mut hasher, self.authorizer_label.as_bytes())?;
+        hash_len_prefixed(&mut hasher, self.authorizer_label.as_bytes())?;
         hasher.update([self.flags()]);
         if let Some(pk) = self.new_encryption_public_key.as_ref() {
             hasher.update(pk);
@@ -307,8 +307,8 @@ impl ReissueLetter {
         if let Some(pk) = self.new_signing_public_key.as_ref() {
             hasher.update(pk);
         }
-        hash_field(&mut hasher, self.previous_encryption_fingerprint.as_bytes())?;
-        hash_field(&mut hasher, self.previous_signing_fingerprint.as_bytes())?;
+        hash_len_prefixed(&mut hasher, self.previous_encryption_fingerprint.as_bytes())?;
+        hash_len_prefixed(&mut hasher, self.previous_signing_fingerprint.as_bytes())?;
         Ok(hasher.finalize().into())
     }
 
@@ -333,7 +333,12 @@ impl ReissueLetter {
         push_len_prefixed(&mut payload, self.previous_signing_fingerprint.as_bytes())?;
         let preimage = self.preimage(recipient_public_key)?;
         payload.extend_from_slice(&signing::sign(&signing_key.to_bytes(), &preimage));
-        crate::envelope::seal(KIND_KEY_REISSUE, recipient_public_key, &payload)
+        crate::envelope::seal(
+            crate::envelope::PACKAGE,
+            KIND_KEY_REISSUE,
+            recipient_public_key,
+            &payload,
+        )
     }
 
     fn decode(payload: &[u8]) -> Result<(Self, [u8; 64])> {
@@ -799,11 +804,11 @@ impl TreeLetter {
     fn preimage(&self, recipient_public_key: &[u8; 32]) -> Result<[u8; 32]> {
         let mut hasher = Sha256::new();
         hasher.update(TREE_DOMAIN);
-        hash_field(&mut hasher, self.tree_label.as_bytes())?;
+        hash_len_prefixed(&mut hasher, self.tree_label.as_bytes())?;
         hasher.update(self.generation.to_be_bytes());
-        hash_field(&mut hasher, self.recipient_label.as_bytes())?;
+        hash_len_prefixed(&mut hasher, self.recipient_label.as_bytes())?;
         hasher.update(recipient_public_key);
-        hash_field(&mut hasher, self.authorizer_label.as_bytes())?;
+        hash_len_prefixed(&mut hasher, self.authorizer_label.as_bytes())?;
         let len = u32::try_from(self.slice_json.len()).map_err(|_| Error::BundleFieldTooLarge)?;
         hasher.update(len.to_be_bytes());
         hasher.update(&self.slice_json);
@@ -819,7 +824,12 @@ impl TreeLetter {
         push_len_prefixed_u32(&mut payload, &self.slice_json)?;
         let preimage = self.preimage(recipient_public_key)?;
         payload.extend_from_slice(&signing::sign(&signing_key.to_bytes(), &preimage));
-        crate::envelope::seal(KIND_TREE_UPDATE, recipient_public_key, &payload)
+        crate::envelope::seal(
+            crate::envelope::PACKAGE,
+            KIND_TREE_UPDATE,
+            recipient_public_key,
+            &payload,
+        )
     }
 
     fn decode(payload: &[u8]) -> Result<(Self, [u8; 64])> {
@@ -1138,13 +1148,6 @@ fn record_update(
         }
         other => Error::Db(other),
     })?;
-    Ok(())
-}
-
-fn hash_field(hasher: &mut Sha256, bytes: &[u8]) -> Result<()> {
-    let len = u16::try_from(bytes.len()).map_err(|_| Error::BundleFieldTooLarge)?;
-    hasher.update(len.to_be_bytes());
-    hasher.update(bytes);
     Ok(())
 }
 

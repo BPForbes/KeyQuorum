@@ -1,23 +1,60 @@
-//! The `.kqpb` outer envelope shared by every authenticated update this
-//! project delivers, plus the byte codec its letters are written in.
+//! The sealed outer envelope every recipient-addressed artifact in this
+//! project shares, plus the byte codec their letters are written in.
 //!
 //! The outside is a routing slip: magic, format version, a kind byte, the
 //! recipient's X25519 public key, and the sealed length. A carrier — the
 //! mailbox relay, a USB drop, an email — indexes on the public key and
 //! never opens the letter. The inside is `crypto_box`-sealed to that key,
-//! so only the store holding the matching private key can read it.
+//! so only the holder of the matching private key can read it.
 //!
-//! The kind byte selects the letter's schema. Private-bridge invites,
-//! rotations and destroys ([`KIND_INVITE`] … [`KIND_SUPERVISOR`]) are
-//! written by `private_bridge`; hardware-key reissue and key-tree
-//! restructure ([`KIND_KEY_REISSUE`], [`KIND_TREE_UPDATE`]) by
-//! `org_update`. Keeping one outer format means the relay routes every
-//! kind with the same code path and learns nothing new about any of them.
+//! ```text
+//! magic (4) | format_version (1) | kind (1) | recipient_public_key (32)
+//!   | payload_len (4) | sealed_payload (payload_len)
+//! ```
+//!
+//! Two formats use that framing, distinguished only by their magic and
+//! version, so [`Format`] names them rather than each module rolling its
+//! own copy:
+//!
+//! - [`PACKAGE`] (`KQPB`) — private-bridge invites, rotations and
+//!   destroys ([`KIND_INVITE`] … [`KIND_SUPERVISOR`]) from
+//!   `private_bridge`, and the authenticated organization updates
+//!   ([`KIND_KEY_REISSUE`], [`KIND_TREE_UPDATE`]) from `org_update`. One
+//!   outer format means the relay routes every kind through the same code
+//!   path and learns nothing new about any of them.
+//! - [`EXPORT_BUNDLE`] (`KQXB`) — the portable credential and file
+//!   bundles in `export`, where the kind byte is the bundle type.
+//!
+//! Only `KQPB` has a decoder today; `export`'s `import` is still open (see
+//! README's Roadmap). The parsing side below is therefore `KQPB`-only and
+//! reports [`Error::InvalidBridgePackage`] on a malformed frame. A future
+//! bundle decoder should take a [`Format`] and its own error rather than
+//! borrowing that one, whose message names private bridges.
 
 use crate::error::{Error, Result};
+use sha2::{Digest, Sha256};
 
-pub const PACKAGE_MAGIC: &[u8; 4] = b"KQPB";
-pub const FORMAT_VERSION: u8 = 2;
+/// Magic and version identifying one framing of the envelope above. The
+/// bytes are wire format: changing either field of a existing constant
+/// breaks every artifact already written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Format {
+    magic: &'static [u8; 4],
+    version: u8,
+}
+
+/// Private-bridge packages and organization updates: the `.kqpb` files
+/// the mailbox relay carries.
+pub const PACKAGE: Format = Format {
+    magic: b"KQPB",
+    version: 2,
+};
+
+/// Portable export bundles (`export::export_credential` / `export_file`).
+pub const EXPORT_BUNDLE: Format = Format {
+    magic: b"KQXB",
+    version: 1,
+};
 
 /// Private-bridge invite: roster plus the sealed shared signing secret.
 pub const KIND_INVITE: u8 = 1;
@@ -43,8 +80,16 @@ pub struct Addressed {
     pub bytes: Vec<u8>,
 }
 
-/// Seal `payload` to `recipient_public_key` under `kind`.
-pub fn seal(kind: u8, recipient_public_key: &[u8; 32], payload: &[u8]) -> Result<Vec<u8>> {
+/// Seal `payload` to `recipient_public_key` under `kind`, framed as
+/// `format`. The header is written in the clear; nothing but the kind byte
+/// and the recipient's own public key is legible to a carrier, so any
+/// name or label that is sensitive on its own belongs in `payload`.
+pub fn seal(
+    format: Format,
+    kind: u8,
+    recipient_public_key: &[u8; 32],
+    payload: &[u8],
+) -> Result<Vec<u8>> {
     if is_weak_x25519_public_key(recipient_public_key) {
         return Err(Error::InvalidPublicKey);
     }
@@ -53,8 +98,8 @@ pub fn seal(kind: u8, recipient_public_key: &[u8; 32], payload: &[u8]) -> Result
         .expect("crypto_box sealing should not fail for an in-memory payload");
     let payload_len = u32::try_from(sealed.len()).map_err(|_| Error::BundleFieldTooLarge)?;
     let mut out = Vec::with_capacity(42 + sealed.len());
-    out.extend_from_slice(PACKAGE_MAGIC);
-    out.push(FORMAT_VERSION);
+    out.extend_from_slice(format.magic);
+    out.push(format.version);
     out.push(kind);
     out.extend_from_slice(recipient_public_key);
     out.extend_from_slice(&payload_len.to_be_bytes());
@@ -62,14 +107,15 @@ pub fn seal(kind: u8, recipient_public_key: &[u8; 32], payload: &[u8]) -> Result
     Ok(out)
 }
 
-/// Reads only the outer header: magic, version, kind, recipient public
-/// key, and the declared sealed length. Does not unseal the letter.
+/// Reads only the outer header of a [`PACKAGE`] envelope: magic, version,
+/// kind, recipient public key, and the declared sealed length. Does not
+/// unseal the letter.
 pub fn parse_outer(bytes: &[u8]) -> Result<(u8, [u8; 32], &[u8])> {
     let mut data = bytes;
-    if take_n(&mut data, 4)? != PACKAGE_MAGIC {
+    if take_n(&mut data, 4)? != PACKAGE.magic {
         return Err(Error::InvalidBridgePackage);
     }
-    if take_u8(&mut data)? != FORMAT_VERSION {
+    if take_u8(&mut data)? != PACKAGE.version {
         return Err(Error::InvalidBridgePackage);
     }
     let kind = take_u8(&mut data)?;
@@ -107,12 +153,23 @@ pub fn open(bytes: &[u8], recipient_secret: &[u8; 32]) -> Result<(u8, [u8; 32], 
     Ok((kind, recipient_public_key, payload))
 }
 
-/// X25519 public keys of small order: a shared secret with one of these is
-/// all zeroes whatever the private key, so sealing to one seals to nobody.
+/// A handful of X25519 curve points have small order and, under
+/// Diffie-Hellman with *any* scalar, always yield an all-zero shared
+/// secret (RFC 7748) — the trivial case is 32 zero bytes. Sealing to one
+/// of these would produce an envelope anyone could open without any
+/// private key at all. Detecting this needs only one clamped scalar
+/// (clamping forces it to be a multiple of the curve's cofactor, so every
+/// low-order point collapses to zero the same way regardless of which one
+/// is used); the probe scalar's value is otherwise irrelevant and is never
+/// used for real encryption.
 pub fn is_weak_x25519_public_key(public_key: &[u8; 32]) -> bool {
     x25519_dalek::x25519([1u8; 32], *public_key) == [0u8; 32]
 }
 
+/// Appends `bytes` to `out` with a `u16` length prefix. Fails, without
+/// writing anything to `out`, if `bytes` exceeds what a `u16` length can
+/// encode — silently truncating the cast instead would corrupt the
+/// framing of everything downstream of this field.
 pub fn push_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) -> Result<()> {
     let len = u16::try_from(bytes.len()).map_err(|_| Error::BundleFieldTooLarge)?;
     out.extend_from_slice(&len.to_be_bytes());
@@ -122,6 +179,25 @@ pub fn push_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) -> Result<()> {
 
 /// Length-prefixed field for payloads that can exceed 64 KiB — a public
 /// tree slice for a large organization does.
+/// The hashing twin of [`push_len_prefixed`]: a signature preimage feeds
+/// a field the same length prefix the encoder writes, so a field boundary
+/// can never be read one way and signed another. Kept beside it for that
+/// reason — the two must stay in step.
+pub fn hash_len_prefixed(hasher: &mut Sha256, bytes: &[u8]) -> Result<()> {
+    let len = u16::try_from(bytes.len()).map_err(|_| Error::BundleFieldTooLarge)?;
+    hasher.update(len.to_be_bytes());
+    hasher.update(bytes);
+    Ok(())
+}
+
+/// A u16 element count in a preimage, matching the count the map encoders
+/// write ahead of their entries.
+pub fn hash_u16_count(hasher: &mut Sha256, n: usize) -> Result<()> {
+    let n = u16::try_from(n).map_err(|_| Error::BundleFieldTooLarge)?;
+    hasher.update(n.to_be_bytes());
+    Ok(())
+}
+
 pub fn push_len_prefixed_u32(out: &mut Vec<u8>, bytes: &[u8]) -> Result<()> {
     let len = u32::try_from(bytes.len()).map_err(|_| Error::BundleFieldTooLarge)?;
     out.extend_from_slice(&len.to_be_bytes());

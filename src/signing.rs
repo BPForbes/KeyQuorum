@@ -6,6 +6,7 @@
 //! salt, and both a shared bridge key and the signer's personal key.
 
 use crate::crypto::{random_salt, SALT_LEN};
+use crate::envelope::{push_len_prefixed, take_array, take_len_prefixed, take_n, take_u8, utf8};
 use crate::error::{Error, Result};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
@@ -147,15 +148,11 @@ pub fn decode_bridge_signature(bytes: &[u8]) -> Result<BridgeSignature> {
     if take_u8(&mut data)? != ARTIFACT_VERSION {
         return Err(Error::InvalidBridgePackage);
     }
-    let uid = std::str::from_utf8(take_len_prefixed(&mut data)?)
-        .map_err(|_| Error::InvalidBridgePackage)?
-        .to_string();
+    let uid = utf8(take_len_prefixed(&mut data)?)?;
     let generation = u32::from_be_bytes(take_array(&mut data)?);
     let bridge_salt = take_array(&mut data)?;
     let signature_salt = take_array(&mut data)?;
-    let signer_label = std::str::from_utf8(take_len_prefixed(&mut data)?)
-        .map_err(|_| Error::InvalidBridgePackage)?
-        .to_string();
+    let signer_label = utf8(take_len_prefixed(&mut data)?)?;
     let signer_public_key = take_array(&mut data)?;
     let bridge_signature = take_array(&mut data)?;
     let personal_signature = take_array(&mut data)?;
@@ -172,39 +169,6 @@ pub fn decode_bridge_signature(bytes: &[u8]) -> Result<BridgeSignature> {
         bridge_signature,
         personal_signature,
     })
-}
-
-fn push_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) -> Result<()> {
-    let len = u16::try_from(bytes.len()).map_err(|_| Error::BundleFieldTooLarge)?;
-    out.extend_from_slice(&len.to_be_bytes());
-    out.extend_from_slice(bytes);
-    Ok(())
-}
-
-fn take_u8(data: &mut &[u8]) -> Result<u8> {
-    let (b, rest) = data.split_first().ok_or(Error::InvalidBridgePackage)?;
-    *data = rest;
-    Ok(*b)
-}
-
-fn take_n<'a>(data: &mut &'a [u8], n: usize) -> Result<&'a [u8]> {
-    if data.len() < n {
-        return Err(Error::InvalidBridgePackage);
-    }
-    let (head, tail) = data.split_at(n);
-    *data = tail;
-    Ok(head)
-}
-
-fn take_array<const N: usize>(data: &mut &[u8]) -> Result<[u8; N]> {
-    take_n(data, N)?
-        .try_into()
-        .map_err(|_| Error::InvalidBridgePackage)
-}
-
-fn take_len_prefixed<'a>(data: &mut &'a [u8]) -> Result<&'a [u8]> {
-    let len = u16::from_be_bytes(take_array(data)?) as usize;
-    take_n(data, len)
 }
 
 #[cfg(test)]

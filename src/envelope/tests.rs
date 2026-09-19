@@ -9,10 +9,10 @@ fn keypair() -> (crypto_box::SecretKey, [u8; 32]) {
 #[test]
 fn seal_round_trips_under_the_recipient_key() {
     let (secret, public) = keypair();
-    let sealed = seal(KIND_TREE_UPDATE, &public, b"letter").expect("seal");
+    let sealed = seal(PACKAGE, KIND_TREE_UPDATE, &public, b"letter").expect("seal");
 
-    assert_eq!(&sealed[..4], PACKAGE_MAGIC);
-    assert_eq!(sealed[4], FORMAT_VERSION);
+    assert_eq!(&sealed[..4], b"KQPB");
+    assert_eq!(sealed[4], 2);
     assert_eq!(sealed[5], KIND_TREE_UPDATE);
     assert_eq!(routing_public_key(&sealed).expect("route"), public);
     assert_eq!(kind(&sealed).expect("kind"), KIND_TREE_UPDATE);
@@ -27,7 +27,7 @@ fn seal_round_trips_under_the_recipient_key() {
 fn another_recipients_key_cannot_open_the_letter() {
     let (_, public) = keypair();
     let (other, _) = keypair();
-    let sealed = seal(KIND_KEY_REISSUE, &public, b"letter").expect("seal");
+    let sealed = seal(PACKAGE, KIND_KEY_REISSUE, &public, b"letter").expect("seal");
 
     assert!(matches!(
         open(&sealed, &other.to_bytes()),
@@ -38,7 +38,7 @@ fn another_recipients_key_cannot_open_the_letter() {
 #[test]
 fn outer_header_rejects_truncation_trailing_bytes_and_wrong_magic() {
     let (_, public) = keypair();
-    let sealed = seal(KIND_INVITE, &public, b"letter").expect("seal");
+    let sealed = seal(PACKAGE, KIND_INVITE, &public, b"letter").expect("seal");
 
     assert!(parse_outer(&sealed[..sealed.len() - 1]).is_err());
 
@@ -51,7 +51,7 @@ fn outer_header_rejects_truncation_trailing_bytes_and_wrong_magic() {
     assert!(parse_outer(&wrong_magic).is_err());
 
     let mut wrong_version = sealed;
-    wrong_version[4] = FORMAT_VERSION + 1;
+    wrong_version[4] = 3;
     assert!(parse_outer(&wrong_version).is_err());
 }
 
@@ -60,7 +60,7 @@ fn sealing_to_a_small_order_public_key_is_refused() {
     let weak = [0u8; 32];
     assert!(is_weak_x25519_public_key(&weak));
     assert!(matches!(
-        seal(KIND_KEY_REISSUE, &weak, b"letter"),
+        seal(PACKAGE, KIND_KEY_REISSUE, &weak, b"letter"),
         Err(Error::InvalidPublicKey)
     ));
 }
@@ -84,10 +84,37 @@ fn length_prefixed_fields_round_trip_at_both_widths() {
 }
 
 #[test]
-fn a_u16_field_refuses_a_payload_it_cannot_describe() {
+fn a_u16_field_takes_its_largest_payload_and_refuses_one_byte_more() {
     let mut out = Vec::new();
+    assert!(push_len_prefixed(&mut out, &vec![0u8; u16::MAX as usize]).is_ok());
     assert!(matches!(
-        push_len_prefixed(&mut out, &vec![0u8; 70_000]),
+        push_len_prefixed(&mut out, &vec![0u8; u16::MAX as usize + 1]),
         Err(Error::BundleFieldTooLarge)
+    ));
+}
+
+#[test]
+fn an_export_bundle_is_the_same_framing_under_its_own_magic() {
+    let (secret, public) = keypair();
+    let bundle = seal(EXPORT_BUNDLE, 1, &public, b"credential").expect("seal");
+
+    // These bytes are wire format: bundles written before `export` and
+    // `private_bridge` shared this module must still parse.
+    assert_eq!(&bundle[..4], b"KQXB");
+    assert_eq!(bundle[4], 1);
+    assert_eq!(bundle[5], 1);
+    assert_eq!(&bundle[6..38], public.as_slice());
+    let len = u32::from_be_bytes(bundle[38..42].try_into().unwrap()) as usize;
+    assert_eq!(bundle.len(), 42 + len);
+
+    let opened = crypto_box::SecretKey::from(secret.to_bytes())
+        .unseal(&bundle[42..])
+        .expect("unseal");
+    assert_eq!(opened, b"credential");
+
+    // A KQPB reader must not accept one: the magic is what separates them.
+    assert!(matches!(
+        parse_outer(&bundle),
+        Err(Error::InvalidBridgePackage)
     ));
 }

@@ -31,8 +31,8 @@
 
 use crate::crypto::{random_salt, SALT_LEN};
 use crate::envelope::{
-    is_weak_x25519_public_key, push_len_prefixed, take_array, take_len_prefixed, take_u8, utf8,
-    FORMAT_VERSION, KIND_DESTROY, KIND_INVITE, KIND_ROTATE, KIND_SUPERVISOR,
+    hash_len_prefixed, hash_u16_count, is_weak_x25519_public_key, push_len_prefixed, take_array,
+    take_len_prefixed, take_u8, utf8, KIND_DESTROY, KIND_INVITE, KIND_ROTATE, KIND_SUPERVISOR,
 };
 use crate::error::{Error, Result};
 use crate::keys;
@@ -45,6 +45,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use zeroize::Zeroizing;
 
 const NOTICE_MAGIC: &[u8; 4] = b"KQBN";
+/// `.kqbn` eviction notices are public routing slips, not sealed
+/// envelopes, so they carry their own version byte. It happens to equal
+/// the `KQPB` envelope's today because the two were written together;
+/// they version independently from here, and this value is wire format.
+const NOTICE_VERSION: u8 = 2;
 const ROLE_MEMBER: u8 = 1;
 const ROLE_SUPERVISOR: u8 = 2;
 const UPDATE_DOMAIN: &[u8] = b"KQBRIDGE-UPDATE-v1";
@@ -1374,7 +1379,12 @@ fn encode_package(f: PackageFields<'_>) -> Result<Vec<u8>> {
         payload.extend_from_slice(&signing::sign(&signing_key.to_bytes(), &preimage));
     }
 
-    crate::envelope::seal(f.kind, f.recipient_public_key, &payload)
+    crate::envelope::seal(
+        crate::envelope::PACKAGE,
+        f.kind,
+        f.recipient_public_key,
+        &payload,
+    )
 }
 
 /// The recipient public key the carrier routes on. Delegates to
@@ -1695,7 +1705,7 @@ fn encode_notice(
 ) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     out.extend_from_slice(NOTICE_MAGIC);
-    out.push(FORMAT_VERSION);
+    out.push(NOTICE_VERSION);
     out.push(match kind {
         BridgeChangeKind::NeedsMemberRotate => 1,
         BridgeChangeKind::Destroyed => 2,
@@ -1796,19 +1806,6 @@ fn update_auth_preimage(
         hasher.update(pk);
     }
     Ok(hasher.finalize().into())
-}
-
-fn hash_len_prefixed(hasher: &mut Sha256, bytes: &[u8]) -> Result<()> {
-    let len = u16::try_from(bytes.len()).map_err(|_| Error::BundleFieldTooLarge)?;
-    hasher.update(len.to_be_bytes());
-    hasher.update(bytes);
-    Ok(())
-}
-
-fn hash_u16_count(hasher: &mut Sha256, n: usize) -> Result<()> {
-    let n = u16::try_from(n).map_err(|_| Error::BundleFieldTooLarge)?;
-    hasher.update(n.to_be_bytes());
-    Ok(())
 }
 
 fn last_bridge_id(conn: &Connection, uid: &str) -> Result<i64> {
