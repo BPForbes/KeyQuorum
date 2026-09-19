@@ -67,8 +67,7 @@ fn a_failed_commit_takes_its_delivery_files_with_it() {
     // store has no schema, so the commit fails the way a locked database
     // or a rejected insert would.
     let planned = plan();
-    let pending = write_delivery_packages(dir.path(), envelope_files(&planned.created.packages))
-        .expect("write");
+    let pending = write_delivery_packages(dir.path(), &planned.created.packages).expect("write");
     assert_eq!(entries(dir.path()).len(), 3);
     let unusable = Connection::open_in_memory().expect("connection");
     private_bridge::commit_planned_creation(&unusable, &planned).expect_err("no such table");
@@ -81,8 +80,8 @@ fn a_failed_commit_takes_its_delivery_files_with_it() {
     // So the same command can simply be run again into the same directory.
     let conn = db::open_in_memory().expect("schema should apply");
     let planned = plan();
-    let pending = write_delivery_packages(dir.path(), envelope_files(&planned.created.packages))
-        .expect("retry should write");
+    let pending =
+        write_delivery_packages(dir.path(), &planned.created.packages).expect("retry should write");
     private_bridge::commit_planned_creation(&conn, &planned).expect("commit");
     let written = pending.keep();
     assert_eq!(private_bridge::list(&conn, None).expect("list").len(), 1);
@@ -116,8 +115,7 @@ fn remove_member_takes_its_envelopes_back_on_a_failed_commit_too() {
     // The command's order, same as `create`: plan, write, then commit.
     let planned = private_bridge::plan_remove_member(&conn, &created.uid, "M.S.3", "M.S.2", &sk_s2)
         .expect("plan");
-    let pending = write_delivery_packages(dir.path(), envelope_files(&planned.outcome.packages))
-        .expect("write");
+    let pending = write_delivery_packages(dir.path(), &planned.outcome.packages).expect("write");
     assert_eq!(entries(dir.path()).len(), 5);
     let unusable = Connection::open_in_memory().expect("connection");
     private_bridge::commit_planned_removal(&unusable, &planned).expect_err("no such table");
@@ -137,8 +135,8 @@ fn remove_member_takes_its_envelopes_back_on_a_failed_commit_too() {
     // So the same command can be run again into the same directory.
     let planned = private_bridge::plan_remove_member(&conn, &created.uid, "M.S.3", "M.S.2", &sk_s2)
         .expect("re-plan");
-    let pending = write_delivery_packages(dir.path(), envelope_files(&planned.outcome.packages))
-        .expect("retry should write");
+    let pending =
+        write_delivery_packages(dir.path(), &planned.outcome.packages).expect("retry should write");
     private_bridge::commit_planned_removal(&conn, &planned).expect("commit");
     let mut written = pending.keep();
     written.sort();
@@ -153,8 +151,7 @@ fn labels_that_collapse_to_one_file_name_write_nothing() {
     let dir = tempfile::tempdir().expect("tempdir");
     let packages = vec![package("M.S 2", b"first"), package("M.S_2", b"second")];
 
-    let err =
-        write_delivery_packages(dir.path(), envelope_files(&packages)).expect_err("names collide");
+    let err = write_delivery_packages(dir.path(), &packages).expect_err("names collide");
     assert!(
         matches!(&err, Error::AmbiguousDeliveryName(file) if file == "M.S_2.kqpb"),
         "unexpected error: {err}"
@@ -169,12 +166,59 @@ fn an_envelope_already_on_disk_rolls_back_the_ones_before_it() {
     fs::write(&taken, b"someone else's file").expect("seed the output dir");
     let packages = vec![package("M.S.2", b"first"), package("M.S.3", b"second")];
 
-    write_delivery_packages(dir.path(), envelope_files(&packages))
-        .expect_err("refuses to overwrite");
+    write_delivery_packages(dir.path(), &packages).expect_err("refuses to overwrite");
     assert_eq!(entries(dir.path()), vec![taken.clone()]);
     assert_eq!(
         fs::read(&taken).expect("read"),
         b"someone else's file",
         "only files we created ourselves are cleaned up"
     );
+}
+
+#[test]
+fn deliver_then_commit_creates_the_directory_and_keeps_the_files_on_success() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let output = dir.path().join("does-not-exist-yet");
+    let packages = vec![package("M.S.2", b"one"), package("M.S.3", b"two")];
+
+    let written = deliver_then_commit(&output, &packages, || Ok(())).expect("commit succeeds");
+
+    assert_eq!(written.len(), 2);
+    assert_eq!(entries(&output), written);
+    assert_eq!(fs::read(&written[0]).expect("read"), b"one");
+}
+
+#[test]
+fn deliver_then_commit_takes_the_files_back_when_the_commit_fails() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let packages = vec![package("M.S.2", b"one"), package("M.S.3", b"two")];
+
+    let err = deliver_then_commit(dir.path(), &packages, || {
+        Err(Error::BridgeGenerationMismatch)
+    })
+    .expect_err("commit fails");
+
+    assert!(matches!(err, Error::BridgeGenerationMismatch));
+    // Nothing describing a change this store never recorded is left to
+    // block the retry.
+    assert!(entries(dir.path()).is_empty());
+}
+
+#[test]
+fn deliver_then_commit_does_not_commit_when_the_envelopes_cannot_be_written() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // Two labels that sanitize to one file name: the write fails, so the
+    // commit must never run.
+    let packages = vec![package("M S 2", b"one"), package("M/S/2", b"two")];
+    let mut committed = false;
+
+    let err = deliver_then_commit(dir.path(), &packages, || {
+        committed = true;
+        Ok(())
+    })
+    .expect_err("names collide");
+
+    assert!(matches!(err, Error::AmbiguousDeliveryName(_)));
+    assert!(!committed, "the database must not move without envelopes");
+    assert!(entries(dir.path()).is_empty());
 }

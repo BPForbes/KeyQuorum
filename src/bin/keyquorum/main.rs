@@ -1188,13 +1188,11 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
             output_dir,
         }) => {
             let signing_sk = zeroize::Zeroizing::new(read_key_array_32(&signing_key_file)?);
-            fs::create_dir_all(&output_dir)?;
             let planned = org_update::plan_tree_restructure(conn, key_id, &as_node, &signing_sk)?;
-            let pending = write_delivery_packages(&output_dir, update_files(&planned.packages))?;
-            // As with a bridge rotation: if this store cannot advance to
-            // the generation the envelopes announce, the envelopes go too.
-            org_update::commit_planned_tree_restructure(conn, &planned)?;
-            for path in pending.keep() {
+            let written = deliver_then_commit(&output_dir, &planned.packages, || {
+                org_update::commit_planned_tree_restructure(conn, &planned).map(|_| ())
+            })?;
+            for path in written {
                 println!("Wrote {}", path.display());
             }
             println!(
@@ -1283,7 +1281,6 @@ fn run_reissue(conn: &Connection, args: ReissueArgs) -> Result<()> {
         .map(read_key_array_32)
         .transpose()?;
     let signing_sk = zeroize::Zeroizing::new(read_key_array_32(&args.signing_key_file)?);
-    fs::create_dir_all(&args.output_dir)?;
 
     let planned = org_update::plan_key_reissue(
         conn,
@@ -1295,11 +1292,10 @@ fn run_reissue(conn: &Connection, args: ReissueArgs) -> Result<()> {
         &args.as_node,
         &signing_sk,
     )?;
-    let pending = write_delivery_packages(&args.output_dir, update_files(&planned.packages))?;
-    // The envelopes name the reissue number this store is about to record;
-    // if the commit fails they describe a change that never happened.
-    org_update::commit_planned_key_reissue(conn, &planned)?;
-    for path in pending.keep() {
+    let written = deliver_then_commit(&args.output_dir, &planned.packages, || {
+        org_update::commit_planned_key_reissue(conn, &planned).map(|_| ())
+    })?;
+    for path in written {
         println!("Wrote {}", path.display());
     }
     println!(
@@ -1395,7 +1391,6 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
                     signing_public_key: None,
                 });
             }
-            fs::create_dir_all(&output_dir)?;
             let planned = private_bridge::plan_create(
                 Some(key_id),
                 label.as_deref(),
@@ -1403,13 +1398,9 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
                 &supervisor_parties,
                 self_node.as_deref(),
             )?;
-            let pending =
-                write_delivery_packages(&output_dir, envelope_files(&planned.created.packages))?;
-            // A commit failure here drops `pending`, deleting the envelopes:
-            // they name a bridge this store did not record, and leaving them
-            // would make `create` fail on retry with "file exists".
-            private_bridge::commit_planned_creation(conn, &planned)?;
-            let written = pending.keep();
+            let written = deliver_then_commit(&output_dir, &planned.created.packages, || {
+                private_bridge::commit_planned_creation(conn, &planned)
+            })?;
             let created = &planned.created;
             println!(
                 "Created private bridge {} (generation {}). Notify {} store(s):",
@@ -1482,14 +1473,10 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
             output_dir,
         } => {
             let sk = zeroize::Zeroizing::new(read_key_array_32(Path::new(&share_file))?);
-            fs::create_dir_all(&output_dir)?;
             let planned = private_bridge::plan_remove_member(conn, &uid, &member, &node, &sk)?;
-            let pending =
-                write_delivery_packages(&output_dir, envelope_files(&planned.outcome.packages))?;
-            // As in `create`: if the commit fails, this store stays on the old
-            // generation, so the rotation envelopes must go with it.
-            private_bridge::commit_planned_removal(conn, &planned)?;
-            let written = pending.keep();
+            let written = deliver_then_commit(&output_dir, &planned.outcome.packages, || {
+                private_bridge::commit_planned_removal(conn, &planned)
+            })?;
             let outcome = &planned.outcome;
             if outcome.destroyed {
                 println!("Destroyed private bridge {uid}");
@@ -1572,19 +1559,19 @@ impl Drop for PendingDelivery {
 /// commits and then calls `keep()` on the returned guard; anything else —
 /// an error here, a failed commit, an early return — removes the files
 /// again so the command can simply be run once more.
-fn write_delivery_packages<'a, I>(output_dir: &Path, packages: I) -> Result<PendingDelivery>
-where
-    I: IntoIterator<Item = (&'a str, &'a [u8])>,
-{
-    let mut planned = Vec::new();
+fn write_delivery_packages(
+    output_dir: &Path,
+    packages: &[impl Envelope],
+) -> Result<PendingDelivery> {
+    let mut planned = Vec::with_capacity(packages.len());
     let mut claimed: BTreeSet<String> = BTreeSet::new();
-    for (label, bytes) in packages {
-        let name = sanitize_label(label)?;
+    for package in packages {
+        let name = sanitize_label(package.label())?;
         let file = format!("{name}.kqpb");
         if !claimed.insert(name) {
             return Err(Error::AmbiguousDeliveryName(file));
         }
-        planned.push((output_dir.join(file), bytes));
+        planned.push((output_dir.join(file), package.bytes()));
     }
 
     let mut pending = PendingDelivery { paths: Vec::new() };
@@ -1595,22 +1582,56 @@ where
     Ok(pending)
 }
 
-/// `(label, bytes)` pairs for `write_delivery_packages`.
-fn envelope_files(
-    packages: &[private_bridge::DeliveryPackage],
-) -> impl Iterator<Item = (&str, &[u8])> {
-    packages
-        .iter()
-        .map(|pkg| (pkg.label.as_str(), pkg.bytes.as_slice()))
+/// A sealed envelope on its way to one store. The private-bridge and
+/// organization-update producers describe their packages with different
+/// types — a bridge package also carries the recipient's role — but
+/// delivery only ever needs the recipient label and the bytes.
+trait Envelope {
+    fn label(&self) -> &str;
+    fn bytes(&self) -> &[u8];
 }
 
-/// Same, for the authenticated update envelopes in `org_update`.
-fn update_files(
-    packages: &[keyquorum::envelope::Addressed],
-) -> impl Iterator<Item = (&str, &[u8])> {
-    packages
-        .iter()
-        .map(|pkg| (pkg.label.as_str(), pkg.bytes.as_slice()))
+impl Envelope for private_bridge::DeliveryPackage {
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl Envelope for keyquorum::envelope::Addressed {
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+/// Write a command's envelopes, then commit the change they describe.
+///
+/// The order is load-bearing, which is why every command that produces
+/// envelopes goes through here rather than spelling it out again: the
+/// directory exists before anything is written, the files land before the
+/// database moves, and `commit` runs last. If `commit` fails, the
+/// `PendingDelivery` guard drops and deletes exactly the files this call
+/// created — they describe a change this store never recorded, and
+/// `write_owner_only` refuses to overwrite, so leaving them behind would
+/// make the retry fail with "file exists" instead.
+///
+/// Returns the paths written, in the same order as `packages`.
+fn deliver_then_commit(
+    output_dir: &Path,
+    packages: &[impl Envelope],
+    commit: impl FnOnce() -> Result<()>,
+) -> Result<Vec<PathBuf>> {
+    fs::create_dir_all(output_dir)?;
+    let pending = write_delivery_packages(output_dir, packages)?;
+    commit()?;
+    Ok(pending.keep())
 }
 
 fn sanitize_label(label: &str) -> Result<String> {
