@@ -18,7 +18,9 @@
 //!
 //! That file is a digital envelope: the header names the recipient's
 //! X25519 public key; `crypto_box` seals the letter. A carrier can route
-//! the envelope without opening it. Network delivery is enhancement #10.
+//! the envelope without opening it — `relay push` / `relay pull` do
+//! exactly that. The outer framing lives in [`crate::envelope`], shared
+//! with the authenticated organization updates in `crate::org_update`.
 //!
 //! `create` and `remove-member` generate every delivery package first.
 //! The CLI writes those `.kqpb` files, then commits. A failed write
@@ -28,6 +30,10 @@
 //! commits in one call for in-process tests.
 
 use crate::crypto::{random_salt, SALT_LEN};
+use crate::envelope::{
+    is_weak_x25519_public_key, push_len_prefixed, take_array, take_len_prefixed, take_u8, utf8,
+    FORMAT_VERSION, KIND_DESTROY, KIND_INVITE, KIND_ROTATE, KIND_SUPERVISOR,
+};
 use crate::error::{Error, Result};
 use crate::keys;
 use crate::signing::{self, BridgeSignature};
@@ -38,13 +44,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use zeroize::Zeroizing;
 
-const PACKAGE_MAGIC: &[u8; 4] = b"KQPB";
 const NOTICE_MAGIC: &[u8; 4] = b"KQBN";
-const FORMAT_VERSION: u8 = 2;
-const KIND_INVITE: u8 = 1;
-const KIND_ROTATE: u8 = 2;
-const KIND_DESTROY: u8 = 3;
-const KIND_SUPERVISOR: u8 = 4;
 const ROLE_MEMBER: u8 = 1;
 const ROLE_SUPERVISOR: u8 = 2;
 const UPDATE_DOMAIN: &[u8] = b"KQBRIDGE-UPDATE-v1";
@@ -1374,52 +1374,18 @@ fn encode_package(f: PackageFields<'_>) -> Result<Vec<u8>> {
         payload.extend_from_slice(&signing::sign(&signing_key.to_bytes(), &preimage));
     }
 
-    let sealed = crypto_box::PublicKey::from_bytes(*f.recipient_public_key)
-        .seal(&mut rand::rngs::OsRng, &payload)
-        .expect("crypto_box sealing should not fail for an in-memory payload");
-    let payload_len = u32::try_from(sealed.len()).map_err(|_| Error::BundleFieldTooLarge)?;
-    let mut out = Vec::new();
-    out.extend_from_slice(PACKAGE_MAGIC);
-    out.push(FORMAT_VERSION);
-    out.push(f.kind);
-    out.extend_from_slice(f.recipient_public_key);
-    out.extend_from_slice(&payload_len.to_be_bytes());
-    out.extend_from_slice(&sealed);
-    Ok(out)
+    crate::envelope::seal(f.kind, f.recipient_public_key, &payload)
 }
 
-/// Reads only the outer `.kqpb` header: magic, version, kind, recipient
-/// public key, and declared payload length. Does not unseal or otherwise
-/// touch the letter. Used by the relay to index envelopes by fingerprint.
+/// The recipient public key the carrier routes on. Delegates to
+/// [`crate::envelope::routing_public_key`]; kept here because the relay
+/// and its tests have always reached for it under this path.
 pub fn routing_public_key(bytes: &[u8]) -> Result<[u8; 32]> {
-    let (_, recipient_public_key, _) = parse_kqpb_outer(bytes)?;
-    Ok(recipient_public_key)
-}
-
-fn parse_kqpb_outer(bytes: &[u8]) -> Result<(u8, [u8; 32], &[u8])> {
-    let mut data = bytes;
-    if take_n(&mut data, 4)? != PACKAGE_MAGIC {
-        return Err(Error::InvalidBridgePackage);
-    }
-    if take_u8(&mut data)? != FORMAT_VERSION {
-        return Err(Error::InvalidBridgePackage);
-    }
-    let kind = take_u8(&mut data)?;
-    let recipient_public_key = take_array::<32>(&mut data)?;
-    let payload_len = u32::from_be_bytes(take_array(&mut data)?) as usize;
-    let sealed = take_n(&mut data, payload_len)?;
-    if !data.is_empty() {
-        return Err(Error::InvalidBridgePackage);
-    }
-    Ok((kind, recipient_public_key, sealed))
+    crate::envelope::routing_public_key(bytes)
 }
 
 fn decode_package(bytes: &[u8], recipient_sk: &[u8; 32]) -> Result<DecodedPackage> {
-    let (kind, recipient_public_key, sealed) = parse_kqpb_outer(bytes)?;
-    let secret_key = crypto_box::SecretKey::from(*recipient_sk);
-    let payload = secret_key
-        .unseal(sealed)
-        .map_err(|_| Error::InvalidBridgePackage)?;
+    let (kind, recipient_public_key, payload) = crate::envelope::open(bytes, recipient_sk)?;
     let mut payload = payload.as_slice();
     let uid = utf8(take_len_prefixed(&mut payload)?)?;
     let generation = u32::from_be_bytes(take_array(&mut payload)?);
@@ -1919,17 +1885,6 @@ fn vec_to_salt(bytes: &[u8]) -> Result<[u8; SALT_LEN]> {
     bytes.try_into().map_err(|_| Error::InvalidPublicKey)
 }
 
-fn is_weak_x25519_public_key(public_key: &[u8; 32]) -> bool {
-    x25519_dalek::x25519([1u8; 32], *public_key) == [0u8; 32]
-}
-
-fn push_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) -> Result<()> {
-    let len = u16::try_from(bytes.len()).map_err(|_| Error::BundleFieldTooLarge)?;
-    out.extend_from_slice(&len.to_be_bytes());
-    out.extend_from_slice(bytes);
-    Ok(())
-}
-
 fn push_party_map(out: &mut Vec<u8>, map: &BTreeMap<String, [u8; 32]>) -> Result<()> {
     let n = u16::try_from(map.len()).map_err(|_| Error::BundleFieldTooLarge)?;
     out.extend_from_slice(&n.to_be_bytes());
@@ -1949,32 +1904,6 @@ fn push_member_map(out: &mut Vec<u8>, map: &BTreeMap<String, MemberKeys>) -> Res
         out.extend_from_slice(&keys.signing);
     }
     Ok(())
-}
-
-fn take_u8(data: &mut &[u8]) -> Result<u8> {
-    let (b, rest) = data.split_first().ok_or(Error::InvalidBridgePackage)?;
-    *data = rest;
-    Ok(*b)
-}
-
-fn take_n<'a>(data: &mut &'a [u8], n: usize) -> Result<&'a [u8]> {
-    if data.len() < n {
-        return Err(Error::InvalidBridgePackage);
-    }
-    let (head, tail) = data.split_at(n);
-    *data = tail;
-    Ok(head)
-}
-
-fn take_array<const N: usize>(data: &mut &[u8]) -> Result<[u8; N]> {
-    take_n(data, N)?
-        .try_into()
-        .map_err(|_| Error::InvalidBridgePackage)
-}
-
-fn take_len_prefixed<'a>(data: &mut &'a [u8]) -> Result<&'a [u8]> {
-    let len = u16::from_be_bytes(take_array(data)?) as usize;
-    take_n(data, len)
 }
 
 fn take_party_map(data: &mut &[u8]) -> Result<BTreeMap<String, [u8; 32]>> {
@@ -2005,12 +1934,6 @@ fn take_member_map(data: &mut &[u8]) -> Result<BTreeMap<String, MemberKeys>> {
         );
     }
     Ok(map)
-}
-
-fn utf8(bytes: &[u8]) -> Result<String> {
-    std::str::from_utf8(bytes)
-        .map(|s| s.to_string())
-        .map_err(|_| Error::InvalidBridgePackage)
 }
 
 #[cfg(test)]

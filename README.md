@@ -328,6 +328,71 @@ scan deletes the ciphertext from disk and drops the file's database row.
 uploaded envelope. Inbox pull skips expired rows and removes them from the
 mailbox so the recipient cannot fetch the file after the date.
 
+### Authenticated updates (key reissue and tree restructure)
+
+Replacing someone's token, or changing the shape of the split tree, has to
+reach every store that held the old picture. Both changes ship as the same
+sealed `.kqpb` envelope a private bridge uses, so the mailbox routes them
+without being able to read them — but the letter inside is *signed* by an
+authorizing label, so each store decides for itself whether to apply it.
+
+A store applies an update only when all four hold:
+
+- **Addressed here** — the envelope's recipient key is an unrevoked
+  encryption key this store has registered under the label named inside
+  the letter. Re-addressing a letter to another mailbox gets it rejected.
+- **Authorized** — the signer is the subject itself or one of its
+  ancestors in the dotted hierarchy (`M` over `M.S` over `M.S.2`), and
+  this store already holds a registered signing key for that label. A peer
+  branch cannot restructure your tree or swap your token.
+- **Signed** — Ed25519 over a domain-separated hash that covers every
+  field, including the recipient label and its public key.
+- **In order** — a reissue must be exactly one past the last one this
+  store applied for that person; a restructure must carry a public
+  generation strictly greater than the one stored. Replays, stale
+  envelopes, and skipped sequences change nothing.
+
+```sh
+# The authorizing label needs a registered signing key:
+keyquorum generate --type signing --label M --register --public-key-out M.sign.pub > M.sign.key
+
+# Restructure: after `add`, `revoke --evict`, or `bind`, announce the new
+# shape. Each active leaf gets its own visible slice at the next generation.
+keyquorum tree restructure 1 --as M   --signing-key-file M.sign.key --output-dir ./updates
+
+# Reissue: M.S.2 lost their token and generated a replacement.
+keyquorum reissue --node M.S.2 --key-id 1   --encryption-public-key-file M.S.2.new.pub   --as M --signing-key-file M.sign.key --revoke-previous   --output-dir ./updates
+
+keyquorum relay push --dir ./updates
+```
+
+Each store applies them the same way it applies a bridge envelope — the
+kind byte in the header decides which it is:
+
+```sh
+keyquorum --db M.S.1.sqlite relay pull --import --share-file M.S.1.key
+keyquorum --db M.S.1.sqlite bridge private import --file M.S.1.kqpb --share-file M.S.1.key
+keyquorum --db M.S.1.sqlite updates    # what this store has applied
+```
+
+A reissue reaches every store whose own slice named that person, plus
+every party of every live private bridge they are on — nobody else, since
+nobody else held the key. It repoints that person's tree leaves and bridge
+roster entries, and drops the leaf's sealed share, which was wrapped to
+the retired token and cannot be opened by its replacement (recover it from
+the quorum, or reseal with `bind --public-key-file`). The shared secret of
+a private bridge is *not* rotated by a reissue: run
+`bridge private remove-member` to roll that generation if the retired
+token could have been compromised.
+
+The subject's own copy is addressed to the **incoming** encryption key, so
+their replacement device must have registered it (`generate --register`, or
+`register`) before importing — which is also what lets it open the letter.
+
+`tree restructure` differs from `tree publish` in exactly this way: publish
+replaces a relay document with a store's own view, while a restructure
+hands each person a slice they can verify the authority for.
+
 ### Mailbox
 
 The hosted mailbox carries sealed `.kqpb` envelopes and public-tree slices.
@@ -368,11 +433,11 @@ still rejects stale generations.
 
 ## Roadmap
 
-[#10](https://github.com/BPForbes/KeyQuorum/issues/10) mailbox transport
-(API keys, `relay push` / `relay pull --import`) is in place.
-Still open on that issue: authenticated envelopes for hardware-key reissue
-and key-tree restructure (private-bridge create/rotate/remove-member already
-emit `.kqpb` files the relay can carry).
+[#10](https://github.com/BPForbes/KeyQuorum/issues/10) is implemented:
+mailbox transport (API keys, `relay push` / `relay pull --import`),
+private-bridge create/rotate/remove-member envelopes, and the
+authenticated update envelopes for hardware-key reissue (`reissue`) and
+key-tree restructure (`tree restructure`) described above.
 
 These still need a private-key custody model (a software file, OS keychain, or real hardware) that hasn't been decided:
 

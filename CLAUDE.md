@@ -17,6 +17,21 @@ The two must stay in step in both directions: if the commit fails, the CLI delet
 the `.kqpb` files it just wrote, because `write_owner_only` refuses to overwrite and
 leftovers would block the retry.
 
+The `.kqpb` outer envelope (magic, version, kind byte, recipient X25519
+public key, sealed length) lives in `src/envelope.rs` and is shared by
+every kind the relay carries, so routing code never needs to know which
+letter is inside. `src/org_update.rs` adds the two authenticated update
+kinds from issue #10 — hardware-key reissue and key-tree restructure. A
+store applies one only when it is addressed to a label that store holds
+under the sealed-to key, signed by the subject or a dotted-label ancestor
+whose signing key that store already has, verified against a
+domain-separated preimage covering the recipient, and in order (a reissue
+exactly one past the last for that subject; a restructure strictly past
+the stored public generation). Accepted updates land in `org_updates`,
+whose UNIQUE key is the last-resort replay guard. Keep the producers
+plan-then-commit like `private_bridge::create`, and never widen the
+authorization rule without updating the tests that pin it.
+
 The mailbox relay (`src/relay/`) stores opaque `.kqpb` envelopes and
 the canonical *public* split-tree as JSON documents (full context). It must never
 unseal envelopes or hold wrapped shares or private keys. `relay push` merges

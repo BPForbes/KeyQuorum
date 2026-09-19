@@ -72,6 +72,18 @@ pub enum Error {
     ProviderHardwareRevoked,
     ApiRootMissing,
     ApiRootAlreadyExists,
+    /// An update envelope is malformed, or its letter does not match the
+    /// kind byte the outer header advertises.
+    InvalidUpdatePackage,
+    /// The envelope is addressed to a label this store does not hold under
+    /// the recipient public key it was sealed to.
+    UpdateRecipientMismatch,
+    /// The authorizing label has no standing over the subject, or this
+    /// store has no registered signing key to check its signature with.
+    UpdateNotAuthorized,
+    /// A replayed update, one that skips a sequence, or one whose stated
+    /// previous key is not the key this store currently holds.
+    StaleUpdate,
 }
 
 impl fmt::Display for Error {
@@ -258,6 +270,20 @@ impl fmt::Display for Error {
             Error::ApiRootAlreadyExists => {
                 write!(f, "API root already exists on this mailbox")
             }
+            Error::InvalidUpdatePackage => {
+                write!(f, "update envelope is malformed or not of the stated kind")
+            }
+            Error::UpdateRecipientMismatch => {
+                write!(f, "update envelope is not addressed to this store")
+            }
+            Error::UpdateNotAuthorized => write!(
+                f,
+                "update was not authorized by a label this store accepts for that subject"
+            ),
+            Error::StaleUpdate => write!(
+                f,
+                "update is stale, replayed, or out of order for this store"
+            ),
         }
     }
 }
