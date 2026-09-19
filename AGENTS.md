@@ -26,13 +26,17 @@ returns a sliced copy that the personal SQLite file translates. A personal SQLit
 file should keep only the subgraph that person needs (own lineage, siblings,
 descendants, and established-bridge peers plus those peers' ancestors). API keys
 are shown once; the relay persists only `hex(SHA-256(raw))`. Customer API keys
-are issued out of band; HTTP cannot create or rotate bearers. Official
-clients still only talk to a relay that proves
-a KeyQuorum-root-signed cert. The mailbox host is a **hidden**
-`keyquorum host` subcommand, compiled only with `--features provider`.
-That feature is a build capability, not authorization. A trusted relay also
-requires a KeyQuorum-signed `provider.kqcert` and the matching relay
-private key; official clients challenge `POST /provider-identity` and
+are minted only by KeyQuorum (host-local `keys create|rotate` on a relay
+that already holds a signed `provider.kqcert` and matching relay key).
+HTTP cannot create or rotate bearers. Customers never mint keys; they
+receive a `kq_…` bearer. The `kql_…` issuer is an internal operator lock
+created only after that identity check, not a customer credential and not
+proof of authorization by itself. Official clients still only talk to a
+relay that proves a KeyQuorum-root-signed cert. The mailbox host is a
+**hidden** `keyquorum host` subcommand, compiled only with `--features
+provider`. That feature is a build capability, not authorization. A trusted
+relay also requires a KeyQuorum-signed `provider.kqcert` and the matching
+relay private key; official clients challenge `POST /provider-identity` and
 disconnect if the certificate, signature, expiry, capabilities, or
 revocation check fails. Do not document
 `host` in README or other customer-facing docs — buyers get
