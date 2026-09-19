@@ -174,3 +174,51 @@ fn an_envelope_already_on_disk_rolls_back_the_ones_before_it() {
         "only files we created ourselves are cleaned up"
     );
 }
+
+#[test]
+fn deliver_then_commit_creates_the_directory_and_keeps_the_files_on_success() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let output = dir.path().join("does-not-exist-yet");
+    let packages = vec![package("M.S.2", b"one"), package("M.S.3", b"two")];
+
+    let written = deliver_then_commit(&output, &packages, || Ok(())).expect("commit succeeds");
+
+    assert_eq!(written.len(), 2);
+    assert_eq!(entries(&output), written);
+    assert_eq!(fs::read(&written[0]).expect("read"), b"one");
+}
+
+#[test]
+fn deliver_then_commit_takes_the_files_back_when_the_commit_fails() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let packages = vec![package("M.S.2", b"one"), package("M.S.3", b"two")];
+
+    let err = deliver_then_commit(dir.path(), &packages, || {
+        Err(Error::BridgeGenerationMismatch)
+    })
+    .expect_err("commit fails");
+
+    assert!(matches!(err, Error::BridgeGenerationMismatch));
+    // Nothing describing a change this store never recorded is left to
+    // block the retry.
+    assert!(entries(dir.path()).is_empty());
+}
+
+#[test]
+fn deliver_then_commit_does_not_commit_when_the_envelopes_cannot_be_written() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // Two labels that sanitize to one file name: the write fails, so the
+    // commit must never run.
+    let packages = vec![package("M S 2", b"one"), package("M/S/2", b"two")];
+    let mut committed = false;
+
+    let err = deliver_then_commit(dir.path(), &packages, || {
+        committed = true;
+        Ok(())
+    })
+    .expect_err("names collide");
+
+    assert!(matches!(err, Error::AmbiguousDeliveryName(_)));
+    assert!(!committed, "the database must not move without envelopes");
+    assert!(entries(dir.path()).is_empty());
+}

@@ -1,5 +1,6 @@
 use super::*;
 use crate::db;
+use crate::error::Error;
 use crate::vault;
 use std::fs;
 
@@ -92,23 +93,6 @@ fn export_file_bundle_round_trips() {
 }
 
 #[test]
-fn encode_len_prefixed_accepts_a_field_at_the_u16_boundary() {
-    let mut out = Vec::new();
-    let bytes = vec![0u8; u16::MAX as usize];
-    assert!(encode_len_prefixed(&mut out, &bytes).is_ok());
-}
-
-#[test]
-fn encode_len_prefixed_rejects_a_field_one_byte_over_the_boundary() {
-    let mut out = Vec::new();
-    let bytes = vec![0u8; u16::MAX as usize + 1];
-    assert!(matches!(
-        encode_len_prefixed(&mut out, &bytes),
-        Err(Error::BundleFieldTooLarge)
-    ));
-}
-
-#[test]
 fn export_credential_rejects_an_oversized_label() {
     let conn = db::open_in_memory().expect("schema should apply");
     let long_label = "x".repeat(u16::MAX as usize + 1);
@@ -143,8 +127,11 @@ struct DecodedBundle {
 }
 
 fn decode_bundle(bytes: &[u8]) -> DecodedBundle {
-    assert_eq!(&bytes[0..4], MAGIC);
-    assert_eq!(bytes[4], FORMAT_VERSION);
+    // Spelled out rather than read back from `envelope::EXPORT_BUNDLE`:
+    // these bytes are the wire format, and a test that quotes the
+    // constant it is checking would pass through a change to it.
+    assert_eq!(&bytes[0..4], b"KQXB");
+    assert_eq!(bytes[4], 1);
     let bundle_type = bytes[5];
     let recipient_public_key: [u8; 32] = bytes[6..38].try_into().unwrap();
     let payload_len = u32::from_be_bytes(bytes[38..42].try_into().unwrap()) as usize;

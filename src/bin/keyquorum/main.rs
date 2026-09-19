@@ -15,10 +15,10 @@ use keyquorum::key_tree::{NodeSpec, TreeNodeSummary};
 use keyquorum::keys::KeyType;
 use keyquorum::pin::ResourceType;
 use keyquorum::{
-    db, export, key_tree, keys, locked_files, pin, private_bridge, provider, quorum, relay,
-    sharing, signing, vault,
+    db, export, key_tree, keys, locked_files, org_update, pin, private_bridge, provider, quorum,
+    relay, sharing, signing, vault,
 };
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::{self, Write};
@@ -208,6 +208,49 @@ enum Command {
         #[command(subcommand)]
         command: BridgeCommand,
     },
+    /// Announce a replaced hardware key. Writes one authenticated `.kqpb`
+    /// per store that holds the old key, then records the change here, so
+    /// every recipient converges on the same token. Deliver the envelopes
+    /// out of band or with `relay push`.
+    Reissue {
+        /// Node label whose token is being replaced
+        #[arg(long)]
+        node: String,
+        /// Split tree that scopes this reissue. Omit for a reissue that
+        /// only affects private-bridge rosters.
+        #[arg(long)]
+        key_id: Option<i64>,
+        /// New encryption public key for --node (`.pub`, PEM, or hex)
+        #[arg(long, required_unless_present = "signing_public_key_file")]
+        encryption_public_key_file: Option<PathBuf>,
+        /// New signing public key for --node
+        #[arg(long)]
+        signing_public_key_file: Option<PathBuf>,
+        /// Label authorizing the reissue: --node itself (signing with the
+        /// key being retired) or one of its ancestors — `M` over `M.S`
+        /// over `M.S.2`. Recipients check this against the signing key
+        /// they already hold for that label.
+        #[arg(long = "as")]
+        as_node: String,
+        /// Ed25519 private key file for --as
+        #[arg(long)]
+        signing_key_file: PathBuf,
+        /// Also retire the replaced ENCRYPTION key in every store that
+        /// applies this. A replaced signing key is always retired,
+        /// regardless of this flag — it doubles as an authorization
+        /// identity, and leaving two active would make that ambiguous.
+        #[arg(long)]
+        revoke_previous: bool,
+        /// Directory for the per-recipient `.kqpb` envelopes
+        #[arg(long)]
+        output_dir: PathBuf,
+    },
+    /// Print the authenticated organization updates this store has applied
+    Updates {
+        /// Only rows after this id
+        #[arg(long)]
+        since: Option<i64>,
+    },
     /// Lock (encrypt) or unlock (decrypt) a password- or quorum-protected file
     Access {
         #[command(subcommand)]
@@ -344,6 +387,23 @@ enum TreeCommand {
         /// Admin-scope API key (or a key from `loadkey`, or KEYQUORUM_RELAY_API_KEY)
         #[arg(long)]
         api_key: Option<String>,
+    },
+    /// Announce a restructured tree. Writes one authenticated `.kqpb` per
+    /// active leaf carrying that leaf's own slice at the next public
+    /// generation, then advances this store to it. Unlike `publish`, the
+    /// recipient can verify who authorized the change.
+    Restructure {
+        key_id: i64,
+        /// Label authorizing the restructure. Leaves it is not an ancestor
+        /// of are reported and left without an envelope.
+        #[arg(long = "as")]
+        as_node: String,
+        /// Ed25519 private key file for --as
+        #[arg(long)]
+        signing_key_file: PathBuf,
+        /// Directory for the per-recipient `.kqpb` envelopes
+        #[arg(long)]
+        output_dir: PathBuf,
     },
     /// Download the slice this pull key is allowed to see and merge it here.
     /// Inbox pull also applies this slice automatically; use fetch to refresh
@@ -733,6 +793,8 @@ fn run(db_path: &Path, command: Command) -> Result<()> {
         | Command::Add { .. }
         | Command::Tree(_)
         | Command::Reconstruct { .. }
+        | Command::Reissue { .. }
+        | Command::Updates { .. }
         | Command::Bridge { .. } => run_tree_command(&mut conn, command)?,
         Command::Verify {
             public_key_file,
@@ -1050,6 +1112,46 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
             write_reassembled_secret(&secret, output.as_deref())?;
         }
         Command::Bridge { command } => run_bridge(conn, command)?,
+        Command::Reissue {
+            node,
+            key_id,
+            encryption_public_key_file,
+            signing_public_key_file,
+            as_node,
+            signing_key_file,
+            revoke_previous,
+            output_dir,
+        } => run_reissue(
+            conn,
+            ReissueArgs {
+                node,
+                key_id,
+                encryption_public_key_file,
+                signing_public_key_file,
+                as_node,
+                signing_key_file,
+                revoke_previous,
+                output_dir,
+            },
+        )?,
+        Command::Updates { since } => {
+            let rows = org_update::history(conn, since)?;
+            if rows.is_empty() {
+                println!("(no applied updates)");
+            }
+            for row in rows {
+                println!(
+                    "{}\t{}\t{}\t{} {}\tby {}\t{}",
+                    row.id,
+                    row.applied_at,
+                    row.kind,
+                    row.subject_label,
+                    row.sequence,
+                    row.authorizer_label,
+                    row.detail
+                );
+            }
+        }
         Command::Vault { .. }
         | Command::Access { .. }
         | Command::Verify { .. }
@@ -1082,6 +1184,34 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
                 stored.nodes.len()
             );
         }
+        Some(TreeCommand::Restructure {
+            key_id,
+            as_node,
+            signing_key_file,
+            output_dir,
+        }) => {
+            let signing_sk = zeroize::Zeroizing::new(read_key_array_32(&signing_key_file)?);
+            let planned = org_update::plan_tree_restructure(conn, key_id, &as_node, &signing_sk)?;
+            let written = deliver_then_commit(&output_dir, &planned.packages, || {
+                org_update::commit_planned_tree_restructure(conn, &planned).map(|_| ())
+            })?;
+            for path in written {
+                println!("Wrote {}", path.display());
+            }
+            println!(
+                "{} is now at public generation {} ({} envelope{})",
+                planned.tree_label,
+                planned.generation,
+                planned.packages.len(),
+                if planned.packages.len() == 1 { "" } else { "s" }
+            );
+            if !planned.skipped.is_empty() {
+                println!(
+                    "No envelope for {} ({as_node} is not an ancestor)",
+                    planned.skipped.join(", ")
+                );
+            }
+        }
         Some(TreeCommand::Fetch {
             key_id,
             label,
@@ -1090,7 +1220,7 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
         }) => {
             let label = match (label, key_id) {
                 (Some(label), _) => label,
-                (None, Some(id)) => key_label(conn, id)?,
+                (None, Some(id)) => key_tree::tree_label(conn, id)?,
                 (None, None) => {
                     fatal_usage_error("tree fetch requires a key id or --label");
                 }
@@ -1131,14 +1261,58 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
     Ok(())
 }
 
-fn key_label(conn: &Connection, key_id: i64) -> Result<String> {
-    conn.query_row(
-        "SELECT label FROM keys WHERE id = ?1",
-        rusqlite::params![key_id],
-        |row| row.get(0),
-    )
-    .optional()?
-    .ok_or(Error::TreeNotFound)
+struct ReissueArgs {
+    node: String,
+    key_id: Option<i64>,
+    encryption_public_key_file: Option<PathBuf>,
+    signing_public_key_file: Option<PathBuf>,
+    as_node: String,
+    signing_key_file: PathBuf,
+    revoke_previous: bool,
+    output_dir: PathBuf,
+}
+
+fn run_reissue(conn: &Connection, args: ReissueArgs) -> Result<()> {
+    let new_encryption = args
+        .encryption_public_key_file
+        .as_deref()
+        .map(read_key_array_32)
+        .transpose()?;
+    let new_signing = args
+        .signing_public_key_file
+        .as_deref()
+        .map(read_key_array_32)
+        .transpose()?;
+    let signing_sk = zeroize::Zeroizing::new(read_key_array_32(&args.signing_key_file)?);
+
+    let planned = org_update::plan_key_reissue(
+        conn,
+        args.key_id,
+        &args.node,
+        new_encryption,
+        new_signing,
+        args.revoke_previous,
+        &args.as_node,
+        &signing_sk,
+    )?;
+    let written = deliver_then_commit(&args.output_dir, &planned.packages, || {
+        org_update::commit_planned_key_reissue(conn, &planned).map(|_| ())
+    })?;
+    for path in written {
+        println!("Wrote {}", path.display());
+    }
+    println!(
+        "Reissue {} for {} authorized by {} ({} envelope{})",
+        planned.sequence(),
+        planned.subject_label(),
+        args.as_node,
+        planned.packages.len(),
+        if planned.packages.len() == 1 { "" } else { "s" }
+    );
+    if planned.packages.is_empty() {
+        println!("No other store in this database holds that key.");
+    }
+    Ok(())
 }
 
 fn run_bridge(conn: &Connection, command: BridgeCommand) -> Result<()> {
@@ -1220,7 +1394,6 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
                     signing_public_key: None,
                 });
             }
-            fs::create_dir_all(&output_dir)?;
             let planned = private_bridge::plan_create(
                 Some(key_id),
                 label.as_deref(),
@@ -1228,12 +1401,9 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
                 &supervisor_parties,
                 self_node.as_deref(),
             )?;
-            let pending = write_delivery_packages(&output_dir, &planned.created.packages)?;
-            // A commit failure here drops `pending`, deleting the envelopes:
-            // they name a bridge this store did not record, and leaving them
-            // would make `create` fail on retry with "file exists".
-            private_bridge::commit_planned_creation(conn, &planned)?;
-            let written = pending.keep();
+            let written = deliver_then_commit(&output_dir, &planned.created.packages, || {
+                private_bridge::commit_planned_creation(conn, &planned)
+            })?;
             let created = &planned.created;
             println!(
                 "Created private bridge {} (generation {}). Notify {} store(s):",
@@ -1283,11 +1453,20 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
             }
         }
         PrivateBridgeCommand::Import { file, share_file } => {
+            // One inbox carries bridge envelopes and authenticated
+            // organization updates alike, so dispatch on the kind byte
+            // rather than making the operator sort them by hand.
             let bytes = fs::read(&file)?;
             let sk = zeroize::Zeroizing::new(read_key_array_32(Path::new(&share_file))?);
-            let summary = private_bridge::import_package(conn, &bytes, &sk)?;
-            println!("Imported private bridge {}", summary.uid);
-            print_bridge_summary(&summary);
+            match org_update::import_any(conn, &bytes, &sk)? {
+                org_update::ImportedEnvelope::Bridge(summary) => {
+                    println!("Imported private bridge {}", summary.uid);
+                    print_bridge_summary(&summary);
+                }
+                org_update::ImportedEnvelope::Update(applied) => {
+                    println!("{}", describe_applied_update(&applied));
+                }
+            }
         }
         PrivateBridgeCommand::RemoveMember {
             uid,
@@ -1297,13 +1476,10 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
             output_dir,
         } => {
             let sk = zeroize::Zeroizing::new(read_key_array_32(Path::new(&share_file))?);
-            fs::create_dir_all(&output_dir)?;
             let planned = private_bridge::plan_remove_member(conn, &uid, &member, &node, &sk)?;
-            let pending = write_delivery_packages(&output_dir, &planned.outcome.packages)?;
-            // As in `create`: if the commit fails, this store stays on the old
-            // generation, so the rotation envelopes must go with it.
-            private_bridge::commit_planned_removal(conn, &planned)?;
-            let written = pending.keep();
+            let written = deliver_then_commit(&output_dir, &planned.outcome.packages, || {
+                private_bridge::commit_planned_removal(conn, &planned)
+            })?;
             let outcome = &planned.outcome;
             if outcome.destroyed {
                 println!("Destroyed private bridge {uid}");
@@ -1388,17 +1564,17 @@ impl Drop for PendingDelivery {
 /// again so the command can simply be run once more.
 fn write_delivery_packages(
     output_dir: &Path,
-    packages: &[private_bridge::DeliveryPackage],
+    packages: &[impl Envelope],
 ) -> Result<PendingDelivery> {
     let mut planned = Vec::with_capacity(packages.len());
     let mut claimed: BTreeSet<String> = BTreeSet::new();
-    for pkg in packages {
-        let name = sanitize_label(&pkg.label)?;
+    for package in packages {
+        let name = sanitize_label(package.label())?;
         let file = format!("{name}.kqpb");
         if !claimed.insert(name) {
             return Err(Error::AmbiguousDeliveryName(file));
         }
-        planned.push((output_dir.join(file), pkg.bytes.as_slice()));
+        planned.push((output_dir.join(file), package.bytes()));
     }
 
     let mut pending = PendingDelivery { paths: Vec::new() };
@@ -1407,6 +1583,58 @@ fn write_delivery_packages(
         pending.paths.push(path);
     }
     Ok(pending)
+}
+
+/// A sealed envelope on its way to one store. The private-bridge and
+/// organization-update producers describe their packages with different
+/// types — a bridge package also carries the recipient's role — but
+/// delivery only ever needs the recipient label and the bytes.
+trait Envelope {
+    fn label(&self) -> &str;
+    fn bytes(&self) -> &[u8];
+}
+
+impl Envelope for private_bridge::DeliveryPackage {
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl Envelope for keyquorum::envelope::Addressed {
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+/// Write a command's envelopes, then commit the change they describe.
+///
+/// The order is load-bearing, which is why every command that produces
+/// envelopes goes through here rather than spelling it out again: the
+/// directory exists before anything is written, the files land before the
+/// database moves, and `commit` runs last. If `commit` fails, the
+/// `PendingDelivery` guard drops and deletes exactly the files this call
+/// created — they describe a change this store never recorded, and
+/// `write_owner_only` refuses to overwrite, so leaving them behind would
+/// make the retry fail with "file exists" instead.
+///
+/// Returns the paths written, in the same order as `packages`.
+fn deliver_then_commit(
+    output_dir: &Path,
+    packages: &[impl Envelope],
+    commit: impl FnOnce() -> Result<()>,
+) -> Result<Vec<PathBuf>> {
+    fs::create_dir_all(output_dir)?;
+    let pending = write_delivery_packages(output_dir, packages)?;
+    commit()?;
+    Ok(pending.keep())
 }
 
 fn sanitize_label(label: &str) -> Result<String> {
@@ -1869,11 +2097,17 @@ fn run_relay(db_path: &Path, command: RelayCommand) -> Result<()> {
                     println!("Wrote {}", path.display());
                 }
                 if let Some(sk) = share_sk.as_ref() {
-                    let summary = private_bridge::import_package(&conn, &bytes, sk)?;
-                    println!(
-                        "Imported envelope {} as private bridge {} gen {}",
-                        item.id, summary.uid, summary.generation
-                    );
+                    match org_update::import_any(&conn, &bytes, sk)? {
+                        org_update::ImportedEnvelope::Bridge(summary) => println!(
+                            "Imported envelope {} as private bridge {} gen {}",
+                            item.id, summary.uid, summary.generation
+                        ),
+                        org_update::ImportedEnvelope::Update(applied) => println!(
+                            "Imported envelope {}: {}",
+                            item.id,
+                            describe_applied_update(&applied)
+                        ),
+                    }
                 }
             }
             if let Some(cursor) = listed.next_after {
@@ -1882,6 +2116,39 @@ fn run_relay(db_path: &Path, command: RelayCommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn describe_applied_update(applied: &org_update::AppliedUpdate) -> String {
+    match applied {
+        org_update::AppliedUpdate::KeyReissue {
+            subject_label,
+            sequence,
+            encryption_rotated,
+            signing_rotated,
+            ..
+        } => {
+            let mut rotated = Vec::new();
+            if *encryption_rotated {
+                rotated.push("encryption");
+            }
+            if *signing_rotated {
+                rotated.push("signing");
+            }
+            format!(
+                "applied reissue {sequence} for {subject_label} ({} key)",
+                rotated.join(" and ")
+            )
+        }
+        org_update::AppliedUpdate::TreeRestructure {
+            tree_label,
+            key_id,
+            generation,
+            nodes,
+            ..
+        } => format!(
+            "applied {tree_label} restructure (generation {generation}, {nodes} nodes) into key {key_id}"
+        ),
+    }
 }
 
 fn export_local_public_trees(conn: &Connection) -> Result<Vec<key_tree::PublicTree>> {

@@ -815,6 +815,40 @@ pub fn rebind_leaf(
     Ok(())
 }
 
+/// Repoint every leaf labeled `subject_label` onto `new_hardware_id`,
+/// dropping `wrapped_share` wherever it pointed at a different key.
+///
+/// Unlike [`rebind_leaf`], the caller here does not hold the retired
+/// key's private key — it is applying someone else's authenticated
+/// hardware-key reissue, not resealing a share it already holds — so
+/// nothing can re-encrypt the old share under the new key; it can only
+/// stop referencing a token that no longer opens it.
+///
+/// `scope_key_id`: `None` repoints the label wherever it appears (a
+/// reissue with no split-tree scope, e.g. a private-bridge-only change);
+/// `Some(key_id)` limits it to that one tree, so a reissue scoped to one
+/// tree leaves a same-named leaf under a different tree untouched.
+pub(crate) fn adopt_reissued_hardware_key(
+    conn: &Connection,
+    subject_label: &str,
+    scope_key_id: Option<i64>,
+    new_hardware_id: i64,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE key_nodes SET wrapped_share = NULL
+         WHERE label = ?1 AND hardware_key_id IS NOT NULL AND hardware_key_id != ?2
+           AND (?3 IS NULL OR key_id = ?3)",
+        params![subject_label, new_hardware_id, scope_key_id],
+    )?;
+    conn.execute(
+        "UPDATE key_nodes SET hardware_key_id = ?2
+         WHERE label = ?1 AND hardware_key_id IS NOT NULL
+           AND (?3 IS NULL OR key_id = ?3)",
+        params![subject_label, new_hardware_id, scope_key_id],
+    )?;
+    Ok(())
+}
+
 /// Recover a parent split, dealer `n+1` shares at the same threshold,
 /// reseal existing active leaf children in place, and insert the new
 /// leaf. Survivor node ids are unchanged so their binds survive.
@@ -1122,6 +1156,27 @@ pub fn list_trees(conn: &Connection) -> Result<Vec<TreeListing>> {
 }
 
 /// Active leaves sealed to this hardware key, across every tree.
+/// Every active leaf of `key_id` backed by an unrevoked encryption key,
+/// as `(label, public_key)`. The stores a key-tree restructure or a
+/// tree-scoped hardware-key reissue must notify.
+pub fn active_encryption_leaves(conn: &Connection, key_id: i64) -> Result<Vec<(String, [u8; 32])>> {
+    let mut stmt = conn.prepare(
+        "SELECT n.label, h.public_key FROM key_nodes n
+         JOIN hardware_keys h ON h.id = n.hardware_key_id
+         WHERE n.key_id = ?1 AND n.is_active = 1
+           AND h.key_type = 'encryption' AND h.revoked_at IS NULL
+         ORDER BY n.label",
+    )?;
+    let rows = stmt
+        .query_map(params![key_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter()
+        .map(|(label, pk)| Ok((label, pk.try_into().map_err(|_| Error::InvalidPublicKey)?)))
+        .collect()
+}
+
 pub fn active_leaves_for_hardware(
     conn: &Connection,
     hardware_key_id: i64,
@@ -1289,20 +1344,73 @@ pub fn export_public_tree(conn: &Connection, key_id: i64) -> Result<PublicTree> 
     })
 }
 
+/// The tree registered under `label`, as `(key_id, public_generation)`,
+/// or `None` when this store has never seen it. Nothing stops two trees
+/// sharing a label, so the oldest wins — the same rule
+/// [`apply_public_tree`] merges under.
+pub fn tree_by_label(conn: &Connection, label: &str) -> Result<Option<(i64, u32)>> {
+    let row: Option<(i64, i64)> = conn
+        .query_row(
+            "SELECT id, public_generation FROM keys WHERE label = ?1 ORDER BY id",
+            params![label],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    Ok(row.map(|(id, generation)| (id, u32::try_from(generation).unwrap_or(1))))
+}
+
+/// A tree's `keys.label` — the name the relay and every update envelope
+/// identify it by, as opposed to the local row id.
+pub fn tree_label(conn: &Connection, key_id: i64) -> Result<String> {
+    conn.query_row(
+        "SELECT label FROM keys WHERE id = ?1",
+        params![key_id],
+        |row| row.get(0),
+    )
+    .optional()?
+    .ok_or(Error::TreeNotFound)
+}
+
+/// The public tree as `as_label` is allowed to see it: the export, that
+/// label's visible set, and the filter in one step. This is the slice
+/// `relay pull` hands that person and the one a restructure envelope
+/// carries, so building it in one place keeps the two identical.
+///
+/// Callers slicing for *many* labels at once should export and load the
+/// tree once and pair [`visible_labels_for_links`] with
+/// [`filter_public_tree`] themselves, rather than paying for a fresh
+/// export and tree load per recipient.
+pub fn public_slice_for(conn: &Connection, key_id: i64, as_label: &str) -> Result<PublicTree> {
+    let full = export_public_tree(conn, key_id)?;
+    let visible = visible_labels(conn, key_id, as_label)?;
+    Ok(filter_public_tree(&full, &visible))
+}
+
 /// Labels this person needs locally: own lineage, own descendants,
 /// siblings of the seed, and the fixpoint of established bridge peers
 /// (peer + peer ancestors). A peer's unrelated siblings stay out until
 /// a later pull after a bridge reaches them. Whitelist-only pairs do
 /// not expand visibility.
 pub fn visible_labels(conn: &Connection, key_id: i64, as_label: &str) -> Result<HashSet<String>> {
-    let tree = KeyQuorumTree::load(conn, key_id)?;
-    let listing = list_bridges(conn, key_id)?;
-    let links: Vec<(String, String)> = listing
-        .established
-        .iter()
-        .map(|edge| (edge.from.clone(), edge.to.clone()))
-        .collect();
+    let (tree, links) = load_for_visibility(conn, key_id)?;
     visible_labels_for_links(&tree, &links, as_label)
+}
+
+/// Loads what [`visible_labels_for_links`] needs — the arena tree and its
+/// established links — once. [`visible_labels`] does this same loading on
+/// every call; call this instead when computing visibility for many
+/// labels in a loop, so the tree is not reloaded per label.
+pub fn load_for_visibility(
+    conn: &Connection,
+    key_id: i64,
+) -> Result<(KeyQuorumTree, Vec<(String, String)>)> {
+    let tree = KeyQuorumTree::load(conn, key_id)?;
+    let links = list_bridges(conn, key_id)?
+        .established
+        .into_iter()
+        .map(|edge| (edge.from, edge.to))
+        .collect();
+    Ok((tree, links))
 }
 
 /// Visibility using established undirected links (not whitelist-only).
@@ -1455,10 +1563,9 @@ pub fn filter_public_tree(full: &PublicTree, visible: &HashSet<String>) -> Publi
 /// Keep only the subgraph `as_label` needs. Sealed shares on remaining
 /// leaves are preserved.
 pub fn project_local(conn: &Connection, key_id: i64, as_label: &str) -> Result<HashSet<String>> {
-    let full = export_public_tree(conn, key_id)?;
     let visible = visible_labels(conn, key_id, as_label)?;
-    let slice = filter_public_tree(&full, &visible);
-    apply_public_tree(conn, Some(key_id), &slice)?;
+    let full = export_public_tree(conn, key_id)?;
+    apply_public_tree(conn, Some(key_id), &filter_public_tree(&full, &visible))?;
     Ok(visible)
 }
 
@@ -1493,25 +1600,16 @@ fn apply_public_tree_inner(
             }
             id
         }
-        None => {
-            let existing: Option<i64> = conn
-                .query_row(
-                    "SELECT id FROM keys WHERE label = ?1",
+        None => match tree_by_label(conn, &snapshot.label)? {
+            Some((id, _)) => id,
+            None => {
+                conn.execute(
+                    "INSERT INTO keys (label) VALUES (?1)",
                     params![snapshot.label],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            match existing {
-                Some(id) => id,
-                None => {
-                    conn.execute(
-                        "INSERT INTO keys (label) VALUES (?1)",
-                        params![snapshot.label],
-                    )?;
-                    conn.last_insert_rowid()
-                }
+                )?;
+                conn.last_insert_rowid()
             }
-        }
+        },
     };
 
     let stored_generation: i64 = conn.query_row(

@@ -433,3 +433,73 @@ fn visible_from_maps_stops_on_a_parent_cycle() {
     let visible = visible_from_maps(&parent_of, &children_of, &[], &["A".to_string()]);
     assert_eq!(visible, HashSet::from(["A".into(), "B".into()]));
 }
+
+#[test]
+fn public_slice_for_matches_exporting_and_filtering_by_hand() {
+    let mut conn = db::open_in_memory().expect("schema");
+    let (a1, _) = register_encryption_key(&conn, "a1");
+    let (a2, _) = register_encryption_key(&conn, "a2");
+    let (s1, _) = register_encryption_key(&conn, "s1");
+    let (s2, _) = register_encryption_key(&conn, "s2");
+    let spec = two_branch_org_spec(a1, a2, s1, s2);
+    let key_id = split(&mut conn, "org", b"company master secret 32 bytes!", &spec).expect("split");
+    allow_bridge(&conn, key_id, "M.S.2", "M.A.2").expect("whitelist");
+    add_bridge(&conn, key_id, "M.S.2", "M.A.2").expect("link");
+
+    let full = export_public_tree(&conn, key_id).expect("export");
+    let visible = visible_labels(&conn, key_id, "M.S.2").expect("visible");
+    let by_hand = filter_public_tree(&full, &visible);
+    let helper = public_slice_for(&conn, key_id, "M.S.2").expect("slice");
+
+    assert_eq!(helper.label, by_hand.label);
+    assert_eq!(helper.generation, by_hand.generation);
+    assert_eq!(
+        helper.nodes.iter().map(|n| &n.label).collect::<Vec<_>>(),
+        by_hand.nodes.iter().map(|n| &n.label).collect::<Vec<_>>()
+    );
+    assert_eq!(helper.links.len(), by_hand.links.len());
+    assert_eq!(helper.whitelist.len(), by_hand.whitelist.len());
+}
+
+#[test]
+fn tree_label_names_the_key_and_refuses_an_unknown_id() {
+    let mut conn = db::open_in_memory().expect("schema");
+    let (a1, _) = register_encryption_key(&conn, "a1");
+    let (a2, _) = register_encryption_key(&conn, "a2");
+    let (s1, _) = register_encryption_key(&conn, "s1");
+    let (s2, _) = register_encryption_key(&conn, "s2");
+    let spec = two_branch_org_spec(a1, a2, s1, s2);
+    let key_id = split(&mut conn, "org", b"company master secret 32 bytes!", &spec).expect("split");
+
+    assert_eq!(tree_label(&conn, key_id).expect("label"), "org");
+    assert!(matches!(
+        tree_label(&conn, key_id + 1),
+        Err(Error::TreeNotFound)
+    ));
+}
+
+#[test]
+fn load_for_visibility_backs_the_same_answer_as_visible_labels() {
+    let mut conn = db::open_in_memory().expect("schema");
+    let (a1, _) = register_encryption_key(&conn, "a1");
+    let (a2, _) = register_encryption_key(&conn, "a2");
+    let (s1, _) = register_encryption_key(&conn, "s1");
+    let (s2, _) = register_encryption_key(&conn, "s2");
+    let spec = two_branch_org_spec(a1, a2, s1, s2);
+    let key_id = split(&mut conn, "org", b"company master secret 32 bytes!", &spec).expect("split");
+    allow_bridge(&conn, key_id, "M.S.2", "M.A.2").expect("whitelist");
+    add_bridge(&conn, key_id, "M.S.2", "M.A.2").expect("link");
+
+    let (tree, links) = load_for_visibility(&conn, key_id).expect("load");
+    let batched = visible_labels_for_links(&tree, &links, "M.S.2").expect("visible");
+    let single = visible_labels(&conn, key_id, "M.S.2").expect("visible");
+    assert_eq!(batched, single);
+
+    // The loaded tree and links serve a second label too, without
+    // reloading — this is the whole point of loading them once.
+    let other = visible_labels_for_links(&tree, &links, "M.A.1").expect("visible");
+    assert_eq!(
+        other,
+        visible_labels(&conn, key_id, "M.A.1").expect("visible")
+    );
+}

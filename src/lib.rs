@@ -1,10 +1,12 @@
 pub mod crypto;
 pub mod db;
+pub mod envelope;
 pub mod error;
 pub mod export;
 pub mod key_tree;
 pub mod keys;
 pub mod locked_files;
+pub mod org_update;
 pub mod pin;
 pub mod private_bridge;
 pub mod provider;

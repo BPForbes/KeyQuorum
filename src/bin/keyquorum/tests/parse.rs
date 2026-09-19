@@ -656,3 +656,77 @@ fn provider_host_is_omitted_from_top_level_help() {
         "hidden host command leaked into --help:\n{help}"
     );
 }
+
+#[test]
+fn reissue_needs_a_new_key_an_authority_and_an_output_dir() {
+    // At least one of the two key files.
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "reissue",
+        "--node",
+        "M.S.2",
+        "--as",
+        "M",
+        "--signing-key-file",
+        "M.sign.key",
+        "--output-dir",
+        "./updates",
+    ])
+    .is_err());
+
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "reissue",
+        "--node",
+        "M.S.2",
+        "--key-id",
+        "1",
+        "--encryption-public-key-file",
+        "M.S.2.new.pub",
+        "--as",
+        "M",
+        "--signing-key-file",
+        "M.sign.key",
+        "--revoke-previous",
+        "--output-dir",
+        "./updates",
+    ])
+    .is_ok());
+
+    // A signing-only reissue needs no encryption key and no tree.
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "reissue",
+        "--node",
+        "M.S.2",
+        "--signing-public-key-file",
+        "M.S.2.new.sign.pub",
+        "--as",
+        "M.S",
+        "--signing-key-file",
+        "M.S.sign.key",
+        "--output-dir",
+        "./updates",
+    ])
+    .is_ok());
+}
+
+#[test]
+fn tree_restructure_and_updates_parse() {
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "tree",
+        "restructure",
+        "1",
+        "--as",
+        "M",
+        "--signing-key-file",
+        "M.sign.key",
+        "--output-dir",
+        "./updates",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from(["keyquorum", "tree", "restructure", "1"]).is_err());
+    assert!(Cli::try_parse_from(["keyquorum", "updates"]).is_ok());
+    assert!(Cli::try_parse_from(["keyquorum", "updates", "--since", "4"]).is_ok());
+}

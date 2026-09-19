@@ -294,3 +294,26 @@ CREATE TABLE IF NOT EXISTS relay_credentials (
     last_checked_at TEXT,
     PRIMARY KEY (relay_url, scope)
 );
+
+-- Authenticated organization updates applied from a `.kqpb` envelope:
+-- hardware-key reissue and key-tree restructure. One row per accepted
+-- update, which is also the replay guard — the UNIQUE constraint makes a
+-- re-delivered envelope a no-op at the SQL layer even if the sequence
+-- check above it were ever bypassed. `sequence` is the reissue counter for
+-- a key reissue and the tree's public generation for a restructure.
+CREATE TABLE IF NOT EXISTS org_updates (
+    id                INTEGER PRIMARY KEY,
+    kind              TEXT NOT NULL CHECK (kind IN ('key_reissue', 'tree_restructure')),
+    -- `keys.label` this update is scoped to, or '' for a store-wide reissue
+    -- that is not tied to one split tree.
+    tree_label        TEXT NOT NULL,
+    subject_label     TEXT NOT NULL,
+    sequence          INTEGER NOT NULL CHECK (sequence > 0),
+    authorizer_label  TEXT NOT NULL,
+    detail            TEXT NOT NULL,
+    applied_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (kind, tree_label, subject_label, sequence)
+);
+
+CREATE INDEX IF NOT EXISTS idx_org_updates_subject
+    ON org_updates (kind, tree_label, subject_label);

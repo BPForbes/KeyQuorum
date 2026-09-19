@@ -17,6 +17,42 @@ The two must stay in step in both directions: if the commit fails, the CLI delet
 the `.kqpb` files it just wrote, because `write_owner_only` refuses to overwrite and
 leftovers would block the retry.
 
+`src/envelope.rs` is the crate's **only** sealed-envelope framing (magic,
+version, kind byte, recipient X25519 public key, sealed length) and the
+only copy of the length-prefixed byte codec and preimage hashing that go
+with it. Two formats share it, named by `envelope::Format`: `PACKAGE`
+(`KQPB`, the `.kqpb` files the relay carries, for `private_bridge` and
+`org_update`) and `EXPORT_BUNDLE` (`KQXB`, `export`'s portable bundles).
+Do not re-roll either in a new module — add a `Format`. Those bytes are
+wire format. `.kqbn` eviction notices and the `KQBS` signature artifact
+have their own magic and version because they are not sealed envelopes,
+and `key_tree`/`private_bridge` seal raw blobs into database columns with
+no header at all; none of those belong in `envelope.rs`. The provider
+`KQPC`/`KQRL`/`KQPL` blobs are signed certificates, not envelopes, and
+keep their own offset-cursor parsers and error variants.
+`src/org_update.rs` adds the two authenticated update
+kinds from issue #10 — hardware-key reissue and key-tree restructure. A
+store applies one only when it is addressed to a label that store holds
+under the sealed-to key, signed by the subject or a dotted-label ancestor
+whose signing key that store already has, verified against a
+domain-separated preimage covering the recipient, and in order (a reissue
+exactly one past the last for that subject; a restructure strictly past
+the stored public generation). Accepted updates land in `org_updates`,
+whose UNIQUE key is the last-resort replay guard. Keep the producers
+plan-then-commit like `private_bridge::create`, and never widen the
+authorization rule without updating the tests that pin it. `org_update.rs`
+itself stays orchestration: `key_tree.rs` is the only place in the crate
+that ever mutates `key_nodes` (`adopt_reissued_hardware_key` sits next to
+`rebind_leaf`; `active_encryption_leaves` next to `active_leaves_for_hardware`;
+`load_for_visibility` backs `visible_labels` itself now, not just the
+restructure loop), `private_bridge.rs` owns the dotted-label hierarchy
+(`is_ancestor_or_self` next to `parent_node_label`) and bridge-roster
+queries (`bridge_notify_targets`), and `keys.rs` owns the hardware-key
+registry (`active_keys_for`, `get_or_register`, `revoke_superseded`,
+`unrevoke_key`). A new authenticated-update primitive belongs in the
+module that owns the table it reads or writes, not in `org_update.rs`,
+even when `org_update.rs` is its only caller today.
+
 The mailbox relay (`src/relay/`) stores opaque `.kqpb` envelopes and
 the canonical *public* split-tree as JSON documents (full context). It must never
 unseal envelopes or hold wrapped shares or private keys. `relay push` merges
