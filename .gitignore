@@ -49,6 +49,7 @@ build/
 *.kqpolicy
 *.kqst
 device.kq
+device.skey
 secrets/
 keys/
 test-keys/

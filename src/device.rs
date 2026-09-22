@@ -32,9 +32,10 @@ use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
 const DEVICE_MAGIC: &[u8; 4] = b"KQDV";
-const DEVICE_VERSION: u8 = 1;
+const DEVICE_VERSION: u8 = 2;
 const TOKEN_MAGIC: &[u8; 4] = b"KQST";
-const TOKEN_VERSION: u8 = 1;
+const TOKEN_VERSION: u8 = 2;
+const DESC_DOMAIN: &[u8] = b"KQ-DEVICE-DESC-v2";
 const DEVICE_ID_LEN: usize = 16;
 const SOLO_DOMAIN: &[u8] = b"KQ-SOLO-DEVICE-v1";
 
@@ -99,12 +100,14 @@ pub struct SlotRecord {
     pub signing_public: [u8; 32],
 }
 
-/// A container directory this process opened. `device_id` is whatever
-/// `device.kq` says; callers cannot substitute their own.
+/// A container directory this process opened. `device_id` is the id inside
+/// the signed `device.kq`, and each slot token seals that same id. The
+/// directory path is not the device identity.
 #[derive(Clone, Debug)]
 pub struct Container {
     path: PathBuf,
     device_id: [u8; DEVICE_ID_LEN],
+    verify_key: [u8; 32],
     slots: Vec<SlotRecord>,
 }
 
@@ -115,6 +118,12 @@ impl Container {
 
     pub fn device_id(&self) -> &[u8; DEVICE_ID_LEN] {
         &self.device_id
+    }
+
+    /// Ed25519 public key that signs `device.kq`. The id is whatever this
+    /// signature covers, not the directory path.
+    pub fn verify_key(&self) -> &[u8; 32] {
+        &self.verify_key
     }
 
     pub fn slots(&self) -> &[SlotRecord] {
@@ -154,9 +163,12 @@ pub fn init(path: &Path) -> Result<Container> {
     }
     let mut device_id = [0u8; DEVICE_ID_LEN];
     OsRng.fill_bytes(&mut device_id);
+    let (secret, verify_key) = keys::generate_signing_keypair();
+    locked_files::write_owner_only(&path.join("device.skey"), secret.as_slice())?;
     let container = Container {
         path: path.to_path_buf(),
         device_id,
+        verify_key,
         slots: Vec::new(),
     };
     store_descriptor(&container)?;
@@ -166,10 +178,11 @@ pub fn init(path: &Path) -> Result<Container> {
 /// Read `device.kq`. Does not decrypt any slot.
 pub fn open(path: &Path) -> Result<Container> {
     let bytes = fs::read(path.join("device.kq"))?;
-    let (device_id, slots) = decode_descriptor(&bytes)?;
+    let (device_id, verify_key, slots) = decode_descriptor(&bytes)?;
     Ok(Container {
         path: path.to_path_buf(),
         device_id,
+        verify_key,
         slots,
     })
 }
@@ -218,8 +231,9 @@ pub fn open_slot(container: &Container, label: &str, passphrase: &str) -> Result
     let record = container.slot(label).ok_or(Error::InvalidSlot)?;
     let bytes = fs::read(token_path(container, label)?)?;
     let plain = decrypt_token(&bytes, passphrase)?;
-    let (token_label, encryption_secret, signing_secret) = decode_token_plain(&plain)?;
-    if token_label != label {
+    let (token_label, token_device, encryption_secret, signing_secret) =
+        decode_token_plain(&plain)?;
+    if token_label != label || token_device != container.device_id {
         return Err(Error::InvalidSlot);
     }
     let encryption_public = keys::encryption_public_from_secret(&encryption_secret);
@@ -276,10 +290,20 @@ pub fn relocate_slot(
     Ok(())
 }
 
-/// Record placements for the slot's registered keys. `device_id` comes
-/// from `container`, which [`open`] or [`init`] filled from `device.kq`.
-pub fn bind_slot(conn: &Connection, container: &Container, slot_label: &str) -> Result<()> {
+/// Record placements for the slot's registered keys. The passphrase opens
+/// the token, and the device id sealed inside that token has to match the
+/// signed `device.kq`. A rewritten descriptor id cannot bind the slot.
+pub fn bind_slot(
+    conn: &Connection,
+    container: &Container,
+    slot_label: &str,
+    passphrase: &str,
+) -> Result<()> {
+    let secrets = open_slot(container, slot_label, passphrase)?;
     let slot = container.slot(slot_label).ok_or(Error::InvalidSlot)?;
+    if secrets.encryption_public != slot.encryption_public {
+        return Err(Error::InvalidSlot);
+    }
     let encryption = keys::get_key_by_public_key(conn, &slot.encryption_public)?;
     if encryption.key_type != KeyType::Encryption {
         return Err(Error::WrongKeyType);
@@ -292,6 +316,78 @@ pub fn bind_slot(conn: &Connection, container: &Container, slot_label: &str) -> 
         upsert_placement(conn, signing.id, &container.device_id, slot_label)?;
     }
     Ok(())
+}
+
+/// Install an existing keypair into a slot. Used when a transfer commits
+/// possession on the destination. The token is sealed to this container's
+/// device id.
+pub fn install_slot(
+    container: &mut Container,
+    label: &str,
+    passphrase: &str,
+    encryption_secret: &[u8; 32],
+    signing_secret: &[u8; 32],
+) -> Result<SlotRecord> {
+    validate_slot_label(label)?;
+    if passphrase.is_empty() {
+        return Err(Error::InvalidPassword);
+    }
+    if container.slot(label).is_some() {
+        return Err(Error::InvalidSlot);
+    }
+    write_token(
+        container,
+        label,
+        passphrase,
+        encryption_secret,
+        signing_secret,
+    )?;
+    let record = SlotRecord {
+        label: label.to_string(),
+        encryption_public: keys::encryption_public_from_secret(encryption_secret),
+        signing_public: signing_public_from_secret(signing_secret),
+    };
+    container.slots.push(record.clone());
+    store_descriptor(container)?;
+    Ok(record)
+}
+
+/// Delete a slot's token and drop it from the descriptor. Hierarchy code
+/// may keep a ghost row; this function only removes usable key material.
+pub fn remove_slot(container: &mut Container, label: &str) -> Result<()> {
+    let source = token_path(container, label)?;
+    if source.exists() {
+        fs::remove_file(&source)?;
+    }
+    if let Some(dir) = source.parent() {
+        let _ = fs::remove_dir(dir);
+    }
+    let before = container.slots.len();
+    container.slots.retain(|slot| slot.label != label);
+    if container.slots.len() == before && !source.exists() {
+        return Err(Error::InvalidSlot);
+    }
+    store_descriptor(container)?;
+    Ok(())
+}
+
+pub(crate) fn device_signing_secret(container: &Container) -> Result<Zeroizing<[u8; 32]>> {
+    let bytes = fs::read(container.path.join("device.skey"))?;
+    let secret: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| Error::InvalidDevice)?;
+    Ok(Zeroizing::new(secret))
+}
+
+/// Prompt twice and refuse an empty or mismatched passphrase.
+pub fn confirm_passphrase(first_prompt: &str, second_prompt: &str) -> Result<String> {
+    let passphrase = prompt_passphrase(first_prompt)?;
+    let again = prompt_passphrase(second_prompt)?;
+    if passphrase != again {
+        return Err(Error::InvalidPassword);
+    }
+    Ok(passphrase)
 }
 
 pub fn set_custody_policy(conn: &Connection, key_id: i64, policy: &CustodyPolicy) -> Result<()> {
@@ -347,8 +443,23 @@ pub fn solo_device_id(public_key: &[u8]) -> [u8; DEVICE_ID_LEN] {
 
 /// Group `used` by physical device and apply the tree's custody policy.
 /// A placement wins over [`solo_device_id`]. Keys with no placement stay
-/// on the one-key one-device path.
+/// on the one-key one-device path. A ghost possession cannot contribute.
 pub fn enforce_devices(
+    conn: &Connection,
+    key_id: i64,
+    used: &[UsedLeaf],
+) -> Result<Vec<PresentedDevice>> {
+    let groups = classify_devices(conn, key_id, used)?;
+    let policy = custody_policy(conn, key_id)?;
+    if groups.len() < usize::from(policy.minimum_physical_devices) {
+        return Err(Error::PhysicalDevicesNotMet);
+    }
+    Ok(groups)
+}
+
+/// Device groups for `used`, including the hardware-mode custody check.
+/// Does not apply `minimum_physical_devices`.
+pub(crate) fn classify_devices(
     conn: &Connection,
     key_id: i64,
     used: &[UsedLeaf],
@@ -359,6 +470,9 @@ pub fn enforce_devices(
     let policy = custody_policy(conn, key_id)?;
     let mut groups: Vec<PresentedDevice> = Vec::new();
     for leaf in used {
+        if leaf_is_ghost(conn, leaf.hardware_key_id)? {
+            return Err(Error::GhostDenied);
+        }
         let key = keys::get_key(conn, leaf.hardware_key_id)?;
         let (device_id, slot_label) = device_for_key(conn, &key)?;
         if let Some(group) = groups.iter_mut().find(|group| group.device_id == device_id) {
@@ -386,10 +500,24 @@ pub fn enforce_devices(
             }
         }
     }
-    if groups.len() < usize::from(policy.minimum_physical_devices) {
-        return Err(Error::PhysicalDevicesNotMet);
-    }
     Ok(groups)
+}
+
+/// True when this hardware key is a ghost identity on this store.
+/// Keys with no possession row stay on the original exchange.
+pub(crate) fn leaf_is_ghost(conn: &Connection, hardware_key_id: i64) -> Result<bool> {
+    let state: Option<String> = conn
+        .query_row(
+            "SELECT p.state
+             FROM key_possession p
+             JOIN key_identities i ON i.id = p.identity_id
+             JOIN hardware_keys h ON h.public_key = i.enc_public
+             WHERE h.id = ?1",
+            params![hardware_key_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(state.as_deref() == Some("ghost"))
 }
 
 pub fn format_presentation(devices: &[PresentedDevice]) -> String {
@@ -501,7 +629,7 @@ fn upsert_placement(
     Ok(())
 }
 
-fn validate_slot_label(label: &str) -> Result<()> {
+pub(crate) fn validate_slot_label(label: &str) -> Result<()> {
     if label.is_empty()
         || label.len() > 128
         || label.contains("..")
@@ -534,7 +662,12 @@ fn write_token(
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let plain = encode_token_plain(label, encryption_secret, signing_secret)?;
+    let plain = encode_token_plain(
+        label,
+        &container.device_id,
+        encryption_secret,
+        signing_secret,
+    )?;
     let salt = crypto::random_salt();
     let nonce = crypto::random_nonce();
     let key = crypto::derive_key(passphrase, &salt)?;
@@ -563,29 +696,53 @@ fn decrypt_token(bytes: &[u8], passphrase: &str) -> Result<Vec<u8>> {
     crypto::decrypt(&key, &nonce, data).map_err(|_| Error::InvalidPassword)
 }
 
-fn encode_token_plain(label: &str, encryption: &[u8; 32], signing: &[u8; 32]) -> Result<Vec<u8>> {
+fn encode_token_plain(
+    label: &str,
+    device_id: &[u8; DEVICE_ID_LEN],
+    encryption: &[u8; 32],
+    signing: &[u8; 32],
+) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     push_len_prefixed(&mut out, label.as_bytes())?;
+    out.extend_from_slice(device_id);
     out.extend_from_slice(encryption);
     out.extend_from_slice(signing);
     Ok(out)
 }
 
-type TokenPlain = (String, Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>);
+type TokenPlain = (
+    String,
+    [u8; DEVICE_ID_LEN],
+    Zeroizing<[u8; 32]>,
+    Zeroizing<[u8; 32]>,
+);
 
 fn decode_token_plain(bytes: &[u8]) -> Result<TokenPlain> {
     let mut data = bytes;
     let label = utf8(take_len_prefixed(&mut data)?)?;
+    let device_id = take_array(&mut data)?;
     let encryption = Zeroizing::new(take_array(&mut data)?);
     let signing = Zeroizing::new(take_array(&mut data)?);
     if !data.is_empty() {
         return Err(Error::InvalidDevice);
     }
-    Ok((label, encryption, signing))
+    Ok((label, device_id, encryption, signing))
 }
 
 fn store_descriptor(container: &Container) -> Result<()> {
-    let bytes = encode_descriptor(&container.device_id, &container.slots)?;
+    let secret = device_signing_secret(container)?;
+    let preimage = descriptor_preimage(
+        &container.device_id,
+        &container.verify_key,
+        &container.slots,
+    )?;
+    let signature = crate::signing::sign(&secret, &preimage);
+    let bytes = encode_descriptor(
+        &container.device_id,
+        &container.verify_key,
+        &signature,
+        &container.slots,
+    )?;
     let path = container.path.join("device.kq");
     let tmp = container.path.join(".device.kq.tmp");
     if tmp.exists() {
@@ -596,12 +753,16 @@ fn store_descriptor(container: &Container) -> Result<()> {
     Ok(())
 }
 
-fn encode_descriptor(device_id: &[u8; DEVICE_ID_LEN], slots: &[SlotRecord]) -> Result<Vec<u8>> {
+fn descriptor_preimage(
+    device_id: &[u8; DEVICE_ID_LEN],
+    verify_key: &[u8; 32],
+    slots: &[SlotRecord],
+) -> Result<Vec<u8>> {
     let count = u16::try_from(slots.len()).map_err(|_| Error::InvalidDevice)?;
     let mut out = Vec::new();
-    out.extend_from_slice(DEVICE_MAGIC);
-    out.push(DEVICE_VERSION);
+    out.extend_from_slice(DESC_DOMAIN);
     out.extend_from_slice(device_id);
+    out.extend_from_slice(verify_key);
     out.extend_from_slice(&count.to_be_bytes());
     for slot in slots {
         push_len_prefixed(&mut out, slot.label.as_bytes())?;
@@ -611,8 +772,30 @@ fn encode_descriptor(device_id: &[u8; DEVICE_ID_LEN], slots: &[SlotRecord]) -> R
     Ok(out)
 }
 
-fn decode_descriptor(bytes: &[u8]) -> Result<([u8; DEVICE_ID_LEN], Vec<SlotRecord>)> {
-    if bytes.len() < 4 + 1 + DEVICE_ID_LEN + 2 || &bytes[..4] != DEVICE_MAGIC {
+fn encode_descriptor(
+    device_id: &[u8; DEVICE_ID_LEN],
+    verify_key: &[u8; 32],
+    signature: &[u8; 64],
+    slots: &[SlotRecord],
+) -> Result<Vec<u8>> {
+    let count = u16::try_from(slots.len()).map_err(|_| Error::InvalidDevice)?;
+    let mut out = Vec::new();
+    out.extend_from_slice(DEVICE_MAGIC);
+    out.push(DEVICE_VERSION);
+    out.extend_from_slice(device_id);
+    out.extend_from_slice(verify_key);
+    out.extend_from_slice(signature);
+    out.extend_from_slice(&count.to_be_bytes());
+    for slot in slots {
+        push_len_prefixed(&mut out, slot.label.as_bytes())?;
+        out.extend_from_slice(&slot.encryption_public);
+        out.extend_from_slice(&slot.signing_public);
+    }
+    Ok(out)
+}
+
+fn decode_descriptor(bytes: &[u8]) -> Result<([u8; DEVICE_ID_LEN], [u8; 32], Vec<SlotRecord>)> {
+    if bytes.len() < 4 + 1 + DEVICE_ID_LEN + 32 + 64 + 2 || &bytes[..4] != DEVICE_MAGIC {
         return Err(Error::InvalidDevice);
     }
     let mut data = &bytes[4..];
@@ -621,6 +804,8 @@ fn decode_descriptor(bytes: &[u8]) -> Result<([u8; DEVICE_ID_LEN], Vec<SlotRecor
         return Err(Error::InvalidDevice);
     }
     let device_id = take_array(&mut data)?;
+    let verify_key = take_array(&mut data)?;
+    let signature = take_array::<64>(&mut data)?;
     let count = u16::from_be_bytes(take_array(&mut data)?) as usize;
     let mut slots = Vec::with_capacity(count);
     for _ in 0..count {
@@ -637,7 +822,9 @@ fn decode_descriptor(bytes: &[u8]) -> Result<([u8; DEVICE_ID_LEN], Vec<SlotRecor
     if !data.is_empty() {
         return Err(Error::InvalidDevice);
     }
-    Ok((device_id, slots))
+    let preimage = descriptor_preimage(&device_id, &verify_key, &slots)?;
+    crate::signing::verify_signature(&verify_key, &preimage, &signature)?;
+    Ok((device_id, verify_key, slots))
 }
 
 fn signing_public_from_secret(secret: &[u8; 32]) -> [u8; 32] {

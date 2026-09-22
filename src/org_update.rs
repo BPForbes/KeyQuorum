@@ -908,6 +908,11 @@ fn import_tree_update(
         &letter.preimage(recipient_public_key)?,
         &auth_sig,
     )?;
+    // A non-root authorizer can only propose. A direct KIND_TREE_UPDATE
+    // signed by that authorizer alone would skip the parent countersignature.
+    if crate::authority::restructure_countersigner(&letter.authorizer_label).is_some() {
+        return Err(Error::UpdateNotAuthorized);
+    }
 
     let slice: PublicTree =
         serde_json::from_slice(&letter.slice_json).map_err(|_| Error::InvalidTreeSpec)?;

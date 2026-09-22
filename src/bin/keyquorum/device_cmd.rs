@@ -52,11 +52,8 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
         }
         DeviceCommand::Provision { path, label } => {
             let mut container = device::open(&path)?;
-            let passphrase = device::prompt_passphrase("Slot passphrase: ")?;
-            let again = device::prompt_passphrase("Repeat passphrase: ")?;
-            if passphrase != again {
-                return Err(keyquorum::error::Error::InvalidPassword);
-            }
+            let passphrase =
+                device::confirm_passphrase("Slot passphrase: ", "Repeat passphrase: ")?;
             let slot = device::provision(&mut container, &label, &passphrase)?;
             println!("slot {}", slot.label);
             println!("  encryption {}", hex::encode(slot.encryption_public));
@@ -73,7 +70,11 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
         }
         DeviceCommand::Bind { path, slot } => {
             let container = device::open(&path)?;
-            device::bind_slot(conn, &container, &slot)?;
+            let passphrase = device::confirm_passphrase(
+                &format!("Passphrase for {slot}: "),
+                &format!("Repeat passphrase for {slot}: "),
+            )?;
+            device::bind_slot(conn, &container, &slot, &passphrase)?;
             println!(
                 "Bound {slot} to device {}",
                 hex::encode(container.device_id())

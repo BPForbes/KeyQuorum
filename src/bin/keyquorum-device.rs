@@ -86,12 +86,8 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Provision { path, label } => {
             let mut container = device::open(&path)?;
-            let passphrase = device::prompt_passphrase("Slot passphrase: ")?;
-            let again = device::prompt_passphrase("Repeat passphrase: ")?;
-            if passphrase != again {
-                eprintln!("error: passphrases did not match");
-                std::process::exit(1);
-            }
+            let passphrase =
+                device::confirm_passphrase("Slot passphrase: ", "Repeat passphrase: ")?;
             let slot = device::provision(&mut container, &label, &passphrase)?;
             print_slot(&slot.label, &slot.encryption_public, &slot.signing_public);
         }

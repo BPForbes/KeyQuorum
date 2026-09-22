@@ -363,6 +363,38 @@ fn a_restructure_signed_by_an_unrelated_branch_is_refused() {
 }
 
 #[test]
+fn a_direct_tree_update_from_a_delegated_authorizer_is_refused() {
+    let org = coordinator();
+    let conn = person_store(&org, "M.S.1");
+    let (manager, manager_public) = register_signing(&org.conn, "M.S");
+    keys::register_key(&conn, "M.S", KeyType::Signing, &manager_public).expect("trust M.S");
+    let before = node_labels(&conn);
+    let slice = slice_for(&org, "M.S.1");
+    let letter = TreeLetter {
+        tree_label: slice.label.clone(),
+        generation: slice.generation + 1,
+        recipient_label: "M.S.1".into(),
+        authorizer_label: "M.S".into(),
+        slice_json: serde_json::to_vec(&PublicTree {
+            generation: slice.generation + 1,
+            ..slice
+        })
+        .expect("json"),
+    };
+    let recipient = *org.secrets["M.S.1"].public_key().as_bytes();
+    let bytes = letter
+        .seal(&recipient, &SigningKey::from_bytes(&manager))
+        .expect("seal");
+
+    assert!(matches!(
+        import_update(&conn, &bytes, &org.secrets["M.S.1"].to_bytes()),
+        Err(Error::UpdateNotAuthorized)
+    ));
+    assert_eq!(node_labels(&conn), before);
+    assert!(history(&conn, None).expect("history").is_empty());
+}
+
+#[test]
 fn a_restructure_the_authority_did_not_sign_is_refused() {
     let org = coordinator();
     let conn = person_store(&org, "M.S.1");

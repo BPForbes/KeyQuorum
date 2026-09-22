@@ -14,7 +14,15 @@ that unwrap a key take `--slot container=label` beside `--share-file`.
 directory (a mounted USB, or a stand-in). Those slots share one device id.
 Logical mode is for development and constrained hardware; it is not a hardware
 quorum. A tree can require `minimum_physical_devices` so co-resident slots
-cannot satisfy a multi-device policy.
+cannot satisfy a multi-device policy. `device.kq` is signed by `device.skey`,
+and each slot token seals that same device id, so rewriting the descriptor
+cannot make one container count as two devices. `keyquorum transfer copy` and
+`transfer move` carry an active identity to a second device that is open at
+the same time. The source stays active on a copy. A move stays active on the
+source until the destination commits, then the source keeps a ghost: hierarchy
+and provenance without the private key. A ghost cannot sign, satisfy a quorum,
+authorize an import, or be exported. The `KQTX` package is signed by the
+source device; it is not a sealed envelope.
 
 ## Concept
 

@@ -89,7 +89,13 @@ or `logical` (several slots may satisfy Shamir together).
 one container cannot satisfy a multi-device policy. Logical slots are not a
 hardware quorum. A non-root `tree restructure` stays pending until the parent
 countersigns; employee reissue by the direct parent stays a single signature.
-`unlock_approval = parent` is opt-in.
+`unlock_approval = parent` is opt-in. `device.kq` is signed by `device.skey`,
+and each slot token seals that same device id. `keyquorum transfer copy|move`
+moves possession of an active identity between two open devices. A ghost keeps
+hierarchy and provenance without a private key, and cannot sign, satisfy
+quorum, authorize an import, or be exported. COPY leaves the source active.
+MOVE leaves it active until the destination commits. `KQTX` packages are
+signed by the source device and are not sealed envelopes.
 
 Rules:
 

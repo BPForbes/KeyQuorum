@@ -101,6 +101,16 @@ pub enum Error {
     UnlockApprovalRequired,
     /// No pending restructure is waiting for this countersignature.
     ProposalNotFound,
+    /// A ghost identity was asked to sign, export, authorize, or satisfy quorum.
+    GhostDenied,
+    /// Import or export was refused by the transfer policy.
+    TransferDenied,
+    /// The same key id was presented with different cryptographic material.
+    IdentityConflict,
+    /// A transfer package was already consumed or is older than the identity.
+    TransferReplay,
+    /// A transfer stopped before both devices agreed, and needs recovery.
+    TransferIncomplete,
 }
 
 impl fmt::Display for Error {
@@ -325,6 +335,18 @@ impl fmt::Display for Error {
             }
             Error::ProposalNotFound => {
                 write!(f, "no restructure proposal is waiting for that countersignature")
+            }
+            Error::GhostDenied => {
+                write!(f, "a ghost identity cannot sign, export, or satisfy quorum")
+            }
+            Error::TransferDenied => write!(f, "transfer is not authorized for this identity"),
+            Error::IdentityConflict => write!(
+                f,
+                "identity conflict: the same key id or tree path has different cryptographic material"
+            ),
+            Error::TransferReplay => write!(f, "transfer package was already consumed or is stale"),
+            Error::TransferIncomplete => {
+                write!(f, "transfer stopped before both devices committed")
             }
         }
     }

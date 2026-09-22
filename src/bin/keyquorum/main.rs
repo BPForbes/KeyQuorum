@@ -24,11 +24,13 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use zeroize::Zeroize;
 
 #[cfg(feature = "provider")]
 mod host;
 
 mod device_cmd;
+mod transfer_cmd;
 
 /// How long a "one-time" PIN unlock stays valid before the PIN is needed
 /// again (see `pin.rs`); not configurable via the CLI in this pass.
@@ -358,6 +360,12 @@ enum Command {
         /// Relay base URL (or KEYQUORUM_RELAY_URL)
         #[arg(long)]
         url: Option<String>,
+    },
+    /// Copy or move an active key identity between two open devices.
+    /// A ghost keeps the hierarchy and cannot be exported.
+    Transfer {
+        #[command(subcommand)]
+        command: transfer_cmd::TransferCommand,
     },
     /// A directory of logical identity slots. A key file with no placement
     /// is still one device; use `register` and `--share-file` for that.
@@ -875,6 +883,7 @@ fn run(db_path: &Path, command: Command) -> Result<()> {
     match command {
         Command::Relay { command } => return run_relay(db_path, command),
         Command::Loadkey { api_key, url } => return run_loadkey(db_path, api_key, url),
+        Command::Transfer { command } => return transfer_cmd::run(command),
         #[cfg(feature = "provider")]
         Command::Host {
             mailbox_db,
@@ -957,8 +966,8 @@ fn run(db_path: &Path, command: Command) -> Result<()> {
         Command::Share { command } => run_share(&conn, command)?,
         Command::Pin { command } => run_pin(&conn, command)?,
         Command::Device { command } => device_cmd::run(&conn, command)?,
-        Command::Relay { .. } | Command::Loadkey { .. } => {
-            unreachable!("relay commands are handled before opening the org db")
+        Command::Transfer { .. } | Command::Relay { .. } | Command::Loadkey { .. } => {
+            unreachable!("transfer and relay commands are handled before opening the org db")
         }
         #[cfg(feature = "provider")]
         Command::Host { .. } => {
@@ -1288,7 +1297,8 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
         | Command::Pin { .. }
         | Command::Relay { .. }
         | Command::Loadkey { .. }
-        | Command::Device { .. } => unreachable!("non-tree commands are dispatched in run()"),
+        | Command::Device { .. }
+        | Command::Transfer { .. } => unreachable!("non-tree commands are dispatched in run()"),
         #[cfg(feature = "provider")]
         Command::Host { .. } => unreachable!("non-tree commands are dispatched in run()"),
     }
@@ -1983,9 +1993,29 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
             let file_status = quorum::status(conn, id)?;
             let shares =
                 collect_shares(conn, &file_status.tree.root, &args.share_files, &args.slots)?;
-            let grants =
-                approval_grants(conn, id, file_status.tree.key_id, &shares, &args.approves)?;
-            let plaintext = quorum::unlock_file_with_approval(conn, id, &shares, &grants)?;
+            let presented =
+                match key_tree::reconstruct_presented(conn, file_status.tree.key_id, &shares) {
+                    Ok(presented) => presented,
+                    Err(err) => {
+                        quorum::record_unlock_failure(conn, id, &err)?;
+                        return Err(err);
+                    }
+                };
+            let grants = match approval_grants(
+                id,
+                file_status.tree.key_id,
+                &presented.devices,
+                &args.approves,
+            ) {
+                Ok(grants) => grants,
+                Err(err) => {
+                    let mut secret = presented.secret;
+                    secret.zeroize();
+                    quorum::record_unlock_failure(conn, id, &err)?;
+                    return Err(err);
+                }
+            };
+            let plaintext = quorum::complete_unlock(conn, id, presented, &grants)?;
             match args.output {
                 Some(path) => locked_files::write_owner_only(&path, &plaintext)?,
                 None => io::stdout().write_all(&plaintext)?,
@@ -2764,22 +2794,15 @@ fn add_slot_shares(
 }
 
 fn approval_grants(
-    conn: &Connection,
     file_id: i64,
     key_id: i64,
-    shares: &HashMap<i64, Vec<u8>>,
+    devices: &[keyquorum::device::PresentedDevice],
     approves: &[String],
 ) -> Result<Vec<keyquorum::authority::UnlockGrant>> {
     if approves.is_empty() {
         return Ok(Vec::new());
     }
-    let presented = key_tree::reconstruct_presented(conn, key_id, shares)?;
-    let _secret = zeroize::Zeroizing::new(presented.secret);
-    let mut device_ids: Vec<[u8; 16]> = presented
-        .devices
-        .iter()
-        .map(|device| device.device_id)
-        .collect();
+    let mut device_ids: Vec<[u8; 16]> = devices.iter().map(|device| device.device_id).collect();
     device_ids.sort();
     let mut grants = Vec::with_capacity(approves.len());
     for entry in approves {

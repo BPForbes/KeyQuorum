@@ -11,7 +11,7 @@ fn schema_applies_cleanly() {
             |row| row.get(0),
         )
         .expect("query should succeed");
-    assert_eq!(table_count, 20);
+    assert_eq!(table_count, 25);
 }
 
 #[test]

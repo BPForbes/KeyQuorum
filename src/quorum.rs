@@ -117,64 +117,80 @@ pub fn unlock_file_with_approval(
     raw_shares: &HashMap<i64, Vec<u8>>,
     grants: &[UnlockGrant],
 ) -> Result<Vec<u8>> {
+    let key_id: i64 = conn.query_row(
+        "SELECT key_id FROM files WHERE id = ?1",
+        params![file_id],
+        |row| row.get(0),
+    )?;
+    let presented = match key_tree::reconstruct_presented(conn, key_id, raw_shares) {
+        Ok(presented) => presented,
+        Err(err) => {
+            let _ = record_unlock_failure(conn, file_id, &err);
+            return Err(err);
+        }
+    };
+    complete_unlock(conn, file_id, presented, grants)
+}
+
+/// Write the same failed `unlock_events` row the unlock path writes when
+/// reconstruction fails before [`complete_unlock`] runs.
+pub fn record_unlock_failure(conn: &Connection, file_id: i64, err: &Error) -> Result<()> {
+    conn.execute(
+        "INSERT INTO unlock_events (file_id, success, keys_presented) VALUES (?1, 0, ?2)",
+        params![file_id, format!("failed: {err}")],
+    )?;
+    Ok(())
+}
+
+/// Decrypt with an already reconstructed secret and write one audit row.
+/// Callers that fail while building approval grants record that failure
+/// themselves so the secret is not reconstructed a second time.
+pub fn complete_unlock(
+    conn: &Connection,
+    file_id: i64,
+    presented: key_tree::PresentedReconstruction,
+    grants: &[UnlockGrant],
+) -> Result<Vec<u8>> {
+    let audit_devices = device::format_presentation(&presented.devices);
+    let secret = Zeroizing::new(presented.secret);
+    let result = decrypt_presented(
+        conn,
+        file_id,
+        secret.as_slice(),
+        &presented.leaves,
+        &presented.devices,
+        grants,
+    );
+    let keys_presented = match &result {
+        Ok(_) => audit_devices,
+        Err(err) => format!("failed: {err}"),
+    };
+    let _ = conn.execute(
+        "INSERT INTO unlock_events (file_id, success, keys_presented) VALUES (?1, ?2, ?3)",
+        params![file_id, result.is_ok() as i64, keys_presented],
+    );
+    result
+}
+
+fn decrypt_presented(
+    conn: &Connection,
+    file_id: i64,
+    secret: &[u8],
+    leaves: &[device::UsedLeaf],
+    devices: &[device::PresentedDevice],
+    grants: &[UnlockGrant],
+) -> Result<Vec<u8>> {
     let (encrypted_path, key_id, nonce): (String, i64, Vec<u8>) = conn.query_row(
         "SELECT encrypted_path, key_id, nonce FROM files WHERE id = ?1",
         params![file_id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
-
-    let result = reconstruct_and_decrypt(
-        conn,
-        file_id,
-        key_id,
-        &encrypted_path,
-        &nonce,
-        raw_shares,
-        grants,
-    );
-    let presented = match &result {
-        Ok((_, audit)) => audit.clone(),
-        Err(err) => format!("failed: {err}"),
-    };
-    let _ = conn.execute(
-        "INSERT INTO unlock_events (file_id, success, keys_presented) VALUES (?1, ?2, ?3)",
-        params![file_id, result.is_ok() as i64, presented],
-    );
-    result.map(|(plaintext, _)| plaintext)
-}
-
-fn reconstruct_and_decrypt(
-    conn: &Connection,
-    file_id: i64,
-    key_id: i64,
-    encrypted_path: &str,
-    nonce: &[u8],
-    raw_shares: &HashMap<i64, Vec<u8>>,
-    grants: &[UnlockGrant],
-) -> Result<(Vec<u8>, String)> {
-    let presented = key_tree::reconstruct_presented(conn, key_id, raw_shares)?;
-    let audit = device::format_presentation(&presented.devices);
-    let data_key = Zeroizing::new(presented.secret);
-    authority::require_unlock_approval(
-        conn,
-        key_id,
-        file_id,
-        &presented.leaves,
-        &presented.devices,
-        grants,
-    )?;
-    let data_key: Zeroizing<[u8; crypto::KEY_LEN]> = Zeroizing::new(
-        data_key
-            .as_slice()
-            .try_into()
-            .map_err(|_| Error::QuorumNotMet)?,
-    );
+    authority::require_unlock_approval(conn, key_id, file_id, leaves, devices, grants)?;
+    let data_key: Zeroizing<[u8; crypto::KEY_LEN]> =
+        Zeroizing::new(secret.try_into().map_err(|_| Error::QuorumNotMet)?);
     let nonce: [u8; NONCE_LEN] = nonce.try_into().map_err(|_| Error::IntegrityCheckFailed)?;
-
     let ciphertext = fs::read(encrypted_path)?;
-    let plaintext =
-        crypto::decrypt(&data_key, &nonce, &ciphertext).map_err(|_| Error::IntegrityCheckFailed)?;
-    Ok((plaintext, audit))
+    crypto::decrypt(&data_key, &nonce, &ciphertext).map_err(|_| Error::IntegrityCheckFailed)
 }
 
 #[cfg(test)]
