@@ -1157,3 +1157,92 @@ fn copy_does_not_deactivate_the_source() {
     assert!(sign_active(&source.conn, &source.container, "M.S.2", PASS, b"src").is_ok());
     assert!(sign_active(&dest.conn, &dest.container, "M.S.2", PASS, b"dst").is_ok());
 }
+
+#[test]
+fn ghost_is_recorded_only_after_the_source_slot_is_gone() {
+    let mut source = end();
+    enroll_all(&mut source, &["M.A"]);
+    let mut dest = end();
+    let passes = passes_for(&source.conn, "M.A", DescendantMode::KeyOnly);
+    let prepared = prepare(
+        &source.conn,
+        &source.container,
+        dest.container.device_id(),
+        "M.A",
+        "M.A",
+        TransferOp::Move,
+        DescendantMode::KeyOnly,
+        &passes,
+        &TransferAuth::default(),
+    )
+    .unwrap();
+    stage_destination(
+        &dest.conn,
+        &dest.container,
+        &source.container,
+        prepared.package(),
+        false,
+    )
+    .unwrap();
+    write_destination_slots(
+        &dest.conn,
+        &mut dest.container,
+        &source.container,
+        prepared.package(),
+        &passes,
+        None,
+    )
+    .unwrap();
+    commit_destination_rows(
+        &dest.conn,
+        &dest.container,
+        &source.container,
+        prepared.package(),
+        false,
+    )
+    .unwrap();
+    acknowledge(&dest.conn, &prepared.id).unwrap();
+    assert_eq!(state(&source, "M.A"), Some(Possession::Active));
+    assert!(device::open_slot(&source.container, "M.A", PASS).is_ok());
+
+    scrub_moved_slots(&source.conn, &mut source.container, &prepared.id).unwrap();
+    assert_eq!(state(&source, "M.A"), Some(Possession::Active));
+    assert!(device::open_slot(&source.container, "M.A", PASS).is_err());
+    assert!(sign_active(&source.conn, &source.container, "M.A", PASS, b"gone").is_err());
+
+    retire_source_material(
+        &source.conn,
+        &mut source.container,
+        &dest.conn,
+        &prepared.id,
+    )
+    .unwrap();
+    assert_eq!(
+        tx_state(&source.conn, &prepared.id).unwrap().as_deref(),
+        Some("source_finalized")
+    );
+    assert_eq!(state(&source, "M.A"), Some(Possession::Ghost));
+    assert!(source.container.slot("M.A").is_none());
+    assert!(device::open_slot(&source.container, "M.A", PASS).is_err());
+    assert!(matches!(
+        sign_active(&source.conn, &source.container, "M.A", PASS, b"ghost"),
+        Err(Error::GhostDenied)
+    ));
+    assert_eq!(state(&dest, "M.A"), Some(Possession::Active));
+    assert!(sign_active(&dest.conn, &dest.container, "M.A", PASS, b"kept").is_ok());
+
+    assert_eq!(
+        recover_pair(
+            &source.conn,
+            &mut source.container,
+            &dest.conn,
+            &mut dest.container,
+            &prepared.id,
+        )
+        .unwrap(),
+        Recovery::AlreadyComplete
+    );
+    assert_eq!(state(&source, "M.A"), Some(Possession::Ghost));
+    assert!(device::open_slot(&source.container, "M.A", PASS).is_err());
+    assert!(sign_active(&dest.conn, &dest.container, "M.A", PASS, b"kept").is_ok());
+}

@@ -744,12 +744,29 @@ pub fn finalize_source(
     tx_id: &[u8; 16],
 ) -> Result<()> {
     let source_state = tx_state(source_conn, tx_id)?.ok_or(Error::TransferIncomplete)?;
-    if source_state == "completed" || source_state == "source_finalized" {
-        scrub_moved_slots(source_conn, source, tx_id)?;
-        let _ = set_state(dest_conn, tx_id, "completed");
-        let _ = set_state(source_conn, tx_id, "completed");
+    if source_state == "completed" {
         return Ok(());
     }
+    if source_state != "source_finalized" {
+        retire_source_material(source_conn, source, dest_conn, tx_id)?;
+    } else {
+        // An older finalize committed GHOST and then deleted the token.
+        // Recovery still removes a leftover slot before calling the move done.
+        scrub_moved_slots(source_conn, source, tx_id)?;
+    }
+    let _ = set_state(dest_conn, tx_id, "completed");
+    set_state(source_conn, tx_id, "completed")
+}
+
+/// Delete moved slot tokens, then commit `GHOST`. The row stays `ACTIVE`
+/// until every included token is gone, so a crash cannot report a ghost
+/// that `keyquorum-device` can still open.
+fn retire_source_material(
+    source_conn: &Connection,
+    source: &mut Container,
+    dest_conn: &Connection,
+    tx_id: &[u8; 16],
+) -> Result<()> {
     let dest_state = tx_state(dest_conn, tx_id)?.ok_or(Error::TransferIncomplete)?;
     if !matches!(
         dest_state.as_str(),
@@ -770,6 +787,7 @@ pub fn finalize_source(
     let root = tx_root(source_conn, tx_id)?;
     let descendants = tx_mode(source_conn, tx_id)?;
     let peer = tx_peer(source_conn, tx_id)?;
+    scrub_moved_slots(source_conn, source, tx_id)?;
     db::with_immediate_transaction(source_conn, || {
         for label in &secret_labels {
             let row = identity_by_label(source_conn, label)?.ok_or(Error::TransferDenied)?;
@@ -822,16 +840,12 @@ pub fn finalize_source(
                 &[],
             ),
         )
-    })?;
-    scrub_moved_slots(source_conn, source, tx_id)?;
-    set_state(source_conn, tx_id, "completed")?;
-    let _ = set_state(dest_conn, tx_id, "completed");
-    Ok(())
+    })
 }
 
-/// Drop slot tokens only after the ghost row has committed. A crash before
-/// this still has the destination copy, and the next finalize removes the
-/// leftover token.
+/// Drop moved slot tokens while the source row is still active. The ghost
+/// commit runs only after this returns. A crash in between leaves an active
+/// row whose token is already gone; the next finalize records the ghost.
 fn scrub_moved_slots(
     source_conn: &Connection,
     source: &mut Container,
