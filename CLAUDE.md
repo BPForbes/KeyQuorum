@@ -119,6 +119,7 @@ is refused.
 
 - Keep changes minimal and scoped to what's requested — don't scaffold unrelated
   modules, abstractions, or tooling ahead of need.
+- When the current branch already has an open pull request, ask before creating another branch or opening another pull request. No answer is a denial. On a denial, stay on the current branch and update the open pull request. Create a new branch and pull request only after an explicit yes.
 - After Rust work, run `cargo build` (and `cargo build --features provider`
   when touching the mailbox host), `cargo fmt`,
   `cargo clippy --locked --all-targets --all-features -- -D warnings`, and

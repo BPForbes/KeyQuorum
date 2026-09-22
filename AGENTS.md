@@ -156,6 +156,7 @@ files, so treat it as security-sensitive:
 
 - Write clear, descriptive commit messages explaining why a change was made.
 - Keep PRs focused on a single logical change where possible.
+- When the current branch already has an open pull request, ask before creating another branch or opening another pull request. No answer is a denial. On a denial, stay on the current branch and update the open pull request. Create a new branch and pull request only after an explicit yes.
 
 ## Other agent instruction files
 
