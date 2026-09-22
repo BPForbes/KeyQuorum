@@ -175,6 +175,18 @@ pub fn init(path: &Path) -> Result<Container> {
     Ok(container)
 }
 
+/// A container that only carries a device id and verify key. It has no
+/// directory and no slot tokens, so it can check a signed package without
+/// the source device's secrets.
+pub fn verification_container(device_id: [u8; DEVICE_ID_LEN], verify_key: [u8; 32]) -> Container {
+    Container {
+        path: PathBuf::new(),
+        device_id,
+        verify_key,
+        slots: Vec::new(),
+    }
+}
+
 /// Read `device.kq`. Does not decrypt any slot.
 pub fn open(path: &Path) -> Result<Container> {
     let bytes = fs::read(path.join("device.kq"))?;
@@ -350,6 +362,26 @@ pub fn install_slot(
     container.slots.push(record.clone());
     store_descriptor(container)?;
     Ok(record)
+}
+
+/// Whether `label` already holds exactly these secrets. `Ok(false)` when
+/// the slot is absent; a slot with the same label and different public
+/// keys is refused so a retried install never overwrites other material.
+pub fn slot_matches(
+    container: &Container,
+    label: &str,
+    encryption_secret: &[u8; 32],
+    signing_secret: &[u8; 32],
+) -> Result<bool> {
+    let Some(record) = container.slot(label) else {
+        return Ok(false);
+    };
+    if record.encryption_public != keys::encryption_public_from_secret(encryption_secret)
+        || record.signing_public != signing_public_from_secret(signing_secret)
+    {
+        return Err(Error::InvalidSlot);
+    }
+    Ok(true)
 }
 
 /// Delete a slot's token and drop it from the descriptor. Hierarchy code

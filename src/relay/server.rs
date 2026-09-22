@@ -1,10 +1,13 @@
 //! Axum router for the mailbox relay. Handlers never unseal envelopes.
 
-use super::api_key::{self, ApiKeyInfo, ApiKeyScope};
+use super::api_key::{self, ApiKeyInfo, ApiKeyScope, AuthedKey};
 use super::client::{
-    ErrorBody, InboxAccepted, InboxEnvelope, InboxList, InboxPush, KeyCheckRequest,
-    KeyCheckResponse, ProviderIdentityRequest, ProviderIdentityResponse,
+    DevicePackageList, DevicePackagePush, ErrorBody, InboxAccepted, InboxEnvelope, InboxList,
+    InboxPush, KeyCheckRequest, KeyCheckResponse, ProviderIdentityRequest,
+    ProviderIdentityResponse,
 };
+use super::device_directory::{self, DeviceDescriptor, DeviceSlotDescriptor};
+use super::device_mail;
 use super::mailbox;
 use super::org_tree;
 use crate::error::Error;
@@ -135,11 +138,16 @@ impl From<Error> for ApiError {
             | Error::InvalidProviderChallenge
             | Error::InvalidExpiresAt
             | Error::ExpiresAtInPast
-            | Error::WrongKeyType => Self {
+            | Error::WrongKeyType
+            | Error::InvalidDevice
+            | Error::InvalidSlot => Self {
                 status: StatusCode::BAD_REQUEST,
                 message: err.to_string(),
             },
-            Error::ApiKeyNotFound | Error::TreeNotFound | Error::NodeNotFound => Self {
+            Error::ApiKeyNotFound
+            | Error::TreeNotFound
+            | Error::NodeNotFound
+            | Error::DeviceNotFound => Self {
                 status: StatusCode::NOT_FOUND,
                 message: err.to_string(),
             },
@@ -254,7 +262,11 @@ impl Modify for SecurityAddon {
         revoke_key,
         put_tree,
         get_tree_context,
-        post_provider_identity
+        post_provider_identity,
+        post_device_package,
+        get_device_packages,
+        put_device,
+        get_device
     ),
     components(
         schemas(
@@ -265,6 +277,10 @@ impl Modify for SecurityAddon {
             InboxEnvelope,
             InboxList,
             InboxPush,
+            DevicePackagePush,
+            DevicePackageList,
+            DeviceDescriptor,
+            DeviceSlotDescriptor,
             ErrorBody,
             ApiKeyView,
             PublicTree,
@@ -279,7 +295,8 @@ impl Modify for SecurityAddon {
         (name = "inbox", description = "Opaque .kqpb envelope mailbox"),
         (name = "api-keys", description = "List and revoke API keys"),
         (name = "trees", description = "Canonical public split-tree topology"),
-        (name = "provider", description = "KeyQuorum-signed relay identity")
+        (name = "provider", description = "KeyQuorum-signed relay identity"),
+        (name = "devices", description = "Sealed device copy, move, and relocate letters")
     )
 )]
 struct ApiDoc;
@@ -597,6 +614,175 @@ async fn get_tree_context(
     Ok(Json(slice))
 }
 
+fn authenticate_device_read(conn: &Connection, token: &str) -> crate::error::Result<AuthedKey> {
+    match api_key::authenticate(conn, token, ApiKeyScope::DevicePull) {
+        Err(crate::error::Error::ApiKeyScopeDenied) => {
+            api_key::authenticate(conn, token, ApiKeyScope::DevicePush)
+        }
+        other => other,
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/devices/packages",
+    tag = "devices",
+    request_body(content = DevicePackagePush, content_type = "application/json"),
+    responses(
+        (status = 201, description = "Device letter stored", body = InboxAccepted),
+        (status = 200, description = "Device letter already stored", body = InboxAccepted),
+        (status = 400, description = "Not a sealed device letter", body = ErrorBody),
+        (status = 401, description = "Unauthorized", body = ErrorBody),
+        (status = 403, description = "Forbidden", body = ErrorBody),
+        (status = 413, description = "Letter too large", body = ErrorBody)
+    ),
+    security(("api_key" = []))
+)]
+async fn post_device_package(
+    State(state): State<AppState>,
+    ApiToken(token): ApiToken,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<(StatusCode, Json<InboxAccepted>), ApiError> {
+    let package = parse_device_package(&headers, &body)?;
+    if package.len() > MAX_ENVELOPE_BYTES {
+        return Err(crate::error::Error::BundleFieldTooLarge.into());
+    }
+    let (id, fingerprint, duplicate) = with_conn(&state, move |conn| {
+        api_key::authenticate(conn, &token, ApiKeyScope::DevicePush)?;
+        device_mail::store(conn, &package)
+    })
+    .await?;
+    let status = if duplicate {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((
+        status,
+        Json(InboxAccepted {
+            id,
+            recipient_fingerprint: fingerprint,
+        }),
+    ))
+}
+
+fn parse_device_package(headers: &HeaderMap, body: &[u8]) -> Result<Vec<u8>, ApiError> {
+    let is_json = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(';')
+                .next()
+                .map(str::trim)
+                .is_some_and(|mime| mime.eq_ignore_ascii_case("application/json"))
+        });
+    if !is_json {
+        return Ok(body.to_vec());
+    }
+    let push: DevicePackagePush =
+        serde_json::from_slice(body).map_err(|_| crate::error::Error::InvalidBridgePackage)?;
+    STANDARD
+        .decode(push.bytes.as_bytes())
+        .map_err(|_| crate::error::Error::InvalidBridgePackage)
+        .map_err(ApiError::from)
+}
+
+#[utoipa::path(
+    get,
+    path = "/devices/packages",
+    tag = "devices",
+    params(InboxQuery),
+    responses(
+        (status = 200, description = "Device letters for this pull key", body = DevicePackageList),
+        (status = 400, description = "Invalid page size", body = ErrorBody),
+        (status = 401, description = "Unauthorized", body = ErrorBody),
+        (status = 403, description = "Forbidden", body = ErrorBody)
+    ),
+    security(("api_key" = []))
+)]
+async fn get_device_packages(
+    State(state): State<AppState>,
+    ApiToken(token): ApiToken,
+    Query(query): Query<InboxQuery>,
+) -> Result<Json<DevicePackageList>, ApiError> {
+    let after = query.after;
+    let limit = query.limit;
+    let page = with_conn(&state, move |conn| {
+        let auth = api_key::authenticate(conn, &token, ApiKeyScope::DevicePull)?;
+        let fingerprint = auth
+            .recipient_fingerprint
+            .ok_or(crate::error::Error::ApiKeyScopeDenied)?;
+        device_mail::list_after(conn, &fingerprint, after, limit)
+    })
+    .await?;
+    Ok(Json(DevicePackageList {
+        packages: page
+            .packages
+            .into_iter()
+            .map(|item| InboxEnvelope {
+                id: item.id,
+                recipient_fingerprint: item.recipient_fingerprint,
+                bytes: STANDARD.encode(&item.bytes),
+            })
+            .collect(),
+        next_after: page.next_after,
+    }))
+}
+
+#[utoipa::path(
+    put,
+    path = "/devices",
+    tag = "devices",
+    request_body = DeviceDescriptor,
+    responses(
+        (status = 200, description = "Public device descriptor stored", body = DeviceDescriptor),
+        (status = 400, description = "Descriptor is unsigned or malformed", body = ErrorBody),
+        (status = 401, description = "Unauthorized", body = ErrorBody),
+        (status = 403, description = "Forbidden", body = ErrorBody)
+    ),
+    security(("api_key" = []))
+)]
+async fn put_device(
+    State(state): State<AppState>,
+    ApiToken(token): ApiToken,
+    Json(descriptor): Json<DeviceDescriptor>,
+) -> Result<Json<DeviceDescriptor>, ApiError> {
+    let stored = with_conn(&state, move |conn| {
+        api_key::authenticate(conn, &token, ApiKeyScope::DevicePush)?;
+        device_directory::put(conn, &descriptor)
+    })
+    .await?;
+    Ok(Json(stored))
+}
+
+#[utoipa::path(
+    get,
+    path = "/devices/{device_id}",
+    tag = "devices",
+    params(("device_id" = String, Path, description = "Hex device id")),
+    responses(
+        (status = 200, description = "Public device descriptor", body = DeviceDescriptor),
+        (status = 401, description = "Unauthorized", body = ErrorBody),
+        (status = 403, description = "Forbidden", body = ErrorBody),
+        (status = 404, description = "Unknown device", body = ErrorBody)
+    ),
+    security(("api_key" = []))
+)]
+async fn get_device(
+    State(state): State<AppState>,
+    ApiToken(token): ApiToken,
+    Path(device_id): Path<String>,
+) -> Result<Json<DeviceDescriptor>, ApiError> {
+    let descriptor = with_conn(&state, move |conn| {
+        authenticate_device_read(conn, &token)?;
+        device_directory::require(conn, &device_id)
+    })
+    .await?;
+    Ok(Json(descriptor))
+}
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
@@ -608,6 +794,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api-keys/{id}/revoke", post(revoke_key))
         .route("/trees", put(put_tree))
         .route("/trees/{label}/context", get(get_tree_context))
+        .route(
+            "/devices/packages",
+            post(post_device_package).get(get_device_packages),
+        )
+        .route("/devices", put(put_device))
+        .route("/devices/{device_id}", get(get_device))
         .layer(DefaultBodyLimit::max(MAX_ENVELOPE_BYTES.saturating_mul(2)))
         .layer(TraceLayer::new_for_http())
         .with_state(state)

@@ -23,11 +23,13 @@ only copy of the length-prefixed byte codec and preimage hashing that go
 with it. Two formats share it, named by `envelope::Format`: `PACKAGE`
 (`KQPB`, the `.kqpb` files the relay carries, for `private_bridge` and
 `org_update`) and `EXPORT_BUNDLE` (`KQXB`, `export`'s portable bundles).
-Do not re-roll either in a new module — add a `Format`. Those bytes are
-wire format. `.kqbn` eviction notices and the `KQBS` signature artifact
-have their own magic and version because they are not sealed envelopes,
-and `key_tree`/`private_bridge` seal raw blobs into database columns with
-no header at all; none of those belong in `envelope.rs`. The provider
+Do not re-roll either in a new module — add a `Format`. Device copy, move,
+and relocate letters are additional `PACKAGE` kind bytes, not a new format.
+Those bytes are wire format. `.kqbn` eviction notices, the `KQBS` signature artifact, `device.kq`
+(`KQDV`), slot tokens (`KQST`), and transfer packages (`KQTX`) have their
+own magic and version because they are not sealed envelopes, and
+`key_tree`/`private_bridge` seal raw blobs into database columns with no
+header at all; none of those belong in `envelope.rs`. The provider
 `KQPC`/`KQRL`/`KQPL` blobs are signed certificates, not envelopes, and
 keep their own offset-cursor parsers and error variants.
 `src/org_update.rs` adds the two authenticated update
@@ -86,27 +88,55 @@ bearer. Never commit bearers, `.kqpb` files, `*.kqcert`, `*.kqrl`,
 
 A hardware key with no `device_placements` row is its own device: that is the
 original one-key one-device exchange, and distinct key files count as distinct
-devices. `keyquorum-device` (and `keyquorum device`) stores several
-passphrase-wrapped identities as logical slots in one directory. A placement,
-written only from a container the library opened, ties those keys to that
-container's `device_id`. `keys.custody_mode` is `hardware` (one key per device)
-or `logical` (several slots may satisfy Shamir together).
-`minimum_physical_devices` counts distinct device ids either way, so slots on
-one container cannot satisfy a multi-device policy. Logical slots are not a
-hardware quorum. A non-root `tree restructure` stays pending until the parent
-countersigns; employee reissue by the direct parent stays a single signature.
-`unlock_approval = parent` is opt-in. `device.kq` is signed by `device.skey`,
-and each slot token seals that same device id. `keyquorum transfer copy|move`
-moves possession of an active identity between two open devices. A ghost keeps
-hierarchy and provenance without a private key, and cannot sign, satisfy
-quorum, authorize an import, or be exported. COPY leaves the source active.
-MOVE leaves it active until the destination commits. `KQTX` packages are
-signed by the source device and are not sealed envelopes.
+devices. `src/device.rs` owns containers, placements, and custody policy.
+`keyquorum-device` (and `keyquorum device`) stores several passphrase-wrapped
+identities as logical slots in one directory. A placement, written only from a
+container the library opened, ties those keys to that container's `device_id`.
+`keys.custody_mode` is `hardware` (one key per device) or `logical` (several
+slots may satisfy Shamir together). `minimum_physical_devices` counts distinct
+device ids either way, so slots on one container cannot satisfy a multi-device
+policy. Logical slots are not a hardware quorum. Reconstruction searches
+threshold-sized subsets for one that meets that minimum; unused extra shares
+are not counted. `src/authority.rs` owns the delegated-signature rule: a
+non-root `tree restructure` stays a proposal until the parent countersigns, a
+direct tree update from that authorizer is refused, and employee reissue by
+the direct parent stays a single signature. `unlock_approval = parent` is
+opt-in. `device.kq` (`KQDV`) is signed by `device.skey`, and each slot token
+(`KQST`) seals that same device id. `src/transfer.rs` owns `keyquorum transfer
+copy|move`. A ghost keeps hierarchy and provenance without a private key, and
+cannot sign, satisfy quorum, authorize an import, or be exported. An active
+child under a ghost ancestor stays usable. COPY leaves the source active.
+MOVE leaves the source row active until the destination commits and the
+source slot token is gone; the ghost row is written only after that deletion,
+so a crash cannot leave a ghost that `keyquorum-device` can still open.
+`KQTX` packages are signed by the source device, bound to the destination
+device id, and are not sealed envelopes. An empty receiver accepts a package.
+A receiver that already holds active identities accepts an incoming key only
+when it is a descendant of one of those identities. The same identity with
+the same public keys reconciles; the same id or label with different material
+is refused. When the devices are not open together, `src/device_relay.rs`
+seals that `KQTX` package, a slot relocate, or the destination's
+acknowledgement into a `PACKAGE` letter (`KIND_DEVICE_TRANSFER`,
+`KIND_DEVICE_TRANSFER_ACK`, `KIND_DEVICE_RELOCATE`,
+`KIND_DEVICE_RELOCATE_ACK`). The relay stores those letters opaquely in
+`device_mailbox` and a public descriptor (device id, verify key, slot
+public keys, signed by the device key) in `device_directory`. `device.push`
+and `device.pull` are required the same way as inbox scopes: no bearer is
+401, the wrong scope is 403, `device.pull` is bound to the recipient
+fingerprint, and HTTP does not mint keys. The relay rejects raw `KQTX` and
+never unseals a letter. A relocate letter carries a random relocate id that
+the source signs and the destination's acknowledgement signs back;
+`relay-drop` deletes the source slot only for the id it is given, so an old
+acknowledgement cannot remove a slot relocated again later. Device letters
+expire `DEVICE_PACKAGE_TTL_DAYS` after they are stored and are never deleted
+on acknowledgement. `src/relay/device_mail.rs` owns the device mailbox;
+`src/relay/device_directory.rs` owns the public descriptor.
 
 ## Working conventions
 
 - Keep changes minimal and scoped to what's requested — don't scaffold unrelated
   modules, abstractions, or tooling ahead of need.
+- When the current branch already has an open pull request, ask before creating another branch or opening another pull request. No answer is a denial. On a denial, stay on the current branch and update the open pull request. Create a new branch and pull request only after an explicit yes.
 - After Rust work, run `cargo build` (and `cargo build --features provider`
   when touching the mailbox host), `cargo fmt`,
   `cargo clippy --locked --all-targets --all-features -- -D warnings`, and
@@ -129,7 +159,8 @@ encrypted user files. Treat it as security-sensitive:
 - Never commit private keys, tokens, `.env` files, secrets, or plaintext copies of
   protected/test files. See `.gitignore` for patterns already excluded (`*.key`,
   `*.pem`, `*.secret`, `*.token`, `*.kqkey`, `*.kqpb`, `*.kqbn`, `*.kqcert`,
-  `*.kqrl`, `*.kqpolicy`, `secrets/`, `keys/`, `test-keys/`, `provider-secrets/`, etc.).
+  `*.kqrl`, `*.kqpolicy`, `device.kq`, `device.skey`, `*.kqst`, `secrets/`,
+  `keys/`, `test-keys/`, `provider-secrets/`, etc.).
 - Be extra careful with any code touching key derivation, encryption/decryption, or
   quorum/threshold logic — correctness bugs here are security bugs.
 - Flag anything that looks like a hardcoded secret or credential before committing.

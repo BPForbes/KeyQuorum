@@ -36,6 +36,10 @@ pub fn store_until(
     envelope: &[u8],
     expires_at: Option<&str>,
 ) -> Result<(i64, String, bool)> {
+    let kind = crate::envelope::kind(envelope)?;
+    if crate::envelope::is_device_workflow_kind(kind) {
+        return Err(Error::InvalidBridgePackage);
+    }
     let recipient_public_key = private_bridge::routing_public_key(envelope)?;
     let fingerprint = keys::fingerprint(&recipient_public_key);
     let content_hash = hex::encode(Sha256::digest(envelope));

@@ -6,9 +6,12 @@
 //! means the hierarchy row remains and the secret does not, and no row
 //! means the identity is absent.
 //!
-//! COPY leaves the source active. MOVE leaves it active until the
-//! destination has committed, then records a ghost. The signed `KQTX`
-//! package is not a sealed envelope and is not written into SQLite.
+//! COPY leaves the source active. MOVE records a ghost only after the
+//! destination has committed and the source slot token is gone. The row
+//! stays active until that deletion succeeds. The signed `KQTX` package
+//! is not a sealed envelope and is not written into SQLite. A relay copy
+//! is a sealed `KQPB` letter built in `device_relay`; this module still
+//! only sees the package and the acknowledgement hash.
 //! Authorization is a [`TransferAuth`] policy so a later countersignature
 //! rule can refuse a transfer without a different package format.
 
@@ -737,6 +740,100 @@ pub fn acknowledge(dest_conn: &Connection, tx_id: &[u8; 16]) -> Result<()> {
     set_state(dest_conn, tx_id, "acknowledged")
 }
 
+/// Install a package whose source device is known by id and verify key.
+/// The source container's secrets are not required. A destination that
+/// already committed this transaction is acknowledged again so the caller
+/// can resend the sealed acknowledgement.
+pub fn accept_package(
+    dest_conn: &Connection,
+    dest: &mut Container,
+    source_device_id: &[u8; 16],
+    source_verify_key: &[u8; 32],
+    package: &[u8],
+    passphrases: &HashMap<String, String>,
+    allow_ancestor_import: bool,
+) -> Result<[u8; 16]> {
+    let header = authenticated_package(package)?;
+    if header.source_device_id != *source_device_id || header.verify_key != *source_verify_key {
+        return Err(Error::SignatureVerificationFailed);
+    }
+    if header.destination_device_id != *dest.device_id() {
+        return Err(Error::SignatureVerificationFailed);
+    }
+    if let Some(state) = tx_state(dest_conn, &header.id)? {
+        return resume_accept(
+            dest_conn,
+            dest,
+            source_device_id,
+            source_verify_key,
+            package,
+            passphrases,
+            allow_ancestor_import,
+            &header.id,
+            &state,
+        );
+    }
+    let source = device::verification_container(*source_device_id, *source_verify_key);
+    stage_destination(dest_conn, dest, &source, package, allow_ancestor_import)?;
+    write_destination_slots(dest_conn, dest, &source, package, passphrases, None)?;
+    commit_destination_rows(dest_conn, dest, &source, package, allow_ancestor_import)?;
+    acknowledge(dest_conn, &header.id)?;
+    Ok(header.id)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resume_accept(
+    dest_conn: &Connection,
+    dest: &mut Container,
+    source_device_id: &[u8; 16],
+    source_verify_key: &[u8; 32],
+    package: &[u8],
+    passphrases: &HashMap<String, String>,
+    allow_ancestor_import: bool,
+    tx_id: &[u8; 16],
+    state: &str,
+) -> Result<[u8; 16]> {
+    if matches!(
+        state,
+        "acknowledged" | "completed" | "source_finalized" | "destination_committed"
+    ) {
+        if state == "destination_committed" {
+            acknowledge(dest_conn, tx_id)?;
+        }
+        return Ok(*tx_id);
+    }
+    if !matches!(state, "transferred" | "writing") {
+        return Err(Error::TransferReplay);
+    }
+    let source = device::verification_container(*source_device_id, *source_verify_key);
+    write_destination_slots(dest_conn, dest, &source, package, passphrases, None)?;
+    commit_destination_rows(dest_conn, dest, &source, package, allow_ancestor_import)?;
+    acknowledge(dest_conn, tx_id)?;
+    Ok(*tx_id)
+}
+
+/// Slot labels whose secrets the destination must wrap. Used to prompt
+/// before [`accept_package`].
+pub fn package_secret_labels(
+    package: &[u8],
+    source_device_id: &[u8; 16],
+    source_verify_key: &[u8; 32],
+    destination: &Container,
+) -> Result<Vec<String>> {
+    let header = authenticated_package(package)?;
+    if header.source_device_id != *source_device_id || header.verify_key != *source_verify_key {
+        return Err(Error::SignatureVerificationFailed);
+    }
+    let source = device::verification_container(*source_device_id, *source_verify_key);
+    let bundle = open_bundle(package, &source, destination)?;
+    Ok(bundle
+        .entries
+        .iter()
+        .filter(|entry| entry.enc_secret.is_some())
+        .map(|entry| entry.label.clone())
+        .collect())
+}
+
 pub fn finalize_source(
     source_conn: &Connection,
     source: &mut Container,
@@ -756,6 +853,88 @@ pub fn finalize_source(
     }
     let _ = set_state(dest_conn, tx_id, "completed");
     set_state(source_conn, tx_id, "completed")
+}
+
+/// Finish a source that is still `prepared` after a destination
+/// acknowledgement. The acknowledgement hash has to match the hash stored
+/// at prepare. MOVE deletes the slot token before the ghost row is written.
+/// The destination database is not required.
+pub fn has_transfer(conn: &Connection, tx_id: &[u8; 16]) -> Result<bool> {
+    tx_exists(conn, tx_id)
+}
+
+pub fn finalize_after_ack(
+    source_conn: &Connection,
+    source: &mut Container,
+    tx_id: &[u8; 16],
+    ack_hash: &[u8; 32],
+) -> Result<()> {
+    let source_state = tx_state(source_conn, tx_id)?.ok_or(Error::TransferIncomplete)?;
+    if source_state == "completed" {
+        return Ok(());
+    }
+    if source_state == "source_finalized" {
+        scrub_moved_slots(source_conn, source, tx_id)?;
+        return set_state(source_conn, tx_id, "completed");
+    }
+    if source_state != "prepared" {
+        return Err(Error::TransferIncomplete);
+    }
+    let source_hash = tx_hash(source_conn, tx_id)?;
+    if source_hash != *ack_hash {
+        set_state(source_conn, tx_id, "needs_admin")?;
+        return Err(Error::TransferIncomplete);
+    }
+    let operation = tx_operation(source_conn, tx_id)?;
+    let detail = tx_detail(source_conn, tx_id)?;
+    let secret_labels = detail_list(&detail, "included");
+    let root = tx_root(source_conn, tx_id)?;
+    let descendants = tx_mode(source_conn, tx_id)?;
+    let peer = tx_peer(source_conn, tx_id)?;
+    scrub_moved_slots(source_conn, source, tx_id)?;
+    db::with_immediate_transaction(source_conn, || {
+        for label in &secret_labels {
+            let row = identity_by_label(source_conn, label)?.ok_or(Error::TransferDenied)?;
+            let generation = generation_of(source_conn, &row.id)?;
+            let target = if operation == TransferOp::Move {
+                generation.saturating_add(1)
+            } else {
+                generation
+            };
+            if operation == TransferOp::Move {
+                set_possession(source_conn, &row.id, Possession::Ghost, target)?;
+                upsert_provenance(source_conn, &row.id, source.device_id(), Possession::Ghost)?;
+            } else {
+                upsert_provenance(source_conn, &row.id, source.device_id(), Possession::Active)?;
+            }
+            upsert_provenance(source_conn, &row.id, &peer, Possession::Active)?;
+        }
+        set_state(source_conn, tx_id, "source_finalized")?;
+        write_audit(
+            source_conn,
+            tx_id,
+            operation,
+            source.device_id(),
+            &peer,
+            &identity_by_label(source_conn, &root)?
+                .map(|row| row.id)
+                .unwrap_or([0u8; 16]),
+            &root,
+            descendants,
+            "source_finalized",
+            &format_detail(
+                if operation == TransferOp::Move {
+                    "ghost"
+                } else {
+                    "copied"
+                },
+                &secret_labels,
+                &detail_list(&detail, "excluded"),
+                &[],
+            ),
+        )?;
+        set_state(source_conn, tx_id, "completed")
+    })
 }
 
 /// Delete moved slot tokens, then commit `GHOST`. The row stays `ACTIVE`
@@ -1388,6 +1567,68 @@ fn ensure_hardware(
         return Ok(existing.id);
     }
     keys::register_key(conn, label, key_type, public_key)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AuthenticatedPackage {
+    pub id: [u8; 16],
+    pub source_device_id: [u8; 16],
+    pub destination_device_id: [u8; 16],
+    pub verify_key: [u8; 32],
+}
+
+/// Verify the package signature against the verify key carried in the body.
+/// Returns that source device id and verify key.
+pub fn authenticated_source(package: &[u8]) -> Result<([u8; 16], [u8; 32])> {
+    let header = authenticated_package(package)?;
+    Ok((header.source_device_id, header.verify_key))
+}
+
+/// SHA-256 of the exact `KQTX` bytes. Prepare stores this, and an
+/// acknowledgement has to repeat it.
+pub fn package_hash(package: &[u8]) -> [u8; 32] {
+    sha256(package)
+}
+
+pub fn authenticated_package(package: &[u8]) -> Result<AuthenticatedPackage> {
+    let (body, signature) = split_package(package)?;
+    let mut data = body;
+    let id = take_array::<16>(&mut data)?;
+    let _operation = take_u8(&mut data)?;
+    let _descendants = take_u8(&mut data)?;
+    let source_device_id = take_array::<16>(&mut data)?;
+    let destination_device_id = take_array::<16>(&mut data)?;
+    let verify_key = take_array::<32>(&mut data)?;
+    let mut message = Vec::with_capacity(DOMAIN.len() + body.len());
+    message.extend_from_slice(DOMAIN);
+    message.extend_from_slice(body);
+    signing::verify_signature(&verify_key, &message, &signature)?;
+    Ok(AuthenticatedPackage {
+        id,
+        source_device_id,
+        destination_device_id,
+        verify_key,
+    })
+}
+
+fn split_package(package: &[u8]) -> Result<(&[u8], [u8; 64])> {
+    if package.len() < 4 + 1 + 4 + 64 || &package[..4] != MAGIC {
+        return Err(Error::IntegrityCheckFailed);
+    }
+    let mut cursor = &package[4..];
+    let version = take_u8(&mut cursor)?;
+    if version != VERSION {
+        return Err(Error::IntegrityCheckFailed);
+    }
+    let body_len = take_u32(&mut cursor)? as usize;
+    if cursor.len() != body_len + 64 {
+        return Err(Error::IntegrityCheckFailed);
+    }
+    let body = &cursor[..body_len];
+    let signature = cursor[body_len..]
+        .try_into()
+        .map_err(|_| Error::IntegrityCheckFailed)?;
+    Ok((body, signature))
 }
 
 fn encode_bundle(source: &Container, bundle: &Bundle) -> Result<Vec<u8>> {

@@ -2132,9 +2132,33 @@ fn resolve_relay_url(
     }
 }
 
+/// Every device letter for this pull key, following `next_after` until the
+/// relay reports no further page. A cursor that does not advance is refused
+/// so a misbehaving relay cannot loop the CLI forever.
+pub(crate) fn pull_all_device_packages(
+    url: &str,
+    api_key: &str,
+) -> Result<Vec<relay::InboxEnvelope>> {
+    let mut after = None;
+    let mut packages = Vec::new();
+    loop {
+        let page = relay::pull_device_packages(url, api_key, after, Some(relay::MAX_INBOX_PAGE))?;
+        packages.extend(page.packages);
+        match page.next_after {
+            Some(next) if after.is_none_or(|prev| next > prev) => after = Some(next),
+            Some(_) => {
+                return Err(Error::RelayRequest(
+                    "relay returned a device page cursor that does not advance".into(),
+                ))
+            }
+            None => return Ok(packages),
+        }
+    }
+}
+
 /// `--api-key` / env win, then a stored key whose hash still passes `/keycheck`.
 /// A newly presented bearer is stored (by scope) after a successful check.
-fn resolve_relay_auth(
+pub(crate) fn resolve_relay_auth(
     conn: &Connection,
     explicit_url: Option<String>,
     explicit_key: Option<String>,
@@ -3283,7 +3307,7 @@ fn read_key_bytes(path: &Path) -> Result<Vec<u8>> {
     keys::parse_key_text(&contents)
 }
 
-fn read_key_array_32(path: &Path) -> Result<[u8; 32]> {
+pub(crate) fn read_key_array_32(path: &Path) -> Result<[u8; 32]> {
     read_key_bytes(path)?
         .try_into()
         .map_err(|_| Error::InvalidPublicKey)

@@ -157,7 +157,7 @@ pub enum KeysCommand {
     Create {
         #[arg(long)]
         scope: String,
-        /// Required for inbox.pull: hex SHA-256 of the recipient X25519 public key
+        /// Required for inbox.pull and device.pull: hex SHA-256 of the recipient X25519 public key
         #[arg(long)]
         fingerprint: Option<String>,
         #[arg(long)]
@@ -666,6 +666,17 @@ fn spawn_ttl_scan(
                 Ok(n) if n > 0 => tracing::info!("purged {n} expired mailbox envelope(s)"),
                 Ok(_) => {}
                 Err(err) => tracing::warn!("mailbox TTL scan failed: {err}"),
+            }
+            let device_letters = {
+                let conn = mailbox
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                relay::purge_expired_device_packages(&conn)
+            };
+            match device_letters {
+                Ok(n) if n > 0 => tracing::info!("purged {n} expired device letter(s)"),
+                Ok(_) => {}
+                Err(err) => tracing::warn!("device mailbox TTL scan failed: {err}"),
             }
             if let Some(path) = scan_db.as_ref().filter(|path| path.is_file()) {
                 let Some(path) = path.to_str() else {

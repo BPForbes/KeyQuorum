@@ -157,6 +157,7 @@ fn migrate(conn: &Connection) -> Result<()> {
                 )?;
             }
             rebuild_key_nodes_if_share_required(conn)?;
+            widen_relay_credential_scopes(conn)?;
             Ok(())
         })();
         match outcome {
@@ -228,6 +229,44 @@ fn rebuild_key_nodes_if_share_required(conn: &Connection) -> Result<()> {
         DROP TABLE key_node_links_rebuild;",
     )?;
     conn.execute_batch(SCHEMA)?;
+    Ok(())
+}
+
+/// Personal stores created before device scopes reject `device.push` until
+/// the CHECK on `relay_credentials` is rebuilt. `CREATE TABLE IF NOT EXISTS`
+/// does not alter it.
+fn widen_relay_credential_scopes(conn: &Connection) -> Result<()> {
+    let Some(sql) = table_sql(conn, "relay_credentials")? else {
+        return Ok(());
+    };
+    if sql.contains("'device.push'") {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE relay_credentials_new (
+            relay_url       TEXT NOT NULL,
+            scope           TEXT NOT NULL CHECK (scope IN (
+                'inbox.push', 'inbox.pull', 'admin', 'device.push', 'device.pull'
+            )),
+            key_hash        TEXT NOT NULL,
+            wrap_key        BLOB NOT NULL,
+            wrap_nonce      BLOB NOT NULL,
+            wrapped_token   BLOB NOT NULL,
+            remote_id       INTEGER,
+            label           TEXT,
+            stored_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            last_checked_at TEXT,
+            PRIMARY KEY (relay_url, scope)
+        );
+        INSERT INTO relay_credentials_new
+            (relay_url, scope, key_hash, wrap_key, wrap_nonce, wrapped_token, remote_id, label,
+             stored_at, last_checked_at)
+            SELECT relay_url, scope, key_hash, wrap_key, wrap_nonce, wrapped_token, remote_id,
+                   label, stored_at, last_checked_at
+            FROM relay_credentials;
+        DROP TABLE relay_credentials;
+        ALTER TABLE relay_credentials_new RENAME TO relay_credentials;",
+    )?;
     Ok(())
 }
 

@@ -316,7 +316,9 @@ CREATE INDEX IF NOT EXISTS idx_bridge_events_bridge ON bridge_events (bridge_id)
 -- kept in this owner-only file. Never commit this database.
 CREATE TABLE IF NOT EXISTS relay_credentials (
     relay_url       TEXT NOT NULL,
-    scope           TEXT NOT NULL CHECK (scope IN ('inbox.push', 'inbox.pull', 'admin')),
+    scope           TEXT NOT NULL CHECK (scope IN (
+        'inbox.push', 'inbox.pull', 'admin', 'device.push', 'device.pull'
+    )),
     key_hash        TEXT NOT NULL,
     wrap_key        BLOB NOT NULL,
     wrap_nonce      BLOB NOT NULL,

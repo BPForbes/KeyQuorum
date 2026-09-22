@@ -1,5 +1,6 @@
 //! HTTP JSON wire types and a synchronous `ureq` client for the relay.
 
+use super::device_directory::DeviceDescriptor;
 use crate::error::{Error, Result};
 use crate::key_tree::PublicTree;
 use crate::provider::{self, Certificate};
@@ -90,6 +91,20 @@ pub struct KeyCheckResponse {
 pub struct ProviderIdentityRequest {
     /// Standard base64 of a 32-byte random challenge.
     pub challenge: String,
+}
+
+/// JSON upload of one sealed device letter.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct DevicePackagePush {
+    /// Standard base64 of the exact `KQPB` bytes.
+    pub bytes: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct DevicePackageList {
+    pub packages: Vec<InboxEnvelope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_after: Option<i64>,
 }
 
 /// Certificate bytes plus the relay signature over the challenge.
@@ -348,6 +363,59 @@ pub fn publish_tree(base_url: &str, api_key: &str, tree: &PublicTree) -> Result<
 /// Fetch the public-tree slice for this pull key's bound fingerprint.
 pub fn fetch_tree_context(base_url: &str, api_key: &str, label: &str) -> Result<PublicTree> {
     let path = format!("/trees/{}/context", urlencoding_label(label));
+    let url = relay_request_url(base_url, &path)?;
+    let resp = with_key(http_agent().request_url("GET", &url), api_key).call();
+    read_json(resp)
+}
+
+/// Upload one sealed device letter (`device.push`).
+pub fn push_device_package(base_url: &str, api_key: &str, package: &[u8]) -> Result<InboxAccepted> {
+    let url = relay_request_url(base_url, "/devices/packages")?;
+    let resp = with_key(http_agent().request_url("POST", &url), api_key)
+        .set("Content-Type", "application/octet-stream")
+        .send_bytes(package);
+    read_json(resp)
+}
+
+/// Fetch one page of device letters for this pull key's fingerprint.
+pub fn pull_device_packages(
+    base_url: &str,
+    api_key: &str,
+    after: Option<i64>,
+    limit: Option<i64>,
+) -> Result<DevicePackageList> {
+    let mut params = Vec::new();
+    if let Some(after) = after {
+        params.push(format!("after={after}"));
+    }
+    if let Some(limit) = limit {
+        params.push(format!("limit={limit}"));
+    }
+    let mut url = relay_request_url(base_url, "/devices/packages")?;
+    if !params.is_empty() {
+        url.set_query(Some(&params.join("&")));
+    }
+    let resp = with_key(http_agent().request_url("GET", &url), api_key).call();
+    read_json(resp)
+}
+
+/// Publish this device's public descriptor (`device.push`).
+pub fn put_device(
+    base_url: &str,
+    api_key: &str,
+    descriptor: &DeviceDescriptor,
+) -> Result<DeviceDescriptor> {
+    let body = serde_json::to_string(descriptor).map_err(|e| Error::RelayRequest(e.to_string()))?;
+    let url = relay_request_url(base_url, "/devices")?;
+    let resp = with_key(http_agent().request_url("PUT", &url), api_key)
+        .set("Content-Type", "application/json")
+        .send_string(&body);
+    read_json(resp)
+}
+
+/// Read a published public descriptor. `device.push` and `device.pull` both work.
+pub fn get_device(base_url: &str, api_key: &str, device_id: &str) -> Result<DeviceDescriptor> {
+    let path = format!("/devices/{device_id}");
     let url = relay_request_url(base_url, &path)?;
     let resp = with_key(http_agent().request_url("GET", &url), api_key).call();
     read_json(resp)
