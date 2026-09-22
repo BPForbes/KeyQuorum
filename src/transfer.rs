@@ -6,9 +6,10 @@
 //! means the hierarchy row remains and the secret does not, and no row
 //! means the identity is absent.
 //!
-//! COPY leaves the source active. MOVE leaves it active until the
-//! destination has committed, then records a ghost. The signed `KQTX`
-//! package is not a sealed envelope and is not written into SQLite.
+//! COPY leaves the source active. MOVE records a ghost only after the
+//! destination has committed and the source slot token is gone. The row
+//! stays active until that deletion succeeds. The signed `KQTX` package
+//! is not a sealed envelope and is not written into SQLite.
 //! Authorization is a [`TransferAuth`] policy so a later countersignature
 //! rule can refuse a transfer without a different package format.
 

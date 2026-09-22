@@ -6,23 +6,11 @@ KeyQuorum is a secure file-sharing system centered on hardware key sharing. File
 
 Early scaffolding, though the CLI now covers most of what the concept below describes.
 Hardware-key quorum splitting/reconstruction is implemented in software. A key
-file with no container placement is still one device: that is the original
-one-key one-device exchange, and distinct key files count as distinct devices.
-`split` and `tree` set `--custody` and `--minimum-physical-devices`. Commands
-that unwrap a key take `--slot container=label` beside `--share-file`.
-`keyquorum-device` can also put several identities in logical slots on one
-directory (a mounted USB, or a stand-in). Those slots share one device id.
-Logical mode is for development and constrained hardware; it is not a hardware
-quorum. A tree can require `minimum_physical_devices` so co-resident slots
-cannot satisfy a multi-device policy. `device.kq` is signed by `device.skey`,
-and each slot token seals that same device id, so rewriting the descriptor
-cannot make one container count as two devices. `keyquorum transfer copy` and
-`transfer move` carry an active identity to a second device that is open at
-the same time. The source stays active on a copy. A move stays active on the
-source until the destination commits, then the source keeps a ghost: hierarchy
-and provenance without the private key. A ghost cannot sign, satisfy a quorum,
-authorize an import, or be exported. The `KQTX` package is signed by the
-source device; it is not a sealed envelope.
+file with no container placement is still one device. Several identities can
+share one container, a non-root tree restructure waits for its parent to
+countersign, and `transfer copy` / `transfer move` carry an active identity
+to a second device that is open at the same time. See Devices and custody,
+and Moving a key between devices.
 
 ## Concept
 
@@ -60,6 +48,77 @@ keyquorum list
 
 `generate --register` writes the public key and records it in one step.
 `list` shows hardware keys and every live split tree.
+
+### Devices and custody
+
+A key file with no container placement is its own device. Distinct
+`--share-file` keys count as distinct physical devices, including when
+`minimum_physical_devices` is greater than 1. Presenting the same key twice
+still counts once.
+
+`keyquorum-device` manages the container directory. `keyquorum device`
+registers a slot's public key in the org store and binds it to the opened
+container.
+Several identities can live as passphrase-wrapped slots in one directory (a
+mounted USB, or a stand-in). The directory is an index. `device.kq` (`KQDV`
+v2) is signed by `device.skey`, and each slot token (`*.kqst`, `KQST`) seals
+that same device id. Opening a slot checks the token against the descriptor,
+so a rewritten descriptor id cannot make one container count as two devices.
+Path, mount, and volume label are not the device identity. `relocate` moves a
+slot's keypair onto another container; that is the authenticated change of
+`device_id`.
+
+```sh
+keyquorum-device init ./usb
+keyquorum-device provision ./usb --label M.S
+keyquorum-device list ./usb
+keyquorum device register ./usb --slot M.S --type encryption
+keyquorum device bind ./usb --slot M.S
+keyquorum-device relocate --from ./usb --to ./usb2 --label M.S
+```
+
+`register` records the public key. A lone key file still uses `register` and
+`--share-file`. `bind` writes the placement from the container this process
+opened, tying that key to the container's `device_id`.
+
+Commands that unwrap a key also take `--slot container=label` beside
+`--share-file`: reconstruct, add, bind, revoke, quorum unlock, bridge
+import, sign, and remove-member, and relay pull. `tree countersign` takes
+`--device` and `--slot`.
+
+```sh
+keyquorum reconstruct <key-id> --slot ./usb=M.S --slot ./usb2=M.A --output master.pub
+keyquorum --db alice.sqlite relay pull --import --slot ./usb=M.S
+```
+
+`split`, `tree`, and `access quorum --state 0` set `--custody` (`hardware` or
+`logical`) and `--minimum-physical-devices`. Hardware mode requires each share
+Shamir actually consumed to sit on its own device id. Logical mode lets
+several slots on one container meet that Shamir threshold together; the
+container still counts as one device toward the minimum. Logical mode is for
+development and constrained hardware. Reconstruction searches threshold-sized
+subsets for one that meets `minimum_physical_devices`. Extra shares that were
+not consumed are not counted.
+
+```sh
+keyquorum split --label master --threshold 2 --custody logical \
+  --minimum-physical-devices 2 \
+  --leaf M.S=SoftwareDepartment.pub --leaf M.A=AccountingDepartment.pub \
+  --source master.pub --generate-keys --register
+keyquorum tree <key-id> --custody hardware --minimum-physical-devices 2
+```
+
+`unlock_approval` is `none` (the default) or `parent`. Parent approval is
+opt-in and sits on top of Shamir and the device count: each leaf that
+contributed a share needs its direct parent's signature. Pass it as
+`--approve leaf=signing-key-file` or `--approve leaf=container>slot`.
+
+```sh
+keyquorum access quorum --state 0 --source ./secret.txt --encrypted-path ./secret.txt.kqenc \
+  --leaf M.S.1=m-s-1.pub --unlock-approval parent --generate-keys --register
+keyquorum access quorum --state 1 --id <file-id> --slot ./usb=M.S.1 \
+  --approve M.S.1=./usb>M.S
+```
 
 ### Splitting a secret (standalone escrow, or protecting a file)
 
@@ -373,7 +432,13 @@ keyquorum generate --type signing --label M --register --public-key-out M.sign.p
 
 # Restructure: after `add`, `revoke --evict`, or `bind`, announce the new
 # shape. Each active leaf gets its own visible slice at the next generation.
+# Root (M) is effective immediately. A label with a parent, such as M.S,
+# writes a proposal and waits.
 keyquorum tree restructure 1 --as M   --signing-key-file M.sign.key --output-dir ./updates
+keyquorum tree restructure 1 --as M.S --signing-key-file M.S.sign.key --output-dir ./updates
+keyquorum tree countersign 1 --as M --signing-key-file M.sign.key --output-dir ./updates
+# the same countersignature from a slot:
+# keyquorum tree countersign 1 --as M --device ./usb --slot M --output-dir ./updates
 
 # Reissue: M.S.2 lost their token and generated a replacement.
 keyquorum reissue --node M.S.2 --key-id 1   --encryption-public-key-file M.S.2.new.pub   --as M --signing-key-file M.sign.key --revoke-previous   --output-dir ./updates
@@ -407,6 +472,73 @@ their replacement device must have registered it (`generate --register`, or
 `tree restructure` differs from `tree publish` in exactly this way: publish
 replaces a relay document with a store's own view, while a restructure
 hands each person a slice they can verify the authority for.
+
+A restructure whose authorizer is the root is applied as soon as a store
+accepts the envelope. A restructure whose authorizer has a parent (`M.S`
+under `M`) is a proposal until that parent runs `tree countersign`. Import
+accepts that change only with the parent's countersignature. A routine
+employee reissue by that employee's own parent (`M.S` reissuing `M.S.1`)
+stays a single signature.
+
+### Moving a key between devices
+
+`keyquorum transfer` copies or moves an active identity between two devices
+that are both open. Each side has its own container and its own database.
+The global `--db` is not used. Enroll a slot before the first transfer so
+this device has an active identity for that label.
+
+```sh
+keyquorum transfer enroll --device ./usb --db ./alice.sqlite --label M.S
+keyquorum transfer copy \
+  --from-device ./usb --from-db ./alice.sqlite \
+  --to-device ./usb2 --to-db ./bob.sqlite \
+  --label M.S
+keyquorum transfer move \
+  --from-device ./usb --from-db ./alice.sqlite \
+  --to-device ./usb2 --to-db ./bob.sqlite \
+  --label M.S --descendants key-only
+keyquorum transfer list --db ./bob.sqlite
+keyquorum transfer list --db ./alice.sqlite --all
+keyquorum transfer recover \
+  --from-device ./usb --from-db ./alice.sqlite \
+  --to-device ./usb2 --to-db ./bob.sqlite \
+  --transaction <hex-id>
+```
+
+The identity id is stable. The dotted label is only the current place in
+the hierarchy. Possession on a device is `active` (the slot secret is
+here), `ghost` (the hierarchy row remains and the secret does not), or
+absent. `transfer list` hides ghosts unless `--all` is set.
+
+COPY leaves the source active and records that the destination may hold a
+legitimate copy. MOVE leaves the source row active until the destination
+has committed and the source slot token is gone. The ghost row is written
+only after that deletion, so a reported ghost cannot still be opened by
+`keyquorum-device`. A transfer that stops before the destination commits
+keeps the usable copy on the source. `transfer recover` finishes a transfer
+whose destination already committed, or rolls back one that did not.
+
+`--descendants` selects what travels with the label: `key-only` (the
+default), `direct-children`, or `all-descendants` (the full subtree). A
+parent can move without its children, and a child can move while the parent
+stays. `--as` names the active identity authorizing the transfer and
+defaults to `--label`.
+
+A ghost keeps hierarchy and provenance and holds no usable private key. It
+cannot sign, satisfy a quorum, authorize an import, or be exported. An
+active child under a ghost ancestor stays usable. Ghosts do not authorize
+an incoming key.
+
+An empty receiver accepts the package. A receiver that already holds active
+identities accepts an incoming key only when it is a descendant of one of
+those identities. The same identity id with the same public keys reconciles.
+The same id or the same label with different key material is refused.
+
+The package magic is `KQTX`. The source device key signs it, and it is bound
+to the destination device id. Replay, tamper, and a bad source are refused.
+Every attempt is audited without private key material. SQLite stores the
+transfer state and the audit row. The mailbox carries `.kqpb` envelopes;
+this package stays between the two open devices.
 
 ### Mailbox
 
@@ -466,7 +598,7 @@ not implemented; a container is a directory, not an OS partition.
 
 ## Security
 
-This project handles cryptographic key material and encrypted user data. Never commit private keys, tokens, secrets, API key bearers, provider certificates, revocation lists, or plaintext copies of protected files to this repository — see `.gitignore` for patterns already excluded. Compiling with `--features provider` does not make a host a trusted KeyQuorum provider.
+This project handles cryptographic key material and encrypted user data. Never commit private keys, tokens, secrets, API key bearers, provider certificates, revocation lists, device descriptors (`device.kq`, `device.skey`), slot tokens (`*.kqst`), or plaintext copies of protected files to this repository — see `.gitignore` for patterns already excluded. Compiling with `--features provider` does not make a host a trusted KeyQuorum provider.
 
 The hosted mailbox cannot decrypt `.kqpb` envelopes and must not be given wrapped shares or private keys. It stores the canonical *public* tree as JSON documents (labels, fingerprints, public keys, policy). Sending envelopes with `relay push` updates those documents from the sender's `--db`. Pulling returns a sliced copy for the pull-key fingerprint, which the CLI translates into local SQLite. Personal devices load a bearer with `keyquorum loadkey` (or `--api-key` once); they keep the hash and a sealed copy of the bearer in the owner-only org database. Recover a lost bearer by loading the replacement your provider issues; recover a missed update by pulling again and importing on the device that holds the matching decryption key.
 
