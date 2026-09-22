@@ -9,7 +9,8 @@ Hardware-key quorum splitting/reconstruction is implemented in software. A key
 file with no container placement is still one device. Several identities can
 share one container, a non-root tree restructure waits for its parent to
 countersign, and `transfer copy` / `transfer move` carry an active identity
-to a second device that is open at the same time. See Devices and custody,
+to a second device that is open at the same time, or through the mailbox
+as a sealed letter when it is not. See Devices and custody,
 and Moving a key between devices.
 
 ## Concept
@@ -537,8 +538,49 @@ The same id or the same label with different key material is refused.
 The package magic is `KQTX`. The source device key signs it, and it is bound
 to the destination device id. Replay, tamper, and a bad source are refused.
 Every attempt is audited without private key material. SQLite stores the
-transfer state and the audit row. The mailbox carries `.kqpb` envelopes;
-this package stays between the two open devices.
+transfer state and the audit row. The raw `KQTX` package stays off the
+mailbox. When the two devices are not open together, the commands below
+seal that package, or a slot relocate, into a `.kqpb` letter and the
+mailbox stores only that letter.
+
+```sh
+keyquorum device publish ./usb --url https://relay.example.com
+keyquorum transfer relay-send \
+  --operation move \
+  --from-device ./usb --from-db ./alice.sqlite \
+  --label M.S \
+  --to-device-id <hex-device-id> \
+  --recipient-key-file ./bob-slot.pub \
+  --url https://relay.example.com
+keyquorum transfer relay-collect \
+  --to-device ./usb2 --to-db ./bob.sqlite \
+  --slot recv \
+  --from-device-id <hex-source-id> \
+  --url https://relay.example.com
+keyquorum transfer relay-finalize \
+  --from-device ./usb --from-db ./alice.sqlite \
+  --slot M.S \
+  --to-device-id <hex-device-id> \
+  --url https://relay.example.com
+keyquorum device relay-relocate \
+  --from ./usb --label M.S \
+  --to-device-id <hex-device-id> \
+  --recipient-key-file ./bob-slot.pub \
+  --url https://relay.example.com
+keyquorum device relay-accept ./usb2 --slot recv --url https://relay.example.com
+keyquorum device relay-drop ./usb --label M.S \
+  --to-device-id <hex-device-id> \
+  --url https://relay.example.com
+```
+
+`relay-send` leaves the source prepared. COPY stays active. MOVE deletes
+the source slot token and writes the ghost only when `relay-finalize`
+checks the destination's signed acknowledgement. `relay-relocate` leaves
+the source slot in place until `relay-drop` checks that acknowledgement.
+Load a `device.push` key for sends and publishes, and a `device.pull` key
+bound to the recipient fingerprint for collects, finalizes, and drops.
+`relay-collect` and `relay-accept` also need `device.push` to post the
+acknowledgement (`--push-key`, or a stored key of that scope).
 
 ### Mailbox
 
@@ -572,6 +614,18 @@ into the mailbox (unrelated nodes stay put). `relay pull` merges the
 returned slices into `--db` (then `--import` opens envelopes).
 `tree fetch` syncs topology without an envelope. Remote mailboxes must
 be `https://`; `http://` is accepted only for loopback.
+
+Device copy, move, and relocate use a second mailbox on the same host.
+`device.push` stores a sealed letter and publishes a device's public
+descriptor (device id, verify key, and slot public keys, signed by the
+device key). `device.pull` is bound to one recipient fingerprint, the same
+way `inbox.pull` is, and reads only that fingerprint's letters. A missing
+bearer is rejected, and a key of the wrong scope is rejected. The host
+does not mint keys over HTTP. Your provider issues `device.push` and
+`device.pull` the same way it issues inbox keys; `loadkey` stores them.
+The host refuses a raw `KQTX` package and never unseals a letter. Bridge
+import does not read this mailbox, and device letters are not accepted
+into the bridge inbox.
 
 If a key is lost or rotated, load the replacement your provider issues.
 Envelopes already delivered are unchanged. Missed pulls: `relay pull

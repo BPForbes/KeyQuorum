@@ -693,3 +693,154 @@ async fn provider_identity_rejects_a_short_challenge() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn device_routes_are_api_blocked_and_keep_packages_opaque() {
+    let conn = relay::open_in_memory().expect("schema");
+    let (_secret, public) = keys::generate_encryption_keypair();
+    let fingerprint = keys::fingerprint(&public);
+    let device_push = relay::create_api_key(
+        &conn,
+        &NewApiKey {
+            scope: ApiKeyScope::DevicePush,
+            recipient_fingerprint: None,
+            label: Some("device-push".into()),
+            ttl_seconds: None,
+        },
+    )
+    .expect("device push")
+    .token;
+    let device_pull = relay::create_api_key(
+        &conn,
+        &NewApiKey {
+            scope: ApiKeyScope::DevicePull,
+            recipient_fingerprint: Some(fingerprint),
+            label: Some("device-pull".into()),
+            ttl_seconds: None,
+        },
+    )
+    .expect("device pull")
+    .token;
+    let inbox_push = push_key(&conn);
+    let letter = crate::envelope::seal(
+        crate::envelope::PACKAGE,
+        crate::envelope::KIND_DEVICE_TRANSFER,
+        &public,
+        b"sealed-letter",
+    )
+    .expect("seal");
+    let app = router(AppState::new(conn));
+
+    let missing = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/devices/packages")
+                .body(Body::from(letter.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+
+    let spec = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api-docs/openapi.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let json = body_json(spec).await;
+    assert!(json["paths"]["/devices/packages"]["post"]["security"].is_array());
+    assert!(json["paths"]["/devices/{device_id}"]["get"]["security"].is_array());
+
+    let wrong_scope = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/devices/packages")
+                .header("Authorization", format!("Bearer {inbox_push}"))
+                .body(Body::from(letter.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(wrong_scope.status(), StatusCode::FORBIDDEN);
+
+    let raw = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/devices/packages")
+                .header("Authorization", format!("Bearer {device_push}"))
+                .body(Body::from(b"KQTX".to_vec()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(raw.status(), StatusCode::BAD_REQUEST);
+
+    let stored = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/devices/packages")
+                .header("Authorization", format!("Bearer {device_push}"))
+                .body(Body::from(letter.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stored.status(), StatusCode::CREATED);
+
+    let pull_denied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/devices/packages")
+                .header("Authorization", format!("Bearer {device_push}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(pull_denied.status(), StatusCode::FORBIDDEN);
+
+    let pulled = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/devices/packages")
+                .header("Authorization", format!("Bearer {device_pull}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(pulled.status(), StatusCode::OK);
+    let body = body_json(pulled).await;
+    let encoded = body["packages"][0]["bytes"].as_str().expect("bytes");
+    let returned = STANDARD.decode(encoded).expect("b64");
+    assert_eq!(returned, letter);
+    assert!(!returned
+        .windows(b"sealed-letter".len())
+        .any(|window| window == b"sealed-letter"));
+
+    let directory = app
+        .oneshot(
+            Request::builder()
+                .uri("/devices/00112233445566778899aabbccddeeff")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(directory.status(), StatusCode::UNAUTHORIZED);
+}

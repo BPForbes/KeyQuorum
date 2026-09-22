@@ -76,6 +76,28 @@ pub const KIND_TREE_PROPOSAL: u8 = 7;
 /// A [`KIND_TREE_PROPOSAL`] letter plus the parent label's countersignature.
 /// Applying it is what makes a delegated restructure effective.
 pub const KIND_COUNTERSIGNED_TREE: u8 = 8;
+/// A `KQTX` copy or move, sealed to the destination. The relay stores this
+/// outer letter and does not see the package inside.
+pub const KIND_DEVICE_TRANSFER: u8 = 9;
+/// Destination acknowledgement of a [`KIND_DEVICE_TRANSFER`].
+pub const KIND_DEVICE_TRANSFER_ACK: u8 = 10;
+/// A slot relocate sealed to the destination. The source slot stays until
+/// a [`KIND_DEVICE_RELOCATE_ACK`] is checked.
+pub const KIND_DEVICE_RELOCATE: u8 = 11;
+/// Destination acknowledgement of a [`KIND_DEVICE_RELOCATE`].
+pub const KIND_DEVICE_RELOCATE_ACK: u8 = 12;
+
+/// Kinds the device mailbox accepts. Every other `KQPB` kind belongs to
+/// the bridge inbox. The two stores do not mix.
+pub fn is_device_workflow_kind(kind: u8) -> bool {
+    matches!(
+        kind,
+        KIND_DEVICE_TRANSFER
+            | KIND_DEVICE_TRANSFER_ACK
+            | KIND_DEVICE_RELOCATE
+            | KIND_DEVICE_RELOCATE_ACK
+    )
+}
 
 /// A sealed envelope addressed to one recipient, ready to be written to a
 /// `.kqpb` file or pushed to the mailbox relay.

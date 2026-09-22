@@ -157,7 +157,7 @@ pub enum KeysCommand {
     Create {
         #[arg(long)]
         scope: String,
-        /// Required for inbox.pull: hex SHA-256 of the recipient X25519 public key
+        /// Required for inbox.pull and device.pull: hex SHA-256 of the recipient X25519 public key
         #[arg(long)]
         fingerprint: Option<String>,
         #[arg(long)]

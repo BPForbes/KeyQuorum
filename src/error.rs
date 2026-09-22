@@ -56,6 +56,7 @@ pub enum Error {
     InvalidInboxPage,
     RelayRequest(String),
     TreeNotFound,
+    DeviceNotFound,
     StalePublicTree,
     InvalidProviderCertificate,
     ProviderCertificateRevoked,
@@ -238,6 +239,7 @@ impl fmt::Display for Error {
             }
             Error::RelayRequest(msg) => write!(f, "relay request failed: {msg}"),
             Error::TreeNotFound => write!(f, "no published tree with that label exists"),
+            Error::DeviceNotFound => write!(f, "no published device with that id exists"),
             Error::StalePublicTree => {
                 write!(
                     f,

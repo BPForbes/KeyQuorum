@@ -175,6 +175,18 @@ pub fn init(path: &Path) -> Result<Container> {
     Ok(container)
 }
 
+/// A container that only carries a device id and verify key. It has no
+/// directory and no slot tokens, so it can check a signed package without
+/// the source device's secrets.
+pub fn verification_container(device_id: [u8; DEVICE_ID_LEN], verify_key: [u8; 32]) -> Container {
+    Container {
+        path: PathBuf::new(),
+        device_id,
+        verify_key,
+        slots: Vec::new(),
+    }
+}
+
 /// Read `device.kq`. Does not decrypt any slot.
 pub fn open(path: &Path) -> Result<Container> {
     let bytes = fs::read(path.join("device.kq"))?;

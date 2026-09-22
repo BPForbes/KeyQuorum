@@ -23,8 +23,9 @@ only copy of the length-prefixed byte codec and preimage hashing that go
 with it. Two formats share it, named by `envelope::Format`: `PACKAGE`
 (`KQPB`, the `.kqpb` files the relay carries, for `private_bridge` and
 `org_update`) and `EXPORT_BUNDLE` (`KQXB`, `export`'s portable bundles).
-Do not re-roll either in a new module — add a `Format`. Those bytes are
-wire format. `.kqbn` eviction notices, the `KQBS` signature artifact, `device.kq`
+Do not re-roll either in a new module — add a `Format`. Device copy, move,
+and relocate letters are additional `PACKAGE` kind bytes, not a new format.
+Those bytes are wire format. `.kqbn` eviction notices, the `KQBS` signature artifact, `device.kq`
 (`KQDV`), slot tokens (`KQST`), and transfer packages (`KQTX`) have their
 own magic and version because they are not sealed envelopes, and
 `key_tree`/`private_bridge` seal raw blobs into database columns with no
@@ -113,7 +114,18 @@ device id, and are not sealed envelopes. An empty receiver accepts a package.
 A receiver that already holds active identities accepts an incoming key only
 when it is a descendant of one of those identities. The same identity with
 the same public keys reconciles; the same id or label with different material
-is refused.
+is refused. When the devices are not open together, `src/device_relay.rs`
+seals that `KQTX` package, a slot relocate, or the destination's
+acknowledgement into a `PACKAGE` letter (`KIND_DEVICE_TRANSFER`,
+`KIND_DEVICE_TRANSFER_ACK`, `KIND_DEVICE_RELOCATE`,
+`KIND_DEVICE_RELOCATE_ACK`). The relay stores those letters opaquely in
+`device_mailbox` and a public descriptor (device id, verify key, slot
+public keys, signed by the device key) in `device_directory`. `device.push`
+and `device.pull` are required the same way as inbox scopes: no bearer is
+401, the wrong scope is 403, `device.pull` is bound to the recipient
+fingerprint, and HTTP does not mint keys. The relay rejects raw `KQTX` and
+never unseals a letter. `src/relay/device_mail.rs` owns the device mailbox;
+`src/relay/device_directory.rs` owns the public descriptor.
 
 ## Setup / build / test
 

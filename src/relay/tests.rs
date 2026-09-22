@@ -503,3 +503,95 @@ fn keycheck_treats_expired_and_revoked_as_invalid() {
             .valid
     );
 }
+
+#[test]
+fn device_pull_requires_a_fingerprint_and_push_must_not_have_one() {
+    let conn = relay::open_in_memory().expect("schema");
+    assert!(matches!(
+        relay::create_api_key(
+            &conn,
+            &NewApiKey {
+                scope: ApiKeyScope::DevicePull,
+                recipient_fingerprint: None,
+                label: None,
+                ttl_seconds: None,
+            },
+        ),
+        Err(Error::InvalidApiKeyRequest)
+    ));
+    let (_secret, public) = keys::generate_encryption_keypair();
+    relay::create_api_key(
+        &conn,
+        &NewApiKey {
+            scope: ApiKeyScope::DevicePull,
+            recipient_fingerprint: Some(keys::fingerprint(&public)),
+            label: None,
+            ttl_seconds: None,
+        },
+    )
+    .expect("device pull");
+    assert!(matches!(
+        relay::create_api_key(
+            &conn,
+            &NewApiKey {
+                scope: ApiKeyScope::DevicePush,
+                recipient_fingerprint: Some(keys::fingerprint(&public)),
+                label: None,
+                ttl_seconds: None,
+            },
+        ),
+        Err(Error::InvalidApiKeyRequest)
+    ));
+}
+
+#[test]
+fn migrate_widens_api_key_scopes_on_an_older_mailbox() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE mailbox (id INTEGER PRIMARY KEY, expires_at TEXT);
+         CREATE TABLE api_keys (
+            id INTEGER PRIMARY KEY,
+            key_hash TEXT NOT NULL UNIQUE,
+            scope TEXT NOT NULL CHECK (scope IN ('inbox.push', 'inbox.pull', 'admin')),
+            recipient_fingerprint TEXT,
+            label TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            expires_at TEXT,
+            revoked_at TEXT,
+            last_used_at TEXT,
+            CHECK (
+                (scope = 'inbox.pull' AND recipient_fingerprint IS NOT NULL)
+                OR (scope != 'inbox.pull' AND recipient_fingerprint IS NULL)
+            )
+         );",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO api_keys (key_hash, scope) VALUES ('abc', 'inbox.push')",
+        [],
+    )
+    .unwrap();
+    super::migrate(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO api_keys (key_hash, scope) VALUES ('def', 'device.push')",
+        [],
+    )
+    .unwrap();
+}
+
+#[test]
+fn bridge_inbox_rejects_device_letters() {
+    let conn = relay::open_in_memory().unwrap();
+    let (_secret, public) = keys::generate_encryption_keypair();
+    let letter = crate::envelope::seal(
+        crate::envelope::PACKAGE,
+        crate::envelope::KIND_DEVICE_TRANSFER,
+        &public,
+        b"sealed",
+    )
+    .unwrap();
+    assert!(matches!(
+        relay::store(&conn, &letter),
+        Err(Error::InvalidBridgePackage)
+    ));
+}

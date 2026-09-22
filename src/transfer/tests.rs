@@ -1246,3 +1246,78 @@ fn ghost_is_recorded_only_after_the_source_slot_is_gone() {
     assert!(device::open_slot(&source.container, "M.A", PASS).is_err());
     assert!(sign_active(&dest.conn, &dest.container, "M.A", PASS, b"kept").is_ok());
 }
+
+#[test]
+fn relay_accept_and_ack_finish_a_move_without_keeping_both_databases_open() {
+    let mut source = end();
+    enroll_all(&mut source, &["M"]);
+    let mut dest = end();
+    let passes = passes_for(&source.conn, "M", DescendantMode::KeyOnly);
+    let prepared = prepare(
+        &source.conn,
+        &source.container,
+        dest.container.device_id(),
+        "M",
+        "M",
+        TransferOp::Move,
+        DescendantMode::KeyOnly,
+        &passes,
+        &TransferAuth::default(),
+    )
+    .unwrap();
+    assert_eq!(state(&source, "M"), Some(Possession::Active));
+    let (source_id, source_verify) = authenticated_source(prepared.package()).unwrap();
+    assert_eq!(source_id, *source.container.device_id());
+    assert_eq!(source_verify, *source.container.verify_key());
+    let id = accept_package(
+        &dest.conn,
+        &mut dest.container,
+        &source_id,
+        &source_verify,
+        prepared.package(),
+        &passes,
+        false,
+    )
+    .unwrap();
+    assert_eq!(id, prepared.id);
+    assert_eq!(state(&dest, "M"), Some(Possession::Active));
+    assert_eq!(state(&source, "M"), Some(Possession::Active));
+    assert!(source.container.slot("M").is_some());
+    finalize_after_ack(
+        &source.conn,
+        &mut source.container,
+        &prepared.id,
+        &package_hash(prepared.package()),
+    )
+    .unwrap();
+    assert_eq!(state(&source, "M"), Some(Possession::Ghost));
+    assert!(source.container.slot("M").is_none());
+    finalize_after_ack(
+        &source.conn,
+        &mut source.container,
+        &prepared.id,
+        &package_hash(prepared.package()),
+    )
+    .unwrap();
+
+    let mut source = end();
+    enroll_all(&mut source, &["M"]);
+    let passes = passes_for(&source.conn, "M", DescendantMode::KeyOnly);
+    let prepared = prepare(
+        &source.conn,
+        &source.container,
+        dest.container.device_id(),
+        "M",
+        "M",
+        TransferOp::Copy,
+        DescendantMode::KeyOnly,
+        &passes,
+        &TransferAuth::default(),
+    )
+    .unwrap();
+    let mut bad = package_hash(prepared.package());
+    bad[0] ^= 0xff;
+    assert!(finalize_after_ack(&source.conn, &mut source.container, &prepared.id, &bad).is_err());
+    assert_eq!(state(&source, "M"), Some(Possession::Active));
+    assert!(source.container.slot("M").is_some());
+}

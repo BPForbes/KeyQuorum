@@ -1,6 +1,9 @@
 -- Server-only mailbox + public-tree database. Never store wrapped shares
 -- or private key material here. Envelopes are opaque blobs indexed by the
 -- recipient encryption-key fingerprint from the outer .kqpb header.
+-- `device_mailbox` is the same idea for device copy, move, and relocate
+-- letters (KQPB kinds 9–12 only). `device_directory` is a public descriptor
+-- (device id, verify key, slot public keys) and never a slot secret.
 -- `org_tree_docs` is a document store: one JSON public tree per label
 -- (the full org context). Pushing envelopes updates those documents.
 -- Personal devices translate a sliced copy into local SQLite.
@@ -16,7 +19,9 @@ CREATE TABLE IF NOT EXISTS licensee_issuer (
 CREATE TABLE IF NOT EXISTS api_keys (
     id                      INTEGER PRIMARY KEY,
     key_hash                TEXT NOT NULL UNIQUE,
-    scope                   TEXT NOT NULL CHECK (scope IN ('inbox.push', 'inbox.pull', 'admin')),
+    scope                   TEXT NOT NULL CHECK (scope IN (
+        'inbox.push', 'inbox.pull', 'admin', 'device.push', 'device.pull'
+    )),
     recipient_fingerprint   TEXT,
     label                   TEXT,
     created_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -24,8 +29,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
     revoked_at              TEXT,
     last_used_at            TEXT,
     CHECK (
-        (scope = 'inbox.pull' AND recipient_fingerprint IS NOT NULL)
-        OR (scope != 'inbox.pull' AND recipient_fingerprint IS NULL)
+        (scope IN ('inbox.pull', 'device.pull') AND recipient_fingerprint IS NOT NULL)
+        OR (scope NOT IN ('inbox.pull', 'device.pull') AND recipient_fingerprint IS NULL)
     )
 );
 
@@ -43,6 +48,28 @@ CREATE TABLE IF NOT EXISTS mailbox (
 
 CREATE INDEX IF NOT EXISTS idx_mailbox_recipient
     ON mailbox (recipient_fingerprint, id);
+
+-- Opaque device-workflow letters. Same indexing rule as `mailbox`:
+-- fingerprint from the outer header, payload stored verbatim.
+CREATE TABLE IF NOT EXISTS device_mailbox (
+    id                      INTEGER PRIMARY KEY,
+    recipient_fingerprint   TEXT NOT NULL,
+    package                 BLOB NOT NULL,
+    content_hash            TEXT NOT NULL,
+    created_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (recipient_fingerprint, content_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_mailbox_recipient
+    ON device_mailbox (recipient_fingerprint, id);
+
+-- Public device descriptor. The document is signed by the device key.
+-- Slot rows are public keys only.
+CREATE TABLE IF NOT EXISTS device_directory (
+    device_id     TEXT PRIMARY KEY,
+    document      TEXT NOT NULL,
+    updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 
 -- Full public split-tree as a JSON document (no wrapped shares, no private keys).
 CREATE TABLE IF NOT EXISTS org_tree_docs (

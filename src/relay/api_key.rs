@@ -26,6 +26,8 @@ pub enum ApiKeyScope {
     InboxPush,
     InboxPull,
     Admin,
+    DevicePush,
+    DevicePull,
 }
 
 impl ApiKeyScope {
@@ -34,6 +36,8 @@ impl ApiKeyScope {
             Self::InboxPush => "inbox.push",
             Self::InboxPull => "inbox.pull",
             Self::Admin => "admin",
+            Self::DevicePush => "device.push",
+            Self::DevicePull => "device.pull",
         }
     }
 
@@ -42,8 +46,16 @@ impl ApiKeyScope {
             "inbox.push" => Ok(Self::InboxPush),
             "inbox.pull" => Ok(Self::InboxPull),
             "admin" => Ok(Self::Admin),
+            "device.push" => Ok(Self::DevicePush),
+            "device.pull" => Ok(Self::DevicePull),
             _ => Err(Error::InvalidApiKeyRequest),
         }
+    }
+
+    /// Pull scopes are bound to one recipient fingerprint. Every other
+    /// scope must be stored without one.
+    pub fn binds_recipient(self) -> bool {
+        matches!(self, Self::InboxPull | Self::DevicePull)
     }
 }
 
@@ -158,11 +170,14 @@ fn row_to_info(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApiKeyInfo> {
 
 /// Hands out a new bearer once and stores only its hash.
 pub fn create(conn: &Connection, new: &NewApiKey) -> Result<CreatedApiKey> {
-    let fingerprint = match (new.scope, new.recipient_fingerprint.as_deref()) {
-        (ApiKeyScope::InboxPull, Some(fp)) => Some(normalize_fingerprint(fp)?),
-        (ApiKeyScope::InboxPull, None) => return Err(Error::InvalidApiKeyRequest),
-        (_, Some(_)) => return Err(Error::InvalidApiKeyRequest),
-        (_, None) => None,
+    let fingerprint = match (
+        new.scope.binds_recipient(),
+        new.recipient_fingerprint.as_deref(),
+    ) {
+        (true, Some(fp)) => Some(normalize_fingerprint(fp)?),
+        (true, None) => return Err(Error::InvalidApiKeyRequest),
+        (false, Some(_)) => return Err(Error::InvalidApiKeyRequest),
+        (false, None) => None,
     };
 
     let (token, token_hash) = generate_bearer();

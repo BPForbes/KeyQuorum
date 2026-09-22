@@ -2134,7 +2134,7 @@ fn resolve_relay_url(
 
 /// `--api-key` / env win, then a stored key whose hash still passes `/keycheck`.
 /// A newly presented bearer is stored (by scope) after a successful check.
-fn resolve_relay_auth(
+pub(crate) fn resolve_relay_auth(
     conn: &Connection,
     explicit_url: Option<String>,
     explicit_key: Option<String>,
@@ -3283,7 +3283,7 @@ fn read_key_bytes(path: &Path) -> Result<Vec<u8>> {
     keys::parse_key_text(&contents)
 }
 
-fn read_key_array_32(path: &Path) -> Result<[u8; 32]> {
+pub(crate) fn read_key_array_32(path: &Path) -> Result<[u8; 32]> {
     read_key_bytes(path)?
         .try_into()
         .map_err(|_| Error::InvalidPublicKey)
