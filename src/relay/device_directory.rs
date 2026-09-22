@@ -97,6 +97,7 @@ pub fn get(conn: &Connection, device_id: &str) -> Result<Option<DeviceDescriptor
     Ok(Some(descriptor))
 }
 
+#[cfg_attr(not(feature = "provider"), allow(dead_code))]
 pub fn require(conn: &Connection, device_id: &str) -> Result<DeviceDescriptor> {
     get(conn, device_id)?.ok_or(Error::DeviceNotFound)
 }
