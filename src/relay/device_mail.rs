@@ -15,6 +15,11 @@ use sha2::{Digest, Sha256};
 /// Same cap as the bridge inbox. A device letter is one sealed envelope.
 pub const MAX_DEVICE_PACKAGE_BYTES: usize = 1024 * 1024;
 
+/// Every device letter and acknowledgement expires this long after it is
+/// first stored. Rows are never deleted on acknowledgement (letters carry no
+/// correlation the relay can read), so this TTL is what bounds storage.
+pub const DEVICE_PACKAGE_TTL_DAYS: i64 = 30;
+
 #[derive(Clone, Debug)]
 pub struct StoredDevicePackage {
     pub id: i64,
@@ -43,11 +48,12 @@ pub fn store(conn: &Connection, package: &[u8]) -> Result<(i64, String, bool)> {
     let fingerprint = keys::fingerprint(&recipient_public_key);
     let content_hash = hex::encode(Sha256::digest(package));
 
+    purge_expired(conn)?;
     conn.execute(
         "INSERT OR IGNORE INTO device_mailbox
-            (recipient_fingerprint, package, content_hash)
-         VALUES (?1, ?2, ?3)",
-        params![fingerprint, package, content_hash],
+            (recipient_fingerprint, package, content_hash, expires_at)
+         VALUES (?1, ?2, ?3, datetime('now', ?4))",
+        params![fingerprint, package, content_hash, ttl_modifier()],
     )?;
 
     if conn.changes() == 1 {
@@ -76,10 +82,12 @@ pub fn list_after(
     };
     let after = after.unwrap_or(0);
     let fetch = page.saturating_add(1);
+    purge_expired(conn)?;
     let mut stmt = conn.prepare(
         "SELECT id, recipient_fingerprint, package
          FROM device_mailbox
          WHERE recipient_fingerprint = ?1 AND id > ?2
+           AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
          ORDER BY id ASC
          LIMIT ?3",
     )?;
@@ -101,6 +109,33 @@ pub fn list_after(
         packages,
         next_after,
     })
+}
+
+/// Deletes device letters whose TTL has passed. The sealed bytes live in
+/// this table, so the DELETE is what removes them from the relay database.
+pub fn purge_expired(conn: &Connection) -> Result<u64> {
+    conn.execute(
+        "DELETE FROM device_mailbox
+         WHERE expires_at IS NOT NULL AND datetime(expires_at) <= datetime('now')",
+        [],
+    )?;
+    Ok(conn.changes())
+}
+
+/// Rows stored before device retention have no `expires_at`. Give them the
+/// same TTL, counted from when they were stored.
+pub(crate) fn backfill_expiry(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "UPDATE device_mailbox
+         SET expires_at = datetime(created_at, ?1)
+         WHERE expires_at IS NULL",
+        params![ttl_modifier()],
+    )?;
+    Ok(())
+}
+
+fn ttl_modifier() -> String {
+    format!("+{DEVICE_PACKAGE_TTL_DAYS} days")
 }
 
 #[cfg(test)]

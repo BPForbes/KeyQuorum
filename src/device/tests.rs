@@ -357,3 +357,45 @@ fn a_rewritten_descriptor_cannot_split_one_container_into_two_devices() {
         Err(Error::PhysicalDevicesNotMet)
     ));
 }
+
+#[test]
+fn slot_matches_reconciles_same_keys_and_refuses_different_ones() {
+    let from_dir = tempfile::tempdir().unwrap();
+    let to_dir = tempfile::tempdir().unwrap();
+    let mut from = init(from_dir.path()).unwrap();
+    let mut to = init(to_dir.path()).unwrap();
+    provision(&mut from, "M.S.1", PASS).unwrap();
+    let secrets = open_slot(&from, "M.S.1", PASS).unwrap();
+    assert!(!slot_matches(
+        &to,
+        "M.S.1",
+        &secrets.encryption_secret,
+        &secrets.signing_secret
+    )
+    .unwrap());
+    install_slot(
+        &mut to,
+        "M.S.1",
+        PASS,
+        &secrets.encryption_secret,
+        &secrets.signing_secret,
+    )
+    .unwrap();
+    assert!(slot_matches(
+        &to,
+        "M.S.1",
+        &secrets.encryption_secret,
+        &secrets.signing_secret
+    )
+    .unwrap());
+    let other = provision(&mut from, "M.S.2", PASS).unwrap();
+    assert!(matches!(
+        slot_matches(
+            &to,
+            "M.S.1",
+            &other.encryption_secret,
+            &other.signing_secret
+        ),
+        Err(Error::InvalidSlot)
+    ));
+}

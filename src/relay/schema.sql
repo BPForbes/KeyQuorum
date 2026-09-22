@@ -57,6 +57,9 @@ CREATE TABLE IF NOT EXISTS device_mailbox (
     package                 BLOB NOT NULL,
     content_hash            TEXT NOT NULL,
     created_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    -- UTC `YYYY-MM-DD HH:MM:SS`. Every device letter expires; the host scan
+    -- and device pulls delete expired rows so storage stays bounded.
+    expires_at              TEXT,
     UNIQUE (recipient_fingerprint, content_hash)
 );
 

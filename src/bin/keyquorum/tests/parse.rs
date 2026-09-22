@@ -907,6 +907,20 @@ fn transfer_commands_parse_without_opening_a_database() {
         "M.S",
         "--to-device-id",
         "00112233445566778899aabbccddeeff",
+        "--relocate-id",
+        "ffeeddccbbaa99887766554433221100",
     ])
     .is_ok());
+    // Without the relocate id, any acknowledgement for the slot could match.
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "device",
+        "relay-drop",
+        "./usb",
+        "--label",
+        "M.S",
+        "--to-device-id",
+        "00112233445566778899aabbccddeeff",
+    ])
+    .is_err());
 }

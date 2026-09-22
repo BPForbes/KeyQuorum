@@ -49,8 +49,8 @@ pub enum DeviceCommand {
         #[arg(long)]
         api_key: Option<String>,
     },
-    /// Seal one slot onto another device. The source slot stays until
-    /// `relay-drop` sees the destination acknowledgement.
+    /// Seal one slot onto another device. Prints the relocate id. The source
+    /// slot stays until `relay-drop` sees the acknowledgement for that id.
     RelayRelocate {
         #[arg(long)]
         from: PathBuf,
@@ -67,7 +67,8 @@ pub enum DeviceCommand {
         #[arg(long)]
         api_key: Option<String>,
     },
-    /// Pull a sealed relocate, install the slot, and post the acknowledgement.
+    /// Pull sealed relocates, install each slot, and post the acknowledgement.
+    /// A slot already installed with the same keys is acknowledged again.
     RelayAccept {
         path: PathBuf,
         /// Slot whose encryption key opens the letter.
@@ -90,6 +91,10 @@ pub enum DeviceCommand {
         /// Hex device id that signed the acknowledgement.
         #[arg(long)]
         to_device_id: String,
+        /// Hex relocate id that `relay-relocate` printed. An acknowledgement
+        /// for any other relocation of this slot is ignored.
+        #[arg(long)]
+        relocate_id: String,
         #[arg(long)]
         url: Option<String>,
         /// device.pull bearer. A stored key is used when this is omitted.
@@ -179,7 +184,7 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
                 &format!("Passphrase for {label}: "),
                 &format!("Repeat passphrase for {label}: "),
             )?;
-            let letter = device_relay::seal_relocate(
+            let sealed = device_relay::seal_relocate(
                 &recipient,
                 &source,
                 &label,
@@ -188,10 +193,11 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
             )?;
             let (url, api_key) =
                 super::resolve_relay_auth(conn, url, api_key, ApiKeyScope::DevicePush)?;
-            let accepted = relay::push_device_package(&url, &api_key, &letter)?;
+            let accepted = relay::push_device_package(&url, &api_key, &sealed.bytes)?;
             println!(
-                "relocating {label} to {} package {}",
+                "relocating {label} to {} relocate {} package {}",
                 hex::encode(destination_device_id),
+                hex::encode(sealed.relocate_id),
                 accepted.id
             );
         }
@@ -216,9 +222,9 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
                 &format!("Repeat passphrase for {slot}: "),
             )?;
             let opener = device::open_slot(&dest, &slot, &passphrase)?;
-            let page = relay::pull_device_packages(&url, &pull_key, None, Some(100))?;
+            let packages = super::pull_all_device_packages(&url, &pull_key)?;
             let mut accepted = 0u32;
-            for item in page.packages {
+            for item in packages {
                 let bytes = decode_package(&item.bytes)?;
                 let letter = match device_relay::open_relocate(&opener.encryption_secret, &bytes) {
                     Ok(letter) if letter.destination_device_id == *dest.device_id() => letter,
@@ -229,20 +235,46 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
                 if parse_verify_key(&published.verify_key)? != letter.source_verify_key {
                     continue;
                 }
-                let install_pass = device::confirm_passphrase(
-                    &format!("Passphrase for {}: ", letter.label),
-                    &format!("Repeat passphrase for {}: ", letter.label),
-                )?;
-                device::install_slot(
-                    &mut dest,
+                // A retry after a failed acknowledgement upload, or an old
+                // letter still in the mailbox, finds the slot already here.
+                // Same keys: acknowledge again. Different keys: skip it so
+                // one conflicting letter does not stop the rest.
+                let installed = match device::slot_matches(
+                    &dest,
                     &letter.label,
-                    &install_pass,
                     &letter.encryption_secret,
                     &letter.signing_secret,
-                )?;
+                ) {
+                    Ok(installed) => installed,
+                    Err(Error::InvalidSlot) => {
+                        eprintln!(
+                            "skipped slot {}: a different key already holds that label",
+                            letter.label
+                        );
+                        continue;
+                    }
+                    Err(err) => return Err(err),
+                };
+                if !installed {
+                    let install_pass = device::confirm_passphrase(
+                        &format!("Passphrase for {}: ", letter.label),
+                        &format!("Repeat passphrase for {}: ", letter.label),
+                    )?;
+                    device::install_slot(
+                        &mut dest,
+                        &letter.label,
+                        &install_pass,
+                        &letter.encryption_secret,
+                        &letter.signing_secret,
+                    )?;
+                }
                 let ack = device_relay::seal_relocate_ack(&letter, &dest)?;
                 relay::push_device_package(&url, &push_key, &ack)?;
-                println!("accepted slot {}", letter.label);
+                if installed {
+                    println!("acknowledged slot {} again", letter.label);
+                } else {
+                    println!("accepted slot {}", letter.label);
+                }
                 accepted += 1;
             }
             if accepted == 0 {
@@ -253,10 +285,12 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
             path,
             label,
             to_device_id,
+            relocate_id,
             url,
             api_key,
         } => {
             let mut container = device::open(&path)?;
+            let relocate_id = parse_device_id(&relocate_id)?;
             let (url, pull_key) =
                 super::resolve_relay_auth(conn, url, api_key, ApiKeyScope::DevicePull)?;
             let destination_device_id = parse_device_id(&to_device_id)?;
@@ -271,9 +305,9 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
                 &format!("Repeat passphrase for {label}: "),
             )?;
             let opener = device::open_slot(&container, &label, &passphrase)?;
-            let page = relay::pull_device_packages(&url, &pull_key, None, Some(100))?;
+            let packages = super::pull_all_device_packages(&url, &pull_key)?;
             let mut dropped = false;
-            for item in page.packages {
+            for item in packages {
                 let bytes = decode_package(&item.bytes)?;
                 let ack = match device_relay::open_relocate_ack(
                     &opener.encryption_secret,
@@ -283,7 +317,8 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
                     Ok(ack) => ack,
                     Err(_) => continue,
                 };
-                if ack.label != label
+                if ack.relocate_id != relocate_id
+                    || ack.label != label
                     || ack.source_device_id != *container.device_id()
                     || ack.destination_device_id != destination_device_id
                 {

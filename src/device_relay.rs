@@ -10,6 +10,8 @@ use crate::error::{Error, Result};
 use crate::relay::{DeviceDescriptor, DeviceSlotDescriptor};
 use crate::signing;
 use crate::transfer::{self, AuthenticatedPackage};
+use rand::rngs::OsRng;
+use rand::RngCore;
 use zeroize::Zeroizing;
 
 const ACK_DOMAIN: &[u8] = b"KQ-DEVICE-ACK-v1";
@@ -27,7 +29,16 @@ pub struct TransferAck {
     pub destination_device_id: [u8; 16],
 }
 
+/// A sealed relocate letter and the id the source chose for it. The source
+/// keeps the id and hands it to `relay-drop`; only an acknowledgement that
+/// echoes it may delete the source slot.
+pub struct SealedRelocate {
+    pub relocate_id: [u8; 16],
+    pub bytes: Vec<u8>,
+}
+
 pub struct RelocateLetter {
+    pub relocate_id: [u8; 16],
     pub label: String,
     pub source_device_id: [u8; 16],
     pub destination_device_id: [u8; 16],
@@ -38,6 +49,7 @@ pub struct RelocateLetter {
 }
 
 pub struct RelocateAck {
+    pub relocate_id: [u8; 16],
     pub label: String,
     pub source_device_id: [u8; 16],
     pub destination_device_id: [u8; 16],
@@ -161,13 +173,16 @@ pub fn seal_relocate(
     label: &str,
     destination_device_id: &[u8; 16],
     passphrase: &str,
-) -> Result<Vec<u8>> {
+) -> Result<SealedRelocate> {
     if source.device_id() == destination_device_id {
         return Err(Error::InvalidDevice);
     }
     let secrets = device::open_slot(source, label, passphrase)?;
     let return_public = secrets.encryption_public;
+    let mut relocate_id = [0u8; 16];
+    OsRng.fill_bytes(&mut relocate_id);
     let mut body = Vec::new();
+    body.extend_from_slice(&relocate_id);
     body.extend_from_slice(source.device_id());
     body.extend_from_slice(destination_device_id);
     body.extend_from_slice(&return_public);
@@ -181,12 +196,13 @@ pub fn seal_relocate(
     let device_secret = device::device_signing_secret(source)?;
     let signature = signing::sign(&device_secret, &message);
     body.extend_from_slice(&signature);
-    envelope::seal(
+    let bytes = envelope::seal(
         PACKAGE,
         envelope::KIND_DEVICE_RELOCATE,
         recipient_public,
         &body,
-    )
+    )?;
+    Ok(SealedRelocate { relocate_id, bytes })
 }
 
 pub fn open_relocate(recipient_secret: &[u8; 32], bytes: &[u8]) -> Result<RelocateLetter> {
@@ -195,6 +211,7 @@ pub fn open_relocate(recipient_secret: &[u8; 32], bytes: &[u8]) -> Result<Reloca
         return Err(Error::InvalidBridgePackage);
     }
     let mut data = payload.as_slice();
+    let relocate_id = take_array::<16>(&mut data)?;
     let source_device_id = take_array::<16>(&mut data)?;
     let destination_device_id = take_array::<16>(&mut data)?;
     let return_public = take_array::<32>(&mut data)?;
@@ -217,6 +234,7 @@ pub fn open_relocate(recipient_secret: &[u8; 32], bytes: &[u8]) -> Result<Reloca
         return Err(Error::IntegrityCheckFailed);
     }
     Ok(RelocateLetter {
+        relocate_id,
         label,
         source_device_id,
         destination_device_id,
@@ -232,6 +250,7 @@ pub fn seal_relocate_ack(letter: &RelocateLetter, destination: &Container) -> Re
         return Err(Error::InvalidDevice);
     }
     let mut body = Vec::new();
+    body.extend_from_slice(&letter.relocate_id);
     envelope::push_len_prefixed(&mut body, letter.label.as_bytes())?;
     body.extend_from_slice(&letter.source_device_id);
     body.extend_from_slice(&letter.destination_device_id);
@@ -259,6 +278,7 @@ pub fn open_relocate_ack(
         return Err(Error::InvalidBridgePackage);
     }
     let mut data = payload.as_slice();
+    let relocate_id = take_array::<16>(&mut data)?;
     let label = envelope::utf8(take_len_prefixed(&mut data)?)?;
     device::validate_slot_label(&label)?;
     let source_device_id = take_array::<16>(&mut data)?;
@@ -272,6 +292,7 @@ pub fn open_relocate_ack(
     message.extend_from_slice(&payload[..payload.len() - 64]);
     signing::verify_signature(destination_verify_key, &message, &signature)?;
     Ok(RelocateAck {
+        relocate_id,
         label,
         source_device_id,
         destination_device_id,

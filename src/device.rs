@@ -364,6 +364,26 @@ pub fn install_slot(
     Ok(record)
 }
 
+/// Whether `label` already holds exactly these secrets. `Ok(false)` when
+/// the slot is absent; a slot with the same label and different public
+/// keys is refused so a retried install never overwrites other material.
+pub fn slot_matches(
+    container: &Container,
+    label: &str,
+    encryption_secret: &[u8; 32],
+    signing_secret: &[u8; 32],
+) -> Result<bool> {
+    let Some(record) = container.slot(label) else {
+        return Ok(false);
+    };
+    if record.encryption_public != keys::encryption_public_from_secret(encryption_secret)
+        || record.signing_public != signing_public_from_secret(signing_secret)
+    {
+        return Err(Error::InvalidSlot);
+    }
+    Ok(true)
+}
+
 /// Delete a slot's token and drop it from the descriptor. Hierarchy code
 /// may keep a ghost row; this function only removes usable key material.
 pub fn remove_slot(container: &mut Container, label: &str) -> Result<()> {

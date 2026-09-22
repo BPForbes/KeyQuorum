@@ -434,9 +434,9 @@ fn run_relay_collect(
         &format!("Repeat passphrase for {slot}: "),
     )?;
     let opener = device::open_slot(&dest, slot, &passphrase)?;
-    let page = relay::pull_device_packages(&url, &pull_key, None, Some(100))?;
+    let packages = super::pull_all_device_packages(&url, &pull_key)?;
     let mut accepted = 0u32;
-    for item in page.packages {
+    for item in packages {
         let bytes = decode_package(&item.bytes)?;
         let opened = match device_relay::open_transfer(&opener.encryption_secret, &bytes) {
             Ok(opened) => opened,
@@ -503,9 +503,9 @@ fn run_relay_finalize(
         &format!("Repeat passphrase for {slot}: "),
     )?;
     let opener = device::open_slot(&source, slot, &passphrase)?;
-    let page = relay::pull_device_packages(&url, &pull_key, None, Some(100))?;
+    let packages = super::pull_all_device_packages(&url, &pull_key)?;
     let mut finalized = 0u32;
-    for item in page.packages {
+    for item in packages {
         let bytes = decode_package(&item.bytes)?;
         let ack = match device_relay::open_transfer_ack(
             &opener.encryption_secret,

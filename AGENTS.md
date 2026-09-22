@@ -124,7 +124,12 @@ public keys, signed by the device key) in `device_directory`. `device.push`
 and `device.pull` are required the same way as inbox scopes: no bearer is
 401, the wrong scope is 403, `device.pull` is bound to the recipient
 fingerprint, and HTTP does not mint keys. The relay rejects raw `KQTX` and
-never unseals a letter. `src/relay/device_mail.rs` owns the device mailbox;
+never unseals a letter. A relocate letter carries a random relocate id that
+the source signs and the destination's acknowledgement signs back;
+`relay-drop` deletes the source slot only for the id it is given, so an old
+acknowledgement cannot remove a slot relocated again later. Device letters
+expire `DEVICE_PACKAGE_TTL_DAYS` after they are stored and are never deleted
+on acknowledgement. `src/relay/device_mail.rs` owns the device mailbox;
 `src/relay/device_directory.rs` owns the public descriptor.
 
 ## Setup / build / test

@@ -36,8 +36,8 @@ pub use device_directory::{
     sign_descriptor as sign_device_descriptor, DeviceDescriptor, DeviceSlotDescriptor,
 };
 pub use device_mail::{
-    list_after as list_device_packages, store as store_device_package, DeviceMailPage,
-    StoredDevicePackage,
+    list_after as list_device_packages, purge_expired as purge_expired_device_packages,
+    store as store_device_package, DeviceMailPage, StoredDevicePackage, DEVICE_PACKAGE_TTL_DAYS,
 };
 pub use mailbox::{
     list_after, purge_expired as purge_expired_envelopes, store, store_until, MailboxPage,
@@ -133,10 +133,17 @@ fn table_has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::R
 }
 
 /// `CREATE TABLE IF NOT EXISTS` never adds columns to an already-created
-/// table. Mailboxes from before envelope TTL need `expires_at`.
+/// table. Mailboxes from before envelope TTL need `expires_at`, and device
+/// letters stored before device retention get the same TTL from `created_at`.
 fn migrate(conn: &Connection) -> Result<()> {
     if !table_has_column(conn, "mailbox", "expires_at")? {
         conn.execute("ALTER TABLE mailbox ADD COLUMN expires_at TEXT", [])?;
+    }
+    if table_sql(conn, "device_mailbox")?.is_some() {
+        if !table_has_column(conn, "device_mailbox", "expires_at")? {
+            conn.execute("ALTER TABLE device_mailbox ADD COLUMN expires_at TEXT", [])?;
+        }
+        device_mail::backfill_expiry(conn)?;
     }
     widen_api_key_scopes(conn)
 }

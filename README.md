@@ -570,13 +570,19 @@ keyquorum device relay-relocate \
 keyquorum device relay-accept ./usb2 --slot recv --url https://relay.example.com
 keyquorum device relay-drop ./usb --label M.S \
   --to-device-id <hex-device-id> \
+  --relocate-id <hex-relocate-id> \
   --url https://relay.example.com
 ```
 
 `relay-send` leaves the source prepared. COPY stays active. MOVE deletes
 the source slot token and writes the ghost only when `relay-finalize`
-checks the destination's signed acknowledgement. `relay-relocate` leaves
-the source slot in place until `relay-drop` checks that acknowledgement.
+checks the destination's signed acknowledgement. `relay-relocate` prints a
+relocate id and leaves the source slot in place until `relay-drop` checks an
+acknowledgement signed for that id. An acknowledgement from an earlier
+relocation of the same slot does not match. `relay-accept` acknowledges a
+slot that is already installed with the same keys again, so a retry after a
+failed upload finishes. The mailbox keeps device letters and
+acknowledgements for 30 days.
 Load a `device.push` key for sends and publishes, and a `device.pull` key
 bound to the recipient fingerprint for collects, finalizes, and drops.
 `relay-collect` and `relay-accept` also need `device.push` to post the
