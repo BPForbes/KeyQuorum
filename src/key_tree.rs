@@ -5,10 +5,11 @@
 //! just a one-level tree — a single SPLIT root with N LEAF children.
 //!
 //! Turning a LEAF's `wrapped_share` back into raw share bytes needs a
-//! hardware key's private key, which this project has no custody story
-//! for yet (see README's Roadmap) — `reconstruct` below takes already
-//! -unwrapped raw shares as opaque bytes; obtaining them is the caller's
-//! responsibility.
+//! hardware key's private key. A key file is the original one-key
+//! one-device exchange; a `device` container slot is the other custody
+//! path. `reconstruct` below takes already-unwrapped raw shares as opaque
+//! bytes — obtaining them is the caller's responsibility — then counts
+//! distinct physical devices before returning the secret.
 
 use crate::error::{Error, Result};
 use crate::keys;
@@ -18,6 +19,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use utoipa::ToSchema;
+use zeroize::Zeroize;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged, deny_unknown_fields)]
@@ -319,20 +321,39 @@ fn insert_allowed_bridges(conn: &Connection, node_id: i64, peers: &[String]) -> 
     Ok(())
 }
 
+/// Secret recovered from `raw_shares`, plus the physical devices those
+/// contributing leaves resolved to.
+pub struct PresentedReconstruction {
+    pub secret: Vec<u8>,
+    pub devices: Vec<crate::device::PresentedDevice>,
+    pub leaves: Vec<crate::device::UsedLeaf>,
+}
+
 /// `raw_shares` maps a leaf `key_nodes.id` to its already-unwrapped raw
 /// share bytes (obtaining them is the deferred unwrap step — see the
 /// module doc comment). Walks the loaded arena: a leaf resolves iff its
 /// id is present in `raw_shares`; a split node resolves once at least
 /// `threshold` of its *active* children resolve (recursively), via
 /// `Sharks::recover`. Returns `QuorumNotMet` if the root can't be
-/// resolved.
+/// resolved. A successful Shamir recovery still has to meet the tree's
+/// physical-device policy before the secret is returned.
 pub fn reconstruct(
     conn: &Connection,
     key_id: i64,
     raw_shares: &HashMap<i64, Vec<u8>>,
 ) -> Result<Vec<u8>> {
+    Ok(reconstruct_presented(conn, key_id, raw_shares)?.secret)
+}
+
+pub fn reconstruct_presented(
+    conn: &Connection,
+    key_id: i64,
+    raw_shares: &HashMap<i64, Vec<u8>>,
+) -> Result<PresentedReconstruction> {
     let tree = KeyQuorumTree::load(conn, key_id)?;
-    tree.reconstruct(raw_shares)
+    let mut leaves = Vec::new();
+    let secret = tree.reconstruct_tracking(conn, key_id, raw_shares, &mut leaves)?;
+    finish_presented(conn, key_id, secret, leaves)
 }
 
 /// Reconstruct only the subtree rooted at `lca_idx` (e.g. a department
@@ -344,7 +365,31 @@ pub fn reconstruct_from_lca(
     raw_shares: &HashMap<i64, Vec<u8>>,
 ) -> Result<Vec<u8>> {
     let tree = KeyQuorumTree::load(conn, key_id)?;
-    tree.reconstruct_up_to_root(lca_idx, raw_shares)
+    let mut leaves = Vec::new();
+    let secret =
+        tree.reconstruct_up_to_root_tracking(conn, key_id, lca_idx, raw_shares, &mut leaves)?;
+    Ok(finish_presented(conn, key_id, secret, leaves)?.secret)
+}
+
+fn finish_presented(
+    conn: &Connection,
+    key_id: i64,
+    secret: Vec<u8>,
+    leaves: Vec<crate::device::UsedLeaf>,
+) -> Result<PresentedReconstruction> {
+    let devices = match crate::device::enforce_devices(conn, key_id, &leaves) {
+        Ok(devices) => devices,
+        Err(err) => {
+            let mut secret = secret;
+            secret.zeroize();
+            return Err(err);
+        }
+    };
+    Ok(PresentedReconstruction {
+        secret,
+        devices,
+        leaves,
+    })
 }
 
 fn root_node_id(conn: &Connection, key_id: i64) -> Result<i64> {
@@ -491,95 +536,273 @@ impl KeyQuorumTree {
         iter.try_fold(first, |acc, idx| self.find_lowest_common_ancestor(acc, idx))
     }
 
-    pub fn reconstruct(&self, raw_shares: &HashMap<i64, Vec<u8>>) -> Result<Vec<u8>> {
-        self.reconstruct_node(self.root_index, raw_shares)
+    /// Shamir recovery with no device policy. In-crate callers that already
+    /// hold raw shares use this; the public `reconstruct` free function is
+    /// what applies custody.
+    #[allow(dead_code)]
+    pub(crate) fn reconstruct(&self, raw_shares: &HashMap<i64, Vec<u8>>) -> Result<Vec<u8>> {
+        let mut used = Vec::new();
+        self.reconstruct_node(self.root_index, raw_shares, &mut used, None)
     }
 
-    pub fn reconstruct_from(
+    pub(crate) fn reconstruct_tracking(
+        &self,
+        conn: &Connection,
+        key_id: i64,
+        raw_shares: &HashMap<i64, Vec<u8>>,
+        used: &mut Vec<crate::device::UsedLeaf>,
+    ) -> Result<Vec<u8>> {
+        self.reconstruct_node(self.root_index, raw_shares, used, Some((conn, key_id)))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn reconstruct_from(
         &self,
         idx: usize,
         raw_shares: &HashMap<i64, Vec<u8>>,
     ) -> Result<Vec<u8>> {
-        self.reconstruct_node(idx, raw_shares)
+        let mut used = Vec::new();
+        self.reconstruct_node(idx, raw_shares, &mut used, None)
     }
 
-    pub fn reconstruct_up_to_root(
+    #[allow(dead_code)]
+    pub(crate) fn reconstruct_up_to_root(
         &self,
         from_idx: usize,
         raw_shares: &HashMap<i64, Vec<u8>>,
     ) -> Result<Vec<u8>> {
-        let mut value = self.reconstruct_node(from_idx, raw_shares)?;
+        let mut used = Vec::new();
+        self.reconstruct_up_to_root_tracking_inner(from_idx, raw_shares, &mut used, None)
+    }
+
+    pub(crate) fn reconstruct_up_to_root_tracking(
+        &self,
+        conn: &Connection,
+        key_id: i64,
+        from_idx: usize,
+        raw_shares: &HashMap<i64, Vec<u8>>,
+        used: &mut Vec<crate::device::UsedLeaf>,
+    ) -> Result<Vec<u8>> {
+        self.reconstruct_up_to_root_tracking_inner(from_idx, raw_shares, used, Some((conn, key_id)))
+    }
+
+    fn reconstruct_up_to_root_tracking_inner(
+        &self,
+        from_idx: usize,
+        raw_shares: &HashMap<i64, Vec<u8>>,
+        used: &mut Vec<crate::device::UsedLeaf>,
+        policy: Option<(&Connection, i64)>,
+    ) -> Result<Vec<u8>> {
+        let mut start_used = Vec::new();
+        let mut value = self.reconstruct_node(from_idx, raw_shares, &mut start_used, policy)?;
+        // At the root the recovered value is the secret, not a share, and
+        // every leaf that produced it counts. Below the root, those leaves
+        // count only when the subtree value is a share the parent accepts.
         let mut idx = from_idx;
+        if self.nodes[from_idx].parent_idx.is_none() || Share::try_from(value.as_slice()).is_ok() {
+            used.append(&mut start_used);
+        }
         while let Some(parent_idx) = self.nodes[idx].parent_idx {
             let parent = &self.nodes[parent_idx];
             let threshold = parent.threshold.ok_or(Error::QuorumNotMet)?;
             let mut resolved = Vec::new();
             if let Ok(share) = Share::try_from(value.as_slice()) {
-                resolved.push(share);
+                resolved.push(ResolvedChild {
+                    share,
+                    leaves: used.clone(),
+                });
+                used.clear();
             }
             for &sib in &parent.children_indices {
-                if resolved.len() >= threshold {
-                    break;
-                }
                 if sib == idx || !self.nodes[sib].is_active {
                     continue;
                 }
-                if let Ok(sibling_value) = self.reconstruct_node(sib, raw_shares) {
+                let mut sib_used = Vec::new();
+                if let Ok(sibling_value) =
+                    self.reconstruct_node(sib, raw_shares, &mut sib_used, policy)
+                {
                     if let Ok(share) = Share::try_from(sibling_value.as_slice()) {
-                        resolved.push(share);
+                        resolved.push(ResolvedChild {
+                            share,
+                            leaves: sib_used,
+                        });
                     }
                 }
             }
-            if resolved.len() < threshold {
-                return Err(Error::QuorumNotMet);
-            }
+            let (shares, leaves) = select_child_subset(policy, threshold, resolved)?;
+            *used = leaves;
             value = Sharks(threshold as u8)
-                .recover(resolved.iter())
+                .recover(shares.iter())
                 .map_err(|_| Error::QuorumNotMet)?;
             idx = parent_idx;
         }
         Ok(value)
     }
 
-    fn reconstruct_node(&self, idx: usize, raw_shares: &HashMap<i64, Vec<u8>>) -> Result<Vec<u8>> {
+    fn reconstruct_node(
+        &self,
+        idx: usize,
+        raw_shares: &HashMap<i64, Vec<u8>>,
+        used: &mut Vec<crate::device::UsedLeaf>,
+        policy: Option<(&Connection, i64)>,
+    ) -> Result<Vec<u8>> {
         let node = self.nodes.get(idx).ok_or(Error::NodeNotFound)?;
         if !node.is_active {
             return Err(Error::QuorumNotMet);
         }
-        if node.hardware_key_id.is_some() {
-            return raw_shares
+        if let Some(hardware_key_id) = node.hardware_key_id {
+            if let Some((conn, _)) = policy {
+                if crate::device::leaf_is_ghost(conn, hardware_key_id)? {
+                    return Err(Error::GhostDenied);
+                }
+            }
+            let share = raw_shares
                 .get(&node.db_id)
                 .cloned()
-                .ok_or(Error::QuorumNotMet);
+                .ok_or(Error::QuorumNotMet)?;
+            used.push(crate::device::UsedLeaf {
+                hardware_key_id,
+                leaf_label: node.id.clone(),
+            });
+            return Ok(share);
         }
 
         let threshold = node.threshold.ok_or(Error::QuorumNotMet)?;
-        let mut resolved: Vec<Share> = Vec::new();
+        let mut resolved = Vec::new();
         for &child_idx in &node.children_indices {
-            if resolved.len() >= threshold {
-                break;
-            }
             if !self.nodes[child_idx].is_active {
                 continue;
             }
-            if let Ok(value) = self.reconstruct_node(child_idx, raw_shares) {
-                // A malformed share is treated the same as an unresolved
-                // child rather than aborting — other valid children may
-                // still meet this node's threshold.
+            let mut child_used = Vec::new();
+            if let Ok(value) = self.reconstruct_node(child_idx, raw_shares, &mut child_used, policy)
+            {
                 if let Ok(share) = Share::try_from(value.as_slice()) {
-                    resolved.push(share);
+                    resolved.push(ResolvedChild {
+                        share,
+                        leaves: child_used,
+                    });
                 }
             }
         }
 
-        if resolved.len() < threshold {
-            return Err(Error::QuorumNotMet);
-        }
-
+        let (shares, leaves) = select_child_subset(policy, threshold, resolved)?;
+        used.extend(leaves);
         Sharks(threshold as u8)
-            .recover(resolved.iter())
+            .recover(shares.iter())
             .map_err(|_| Error::QuorumNotMet)
     }
+}
+
+struct ResolvedChild {
+    share: Share,
+    leaves: Vec<crate::device::UsedLeaf>,
+}
+
+/// Pick `threshold` children. With no custody policy, that is the first
+/// threshold in child order. With a policy, search combinations so a later
+/// share can satisfy `minimum_physical_devices` when an earlier pair cannot.
+/// A short combination is kept only as a fallback; the root check still
+/// applies the minimum to the leaves that were actually used.
+fn select_child_subset(
+    policy: Option<(&Connection, i64)>,
+    threshold: usize,
+    mut children: Vec<ResolvedChild>,
+) -> Result<(Vec<Share>, Vec<crate::device::UsedLeaf>)> {
+    if threshold == 0 || children.len() < threshold {
+        return Err(Error::QuorumNotMet);
+    }
+    let Some((conn, key_id)) = policy else {
+        children.truncate(threshold);
+        return Ok(flatten_children(children));
+    };
+    let minimum =
+        usize::from(crate::device::custody_policy(conn, key_id)?.minimum_physical_devices);
+    let mut indexes: Vec<usize> = (0..threshold).collect();
+    let child_count = children.len();
+    let mut examined = 0u32;
+    let mut best_devices = 0usize;
+    let mut best_indexes: Option<Vec<usize>> = None;
+    let mut saw_custody = false;
+    loop {
+        examined += 1;
+        if examined > 100_000 {
+            break;
+        }
+        let mut leaves = Vec::new();
+        for &index in &indexes {
+            leaves.extend(children[index].leaves.iter().cloned());
+        }
+        match crate::device::classify_devices(conn, key_id, &leaves) {
+            Ok(groups) if groups.len() >= minimum => {
+                return Ok(take_indexed(&mut children, &indexes));
+            }
+            Ok(groups) => {
+                if best_indexes.is_none() || groups.len() > best_devices {
+                    best_devices = groups.len();
+                    best_indexes = Some(indexes.clone());
+                }
+            }
+            Err(Error::CustodyViolation) => saw_custody = true,
+            Err(Error::QuorumNotMet | Error::GhostDenied) => {}
+            Err(err) => return Err(err),
+        }
+        if !next_combination(&mut indexes, child_count) {
+            break;
+        }
+    }
+    if let Some(indexes) = best_indexes {
+        return Ok(take_indexed(&mut children, &indexes));
+    }
+    if saw_custody {
+        return Err(Error::CustodyViolation);
+    }
+    Err(Error::QuorumNotMet)
+}
+
+fn flatten_children(children: Vec<ResolvedChild>) -> (Vec<Share>, Vec<crate::device::UsedLeaf>) {
+    let mut shares = Vec::with_capacity(children.len());
+    let mut leaves = Vec::new();
+    for child in children {
+        shares.push(child.share);
+        leaves.extend(child.leaves);
+    }
+    (shares, leaves)
+}
+
+fn take_indexed(
+    children: &mut Vec<ResolvedChild>,
+    indexes: &[usize],
+) -> (Vec<Share>, Vec<crate::device::UsedLeaf>) {
+    let mut order = indexes.to_vec();
+    order.sort_unstable();
+    let mut picked = Vec::with_capacity(order.len());
+    for index in order.into_iter().rev() {
+        picked.push((index, children.swap_remove(index)));
+    }
+    picked.sort_by_key(|(index, _)| *index);
+    flatten_children(picked.into_iter().map(|(_, child)| child).collect())
+}
+
+fn next_combination(indexes: &mut [usize], n: usize) -> bool {
+    let k = indexes.len();
+    if k == 0 || k > n {
+        return false;
+    }
+    let mut i = k;
+    while i > 0 {
+        i -= 1;
+        let limit = n - (k - 1 - i);
+        if indexes[i] + 1 < limit {
+            indexes[i] += 1;
+            let mut next = indexes[i];
+            for slot in indexes.iter_mut().skip(i + 1) {
+                next += 1;
+                *slot = next;
+            }
+            return true;
+        }
+    }
+    false
 }
 
 fn node_id_for_label(conn: &Connection, key_id: i64, label: &str) -> Result<i64> {

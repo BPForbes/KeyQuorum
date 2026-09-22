@@ -138,6 +138,24 @@ fn migrate(conn: &Connection) -> Result<()> {
                     [],
                 )?;
             }
+            if !table_has_column(conn, "keys", "custody_mode")? {
+                conn.execute(
+                    "ALTER TABLE keys ADD COLUMN custody_mode TEXT NOT NULL DEFAULT 'hardware'",
+                    [],
+                )?;
+            }
+            if !table_has_column(conn, "keys", "minimum_physical_devices")? {
+                conn.execute(
+                    "ALTER TABLE keys ADD COLUMN minimum_physical_devices INTEGER NOT NULL DEFAULT 1",
+                    [],
+                )?;
+            }
+            if !table_has_column(conn, "keys", "unlock_approval")? {
+                conn.execute(
+                    "ALTER TABLE keys ADD COLUMN unlock_approval TEXT NOT NULL DEFAULT 'none'",
+                    [],
+                )?;
+            }
             rebuild_key_nodes_if_share_required(conn)?;
             Ok(())
         })();

@@ -84,6 +84,25 @@ personal SQLite file. Later commands re-check the hash and inject the
 bearer. Never commit bearers, `.kqpb` files, `*.kqcert`, `*.kqrl`,
 `*.kqpolicy`, provider root keys, or the relay database.
 
+A hardware key with no `device_placements` row is its own device: that is the
+original one-key one-device exchange, and distinct key files count as distinct
+devices. `keyquorum-device` (and `keyquorum device`) stores several
+passphrase-wrapped identities as logical slots in one directory. A placement,
+written only from a container the library opened, ties those keys to that
+container's `device_id`. `keys.custody_mode` is `hardware` (one key per device)
+or `logical` (several slots may satisfy Shamir together).
+`minimum_physical_devices` counts distinct device ids either way, so slots on
+one container cannot satisfy a multi-device policy. Logical slots are not a
+hardware quorum. A non-root `tree restructure` stays pending until the parent
+countersigns; employee reissue by the direct parent stays a single signature.
+`unlock_approval = parent` is opt-in. `device.kq` is signed by `device.skey`,
+and each slot token seals that same device id. `keyquorum transfer copy|move`
+moves possession of an active identity between two open devices. A ghost keeps
+hierarchy and provenance without a private key, and cannot sign, satisfy
+quorum, authorize an import, or be exported. COPY leaves the source active.
+MOVE leaves it active until the destination commits. `KQTX` packages are
+signed by the source device and are not sealed envelopes.
+
 ## Setup / build / test
 
 - Build (customer CLI): `cargo build --release` (no mailbox host subcommand)

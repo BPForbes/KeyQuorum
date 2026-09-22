@@ -1,6 +1,7 @@
-//! Hardware-key registry: keypair generation (pure, no I/O — this project
-//! deliberately does not commit to a private-key custody scheme yet, see
-//! README's Roadmap) and CRUD over the `hardware_keys` table.
+//! Hardware-key registry: keypair generation (pure, no I/O) and CRUD over
+//! the `hardware_keys` table. A key file is the original one-key one-device
+//! exchange. Container slots live in `device`; this module does not store
+//! private keys.
 
 use crate::error::{Error, Result};
 use base64::Engine as _;

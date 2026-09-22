@@ -1,5 +1,7 @@
+pub mod authority;
 pub mod crypto;
 pub mod db;
+pub mod device;
 pub mod envelope;
 pub mod error;
 pub mod export;
@@ -15,4 +17,5 @@ pub mod quorum;
 pub mod relay;
 pub mod sharing;
 pub mod signing;
+pub mod transfer;
 pub mod vault;

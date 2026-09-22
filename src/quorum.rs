@@ -3,7 +3,9 @@
 //! file means reconstructing that key's tree — a flat "M-of-N hardware
 //! keys" quorum is just the simplest possible tree shape.
 
+use crate::authority::{self, UnlockGrant};
 use crate::crypto::{self, NONCE_LEN};
+use crate::device;
 use crate::error::{Error, Result};
 use crate::key_tree::{self, NodeSpec, TreeSummary};
 use crate::locked_files;
@@ -97,52 +99,96 @@ pub fn status(conn: &Connection, file_id: i64) -> Result<FileStatus> {
 
 /// `raw_shares` maps a leaf `key_nodes.id` to its already-unwrapped raw
 /// share bytes — see `key_tree`'s module doc comment for why obtaining
-/// them is the caller's responsibility this round.
+/// them is the caller's responsibility. A key file with no placement is
+/// one device; slots that share a container are not.
 pub fn unlock_file(
     conn: &Connection,
     file_id: i64,
     raw_shares: &HashMap<i64, Vec<u8>>,
+) -> Result<Vec<u8>> {
+    unlock_file_with_approval(conn, file_id, raw_shares, &[])
+}
+
+/// Same as [`unlock_file`], plus parent signatures when the tree's
+/// `unlock_approval` policy asks for them.
+pub fn unlock_file_with_approval(
+    conn: &Connection,
+    file_id: i64,
+    raw_shares: &HashMap<i64, Vec<u8>>,
+    grants: &[UnlockGrant],
+) -> Result<Vec<u8>> {
+    let key_id: i64 = conn.query_row(
+        "SELECT key_id FROM files WHERE id = ?1",
+        params![file_id],
+        |row| row.get(0),
+    )?;
+    let presented = match key_tree::reconstruct_presented(conn, key_id, raw_shares) {
+        Ok(presented) => presented,
+        Err(err) => {
+            let _ = record_unlock_failure(conn, file_id, &err);
+            return Err(err);
+        }
+    };
+    complete_unlock(conn, file_id, presented, grants)
+}
+
+/// Write the same failed `unlock_events` row the unlock path writes when
+/// reconstruction fails before [`complete_unlock`] runs.
+pub fn record_unlock_failure(conn: &Connection, file_id: i64, err: &Error) -> Result<()> {
+    conn.execute(
+        "INSERT INTO unlock_events (file_id, success, keys_presented) VALUES (?1, 0, ?2)",
+        params![file_id, format!("failed: {err}")],
+    )?;
+    Ok(())
+}
+
+/// Decrypt with an already reconstructed secret and write one audit row.
+/// Callers that fail while building approval grants record that failure
+/// themselves so the secret is not reconstructed a second time.
+pub fn complete_unlock(
+    conn: &Connection,
+    file_id: i64,
+    presented: key_tree::PresentedReconstruction,
+    grants: &[UnlockGrant],
+) -> Result<Vec<u8>> {
+    let audit_devices = device::format_presentation(&presented.devices);
+    let secret = Zeroizing::new(presented.secret);
+    let result = decrypt_presented(
+        conn,
+        file_id,
+        secret.as_slice(),
+        &presented.leaves,
+        &presented.devices,
+        grants,
+    );
+    let keys_presented = match &result {
+        Ok(_) => audit_devices,
+        Err(err) => format!("failed: {err}"),
+    };
+    let _ = conn.execute(
+        "INSERT INTO unlock_events (file_id, success, keys_presented) VALUES (?1, ?2, ?3)",
+        params![file_id, result.is_ok() as i64, keys_presented],
+    );
+    result
+}
+
+fn decrypt_presented(
+    conn: &Connection,
+    file_id: i64,
+    secret: &[u8],
+    leaves: &[device::UsedLeaf],
+    devices: &[device::PresentedDevice],
+    grants: &[UnlockGrant],
 ) -> Result<Vec<u8>> {
     let (encrypted_path, key_id, nonce): (String, i64, Vec<u8>) = conn.query_row(
         "SELECT encrypted_path, key_id, nonce FROM files WHERE id = ?1",
         params![file_id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
-
-    let result = reconstruct_and_decrypt(conn, key_id, &encrypted_path, &nonce, raw_shares);
-
-    // Best-effort audit trail: unlock_events already existed in the schema
-    // for exactly this, unused until now. A raw share's origin (which
-    // hardware key it came from) isn't known yet without the deferred
-    // unwrap step, so this logs only a count and the outcome.
-    let _ = conn.execute(
-        "INSERT INTO unlock_events (file_id, success, keys_presented) VALUES (?1, ?2, ?3)",
-        params![
-            file_id,
-            result.is_ok() as i64,
-            format!("{} raw share(s) presented", raw_shares.len())
-        ],
-    );
-
-    result
-}
-
-fn reconstruct_and_decrypt(
-    conn: &Connection,
-    key_id: i64,
-    encrypted_path: &str,
-    nonce: &[u8],
-    raw_shares: &HashMap<i64, Vec<u8>>,
-) -> Result<Vec<u8>> {
-    let data_key = Zeroizing::new(key_tree::reconstruct(conn, key_id, raw_shares)?);
-    let data_key: Zeroizing<[u8; crypto::KEY_LEN]> = Zeroizing::new(
-        data_key
-            .as_slice()
-            .try_into()
-            .map_err(|_| Error::QuorumNotMet)?,
-    );
+    authority::require_unlock_approval(conn, key_id, file_id, leaves, devices, grants)?;
+    let data_key: Zeroizing<[u8; crypto::KEY_LEN]> =
+        Zeroizing::new(secret.try_into().map_err(|_| Error::QuorumNotMet)?);
     let nonce: [u8; NONCE_LEN] = nonce.try_into().map_err(|_| Error::IntegrityCheckFailed)?;
-
     let ciphertext = fs::read(encrypted_path)?;
     crypto::decrypt(&data_key, &nonce, &ciphertext).map_err(|_| Error::IntegrityCheckFailed)
 }

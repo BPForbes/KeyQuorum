@@ -5,9 +5,24 @@ KeyQuorum is a secure file-sharing system centered on hardware key sharing. File
 ## Status
 
 Early scaffolding, though the CLI now covers most of what the concept below describes.
-Hardware-key quorum splitting/reconstruction is implemented in software (keys are
-software keypairs today, not real hardware tokens yet — see Roadmap). No real
-hardware/USB integration exists.
+Hardware-key quorum splitting/reconstruction is implemented in software. A key
+file with no container placement is still one device: that is the original
+one-key one-device exchange, and distinct key files count as distinct devices.
+`split` and `tree` set `--custody` and `--minimum-physical-devices`. Commands
+that unwrap a key take `--slot container=label` beside `--share-file`.
+`keyquorum-device` can also put several identities in logical slots on one
+directory (a mounted USB, or a stand-in). Those slots share one device id.
+Logical mode is for development and constrained hardware; it is not a hardware
+quorum. A tree can require `minimum_physical_devices` so co-resident slots
+cannot satisfy a multi-device policy. `device.kq` is signed by `device.skey`,
+and each slot token seals that same device id, so rewriting the descriptor
+cannot make one container count as two devices. `keyquorum transfer copy` and
+`transfer move` carry an active identity to a second device that is open at
+the same time. The source stays active on a copy. A move stays active on the
+source until the destination commits, then the source keeps a ghost: hierarchy
+and provenance without the private key. A ghost cannot sign, satisfy a quorum,
+authorize an import, or be exported. The `KQTX` package is signed by the
+source device; it is not a sealed envelope.
 
 ## Concept
 
@@ -439,12 +454,13 @@ private-bridge create/rotate/remove-member envelopes, and the
 authenticated update envelopes for hardware-key reissue (`reissue`) and
 key-tree restructure (`tree restructure`) described above.
 
-These still need a private-key custody model (a software file, OS keychain, or real hardware) that hasn't been decided:
+Private-key custody is the key file (one key, one device) or a `keyquorum-device`
+container (one directory, many passphrase-wrapped slots). `generate` still
+prints a private key once and does not write it. Real USB token protocols are
+not implemented; a container is a directory, not an OS partition.
 
-- **Persisted private-key custody** for `generate` (today the private key only ever
-  goes to stdout).
-- **`unwrap-share`** — turning a stored, sealed quorum share back into the raw share
-  a hardware key's own private key would produce.
+- **Persisted private-key custody** for `generate` beyond the key file and the
+  slot token (for example an OS keychain).
 - **`import`** of password-vault / locked-file `export` bundles (the bundle format
   and encoder are already final). Private-bridge `.kqpb` import is implemented.
 

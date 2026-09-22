@@ -41,7 +41,7 @@
 use crate::envelope::{
     hash_len_prefixed, is_weak_x25519_public_key, push_len_prefixed, push_len_prefixed_u32,
     take_array, take_len_prefixed, take_len_prefixed_u32, take_u32, take_u8, utf8, Addressed,
-    KIND_KEY_REISSUE, KIND_TREE_UPDATE,
+    KIND_COUNTERSIGNED_TREE, KIND_KEY_REISSUE, KIND_TREE_PROPOSAL, KIND_TREE_UPDATE,
 };
 use crate::error::{Error, Result};
 use crate::key_tree::{self, PublicTree};
@@ -56,6 +56,7 @@ use sha2::{Digest, Sha256};
 
 const REISSUE_DOMAIN: &[u8] = b"KQORG-KEYREISSUE-v1";
 const TREE_DOMAIN: &[u8] = b"KQORG-TREEUPDATE-v1";
+const COUNTERSIGN_DOMAIN: &[u8] = b"KQORG-COUNTERSIGN-v1";
 
 const KIND_REISSUE_STR: &str = "key_reissue";
 const KIND_TREE_STR: &str = "tree_restructure";
@@ -81,6 +82,15 @@ pub enum AppliedUpdate {
         key_id: i64,
         generation: u32,
         nodes: usize,
+    },
+    /// Recorded locally, not applied. Effective only after the named parent
+    /// countersigns.
+    TreeProposal {
+        tree_label: String,
+        authorizer_label: String,
+        countersigner_label: String,
+        generation: u32,
+        recipients: usize,
     },
 }
 
@@ -139,6 +149,24 @@ pub struct PlannedTreeRestructure {
     key_id: i64,
     previous_generation: u32,
     authorizer_label: String,
+    /// `true` when the authorizer is not the root. Commit stores a pending
+    /// proposal and does not advance `public_generation`.
+    pub needs_countersign: bool,
+    pub countersigner_label: Option<String>,
+    proposals: Vec<Vec<u8>>,
+}
+
+/// Countersigned restructure envelopes, ready to deliver. Commit is what
+/// advances `public_generation`.
+#[derive(Debug)]
+pub struct PlannedCountersign {
+    pub packages: Vec<Addressed>,
+    key_id: i64,
+    pub generation: u32,
+    previous_generation: u32,
+    tree_label: String,
+    authorizer_label: String,
+    countersigner_label: String,
 }
 
 // ---------------------------------------------------------------------
@@ -653,6 +681,13 @@ pub fn plan_tree_restructure(
         .ok_or(Error::StalePublicTree)?;
     full.generation = generation;
     let tree_label = full.label.clone();
+    let countersigner_label =
+        crate::authority::restructure_countersigner(authorizer_label).map(str::to_string);
+    let kind = if countersigner_label.is_some() {
+        KIND_TREE_PROPOSAL
+    } else {
+        KIND_TREE_UPDATE
+    };
 
     // The export and the arena load are the expensive parts and do not
     // vary by recipient, so they happen once here rather than inside the
@@ -660,6 +695,7 @@ pub fn plan_tree_restructure(
     let (tree, links) = key_tree::load_for_visibility(conn, key_id)?;
 
     let mut packages = Vec::new();
+    let mut proposals = Vec::new();
     let mut skipped = Vec::new();
     for (label, recipient_public_key) in tree_recipients(conn, key_id)? {
         if !is_ancestor_or_self(authorizer_label, &label) {
@@ -675,8 +711,16 @@ pub fn plan_tree_restructure(
             authorizer_label: authorizer_label.to_string(),
             slice_json: serde_json::to_vec(&slice).map_err(|_| Error::InvalidTreeSpec)?,
         };
+        let payload = letter.encode(&recipient_public_key, &signing_key)?;
+        let bytes = crate::envelope::seal(
+            crate::envelope::PACKAGE,
+            kind,
+            &recipient_public_key,
+            &payload,
+        )?;
+        proposals.push(payload);
         packages.push(Addressed {
-            bytes: letter.seal(&recipient_public_key, &signing_key)?,
+            bytes,
             label,
             recipient_public_key,
         });
@@ -690,6 +734,9 @@ pub fn plan_tree_restructure(
         key_id,
         previous_generation,
         authorizer_label: authorizer_label.to_string(),
+        needs_countersign: countersigner_label.is_some(),
+        countersigner_label,
+        proposals,
     })
 }
 
@@ -700,6 +747,32 @@ pub fn commit_planned_tree_restructure(
     conn: &Connection,
     planned: &PlannedTreeRestructure,
 ) -> Result<AppliedUpdate> {
+    if planned.needs_countersign {
+        let countersigner = planned
+            .countersigner_label
+            .as_deref()
+            .ok_or(Error::UpdateNotAuthorized)?;
+        return crate::db::with_immediate_transaction(conn, || {
+            for proposal in &planned.proposals {
+                insert_pending(
+                    conn,
+                    Some(planned.key_id),
+                    &planned.tree_label,
+                    &planned.authorizer_label,
+                    countersigner,
+                    planned.generation,
+                    proposal,
+                )?;
+            }
+            Ok(AppliedUpdate::TreeProposal {
+                tree_label: planned.tree_label.clone(),
+                authorizer_label: planned.authorizer_label.clone(),
+                countersigner_label: countersigner.to_string(),
+                generation: planned.generation,
+                recipients: planned.packages.len(),
+            })
+        });
+    }
     crate::db::with_immediate_transaction(conn, || {
         let updated = conn.execute(
             "UPDATE keys SET public_generation = ?1 WHERE id = ?2 AND public_generation = ?3",
@@ -765,7 +838,7 @@ impl TreeLetter {
         Ok(hasher.finalize().into())
     }
 
-    fn seal(&self, recipient_public_key: &[u8; 32], signing_key: &SigningKey) -> Result<Vec<u8>> {
+    fn encode(&self, recipient_public_key: &[u8; 32], signing_key: &SigningKey) -> Result<Vec<u8>> {
         let mut payload = Vec::new();
         push_len_prefixed(&mut payload, self.tree_label.as_bytes())?;
         payload.extend_from_slice(&self.generation.to_be_bytes());
@@ -774,6 +847,12 @@ impl TreeLetter {
         push_len_prefixed_u32(&mut payload, &self.slice_json)?;
         let preimage = self.preimage(recipient_public_key)?;
         payload.extend_from_slice(&signing::sign(&signing_key.to_bytes(), &preimage));
+        Ok(payload)
+    }
+
+    #[cfg(test)]
+    fn seal(&self, recipient_public_key: &[u8; 32], signing_key: &SigningKey) -> Result<Vec<u8>> {
+        let payload = self.encode(recipient_public_key, signing_key)?;
         crate::envelope::seal(
             crate::envelope::PACKAGE,
             KIND_TREE_UPDATE,
@@ -829,6 +908,11 @@ fn import_tree_update(
         &letter.preimage(recipient_public_key)?,
         &auth_sig,
     )?;
+    // A non-root authorizer can only propose. A direct KIND_TREE_UPDATE
+    // signed by that authorizer alone would skip the parent countersignature.
+    if crate::authority::restructure_countersigner(&letter.authorizer_label).is_some() {
+        return Err(Error::UpdateNotAuthorized);
+    }
 
     let slice: PublicTree =
         serde_json::from_slice(&letter.slice_json).map_err(|_| Error::InvalidTreeSpec)?;
@@ -884,6 +968,353 @@ fn import_tree_update(
     })
 }
 
+fn import_tree_proposal(
+    conn: &Connection,
+    payload: &[u8],
+    recipient_public_key: &[u8; 32],
+) -> Result<AppliedUpdate> {
+    let (letter, auth_sig) = TreeLetter::decode(payload)?;
+    verify_tree_letter(conn, &letter, &auth_sig, recipient_public_key)?;
+    let countersigner = crate::authority::restructure_countersigner(&letter.authorizer_label)
+        .ok_or(Error::UpdateNotAuthorized)?;
+    let existing = key_tree::tree_by_label(conn, &letter.tree_label)?;
+    if let Some((_, stored_generation)) = existing {
+        if letter.generation <= stored_generation {
+            return Err(Error::StaleUpdate);
+        }
+    }
+    let countersigner_label = countersigner.to_string();
+    insert_pending(
+        conn,
+        existing.map(|(id, _)| id),
+        &letter.tree_label,
+        &letter.authorizer_label,
+        &countersigner_label,
+        letter.generation,
+        payload,
+    )?;
+    Ok(AppliedUpdate::TreeProposal {
+        tree_label: letter.tree_label,
+        authorizer_label: letter.authorizer_label,
+        countersigner_label,
+        generation: letter.generation,
+        recipients: 1,
+    })
+}
+
+fn import_countersigned_tree(
+    conn: &Connection,
+    payload: &[u8],
+    recipient_public_key: &[u8; 32],
+) -> Result<AppliedUpdate> {
+    let (countersigner_label, countersign_sig, inner) = decode_countersigned(payload)?;
+    let preimage = countersign_preimage(&inner, &countersigner_label, recipient_public_key)?;
+    let countersigner_public = authorizer_signing_key(conn, &countersigner_label)?;
+    signing::verify_signature(&countersigner_public, &preimage, &countersign_sig)?;
+    let (letter, auth_sig) = TreeLetter::decode(&inner)?;
+    if crate::authority::restructure_countersigner(&letter.authorizer_label)
+        != Some(countersigner_label.as_str())
+    {
+        return Err(Error::UpdateNotAuthorized);
+    }
+    verify_tree_letter(conn, &letter, &auth_sig, recipient_public_key)?;
+    apply_tree_letter(conn, &letter, recipient_public_key, &inner)
+}
+
+/// Sign every pending proposal for `key_id`. Does not advance the generation;
+/// [`commit_planned_countersign`] does that after the envelopes are written.
+pub fn plan_restructure_countersign(
+    conn: &Connection,
+    key_id: i64,
+    countersigner_label: &str,
+    countersigner_secret: &[u8; 32],
+) -> Result<PlannedCountersign> {
+    let signing_key = SigningKey::from_bytes(countersigner_secret);
+    let countersigner_public = signing_key.verifying_key().to_bytes();
+    if private_bridge::signing_public_for_label(conn, countersigner_label)? != countersigner_public
+    {
+        return Err(Error::UpdateNotAuthorized);
+    }
+    let pending = load_pending(conn, key_id)?;
+    if pending.is_empty() {
+        return Err(Error::ProposalNotFound);
+    }
+    let first = &pending[0];
+    if pending.iter().any(|row| {
+        row.countersigner_label != countersigner_label
+            || row.generation != first.generation
+            || row.tree_label != first.tree_label
+            || row.authorizer_label != first.authorizer_label
+    }) {
+        return Err(Error::UpdateNotAuthorized);
+    }
+    if crate::authority::restructure_countersigner(&first.authorizer_label)
+        != Some(countersigner_label)
+    {
+        return Err(Error::UpdateNotAuthorized);
+    }
+    let mut packages = Vec::with_capacity(pending.len());
+    for row in &pending {
+        let (letter, auth_sig) = TreeLetter::decode(&row.proposal)?;
+        let recipient_public_key = private_bridge::encryption_public_for_label(
+            conn,
+            Some(key_id),
+            &letter.recipient_label,
+        )?;
+        verify_tree_letter(conn, &letter, &auth_sig, &recipient_public_key)?;
+        let preimage =
+            countersign_preimage(&row.proposal, countersigner_label, &recipient_public_key)?;
+        let signature = signing::sign(countersigner_secret, &preimage);
+        packages.push(Addressed {
+            bytes: seal_countersigned(
+                &row.proposal,
+                countersigner_label,
+                &signature,
+                &recipient_public_key,
+            )?,
+            label: letter.recipient_label,
+            recipient_public_key,
+        });
+    }
+    let generation = u32::try_from(first.generation).map_err(|_| Error::StalePublicTree)?;
+    let previous_generation = generation.checked_sub(1).ok_or(Error::StalePublicTree)?;
+    Ok(PlannedCountersign {
+        packages,
+        key_id,
+        generation,
+        previous_generation,
+        tree_label: first.tree_label.clone(),
+        authorizer_label: first.authorizer_label.clone(),
+        countersigner_label: countersigner_label.to_string(),
+    })
+}
+
+pub fn commit_planned_countersign(
+    conn: &Connection,
+    planned: &PlannedCountersign,
+) -> Result<AppliedUpdate> {
+    crate::db::with_immediate_transaction(conn, || {
+        let updated = conn.execute(
+            "UPDATE keys SET public_generation = ?1 WHERE id = ?2 AND public_generation = ?3",
+            params![
+                i64::from(planned.generation),
+                planned.key_id,
+                i64::from(planned.previous_generation)
+            ],
+        )?;
+        if updated != 1 {
+            return Err(Error::StalePublicTree);
+        }
+        conn.execute(
+            "DELETE FROM pending_org_actions WHERE key_id = ?1",
+            params![planned.key_id],
+        )?;
+        let nodes: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM key_nodes WHERE key_id = ?1",
+            params![planned.key_id],
+            |row| row.get(0),
+        )?;
+        record_update(
+            conn,
+            KIND_TREE_STR,
+            &planned.tree_label,
+            &planned.tree_label,
+            planned.generation,
+            &planned.countersigner_label,
+            &json!({
+                "authorizer": planned.authorizer_label,
+                "countersigner": planned.countersigner_label,
+                "recipients": planned.packages.len(),
+            })
+            .to_string(),
+        )?;
+        Ok(AppliedUpdate::TreeRestructure {
+            tree_label: planned.tree_label.clone(),
+            recipient_label: planned.tree_label.clone(),
+            key_id: planned.key_id,
+            generation: planned.generation,
+            nodes: usize::try_from(nodes).unwrap_or(0),
+        })
+    })
+}
+
+fn verify_tree_letter(
+    conn: &Connection,
+    letter: &TreeLetter,
+    auth_sig: &[u8; 64],
+    recipient_public_key: &[u8; 32],
+) -> Result<()> {
+    require_addressed_here(conn, &letter.recipient_label, recipient_public_key)?;
+    if !is_ancestor_or_self(&letter.authorizer_label, &letter.recipient_label) {
+        return Err(Error::UpdateNotAuthorized);
+    }
+    let authorizer_public = authorizer_signing_key(conn, &letter.authorizer_label)?;
+    signing::verify_signature(
+        &authorizer_public,
+        &letter.preimage(recipient_public_key)?,
+        auth_sig,
+    )?;
+    Ok(())
+}
+
+fn apply_tree_letter(
+    conn: &Connection,
+    letter: &TreeLetter,
+    recipient_public_key: &[u8; 32],
+    proposal: &[u8],
+) -> Result<AppliedUpdate> {
+    let slice: PublicTree =
+        serde_json::from_slice(&letter.slice_json).map_err(|_| Error::InvalidTreeSpec)?;
+    if slice.label != letter.tree_label || slice.generation != letter.generation {
+        return Err(Error::InvalidUpdatePackage);
+    }
+    let node = slice
+        .nodes
+        .iter()
+        .find(|n| n.label == letter.recipient_label)
+        .ok_or(Error::UpdateRecipientMismatch)?;
+    match node.encryption_public_key.as_deref() {
+        Some(hex_pk) if hex::decode(hex_pk).ok().as_deref() == Some(recipient_public_key) => {}
+        _ => return Err(Error::UpdateRecipientMismatch),
+    }
+    let existing = key_tree::tree_by_label(conn, &letter.tree_label)?;
+    if let Some((_, stored_generation)) = existing {
+        if letter.generation <= stored_generation {
+            return Err(Error::StaleUpdate);
+        }
+    }
+    let key_id = crate::db::with_immediate_transaction(conn, || {
+        let key_id = key_tree::apply_public_tree(conn, existing.map(|(id, _)| id), &slice)?;
+        conn.execute(
+            "DELETE FROM pending_org_actions WHERE proposal_hash = ?1",
+            params![Sha256::digest(proposal).as_slice()],
+        )?;
+        record_update(
+            conn,
+            KIND_TREE_STR,
+            &letter.tree_label,
+            &letter.tree_label,
+            letter.generation,
+            &letter.authorizer_label,
+            &json!({
+                "recipient": letter.recipient_label,
+                "nodes": slice.nodes.len(),
+            })
+            .to_string(),
+        )?;
+        Ok(key_id)
+    })?;
+    Ok(AppliedUpdate::TreeRestructure {
+        tree_label: letter.tree_label.clone(),
+        recipient_label: letter.recipient_label.clone(),
+        key_id,
+        generation: letter.generation,
+        nodes: slice.nodes.len(),
+    })
+}
+
+struct PendingProposal {
+    tree_label: String,
+    authorizer_label: String,
+    countersigner_label: String,
+    generation: i64,
+    proposal: Vec<u8>,
+}
+
+fn load_pending(conn: &Connection, key_id: i64) -> Result<Vec<PendingProposal>> {
+    let mut stmt = conn.prepare(
+        "SELECT tree_label, authorizer_label, countersigner_label, generation, proposal
+         FROM pending_org_actions WHERE key_id = ?1 ORDER BY id",
+    )?;
+    let rows = stmt
+        .query_map(params![key_id], |row| {
+            Ok(PendingProposal {
+                tree_label: row.get(0)?,
+                authorizer_label: row.get(1)?,
+                countersigner_label: row.get(2)?,
+                generation: row.get(3)?,
+                proposal: row.get(4)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+fn insert_pending(
+    conn: &Connection,
+    key_id: Option<i64>,
+    tree_label: &str,
+    authorizer_label: &str,
+    countersigner_label: &str,
+    generation: u32,
+    proposal: &[u8],
+) -> Result<()> {
+    let hash = Sha256::digest(proposal);
+    match conn.execute(
+        "INSERT INTO pending_org_actions
+         (key_id, tree_label, authorizer_label, countersigner_label, generation, proposal_hash, proposal)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            key_id,
+            tree_label,
+            authorizer_label,
+            countersigner_label,
+            i64::from(generation),
+            hash.as_slice(),
+            proposal,
+        ],
+    ) {
+        Ok(_) => Ok(()),
+        Err(rusqlite::Error::SqliteFailure(err, _))
+            if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
+            Err(Error::StaleUpdate)
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn countersign_preimage(
+    proposal: &[u8],
+    countersigner_label: &str,
+    recipient_public_key: &[u8; 32],
+) -> Result<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    hasher.update(COUNTERSIGN_DOMAIN);
+    hasher.update(Sha256::digest(proposal));
+    hash_len_prefixed(&mut hasher, countersigner_label.as_bytes())?;
+    hasher.update(recipient_public_key);
+    Ok(hasher.finalize().into())
+}
+
+fn seal_countersigned(
+    proposal: &[u8],
+    countersigner_label: &str,
+    signature: &[u8; 64],
+    recipient_public_key: &[u8; 32],
+) -> Result<Vec<u8>> {
+    let mut payload = Vec::new();
+    push_len_prefixed(&mut payload, countersigner_label.as_bytes())?;
+    payload.extend_from_slice(signature);
+    payload.extend_from_slice(proposal);
+    crate::envelope::seal(
+        crate::envelope::PACKAGE,
+        KIND_COUNTERSIGNED_TREE,
+        recipient_public_key,
+        &payload,
+    )
+}
+
+fn decode_countersigned(payload: &[u8]) -> Result<(String, [u8; 64], Vec<u8>)> {
+    let mut data = payload;
+    let countersigner_label = utf8(take_len_prefixed(&mut data)?)?;
+    let signature = take_array(&mut data)?;
+    if countersigner_label.is_empty() || data.is_empty() {
+        return Err(Error::InvalidUpdatePackage);
+    }
+    Ok((countersigner_label, signature, data.to_vec()))
+}
+
 /// Every active leaf of the tree that has an unrevoked encryption key: the
 /// stores that need a slice of the new topology. Goes through
 /// [`insert_recipient`] rather than trusting `key_tree::active_encryption_leaves`'s
@@ -914,6 +1345,8 @@ pub fn import_update(
     match kind {
         KIND_KEY_REISSUE => import_reissue(conn, &payload, &recipient_public_key),
         KIND_TREE_UPDATE => import_tree_update(conn, &payload, &recipient_public_key),
+        KIND_TREE_PROPOSAL => import_tree_proposal(conn, &payload, &recipient_public_key),
+        KIND_COUNTERSIGNED_TREE => import_countersigned_tree(conn, &payload, &recipient_public_key),
         _ => Err(Error::InvalidUpdatePackage),
     }
 }
@@ -928,11 +1361,9 @@ pub fn import_any(
     recipient_secret: &[u8; 32],
 ) -> Result<ImportedEnvelope> {
     match crate::envelope::kind(bytes)? {
-        KIND_KEY_REISSUE | KIND_TREE_UPDATE => Ok(ImportedEnvelope::Update(import_update(
-            conn,
-            bytes,
-            recipient_secret,
-        )?)),
+        KIND_KEY_REISSUE | KIND_TREE_UPDATE | KIND_TREE_PROPOSAL | KIND_COUNTERSIGNED_TREE => Ok(
+            ImportedEnvelope::Update(import_update(conn, bytes, recipient_secret)?),
+        ),
         _ => Ok(ImportedEnvelope::Bridge(private_bridge::import_package(
             conn,
             bytes,

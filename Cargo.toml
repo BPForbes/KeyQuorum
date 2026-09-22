@@ -28,6 +28,10 @@ provider = [
 name = "keyquorum"
 path = "src/bin/keyquorum/main.rs"
 
+[[bin]]
+name = "keyquorum-device"
+path = "src/bin/keyquorum-device.rs"
+
 [dependencies]
 rusqlite = { version = "0.40", features = ["bundled"] }
 argon2 = "0.5"

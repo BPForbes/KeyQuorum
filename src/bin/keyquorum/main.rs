@@ -24,9 +24,13 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use zeroize::Zeroize;
 
 #[cfg(feature = "provider")]
 mod host;
+
+mod device_cmd;
+mod transfer_cmd;
 
 /// How long a "one-time" PIN unlock stays valid before the PIN is needed
 /// again (see `pin.rs`); not configurable via the CLI in this pass.
@@ -100,6 +104,9 @@ enum Command {
         /// remaining active sibling must be supplied here or at the prompt.
         #[arg(long = "share-file", requires = "evict")]
         share_files: Vec<String>,
+        /// Survivor slot: container=label (repeatable). Same role as --share-file.
+        #[arg(long = "slot", requires = "evict")]
+        slots: Vec<String>,
         /// Drop whitelist permission (and any pairing) from --node to this peer
         #[arg(long = "deny-peer", requires_all = ["key_id", "node"])]
         deny_peers: Vec<String>,
@@ -144,6 +151,16 @@ enum Command {
         /// Register each --leaf public key (leaf label is the registry label)
         #[arg(long, requires = "leaves")]
         register: bool,
+        /// hardware: one key per device. logical: several slots may share one.
+        #[arg(long)]
+        custody: Option<String>,
+        /// Distinct physical devices required at reconstruct. Unplaced key
+        /// files each count as one device.
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=255))]
+        minimum_physical_devices: Option<u8>,
+        /// none, or parent (each used leaf needs its parent's signature)
+        #[arg(long)]
+        unlock_approval: Option<String>,
     },
     /// Pair two nodes, or reseal a leaf onto a new public key
     Bind {
@@ -157,8 +174,19 @@ enum Command {
         #[arg(long, conflicts_with = "peer")]
         public_key_file: Option<PathBuf>,
         /// Old key file that unwraps --node before a rebind
-        #[arg(long = "share-file", requires = "public_key_file")]
+        #[arg(
+            long = "share-file",
+            requires = "public_key_file",
+            conflicts_with = "slot"
+        )]
         share_file: Option<String>,
+        /// Container slot that unwraps --node: container=label
+        #[arg(
+            long = "slot",
+            requires = "public_key_file",
+            conflicts_with = "share_file"
+        )]
+        slot: Option<String>,
         /// Register --public-key-file if it is not already in the registry
         #[arg(long, requires = "public_key_file")]
         register: bool,
@@ -176,6 +204,10 @@ enum Command {
         /// Key files that recover the parent (repeatable)
         #[arg(long = "share-file")]
         share_files: Vec<String>,
+        /// Container slot that recovers the parent: container=label (repeatable).
+        /// A `--share-file` key with no placement is its own device.
+        #[arg(long = "slot")]
+        slots: Vec<String>,
         /// Generate a keypair at --public-key-file (.pub and sibling .key)
         #[arg(long)]
         generate_keys: bool,
@@ -198,6 +230,10 @@ enum Command {
         /// PEM, or hex. Any leaf not covered here is prompted for instead.
         #[arg(long = "share-file")]
         share_files: Vec<String>,
+        /// Container slot that unwraps a leaf: container=label (repeatable).
+        /// A `--share-file` key with no placement is its own device.
+        #[arg(long = "slot")]
+        slots: Vec<String>,
         /// Write the reassembled secret as raw file bytes (a `.pub` comes
         /// back as the original file). Omit to print hex on stdout.
         #[arg(long)]
@@ -281,8 +317,15 @@ enum Command {
         #[arg(long)]
         signing_key_file: PathBuf,
         /// Encryption private key that unwraps this store's sealed bridge secret
-        #[arg(long)]
-        share_file: String,
+        #[arg(long, required_unless_present = "slot", conflicts_with = "slot")]
+        share_file: Option<String>,
+        /// Container slot that unwraps the sealed bridge secret: container=label
+        #[arg(
+            long = "slot",
+            required_unless_present = "share_file",
+            conflicts_with = "share_file"
+        )]
+        slot: Option<String>,
         #[arg(long)]
         message_file: PathBuf,
         #[arg(long)]
@@ -318,6 +361,18 @@ enum Command {
         #[arg(long)]
         url: Option<String>,
     },
+    /// Copy or move an active key identity between two open devices.
+    /// A ghost keeps the hierarchy and cannot be exported.
+    Transfer {
+        #[command(subcommand)]
+        command: transfer_cmd::TransferCommand,
+    },
+    /// A directory of logical identity slots. A key file with no placement
+    /// is still one device; use `register` and `--share-file` for that.
+    Device {
+        #[command(subcommand)]
+        command: device_cmd::DeviceCommand,
+    },
     /// Provider mailbox host (capability build). Hidden from --help.
     #[cfg(feature = "provider")]
     #[command(hide = true)]
@@ -346,7 +401,7 @@ enum VaultCommand {
 }
 
 #[derive(Clone, Copy, ValueEnum)]
-enum CliKeyType {
+pub enum CliKeyType {
     Encryption,
     Signing,
 }
@@ -374,6 +429,13 @@ struct TreeArgs {
     /// Write a snapshot of the live tree (active nodes and binds)
     #[arg(long, conflicts_with = "nodes", requires = "key_id")]
     output: Option<PathBuf>,
+    /// hardware: one key per device. logical: several slots may share one.
+    #[arg(long, requires = "key_id")]
+    custody: Option<String>,
+    /// Distinct physical devices required at reconstruct. Unplaced key
+    /// files each count as one device.
+    #[arg(long, requires = "key_id", value_parser = clap::value_parser!(u8).range(1..=255))]
+    minimum_physical_devices: Option<u8>,
 }
 
 #[derive(Subcommand)]
@@ -398,10 +460,26 @@ enum TreeCommand {
         /// of are reported and left without an envelope.
         #[arg(long = "as")]
         as_node: String,
-        /// Ed25519 private key file for --as
+        /// Ed25519 private key file for --as. A container slot uses
+        /// `tree countersign` instead.
         #[arg(long)]
         signing_key_file: PathBuf,
         /// Directory for the per-recipient `.kqpb` envelopes
+        #[arg(long)]
+        output_dir: PathBuf,
+    },
+    /// Countersign a pending restructure. Pass a key file, or a container slot.
+    Countersign {
+        key_id: i64,
+        #[arg(long = "as")]
+        as_node: String,
+        /// Ed25519 private key file. Omit when using --device and --slot.
+        #[arg(long, conflicts_with = "device")]
+        signing_key_file: Option<PathBuf>,
+        #[arg(long, requires = "slot")]
+        device: Option<PathBuf>,
+        #[arg(long, requires = "device")]
+        slot: Option<String>,
         #[arg(long)]
         output_dir: PathBuf,
     },
@@ -511,8 +589,15 @@ enum PrivateBridgeCommand {
         #[arg(long)]
         file: PathBuf,
         /// Encryption private key that opens this package
-        #[arg(long)]
-        share_file: String,
+        #[arg(long, required_unless_present = "slot", conflicts_with = "slot")]
+        share_file: Option<String>,
+        /// Container slot that opens this package: container=label
+        #[arg(
+            long = "slot",
+            required_unless_present = "share_file",
+            conflicts_with = "share_file"
+        )]
+        slot: Option<String>,
     },
     /// Drop a signing member. Writes rotation/destroy packages first,
     /// then commits. Either both land or neither does, so a failure at
@@ -525,14 +610,23 @@ enum PrivateBridgeCommand {
         /// Local remaining member that holds the sealed bridge secret
         #[arg(long)]
         node: String,
-        #[arg(long)]
-        share_file: String,
+        /// Encryption private key that unwraps this store's sealed bridge secret
+        #[arg(long, required_unless_present = "slot", conflicts_with = "slot")]
+        share_file: Option<String>,
+        /// Container slot that unwraps the sealed bridge secret: container=label
+        #[arg(
+            long = "slot",
+            required_unless_present = "share_file",
+            conflicts_with = "share_file"
+        )]
+        slot: Option<String>,
         #[arg(long)]
         output_dir: PathBuf,
     },
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum AccessCommand {
     Password(AccessPasswordArgs),
     Quorum(AccessQuorumArgs),
@@ -613,6 +707,23 @@ struct AccessQuorumArgs {
     /// state 1 only: write plaintext here instead of stdout
     #[arg(long, conflicts_with_all = ["source", "encrypted_path", "tree_spec", "leaves", "name"])]
     output: Option<PathBuf>,
+    /// state 1: container=slot (repeatable). Same device id for every slot
+    /// in that container. A `--share-file` key with no placement is its own device.
+    #[arg(long = "slot", conflicts_with_all = ["source", "encrypted_path", "tree_spec", "leaves", "name"])]
+    slots: Vec<String>,
+    /// state 1: leaf=signing-key-file, or leaf=container>slot, when unlock
+    /// approval is `parent`.
+    #[arg(long = "approve", conflicts_with_all = ["source", "encrypted_path", "tree_spec", "leaves", "name"])]
+    approves: Vec<String>,
+    /// state 0: hardware (one key per device) or logical
+    #[arg(long, conflicts_with_all = ["id", "share_files", "output"])]
+    custody: Option<String>,
+    /// state 0: distinct physical devices required to unlock
+    #[arg(long, conflicts_with_all = ["id", "share_files", "output"], value_parser = clap::value_parser!(u8).range(1..=255))]
+    minimum_physical_devices: Option<u8>,
+    /// state 0: none, or parent
+    #[arg(long, conflicts_with_all = ["id", "share_files", "output"])]
+    unlock_approval: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -699,12 +810,15 @@ enum RelayCommand {
     },
     /// Download envelopes and the public-tree slice for this pull key
     Pull {
-        /// Import each envelope into --db using --share-file
-        #[arg(long, requires = "share_file")]
+        /// Import each envelope into --db using --share-file or --slot
+        #[arg(long, requires = "pull_secret")]
         import: bool,
         /// Encryption private key that opens the envelopes
-        #[arg(long, requires = "import")]
+        #[arg(long, requires = "import", group = "pull_secret")]
         share_file: Option<String>,
+        /// Container slot that opens the envelopes: container=label
+        #[arg(long = "slot", requires = "import", group = "pull_secret")]
+        slot: Option<String>,
         /// Write retrieved envelopes here (required unless --import)
         #[arg(long, required_unless_present = "import")]
         output_dir: Option<PathBuf>,
@@ -769,6 +883,7 @@ fn run(db_path: &Path, command: Command) -> Result<()> {
     match command {
         Command::Relay { command } => return run_relay(db_path, command),
         Command::Loadkey { api_key, url } => return run_loadkey(db_path, api_key, url),
+        Command::Transfer { command } => return transfer_cmd::run(command),
         #[cfg(feature = "provider")]
         Command::Host {
             mailbox_db,
@@ -826,10 +941,11 @@ fn run(db_path: &Path, command: Command) -> Result<()> {
             node,
             signing_key_file,
             share_file,
+            slot,
             message_file,
             signature_out,
         } => {
-            let encryption_sk = zeroize::Zeroizing::new(read_key_array_32(Path::new(&share_file))?);
+            let encryption_sk = encryption_secret_from(share_file.as_deref(), slot.as_deref())?;
             let signing_sk = zeroize::Zeroizing::new(read_key_array_32(&signing_key_file)?);
             let message = fs::read(&message_file)?;
             let artifact = private_bridge::sign_message(
@@ -849,8 +965,9 @@ fn run(db_path: &Path, command: Command) -> Result<()> {
         Command::Export { command } => run_export(&conn, command)?,
         Command::Share { command } => run_share(&conn, command)?,
         Command::Pin { command } => run_pin(&conn, command)?,
-        Command::Relay { .. } | Command::Loadkey { .. } => {
-            unreachable!("relay commands are handled before opening the org db")
+        Command::Device { command } => device_cmd::run(&conn, command)?,
+        Command::Transfer { .. } | Command::Relay { .. } | Command::Loadkey { .. } => {
+            unreachable!("transfer and relay commands are handled before opening the org db")
         }
         #[cfg(feature = "provider")]
         Command::Host { .. } => {
@@ -970,6 +1087,7 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
             node,
             evict,
             share_files,
+            slots,
             deny_peers,
             remove_peers,
         } => {
@@ -981,6 +1099,7 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
                     node_label: node.as_deref(),
                     evict,
                     share_files: &share_files,
+                    slots: &slots,
                     deny_peers: &deny_peers,
                     remove_peers: &remove_peers,
                 },
@@ -1000,6 +1119,9 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
             source,
             generate_keys,
             register,
+            custody,
+            minimum_physical_devices,
+            unlock_approval,
         } => {
             let from_leaves = tree_spec.is_none();
             let spec = match tree_spec {
@@ -1045,6 +1167,13 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
             for (a, b) in parse_bind_pairs(&binds)? {
                 key_tree::bind_pair(conn, key_id, &a, &b)?;
             }
+            device_cmd::apply_policy(
+                conn,
+                key_id,
+                custody.as_deref(),
+                minimum_physical_devices,
+                unlock_approval.as_deref(),
+            )?;
         }
         Command::Bind {
             key_id,
@@ -1052,6 +1181,7 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
             peer,
             public_key_file,
             share_file,
+            slot,
             register,
         } => match (peer, public_key_file) {
             (Some(peer), None) => {
@@ -1059,12 +1189,16 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
                 println!("Bound {node} <-> {peer}");
             }
             (None, Some(public_key_file)) => {
-                let share_file = share_file.unwrap_or_else(|| {
-                    fatal_usage_error("bind --public-key-file requires --share-file")
-                });
                 let new_id =
                     resolve_or_register_pub(conn, &node, &public_key_file, false, register)?;
-                let old_secret = secret_for_named_leaf(conn, key_id, &node, &share_file)?;
+                let old_secret = if let Some(slot) = slot {
+                    open_slot_encryption_secret(&slot)?
+                } else {
+                    let share_file = share_file.unwrap_or_else(|| {
+                        fatal_usage_error("bind --public-key-file requires --share-file or --slot")
+                    });
+                    secret_for_named_leaf(conn, key_id, &node, &share_file)?
+                };
                 key_tree::rebind_leaf(conn, key_id, &node, new_id, old_secret.as_ref())?;
                 println!("Rebound {node} to hardware key {new_id}");
             }
@@ -1076,6 +1210,7 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
             node,
             public_key_file,
             share_files,
+            slots,
             generate_keys,
             register,
         } => {
@@ -1083,7 +1218,7 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
                 resolve_or_register_pub(conn, &node, &public_key_file, generate_keys, register)?;
             let summary = key_tree::describe(conn, key_id)?;
             let parent_node = find_tree_node(&summary.root, &parent).ok_or(Error::NodeNotFound)?;
-            let shares = collect_shares(conn, parent_node, &share_files)?;
+            let shares = collect_shares(conn, parent_node, &share_files, &slots)?;
             let new_id =
                 key_tree::add_leaf_and_reshare(conn, key_id, &parent, &node, hw_id, &shares)?;
             key_tree::bind_leaf_to_active_siblings(conn, key_id, &node)?;
@@ -1094,10 +1229,11 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
             key_id,
             nodes,
             share_files,
+            slots,
             output,
         } => {
             let summary = key_tree::describe(conn, key_id)?;
-            let shares = collect_shares(conn, &summary.root, &share_files)?;
+            let shares = collect_shares(conn, &summary.root, &share_files, &slots)?;
             let secret = if nodes.is_empty() {
                 key_tree::reconstruct(conn, key_id, &shares)?
             } else {
@@ -1160,7 +1296,9 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
         | Command::Share { .. }
         | Command::Pin { .. }
         | Command::Relay { .. }
-        | Command::Loadkey { .. } => unreachable!("non-tree commands are dispatched in run()"),
+        | Command::Loadkey { .. }
+        | Command::Device { .. }
+        | Command::Transfer { .. } => unreachable!("non-tree commands are dispatched in run()"),
         #[cfg(feature = "provider")]
         Command::Host { .. } => unreachable!("non-tree commands are dispatched in run()"),
     }
@@ -1198,19 +1336,56 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
             for path in written {
                 println!("Wrote {}", path.display());
             }
-            println!(
-                "{} is now at public generation {} ({} envelope{})",
-                planned.tree_label,
-                planned.generation,
-                planned.packages.len(),
-                if planned.packages.len() == 1 { "" } else { "s" }
-            );
+            if planned.needs_countersign {
+                let parent = planned.countersigner_label.as_deref().unwrap_or("parent");
+                println!(
+                    "Proposal for {} at generation {} is waiting for {parent} to countersign ({} envelope{})",
+                    planned.tree_label,
+                    planned.generation,
+                    planned.packages.len(),
+                    if planned.packages.len() == 1 { "" } else { "s" }
+                );
+            } else {
+                println!(
+                    "{} is now at public generation {} ({} envelope{})",
+                    planned.tree_label,
+                    planned.generation,
+                    planned.packages.len(),
+                    if planned.packages.len() == 1 { "" } else { "s" }
+                );
+            }
             if !planned.skipped.is_empty() {
                 println!(
                     "No envelope for {} ({as_node} is not an ancestor)",
                     planned.skipped.join(", ")
                 );
             }
+        }
+        Some(TreeCommand::Countersign {
+            key_id,
+            as_node,
+            signing_key_file,
+            device,
+            slot,
+            output_dir,
+        }) => {
+            let signing_sk = zeroize::Zeroizing::new(signing_secret_from(
+                signing_key_file.as_deref(),
+                device.as_deref(),
+                slot.as_deref(),
+            )?);
+            let planned =
+                org_update::plan_restructure_countersign(conn, key_id, &as_node, &signing_sk)?;
+            let written = deliver_then_commit(&output_dir, &planned.packages, || {
+                org_update::commit_planned_countersign(conn, &planned).map(|_| ())
+            })?;
+            for path in written {
+                println!("Wrote {}", path.display());
+            }
+            println!(
+                "{} countersigned generation {}",
+                as_node, planned.generation
+            );
         }
         Some(TreeCommand::Fetch {
             key_id,
@@ -1236,27 +1411,44 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
                 slice.nodes.len()
             );
         }
-        None => match args.key_id {
-            None => {
-                let trees = key_tree::list_trees(conn)?;
-                if trees.is_empty() {
-                    println!("(no split trees)");
-                } else {
-                    for tree in trees {
-                        println!("{}\t{}", tree.key_id, tree.label);
+        None => {
+            if args.custody.is_some() || args.minimum_physical_devices.is_some() {
+                let key_id = args.key_id.unwrap_or_else(|| {
+                    fatal_usage_error(
+                        "tree --custody and --minimum-physical-devices require a key id",
+                    );
+                });
+                device_cmd::apply_policy(
+                    conn,
+                    key_id,
+                    args.custody.as_deref(),
+                    args.minimum_physical_devices,
+                    None,
+                )?;
+                println!("Updated custody for key {key_id}");
+            }
+            match args.key_id {
+                None => {
+                    let trees = key_tree::list_trees(conn)?;
+                    if trees.is_empty() {
+                        println!("(no split trees)");
+                    } else {
+                        for tree in trees {
+                            println!("{}\t{}", tree.key_id, tree.label);
+                        }
                     }
                 }
-            }
-            Some(key_id) if args.nodes.is_empty() => {
-                let summary = key_tree::describe(conn, key_id)?;
-                println!("{} (key {})", summary.label, summary.key_id);
-                print_tree_node(&summary.root, 0);
-                if let Some(path) = args.output {
-                    write_live_spec(conn, key_id, &path)?;
+                Some(key_id) if args.nodes.is_empty() => {
+                    let summary = key_tree::describe(conn, key_id)?;
+                    println!("{} (key {})", summary.label, summary.key_id);
+                    print_tree_node(&summary.root, 0);
+                    if let Some(path) = args.output {
+                        write_live_spec(conn, key_id, &path)?;
+                    }
                 }
+                Some(key_id) => print_lca(conn, key_id, &args.nodes)?,
             }
-            Some(key_id) => print_lca(conn, key_id, &args.nodes)?,
-        },
+        }
     }
     Ok(())
 }
@@ -1452,12 +1644,16 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
                 }
             }
         }
-        PrivateBridgeCommand::Import { file, share_file } => {
+        PrivateBridgeCommand::Import {
+            file,
+            share_file,
+            slot,
+        } => {
             // One inbox carries bridge envelopes and authenticated
             // organization updates alike, so dispatch on the kind byte
             // rather than making the operator sort them by hand.
             let bytes = fs::read(&file)?;
-            let sk = zeroize::Zeroizing::new(read_key_array_32(Path::new(&share_file))?);
+            let sk = encryption_secret_from(share_file.as_deref(), slot.as_deref())?;
             match org_update::import_any(conn, &bytes, &sk)? {
                 org_update::ImportedEnvelope::Bridge(summary) => {
                     println!("Imported private bridge {}", summary.uid);
@@ -1473,9 +1669,10 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
             member,
             node,
             share_file,
+            slot,
             output_dir,
         } => {
-            let sk = zeroize::Zeroizing::new(read_key_array_32(Path::new(&share_file))?);
+            let sk = encryption_secret_from(share_file.as_deref(), slot.as_deref())?;
             let planned = private_bridge::plan_remove_member(conn, &uid, &member, &node, &sk)?;
             let written = deliver_then_commit(&output_dir, &planned.outcome.packages, || {
                 private_bridge::commit_planned_removal(conn, &planned)
@@ -1782,12 +1979,43 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
                 }
             }
             println!("Locked file {id}");
+            let file_status = quorum::status(conn, id)?;
+            device_cmd::apply_policy(
+                conn,
+                file_status.tree.key_id,
+                args.custody.as_deref(),
+                args.minimum_physical_devices,
+                args.unlock_approval.as_deref(),
+            )?;
         }
         Some(1) => {
             let id = require(args.id, "id");
             let file_status = quorum::status(conn, id)?;
-            let shares = collect_shares(conn, &file_status.tree.root, &args.share_files)?;
-            let plaintext = quorum::unlock_file(conn, id, &shares)?;
+            let shares =
+                collect_shares(conn, &file_status.tree.root, &args.share_files, &args.slots)?;
+            let presented =
+                match key_tree::reconstruct_presented(conn, file_status.tree.key_id, &shares) {
+                    Ok(presented) => presented,
+                    Err(err) => {
+                        quorum::record_unlock_failure(conn, id, &err)?;
+                        return Err(err);
+                    }
+                };
+            let grants = match approval_grants(
+                id,
+                file_status.tree.key_id,
+                &presented.devices,
+                &args.approves,
+            ) {
+                Ok(grants) => grants,
+                Err(err) => {
+                    let mut secret = presented.secret;
+                    secret.zeroize();
+                    quorum::record_unlock_failure(conn, id, &err)?;
+                    return Err(err);
+                }
+            };
+            let plaintext = quorum::complete_unlock(conn, id, presented, &grants)?;
             match args.output {
                 Some(path) => locked_files::write_owner_only(&path, &plaintext)?,
                 None => io::stdout().write_all(&plaintext)?,
@@ -2048,6 +2276,7 @@ fn run_relay(db_path: &Path, command: RelayCommand) -> Result<()> {
         RelayCommand::Pull {
             import,
             share_file,
+            slot,
             output_dir,
             url,
             api_key,
@@ -2077,8 +2306,10 @@ fn run_relay(db_path: &Path, command: RelayCommand) -> Result<()> {
             }
 
             let share_sk = if import {
-                let path = share_file.as_ref().ok_or(Error::InvalidPath)?;
-                Some(zeroize::Zeroizing::new(read_key_array_32(Path::new(path))?))
+                Some(encryption_secret_from(
+                    share_file.as_deref(),
+                    slot.as_deref(),
+                )?)
             } else {
                 None
             };
@@ -2139,6 +2370,15 @@ fn describe_applied_update(applied: &org_update::AppliedUpdate) -> String {
                 rotated.join(" and ")
             )
         }
+        org_update::AppliedUpdate::TreeProposal {
+            tree_label,
+            authorizer_label,
+            countersigner_label,
+            generation,
+            recipients,
+        } => format!(
+            "recorded {tree_label} restructure proposal generation {generation} from {authorizer_label}, waiting for {countersigner_label} ({recipients} recipient(s))"
+        ),
         org_update::AppliedUpdate::TreeRestructure {
             tree_label,
             key_id,
@@ -2307,6 +2547,7 @@ struct HardwareRevokeArgs<'a> {
     node_label: Option<&'a str>,
     evict: bool,
     share_files: &'a [String],
+    slots: &'a [String],
     deny_peers: &'a [String],
     remove_peers: &'a [String],
 }
@@ -2321,6 +2562,7 @@ fn apply_hardware_revoke(conn: &mut Connection, args: HardwareRevokeArgs<'_>) ->
         node_label,
         evict,
         share_files,
+        slots,
         deny_peers,
         remove_peers,
     } = args;
@@ -2364,7 +2606,7 @@ fn apply_hardware_revoke(conn: &mut Connection, args: HardwareRevokeArgs<'_>) ->
             },
         };
         let summary = key_tree::describe(conn, target.0)?;
-        let shares = collect_shares(conn, &summary.root, share_files)?;
+        let shares = collect_shares(conn, &summary.root, share_files, slots)?;
         let changes = key_tree::evict_and_refresh(conn, target.0, target.1, &shares)?;
         println!("Evicted node {}; survivor shares refreshed", target.1);
         evict_changes = changes;
@@ -2483,9 +2725,123 @@ fn leaf_backed_by<'a>(
     Ok(node)
 }
 
+fn signing_secret_from(
+    key_file: Option<&Path>,
+    device_path: Option<&Path>,
+    slot: Option<&str>,
+) -> Result<[u8; 32]> {
+    if let Some(path) = key_file {
+        return read_key_array_32(path);
+    }
+    let (Some(path), Some(slot)) = (device_path, slot) else {
+        fatal_usage_error("countersign requires --signing-key-file or --device and --slot");
+    };
+    let container = keyquorum::device::open(path)?;
+    let passphrase = keyquorum::device::prompt_passphrase(&format!("Passphrase for {slot}: "))?;
+    let secrets = keyquorum::device::open_slot(&container, slot, &passphrase)?;
+    Ok(*secrets.signing_secret)
+}
+
+fn encryption_secret_from(
+    share_file: Option<&str>,
+    slot: Option<&str>,
+) -> Result<zeroize::Zeroizing<[u8; 32]>> {
+    match (share_file, slot) {
+        (Some(path), None) => Ok(zeroize::Zeroizing::new(read_key_array_32(Path::new(path))?)),
+        (None, Some(spec)) => open_slot_encryption_secret(spec),
+        _ => fatal_usage_error("pass --share-file or --slot container=label"),
+    }
+}
+
+fn open_slot_encryption_secret(entry: &str) -> Result<zeroize::Zeroizing<[u8; 32]>> {
+    let (path, label) = entry
+        .rsplit_once('=')
+        .unwrap_or_else(|| fatal_usage_error("--slot must be container=label"));
+    if path.is_empty() || label.is_empty() {
+        fatal_usage_error("--slot must be container=label");
+    }
+    let container = keyquorum::device::open(Path::new(path))?;
+    let passphrase = keyquorum::device::prompt_passphrase(&format!("Passphrase for {label}: "))?;
+    let secrets = keyquorum::device::open_slot(&container, label, &passphrase)?;
+    Ok(secrets.encryption_secret)
+}
+
+fn add_slot_shares(
+    conn: &Connection,
+    root: &TreeNodeSummary,
+    shares: &mut HashMap<i64, Vec<u8>>,
+    slots: &[String],
+) -> Result<()> {
+    if slots.is_empty() {
+        return Ok(());
+    }
+    let mut leaves = Vec::new();
+    collect_leaves(root, &mut leaves);
+    for entry in slots {
+        let (path, label) = entry
+            .rsplit_once('=')
+            .unwrap_or_else(|| fatal_usage_error("--slot must be container=label"));
+        if path.is_empty() || label.is_empty() {
+            fatal_usage_error("--slot must be container=label");
+        }
+        let container = keyquorum::device::open(Path::new(path))?;
+        let passphrase =
+            keyquorum::device::prompt_passphrase(&format!("Passphrase for {label}: "))?;
+        let secrets = keyquorum::device::open_slot(&container, label, &passphrase)?;
+        unwrap_leaves_for_secret(conn, &leaves, shares, secrets.encryption_secret.as_slice())?;
+    }
+    Ok(())
+}
+
+fn approval_grants(
+    file_id: i64,
+    key_id: i64,
+    devices: &[keyquorum::device::PresentedDevice],
+    approves: &[String],
+) -> Result<Vec<keyquorum::authority::UnlockGrant>> {
+    if approves.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut device_ids: Vec<[u8; 16]> = devices.iter().map(|device| device.device_id).collect();
+    device_ids.sort();
+    let mut grants = Vec::with_capacity(approves.len());
+    for entry in approves {
+        let (leaf, spec) = entry.split_once('=').unwrap_or_else(|| {
+            fatal_usage_error("--approve must be leaf=key-file or leaf=container>slot")
+        });
+        let parent = private_bridge::parent_node_label(leaf)
+            .ok_or(Error::UnlockApprovalRequired)?
+            .to_string();
+        let preimage = keyquorum::authority::unlock_approval_preimage(
+            file_id,
+            key_id,
+            leaf,
+            &parent,
+            &device_ids,
+        )?;
+        let signature = if let Some((container, slot)) = spec.split_once('>') {
+            let opened = keyquorum::device::open(Path::new(container))?;
+            let passphrase =
+                keyquorum::device::prompt_passphrase(&format!("Passphrase for {slot}: "))?;
+            let secrets = keyquorum::device::open_slot(&opened, slot, &passphrase)?;
+            keyquorum::device::sign_message(&secrets, &preimage)
+        } else {
+            let secret = zeroize::Zeroizing::new(read_key_array_32(Path::new(spec))?);
+            signing::sign(&secret, &preimage)
+        };
+        grants.push(keyquorum::authority::UnlockGrant {
+            leaf_label: leaf.to_string(),
+            countersigner_label: parent,
+            signature,
+        });
+    }
+    Ok(grants)
+}
+
 /// Gathers raw shares for every active leaf in `root`. `--share-file` is a
 /// path to the hardware key that backs the leaf (`.pub`, `.key`, PEM, or
-/// hex). A matching private key unwraps the sealed share in the database.
+/// hex). `--slot` is `container=label` and unwraps with that slot's key.
+/// A matching private key unwraps the sealed share in the database.
 /// `node_id=path` is still accepted as a raw already-unwrapped share.
 /// Leaves not covered by a flag are prompted for (key-file path or hex
 /// private key). Never takes share or key material as a bare argv value.
@@ -2493,6 +2849,7 @@ fn collect_shares(
     conn: &Connection,
     root: &TreeNodeSummary,
     share_files: &[String],
+    slots: &[String],
 ) -> Result<HashMap<i64, Vec<u8>>> {
     let mut leaves = Vec::new();
     collect_leaves(root, &mut leaves);
@@ -2507,6 +2864,7 @@ fn collect_shares(
         }
         apply_key_file(conn, &leaves, &mut shares, Path::new(entry))?;
     }
+    add_slot_shares(conn, root, &mut shares, slots)?;
 
     for (node_id, hardware_key_id, label) in &leaves {
         if shares.contains_key(node_id) {

@@ -729,4 +729,95 @@ fn tree_restructure_and_updates_parse() {
     assert!(Cli::try_parse_from(["keyquorum", "tree", "restructure", "1"]).is_err());
     assert!(Cli::try_parse_from(["keyquorum", "updates"]).is_ok());
     assert!(Cli::try_parse_from(["keyquorum", "updates", "--since", "4"]).is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "tree",
+        "1",
+        "--custody",
+        "logical",
+        "--minimum-physical-devices",
+        "2",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from(["keyquorum", "tree", "--custody", "hardware"]).is_err());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "reconstruct",
+        "1",
+        "--slot",
+        "/mnt/usb=M.S.1",
+        "--share-file",
+        "alice.key",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "relay",
+        "pull",
+        "--import",
+        "--slot",
+        "/mnt/usb=M.S.1",
+        "--url",
+        "http://127.0.0.1:8787",
+    ])
+    .is_ok());
+}
+
+#[test]
+fn transfer_commands_parse_without_opening_a_database() {
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "transfer",
+        "copy",
+        "--from-device",
+        "usb-a",
+        "--from-db",
+        "a.sqlite",
+        "--to-device",
+        "usb-c",
+        "--to-db",
+        "c.sqlite",
+        "--label",
+        "M.S.2",
+        "--descendants",
+        "all-descendants",
+        "--as",
+        "M.S",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "transfer",
+        "move",
+        "--from-device",
+        "usb-a",
+        "--from-db",
+        "a.sqlite",
+        "--to-device",
+        "usb-b",
+        "--to-db",
+        "b.sqlite",
+        "--label",
+        "M.A",
+        "--descendants",
+        "key-only",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "transfer",
+        "recover",
+        "--from-device",
+        "usb-a",
+        "--from-db",
+        "a.sqlite",
+        "--to-device",
+        "usb-b",
+        "--to-db",
+        "b.sqlite",
+        "--transaction",
+        "00112233445566778899aabbccddeeff",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from(["keyquorum", "transfer", "copy", "--label", "M"]).is_err());
 }

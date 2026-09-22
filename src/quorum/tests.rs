@@ -260,3 +260,61 @@ fn lock_rejects_revoked_recipient() {
     assert!(matches!(result, Err(Error::KeyRevoked)));
     assert!(!encrypted_path.exists());
 }
+
+#[test]
+fn parent_approval_is_required_only_when_the_tree_asks_for_it() {
+    let mut conn = db::open_in_memory().expect("schema");
+    let (id_emp, sk_emp) = register_encryption_key(&conn, "M.S.1");
+    let (manager, manager_public) = keys::generate_signing_keypair();
+    keys::register_key(&conn, "M.S", KeyType::Signing, &manager_public).unwrap();
+    let spec = NodeSpec::Split {
+        label: "M".into(),
+        threshold: 1,
+        allowed_bridges: vec![],
+        children: vec![NodeSpec::Leaf {
+            label: "M.S.1".into(),
+            hardware_key_id: id_emp,
+            allowed_bridges: vec![],
+        }],
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("secret.txt");
+    let encrypted = dir.path().join("secret.txt.kqenc");
+    fs::write(&source, b"needs a supervisor").unwrap();
+    let file_id = lock_file(&mut conn, &source, &encrypted, None, &spec).unwrap();
+    let key_id = status(&conn, file_id).unwrap().tree.key_id;
+    crate::device::set_custody_policy(
+        &conn,
+        key_id,
+        &crate::device::CustodyPolicy {
+            mode: crate::device::CustodyMode::Hardware,
+            minimum_physical_devices: 1,
+            unlock_approval: crate::device::UnlockApproval::Parent,
+        },
+    )
+    .unwrap();
+    let leaves = leaf_ids_by_label(&conn, key_id);
+    let mut shares = HashMap::new();
+    shares.insert(
+        leaves["M.S.1"],
+        unwrap_leaf_share(&conn, leaves["M.S.1"], &sk_emp),
+    );
+    assert!(matches!(
+        unlock_file(&conn, file_id, &shares),
+        Err(Error::UnlockApprovalRequired)
+    ));
+    let presented = crate::key_tree::reconstruct_presented(&conn, key_id, &shares).unwrap();
+    let mut device_ids: Vec<[u8; 16]> = presented.devices.iter().map(|d| d.device_id).collect();
+    device_ids.sort();
+    let preimage =
+        crate::authority::unlock_approval_preimage(file_id, key_id, "M.S.1", "M.S", &device_ids)
+            .unwrap();
+    let grant = crate::authority::UnlockGrant {
+        leaf_label: "M.S.1".into(),
+        countersigner_label: "M.S".into(),
+        signature: crate::signing::sign(&manager, &preimage),
+    };
+    let plaintext =
+        unlock_file_with_approval(&conn, file_id, &shares, &[grant]).expect("parent signed");
+    assert_eq!(plaintext, b"needs a supervisor");
+}
