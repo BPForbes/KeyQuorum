@@ -4,7 +4,7 @@ use crate::error::Error;
 use crate::key_tree::{self, NodeSpec};
 use crate::keys::{self, KeyType};
 use rusqlite::params;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 
 const PASS: &str = "slot-passphrase";
@@ -215,16 +215,26 @@ fn moving_a_slot_changes_only_the_device_binding() {
 fn separate_containers_count_as_separate_devices() {
     let mut conn = db::open_in_memory().unwrap();
     let mut minted = Vec::new();
-    for label in ["M.S.1", "M.S.2"] {
+    for label in ["M.S", "M.S.1", "M.S.2"] {
         let dir = tempfile::tempdir().unwrap();
         let mut container = init(dir.path()).unwrap();
         let slot = provision(&mut container, label, PASS).unwrap();
         let id =
             keys::register_key(&conn, label, KeyType::Encryption, &slot.encryption_public).unwrap();
         bind_slot(&conn, &container, label).unwrap();
-        minted.push((label, id, *slot.encryption_secret, dir));
+        minted.push((
+            label,
+            id,
+            *slot.encryption_secret,
+            *container.device_id(),
+            dir,
+        ));
     }
-    let pairs: Vec<(&str, i64)> = minted.iter().map(|(l, id, _, _)| (*l, *id)).collect();
+    let mut seen = HashSet::new();
+    for (_, _, _, device_id, _) in &minted {
+        assert!(seen.insert(*device_id));
+    }
+    let pairs: Vec<(&str, i64)> = minted.iter().map(|(l, id, _, _, _)| (*l, *id)).collect();
     let key_id = flat_tree(&mut conn, &pairs, 2);
     set_custody_policy(
         &conn,
@@ -237,9 +247,39 @@ fn separate_containers_count_as_separate_devices() {
     )
     .unwrap();
     let mut shares = HashMap::new();
-    for (label, _, secret, _) in &minted {
+    for (label, _, secret, _, _) in minted.iter().take(2) {
         let (node, raw) = share_for(&conn, key_id, label, secret);
         shares.insert(node, raw);
     }
-    key_tree::reconstruct(&conn, key_id, &shares).expect("one key per container");
+    key_tree::reconstruct(&conn, key_id, &shares)
+        .expect("two of three identities on separate containers meet the minimum");
+}
+
+#[test]
+fn placement_follows_the_opened_device_kq() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut container = init(dir.path()).unwrap();
+    let slot = provision(&mut container, "M.S.1", PASS).unwrap();
+    let conn = db::open_in_memory().unwrap();
+    let id =
+        keys::register_key(&conn, "M.S.1", KeyType::Encryption, &slot.encryption_public).unwrap();
+    bind_slot(&conn, &container, "M.S.1").unwrap();
+
+    // device_id sits immediately after magic and version. Rewriting it is
+    // still a valid descriptor. The next open is the only id bind will store.
+    let path = dir.path().join("device.kq");
+    let mut bytes = fs::read(&path).unwrap();
+    bytes[5] ^= 0xff;
+    fs::write(&path, &bytes).unwrap();
+    let reopened = open(dir.path()).unwrap();
+    assert_ne!(reopened.device_id(), container.device_id());
+    bind_slot(&conn, &reopened, "M.S.1").unwrap();
+    let stored: Vec<u8> = conn
+        .query_row(
+            "SELECT device_id FROM device_placements WHERE hardware_key_id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored.as_slice(), reopened.device_id().as_slice());
 }

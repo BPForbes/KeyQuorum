@@ -45,6 +45,7 @@ fn collect_shares_unwraps_from_standard_key_files() {
             alice_key.to_str().unwrap().to_string(),
             bob_pub.to_str().unwrap().to_string(),
         ],
+        &[],
     )
     .expect("key files should unwrap leaf shares");
     let recovered = key_tree::reconstruct(&conn, key_id, &shares).expect("reconstruct");
@@ -89,6 +90,7 @@ fn split_and_reassemble_a_pub_file() {
             alice_key.to_str().unwrap().to_string(),
             bob_key.to_str().unwrap().to_string(),
         ],
+        &[],
     )
     .expect("unwrap holders");
     let recovered = key_tree::reconstruct(&conn, key_id, &shares).expect("reconstruct");
@@ -233,6 +235,7 @@ fn reconstruct_department_pubs_yields_master_pub() {
             software_pub.to_str().unwrap().to_string(),
             accounting_pub.to_str().unwrap().to_string(),
         ],
+        &[],
     )
     .expect("department pubs should unwrap with sibling .key files");
 

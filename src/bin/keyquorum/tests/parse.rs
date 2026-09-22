@@ -729,4 +729,36 @@ fn tree_restructure_and_updates_parse() {
     assert!(Cli::try_parse_from(["keyquorum", "tree", "restructure", "1"]).is_err());
     assert!(Cli::try_parse_from(["keyquorum", "updates"]).is_ok());
     assert!(Cli::try_parse_from(["keyquorum", "updates", "--since", "4"]).is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "tree",
+        "1",
+        "--custody",
+        "logical",
+        "--minimum-physical-devices",
+        "2",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from(["keyquorum", "tree", "--custody", "hardware"]).is_err());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "reconstruct",
+        "1",
+        "--slot",
+        "/mnt/usb=M.S.1",
+        "--share-file",
+        "alice.key",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "relay",
+        "pull",
+        "--import",
+        "--slot",
+        "/mnt/usb=M.S.1",
+        "--url",
+        "http://127.0.0.1:8787",
+    ])
+    .is_ok());
 }

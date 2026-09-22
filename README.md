@@ -8,6 +8,8 @@ Early scaffolding, though the CLI now covers most of what the concept below desc
 Hardware-key quorum splitting/reconstruction is implemented in software. A key
 file with no container placement is still one device: that is the original
 one-key one-device exchange, and distinct key files count as distinct devices.
+`split` and `tree` set `--custody` and `--minimum-physical-devices`. Commands
+that unwrap a key take `--slot container=label` beside `--share-file`.
 `keyquorum-device` can also put several identities in logical slots on one
 directory (a mounted USB, or a stand-in). Those slots share one device id.
 Logical mode is for development and constrained hardware; it is not a hardware
@@ -451,8 +453,6 @@ not implemented; a container is a directory, not an OS partition.
 
 - **Persisted private-key custody** for `generate` beyond the key file and the
   slot token (for example an OS keychain).
-- **`unwrap-share`** — turning a stored, sealed quorum share back into the raw share
-  a hardware key's own private key would produce.
 - **`import`** of password-vault / locked-file `export` bundles (the bundle format
   and encoder are already final). Private-bridge `.kqpb` import is implemented.
 
