@@ -24,7 +24,40 @@ CREATE TABLE IF NOT EXISTS keys (
     id                 INTEGER PRIMARY KEY,
     label              TEXT NOT NULL,
     created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    public_generation  INTEGER NOT NULL DEFAULT 1 CHECK (public_generation > 0)
+    public_generation  INTEGER NOT NULL DEFAULT 1 CHECK (public_generation > 0),
+    -- hardware: one key is one device unless a placement says otherwise.
+    -- logical: several slots on one container may satisfy Shamir together.
+    custody_mode       TEXT NOT NULL DEFAULT 'hardware'
+                       CHECK (custody_mode IN ('hardware', 'logical')),
+    minimum_physical_devices INTEGER NOT NULL DEFAULT 1
+                       CHECK (minimum_physical_devices >= 1),
+    -- none: Shamir (and the device count) is enough.
+    -- parent: each contributing leaf also needs its direct parent's signature.
+    unlock_approval    TEXT NOT NULL DEFAULT 'none'
+                       CHECK (unlock_approval IN ('none', 'parent'))
+);
+
+-- Binds a registered hardware key to a physical container. Absent row:
+-- the key is its own device (the original one-key one-device exchange).
+-- Written only from a container descriptor this process opened.
+CREATE TABLE IF NOT EXISTS device_placements (
+    hardware_key_id INTEGER PRIMARY KEY REFERENCES hardware_keys(id) ON DELETE CASCADE,
+    device_id       BLOB NOT NULL CHECK (length(device_id) = 16),
+    slot_label      TEXT NOT NULL
+);
+
+-- A restructure a non-root authorizer has signed but that is not effective
+-- until the parent countersigns. `org_updates` is written only then.
+CREATE TABLE IF NOT EXISTS pending_org_actions (
+    id                   INTEGER PRIMARY KEY,
+    key_id               INTEGER REFERENCES keys(id) ON DELETE CASCADE,
+    tree_label           TEXT NOT NULL,
+    authorizer_label     TEXT NOT NULL,
+    countersigner_label  TEXT NOT NULL,
+    generation           INTEGER NOT NULL CHECK (generation > 0),
+    proposal_hash        BLOB NOT NULL UNIQUE,
+    proposal             BLOB NOT NULL,
+    created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 -- One row per node in a key's split tree. A node is either a SPLIT node

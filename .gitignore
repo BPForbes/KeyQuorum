@@ -47,6 +47,8 @@ build/
 *.kqcert
 *.kqrl
 *.kqpolicy
+*.kqst
+device.kq
 secrets/
 keys/
 test-keys/

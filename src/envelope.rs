@@ -70,6 +70,12 @@ pub const KIND_KEY_REISSUE: u8 = 5;
 /// Key-tree restructure: the slice of the public split tree this
 /// recipient is allowed to see, at a new public generation.
 pub const KIND_TREE_UPDATE: u8 = 6;
+/// A restructure signed by a delegated authorizer. Stores record it as
+/// pending and do not change the tree until [`KIND_COUNTERSIGNED_TREE`].
+pub const KIND_TREE_PROPOSAL: u8 = 7;
+/// A [`KIND_TREE_PROPOSAL`] letter plus the parent label's countersignature.
+/// Applying it is what makes a delegated restructure effective.
+pub const KIND_COUNTERSIGNED_TREE: u8 = 8;
 
 /// A sealed envelope addressed to one recipient, ready to be written to a
 /// `.kqpb` file or pushed to the mailbox relay.

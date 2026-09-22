@@ -87,6 +87,20 @@ pub enum Error {
     /// These public-key bytes are already registered in this store, under
     /// a different label than the one they were just presented under.
     PublicKeyLabelMismatch,
+    /// A container file is malformed, or a placement does not match the
+    /// container that was opened.
+    InvalidDevice,
+    /// Slot label is unsafe, missing, or does not match the token inside.
+    InvalidSlot,
+    /// Hardware custody was asked to treat two keys on one device as
+    /// independent devices.
+    CustodyViolation,
+    /// Shamir succeeded, but not enough distinct physical devices were presented.
+    PhysicalDevicesNotMet,
+    /// The tree's unlock policy requires the leaf's parent to sign.
+    UnlockApprovalRequired,
+    /// No pending restructure is waiting for this countersignature.
+    ProposalNotFound,
 }
 
 impl fmt::Display for Error {
@@ -291,6 +305,27 @@ impl fmt::Display for Error {
                 f,
                 "this public key is already registered in this store under a different label"
             ),
+            Error::InvalidDevice => write!(
+                f,
+                "device container is malformed or does not match this key"
+            ),
+            Error::InvalidSlot => write!(
+                f,
+                "slot label is missing, unsafe, or does not match the token"
+            ),
+            Error::CustodyViolation => write!(
+                f,
+                "hardware custody allows one key per physical device"
+            ),
+            Error::PhysicalDevicesNotMet => {
+                write!(f, "not enough distinct physical devices")
+            }
+            Error::UnlockApprovalRequired => {
+                write!(f, "this unlock needs the parent label's signature")
+            }
+            Error::ProposalNotFound => {
+                write!(f, "no restructure proposal is waiting for that countersignature")
+            }
         }
     }
 }

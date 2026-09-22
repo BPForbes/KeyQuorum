@@ -1223,3 +1223,88 @@ fn a_reissue_naming_a_key_already_registered_under_another_label_is_refused() {
     let after = keys::get_key_by_public_key(&conn, &collide_pk).expect("row still there");
     assert_eq!(after.label, "M.A.9");
 }
+
+fn public_generation(conn: &Connection, key_id: i64) -> i64 {
+    conn.query_row(
+        "SELECT public_generation FROM keys WHERE id = ?1",
+        [key_id],
+        |row| row.get(0),
+    )
+    .expect("generation")
+}
+
+#[test]
+fn a_supervisor_reissue_of_an_employee_applies_with_one_signature() {
+    let org = coordinator();
+    let (manager, manager_public) = register_signing(&org.conn, "M.S");
+    assert!(crate::authority::is_routine_employee_reissue(
+        "M.S", "M.S.2"
+    ));
+    let (replacement, new_public) = keys::generate_encryption_keypair();
+    let store = person_store(&org, "M.S.2");
+    keys::register_key(&store, "M.S", KeyType::Signing, &manager_public).expect("trust M.S");
+    keys::register_key(&store, "M.S.2", KeyType::Encryption, &new_public).expect("replacement");
+
+    let planned = plan_key_reissue(
+        &org.conn,
+        Some(org.key_id),
+        "M.S.2",
+        Some(new_public),
+        None,
+        true,
+        "M.S",
+        &manager,
+    )
+    .expect("routine reissue");
+    commit_planned_key_reissue(&org.conn, &planned).expect("commit");
+    let applied = import_update(
+        &store,
+        &package_for(&planned.packages, "M.S.2").bytes,
+        &replacement,
+    )
+    .expect("import");
+    assert!(matches!(applied, AppliedUpdate::KeyReissue { .. }));
+}
+
+#[test]
+fn a_department_restructure_waits_for_the_parent_countersignature() {
+    let org = coordinator();
+    let (manager, manager_public) = register_signing(&org.conn, "M.S");
+    let (other, _) = register_signing(&org.conn, "M.A");
+    assert_eq!(public_generation(&org.conn, org.key_id), 1);
+
+    let planned = plan_tree_restructure(&org.conn, org.key_id, "M.S", &manager).expect("plan");
+    assert!(planned.needs_countersign);
+    assert_eq!(planned.countersigner_label.as_deref(), Some("M"));
+    commit_planned_tree_restructure(&org.conn, &planned).expect("record proposal");
+    assert_eq!(public_generation(&org.conn, org.key_id), 1);
+    assert!(matches!(
+        plan_restructure_countersign(&org.conn, org.key_id, "M.A", &other),
+        Err(Error::UpdateNotAuthorized)
+    ));
+
+    let store = person_store(&org, "M.S.1");
+    keys::register_key(&store, "M.S", KeyType::Signing, &manager_public).expect("trust M.S");
+    let countersigned = plan_restructure_countersign(&org.conn, org.key_id, "M", &org.authority)
+        .expect("countersign");
+    commit_planned_countersign(&org.conn, &countersigned).expect("commit");
+    assert_eq!(public_generation(&org.conn, org.key_id), 2);
+    let applied = import_update(
+        &store,
+        &package_for(&countersigned.packages, "M.S.1").bytes,
+        &org.secrets["M.S.1"].to_bytes(),
+    )
+    .expect("import countersigned restructure");
+    assert!(matches!(
+        applied,
+        AppliedUpdate::TreeRestructure { generation: 2, .. }
+    ));
+    assert!(matches!(
+        import_update(
+            &store,
+            &package_for(&countersigned.packages, "M.S.1").bytes,
+            &org.secrets["M.S.1"].to_bytes(),
+        ),
+        Err(Error::StaleUpdate)
+    ));
+}

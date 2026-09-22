@@ -28,6 +28,8 @@ use std::process::ExitCode;
 #[cfg(feature = "provider")]
 mod host;
 
+mod device_cmd;
+
 /// How long a "one-time" PIN unlock stays valid before the PIN is needed
 /// again (see `pin.rs`); not configurable via the CLI in this pass.
 const PIN_TTL_SECONDS: i64 = 3600;
@@ -144,6 +146,16 @@ enum Command {
         /// Register each --leaf public key (leaf label is the registry label)
         #[arg(long, requires = "leaves")]
         register: bool,
+        /// hardware: one key per device. logical: several slots may share one.
+        #[arg(long)]
+        custody: Option<String>,
+        /// Distinct physical devices required at reconstruct. Unplaced key
+        /// files each count as one device.
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=255))]
+        minimum_physical_devices: Option<u8>,
+        /// none, or parent (each used leaf needs its parent's signature)
+        #[arg(long)]
+        unlock_approval: Option<String>,
     },
     /// Pair two nodes, or reseal a leaf onto a new public key
     Bind {
@@ -318,6 +330,12 @@ enum Command {
         #[arg(long)]
         url: Option<String>,
     },
+    /// A directory of logical identity slots. A key file with no placement
+    /// is still one device; use `register` and `--share-file` for that.
+    Device {
+        #[command(subcommand)]
+        command: device_cmd::DeviceCommand,
+    },
     /// Provider mailbox host (capability build). Hidden from --help.
     #[cfg(feature = "provider")]
     #[command(hide = true)]
@@ -346,7 +364,7 @@ enum VaultCommand {
 }
 
 #[derive(Clone, Copy, ValueEnum)]
-enum CliKeyType {
+pub enum CliKeyType {
     Encryption,
     Signing,
 }
@@ -398,10 +416,26 @@ enum TreeCommand {
         /// of are reported and left without an envelope.
         #[arg(long = "as")]
         as_node: String,
-        /// Ed25519 private key file for --as
+        /// Ed25519 private key file for --as. A container slot uses
+        /// `tree countersign` instead.
         #[arg(long)]
         signing_key_file: PathBuf,
         /// Directory for the per-recipient `.kqpb` envelopes
+        #[arg(long)]
+        output_dir: PathBuf,
+    },
+    /// Countersign a pending restructure. Pass a key file, or a container slot.
+    Countersign {
+        key_id: i64,
+        #[arg(long = "as")]
+        as_node: String,
+        /// Ed25519 private key file. Omit when using --device and --slot.
+        #[arg(long, conflicts_with = "device")]
+        signing_key_file: Option<PathBuf>,
+        #[arg(long, requires = "slot")]
+        device: Option<PathBuf>,
+        #[arg(long, requires = "device")]
+        slot: Option<String>,
         #[arg(long)]
         output_dir: PathBuf,
     },
@@ -533,6 +567,7 @@ enum PrivateBridgeCommand {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum AccessCommand {
     Password(AccessPasswordArgs),
     Quorum(AccessQuorumArgs),
@@ -613,6 +648,23 @@ struct AccessQuorumArgs {
     /// state 1 only: write plaintext here instead of stdout
     #[arg(long, conflicts_with_all = ["source", "encrypted_path", "tree_spec", "leaves", "name"])]
     output: Option<PathBuf>,
+    /// state 1: container=slot (repeatable). Same device id for every slot
+    /// in that container. A `--share-file` key with no placement is its own device.
+    #[arg(long = "slot", conflicts_with_all = ["source", "encrypted_path", "tree_spec", "leaves", "name"])]
+    slots: Vec<String>,
+    /// state 1: leaf=signing-key-file, or leaf=container>slot, when unlock
+    /// approval is `parent`.
+    #[arg(long = "approve", conflicts_with_all = ["source", "encrypted_path", "tree_spec", "leaves", "name"])]
+    approves: Vec<String>,
+    /// state 0: hardware (one key per device) or logical
+    #[arg(long, conflicts_with_all = ["id", "share_files", "output"])]
+    custody: Option<String>,
+    /// state 0: distinct physical devices required to unlock
+    #[arg(long, conflicts_with_all = ["id", "share_files", "output"], value_parser = clap::value_parser!(u8).range(1..=255))]
+    minimum_physical_devices: Option<u8>,
+    /// state 0: none, or parent
+    #[arg(long, conflicts_with_all = ["id", "share_files", "output"])]
+    unlock_approval: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -849,6 +901,7 @@ fn run(db_path: &Path, command: Command) -> Result<()> {
         Command::Export { command } => run_export(&conn, command)?,
         Command::Share { command } => run_share(&conn, command)?,
         Command::Pin { command } => run_pin(&conn, command)?,
+        Command::Device { command } => device_cmd::run(&conn, command)?,
         Command::Relay { .. } | Command::Loadkey { .. } => {
             unreachable!("relay commands are handled before opening the org db")
         }
@@ -1000,6 +1053,9 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
             source,
             generate_keys,
             register,
+            custody,
+            minimum_physical_devices,
+            unlock_approval,
         } => {
             let from_leaves = tree_spec.is_none();
             let spec = match tree_spec {
@@ -1045,6 +1101,13 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
             for (a, b) in parse_bind_pairs(&binds)? {
                 key_tree::bind_pair(conn, key_id, &a, &b)?;
             }
+            device_cmd::apply_policy(
+                conn,
+                key_id,
+                custody.as_deref(),
+                minimum_physical_devices,
+                unlock_approval.as_deref(),
+            )?;
         }
         Command::Bind {
             key_id,
@@ -1160,7 +1223,8 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
         | Command::Share { .. }
         | Command::Pin { .. }
         | Command::Relay { .. }
-        | Command::Loadkey { .. } => unreachable!("non-tree commands are dispatched in run()"),
+        | Command::Loadkey { .. }
+        | Command::Device { .. } => unreachable!("non-tree commands are dispatched in run()"),
         #[cfg(feature = "provider")]
         Command::Host { .. } => unreachable!("non-tree commands are dispatched in run()"),
     }
@@ -1198,19 +1262,56 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
             for path in written {
                 println!("Wrote {}", path.display());
             }
-            println!(
-                "{} is now at public generation {} ({} envelope{})",
-                planned.tree_label,
-                planned.generation,
-                planned.packages.len(),
-                if planned.packages.len() == 1 { "" } else { "s" }
-            );
+            if planned.needs_countersign {
+                let parent = planned.countersigner_label.as_deref().unwrap_or("parent");
+                println!(
+                    "Proposal for {} at generation {} is waiting for {parent} to countersign ({} envelope{})",
+                    planned.tree_label,
+                    planned.generation,
+                    planned.packages.len(),
+                    if planned.packages.len() == 1 { "" } else { "s" }
+                );
+            } else {
+                println!(
+                    "{} is now at public generation {} ({} envelope{})",
+                    planned.tree_label,
+                    planned.generation,
+                    planned.packages.len(),
+                    if planned.packages.len() == 1 { "" } else { "s" }
+                );
+            }
             if !planned.skipped.is_empty() {
                 println!(
                     "No envelope for {} ({as_node} is not an ancestor)",
                     planned.skipped.join(", ")
                 );
             }
+        }
+        Some(TreeCommand::Countersign {
+            key_id,
+            as_node,
+            signing_key_file,
+            device,
+            slot,
+            output_dir,
+        }) => {
+            let signing_sk = zeroize::Zeroizing::new(signing_secret_from(
+                signing_key_file.as_deref(),
+                device.as_deref(),
+                slot.as_deref(),
+            )?);
+            let planned =
+                org_update::plan_restructure_countersign(conn, key_id, &as_node, &signing_sk)?;
+            let written = deliver_then_commit(&output_dir, &planned.packages, || {
+                org_update::commit_planned_countersign(conn, &planned).map(|_| ())
+            })?;
+            for path in written {
+                println!("Wrote {}", path.display());
+            }
+            println!(
+                "{} countersigned generation {}",
+                as_node, planned.generation
+            );
         }
         Some(TreeCommand::Fetch {
             key_id,
@@ -1782,12 +1883,23 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
                 }
             }
             println!("Locked file {id}");
+            let file_status = quorum::status(conn, id)?;
+            device_cmd::apply_policy(
+                conn,
+                file_status.tree.key_id,
+                args.custody.as_deref(),
+                args.minimum_physical_devices,
+                args.unlock_approval.as_deref(),
+            )?;
         }
         Some(1) => {
             let id = require(args.id, "id");
             let file_status = quorum::status(conn, id)?;
-            let shares = collect_shares(conn, &file_status.tree.root, &args.share_files)?;
-            let plaintext = quorum::unlock_file(conn, id, &shares)?;
+            let mut shares = collect_shares(conn, &file_status.tree.root, &args.share_files)?;
+            add_slot_shares(conn, &file_status.tree.root, &mut shares, &args.slots)?;
+            let grants =
+                approval_grants(conn, id, file_status.tree.key_id, &shares, &args.approves)?;
+            let plaintext = quorum::unlock_file_with_approval(conn, id, &shares, &grants)?;
             match args.output {
                 Some(path) => locked_files::write_owner_only(&path, &plaintext)?,
                 None => io::stdout().write_all(&plaintext)?,
@@ -2139,6 +2251,15 @@ fn describe_applied_update(applied: &org_update::AppliedUpdate) -> String {
                 rotated.join(" and ")
             )
         }
+        org_update::AppliedUpdate::TreeProposal {
+            tree_label,
+            authorizer_label,
+            countersigner_label,
+            generation,
+            recipients,
+        } => format!(
+            "recorded {tree_label} restructure proposal generation {generation} from {authorizer_label}, waiting for {countersigner_label} ({recipients} recipient(s))"
+        ),
         org_update::AppliedUpdate::TreeRestructure {
             tree_label,
             key_id,
@@ -2481,6 +2602,102 @@ fn leaf_backed_by<'a>(
         ));
     }
     Ok(node)
+}
+
+fn signing_secret_from(
+    key_file: Option<&Path>,
+    device_path: Option<&Path>,
+    slot: Option<&str>,
+) -> Result<[u8; 32]> {
+    if let Some(path) = key_file {
+        return read_key_array_32(path);
+    }
+    let (Some(path), Some(slot)) = (device_path, slot) else {
+        fatal_usage_error("countersign requires --signing-key-file or --device and --slot");
+    };
+    let container = keyquorum::device::open(path)?;
+    let passphrase = keyquorum::device::prompt_passphrase(&format!("Passphrase for {slot}: "))?;
+    let secrets = keyquorum::device::open_slot(&container, slot, &passphrase)?;
+    Ok(*secrets.signing_secret)
+}
+
+fn add_slot_shares(
+    conn: &Connection,
+    root: &TreeNodeSummary,
+    shares: &mut HashMap<i64, Vec<u8>>,
+    slots: &[String],
+) -> Result<()> {
+    if slots.is_empty() {
+        return Ok(());
+    }
+    let mut leaves = Vec::new();
+    collect_leaves(root, &mut leaves);
+    for entry in slots {
+        let (path, label) = entry
+            .rsplit_once('=')
+            .unwrap_or_else(|| fatal_usage_error("--slot must be container=label"));
+        if path.is_empty() || label.is_empty() {
+            fatal_usage_error("--slot must be container=label");
+        }
+        let container = keyquorum::device::open(Path::new(path))?;
+        let passphrase =
+            keyquorum::device::prompt_passphrase(&format!("Passphrase for {label}: "))?;
+        let secrets = keyquorum::device::open_slot(&container, label, &passphrase)?;
+        unwrap_leaves_for_secret(conn, &leaves, shares, secrets.encryption_secret.as_slice())?;
+    }
+    Ok(())
+}
+
+fn approval_grants(
+    conn: &Connection,
+    file_id: i64,
+    key_id: i64,
+    shares: &HashMap<i64, Vec<u8>>,
+    approves: &[String],
+) -> Result<Vec<keyquorum::authority::UnlockGrant>> {
+    if approves.is_empty() {
+        return Ok(Vec::new());
+    }
+    let presented = key_tree::reconstruct_presented(conn, key_id, shares)?;
+    let _secret = zeroize::Zeroizing::new(presented.secret);
+    let mut device_ids: Vec<[u8; 16]> = presented
+        .devices
+        .iter()
+        .map(|device| device.device_id)
+        .collect();
+    device_ids.sort();
+    let mut grants = Vec::with_capacity(approves.len());
+    for entry in approves {
+        let (leaf, spec) = entry.split_once('=').unwrap_or_else(|| {
+            fatal_usage_error("--approve must be leaf=key-file or leaf=container>slot")
+        });
+        let parent = private_bridge::parent_node_label(leaf)
+            .ok_or(Error::UnlockApprovalRequired)?
+            .to_string();
+        let preimage = keyquorum::authority::unlock_approval_preimage(
+            file_id,
+            key_id,
+            leaf,
+            &parent,
+            &device_ids,
+        )?;
+        let signature = if let Some((container, slot)) = spec.split_once('>') {
+            let opened = keyquorum::device::open(Path::new(container))?;
+            let passphrase =
+                keyquorum::device::prompt_passphrase(&format!("Passphrase for {slot}: "))?;
+            let secrets = keyquorum::device::open_slot(&opened, slot, &passphrase)?;
+            keyquorum::device::sign_message(&secrets, &preimage)
+        } else {
+            let secret = zeroize::Zeroizing::new(read_key_array_32(Path::new(spec))?);
+            signing::sign(&secret, &preimage)
+        };
+        grants.push(keyquorum::authority::UnlockGrant {
+            leaf_label: leaf.to_string(),
+            countersigner_label: parent,
+            signature,
+        });
+    }
+    Ok(grants)
 }
 
 /// Gathers raw shares for every active leaf in `root`. `--share-file` is a

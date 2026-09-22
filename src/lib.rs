@@ -1,5 +1,7 @@
+pub mod authority;
 pub mod crypto;
 pub mod db;
+pub mod device;
 pub mod envelope;
 pub mod error;
 pub mod export;
