@@ -1,0 +1,29 @@
+{
+  "name": "keyquorum-lab",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --strictPort --port 4173",
+    "test:browser": "playwright test",
+    "generate:metadata": "node scripts/generate-project-metadata.mjs",
+    "validate:metadata": "node scripts/generate-project-metadata.mjs --validate dist/project-metadata.json",
+    "test:scripts": "node --test scripts/*.test.mjs"
+  },
+  "dependencies": {
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^22.20.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "typescript": "^5.9.2",
+    "vite": "^8.3.1"
+  }
+}

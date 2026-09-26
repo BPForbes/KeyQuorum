@@ -23,6 +23,11 @@ provider = [
     "dep:tracing-subscriber",
     "utoipa/axum_extras",
 ]
+# Browser lab (`src/lab/`): seeded mock users, mock USB containers, and an
+# in-memory relay over the crate's own logic, exported through
+# wasm-bindgen when built for wasm32. Demonstration only; never combined
+# with `provider` in a wasm32 build (see the guard in lib.rs).
+lab = ["dep:wasm-bindgen"]
 
 [[bin]]
 name = "keyquorum"
@@ -43,7 +48,6 @@ libc = "0.2"
 base64 = "0.22"
 zeroize = "1"
 clap = { version = "4", features = ["derive"] }
-rpassword = "7.5"
 blahaj = "0.6"
 crypto_box = { version = "0.9", features = ["seal"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
@@ -55,10 +59,19 @@ tokio = { version = "1", optional = true, features = ["macros", "rt-multi-thread
 tower-http = { version = "0.6", optional = true, features = ["trace"] }
 utoipa = "5"
 utoipa-swagger-ui = { version = "9", optional = true, features = ["axum"] }
-ureq = "2"
 url = "2"
 tracing = { version = "0.1", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
 tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter"] }
+
+# Terminal prompts and the HTTPS relay client are native-only: the browser
+# lab (wasm32) never prompts a TTY and never talks to a real relay.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rpassword = "7.5"
+ureq = "2"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
 
 [dev-dependencies]
 tempfile = "3"

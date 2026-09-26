@@ -20,14 +20,13 @@ use crate::crypto::{self, NONCE_LEN, SALT_LEN};
 use crate::envelope::{push_len_prefixed, take_array, take_len_prefixed, take_u8, utf8};
 use crate::error::{Error, Result};
 use crate::keys::{self, KeyType};
-use crate::locked_files;
 use crate::signing;
+use crate::storage::{NativeStorage, Storage};
 use rand::rngs::OsRng;
 use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::fs;
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
@@ -155,23 +154,28 @@ pub struct ProvisionedSlot {
 
 /// Create an empty container at `path` (a directory, or a mounted USB).
 pub fn init(path: &Path) -> Result<Container> {
-    fs::create_dir_all(path)?;
-    fs::create_dir_all(path.join("vault"))?;
+    init_in(&mut NativeStorage, path)
+}
+
+/// [`init`] against any [`Storage`], such as the browser lab's mock drives.
+pub fn init_in(storage: &mut dyn Storage, path: &Path) -> Result<Container> {
+    storage.create_dir_all(path)?;
+    storage.create_dir_all(&path.join("vault"))?;
     let descriptor = path.join("device.kq");
-    if descriptor.exists() {
+    if storage.exists(&descriptor) {
         return Err(Error::InvalidDevice);
     }
     let mut device_id = [0u8; DEVICE_ID_LEN];
     OsRng.fill_bytes(&mut device_id);
     let (secret, verify_key) = keys::generate_signing_keypair();
-    locked_files::write_owner_only(&path.join("device.skey"), secret.as_slice())?;
+    storage.write_new(&path.join("device.skey"), secret.as_slice())?;
     let container = Container {
         path: path.to_path_buf(),
         device_id,
         verify_key,
         slots: Vec::new(),
     };
-    store_descriptor(&container)?;
+    store_descriptor(storage, &container)?;
     Ok(container)
 }
 
@@ -189,7 +193,12 @@ pub fn verification_container(device_id: [u8; DEVICE_ID_LEN], verify_key: [u8; 3
 
 /// Read `device.kq`. Does not decrypt any slot.
 pub fn open(path: &Path) -> Result<Container> {
-    let bytes = fs::read(path.join("device.kq"))?;
+    open_in(&NativeStorage, path)
+}
+
+/// [`open`] against any [`Storage`].
+pub fn open_in(storage: &dyn Storage, path: &Path) -> Result<Container> {
+    let bytes = storage.read(&path.join("device.kq"))?;
     let (device_id, verify_key, slots) = decode_descriptor(&bytes)?;
     Ok(Container {
         path: path.to_path_buf(),
@@ -206,6 +215,16 @@ pub fn provision(
     label: &str,
     passphrase: &str,
 ) -> Result<ProvisionedSlot> {
+    provision_in(&mut NativeStorage, container, label, passphrase)
+}
+
+/// [`provision`] against any [`Storage`].
+pub fn provision_in(
+    storage: &mut dyn Storage,
+    container: &mut Container,
+    label: &str,
+    passphrase: &str,
+) -> Result<ProvisionedSlot> {
     validate_slot_label(label)?;
     if passphrase.is_empty() {
         return Err(Error::InvalidPassword);
@@ -216,6 +235,7 @@ pub fn provision(
     let (encryption_secret, encryption_public) = keys::generate_encryption_keypair();
     let (signing_secret, signing_public) = keys::generate_signing_keypair();
     write_token(
+        storage,
         container,
         label,
         passphrase,
@@ -227,7 +247,7 @@ pub fn provision(
         encryption_public,
         signing_public,
     });
-    store_descriptor(container)?;
+    store_descriptor(storage, container)?;
     Ok(ProvisionedSlot {
         label: label.to_string(),
         encryption_public,
@@ -240,8 +260,18 @@ pub fn provision(
 /// Decrypt one slot. The label inside the token must match `label`, and
 /// the derived public keys must match `device.kq`.
 pub fn open_slot(container: &Container, label: &str, passphrase: &str) -> Result<SlotSecrets> {
+    open_slot_in(&NativeStorage, container, label, passphrase)
+}
+
+/// [`open_slot`] against any [`Storage`].
+pub fn open_slot_in(
+    storage: &dyn Storage,
+    container: &Container,
+    label: &str,
+    passphrase: &str,
+) -> Result<SlotSecrets> {
     let record = container.slot(label).ok_or(Error::InvalidSlot)?;
-    let bytes = fs::read(token_path(container, label)?)?;
+    let bytes = storage.read(&token_path(container, label)?)?;
     let plain = decrypt_token(&bytes, passphrase)?;
     let (token_label, token_device, encryption_secret, signing_secret) =
         decode_token_plain(&plain)?;
@@ -270,14 +300,26 @@ pub fn relocate_slot(
     label: &str,
     passphrase: &str,
 ) -> Result<()> {
+    relocate_slot_in(&mut NativeStorage, from, to, label, passphrase)
+}
+
+/// [`relocate_slot`] against any [`Storage`] holding both containers.
+pub fn relocate_slot_in(
+    storage: &mut dyn Storage,
+    from: &mut Container,
+    to: &mut Container,
+    label: &str,
+    passphrase: &str,
+) -> Result<()> {
     if from.device_id == to.device_id {
         return Err(Error::InvalidDevice);
     }
     if to.slot(label).is_some() {
         return Err(Error::InvalidSlot);
     }
-    let secrets = open_slot(from, label, passphrase)?;
+    let secrets = open_slot_in(storage, from, label, passphrase)?;
     write_token(
+        storage,
         to,
         label,
         passphrase,
@@ -289,16 +331,16 @@ pub fn relocate_slot(
         encryption_public: secrets.encryption_public,
         signing_public: secrets.signing_public,
     });
-    store_descriptor(to)?;
+    store_descriptor(storage, to)?;
     let source = token_path(from, label)?;
-    fs::remove_file(&source)?;
+    storage.delete(&source)?;
     let slot_dir = source
         .parent()
         .map(Path::to_path_buf)
         .ok_or(Error::InvalidPath)?;
-    let _ = fs::remove_dir(&slot_dir);
+    storage.remove_empty_dir(&slot_dir);
     from.slots.retain(|slot| slot.label != label);
-    store_descriptor(from)?;
+    store_descriptor(storage, from)?;
     Ok(())
 }
 
@@ -311,7 +353,18 @@ pub fn bind_slot(
     slot_label: &str,
     passphrase: &str,
 ) -> Result<()> {
-    let secrets = open_slot(container, slot_label, passphrase)?;
+    bind_slot_in(&NativeStorage, conn, container, slot_label, passphrase)
+}
+
+/// [`bind_slot`] against any [`Storage`].
+pub fn bind_slot_in(
+    storage: &dyn Storage,
+    conn: &Connection,
+    container: &Container,
+    slot_label: &str,
+    passphrase: &str,
+) -> Result<()> {
+    let secrets = open_slot_in(storage, container, slot_label, passphrase)?;
     let slot = container.slot(slot_label).ok_or(Error::InvalidSlot)?;
     if secrets.encryption_public != slot.encryption_public {
         return Err(Error::InvalidSlot);
@@ -340,6 +393,25 @@ pub fn install_slot(
     encryption_secret: &[u8; 32],
     signing_secret: &[u8; 32],
 ) -> Result<SlotRecord> {
+    install_slot_in(
+        &mut NativeStorage,
+        container,
+        label,
+        passphrase,
+        encryption_secret,
+        signing_secret,
+    )
+}
+
+/// [`install_slot`] against any [`Storage`].
+pub fn install_slot_in(
+    storage: &mut dyn Storage,
+    container: &mut Container,
+    label: &str,
+    passphrase: &str,
+    encryption_secret: &[u8; 32],
+    signing_secret: &[u8; 32],
+) -> Result<SlotRecord> {
     validate_slot_label(label)?;
     if passphrase.is_empty() {
         return Err(Error::InvalidPassword);
@@ -348,6 +420,7 @@ pub fn install_slot(
         return Err(Error::InvalidSlot);
     }
     write_token(
+        storage,
         container,
         label,
         passphrase,
@@ -360,7 +433,7 @@ pub fn install_slot(
         signing_public: signing_public_from_secret(signing_secret),
     };
     container.slots.push(record.clone());
-    store_descriptor(container)?;
+    store_descriptor(storage, container)?;
     Ok(record)
 }
 
@@ -387,24 +460,40 @@ pub fn slot_matches(
 /// Delete a slot's token and drop it from the descriptor. Hierarchy code
 /// may keep a ghost row; this function only removes usable key material.
 pub fn remove_slot(container: &mut Container, label: &str) -> Result<()> {
+    remove_slot_in(&mut NativeStorage, container, label)
+}
+
+/// [`remove_slot`] against any [`Storage`].
+pub fn remove_slot_in(
+    storage: &mut dyn Storage,
+    container: &mut Container,
+    label: &str,
+) -> Result<()> {
     let source = token_path(container, label)?;
-    if source.exists() {
-        fs::remove_file(&source)?;
+    if storage.exists(&source) {
+        storage.delete(&source)?;
     }
     if let Some(dir) = source.parent() {
-        let _ = fs::remove_dir(dir);
+        storage.remove_empty_dir(dir);
     }
     let before = container.slots.len();
     container.slots.retain(|slot| slot.label != label);
-    if container.slots.len() == before && !source.exists() {
+    if container.slots.len() == before && !storage.exists(&source) {
         return Err(Error::InvalidSlot);
     }
-    store_descriptor(container)?;
+    store_descriptor(storage, container)?;
     Ok(())
 }
 
 pub(crate) fn device_signing_secret(container: &Container) -> Result<Zeroizing<[u8; 32]>> {
-    let bytes = fs::read(container.path.join("device.skey"))?;
+    device_signing_secret_in(&NativeStorage, container)
+}
+
+pub(crate) fn device_signing_secret_in(
+    storage: &dyn Storage,
+    container: &Container,
+) -> Result<Zeroizing<[u8; 32]>> {
+    let bytes = storage.read(&container.path.join("device.skey"))?;
     let secret: [u8; 32] = bytes
         .as_slice()
         .try_into()
@@ -413,6 +502,7 @@ pub(crate) fn device_signing_secret(container: &Container) -> Result<Zeroizing<[
 }
 
 /// Prompt twice and refuse an empty or mismatched passphrase.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn confirm_passphrase(first_prompt: &str, second_prompt: &str) -> Result<String> {
     let passphrase = prompt_passphrase(first_prompt)?;
     let again = prompt_passphrase(second_prompt)?;
@@ -581,6 +671,7 @@ pub fn sign_message(secrets: &SlotSecrets, message: &[u8]) -> [u8; 64] {
     signing::sign(&secrets.signing_secret, message)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn prompt_passphrase(prompt: &str) -> Result<String> {
     let passphrase = rpassword::prompt_password(prompt)?;
     if passphrase.is_empty() {
@@ -684,6 +775,7 @@ fn token_path(container: &Container, label: &str) -> Result<PathBuf> {
 }
 
 fn write_token(
+    storage: &mut dyn Storage,
     container: &Container,
     label: &str,
     passphrase: &str,
@@ -692,7 +784,7 @@ fn write_token(
 ) -> Result<()> {
     let path = token_path(container, label)?;
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
+        storage.create_dir_all(dir)?;
     }
     let plain = encode_token_plain(
         label,
@@ -710,7 +802,7 @@ fn write_token(
     bytes.extend_from_slice(&salt);
     bytes.extend_from_slice(&nonce);
     bytes.extend_from_slice(&ciphertext);
-    locked_files::write_owner_only(&path, &bytes)
+    storage.write_new(&path, &bytes)
 }
 
 fn decrypt_token(bytes: &[u8], passphrase: &str) -> Result<Vec<u8>> {
@@ -761,8 +853,8 @@ fn decode_token_plain(bytes: &[u8]) -> Result<TokenPlain> {
     Ok((label, device_id, encryption, signing))
 }
 
-fn store_descriptor(container: &Container) -> Result<()> {
-    let secret = device_signing_secret(container)?;
+fn store_descriptor(storage: &mut dyn Storage, container: &Container) -> Result<()> {
+    let secret = device_signing_secret_in(storage, container)?;
     let preimage = descriptor_preimage(
         &container.device_id,
         &container.verify_key,
@@ -777,11 +869,11 @@ fn store_descriptor(container: &Container) -> Result<()> {
     )?;
     let path = container.path.join("device.kq");
     let tmp = container.path.join(".device.kq.tmp");
-    if tmp.exists() {
-        fs::remove_file(&tmp)?;
+    if storage.exists(&tmp) {
+        storage.delete(&tmp)?;
     }
-    locked_files::write_owner_only(&tmp, &bytes)?;
-    fs::rename(&tmp, &path)?;
+    storage.write_new(&tmp, &bytes)?;
+    storage.rename(&tmp, &path)?;
     Ok(())
 }
 

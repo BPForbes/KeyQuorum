@@ -8,7 +8,7 @@ use crate::crypto::{self, NONCE_LEN};
 use crate::device;
 use crate::error::{Error, Result};
 use crate::key_tree::{self, NodeSpec, TreeSummary};
-use crate::locked_files;
+use crate::storage::{NativeStorage, Storage};
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
 use std::fs;
@@ -40,25 +40,45 @@ pub fn lock_file(
     tree_spec: &NodeSpec,
 ) -> Result<i64> {
     key_tree::validate(conn, tree_spec)?;
-    let encrypted_path_str = encrypted_path.to_str().ok_or(Error::InvalidPath)?;
-
     let plaintext = fs::read(source_path)?;
-    let data_key = crypto::random_key();
-    let nonce = crypto::random_nonce();
-    let ciphertext = crypto::encrypt(&data_key, &nonce, &plaintext);
-
     let name = name.map(str::to_owned).unwrap_or_else(|| {
         source_path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default()
     });
+    lock_bytes_in(
+        &mut NativeStorage,
+        conn,
+        &plaintext,
+        encrypted_path,
+        &name,
+        tree_spec,
+    )
+}
 
-    locked_files::write_owner_only(encrypted_path, &ciphertext)?;
+/// [`lock_file`] for plaintext already in memory, writing the ciphertext
+/// through `storage`. The browser lab locks its seeded files this way.
+pub fn lock_bytes_in(
+    storage: &mut dyn Storage,
+    conn: &mut Connection,
+    plaintext: &[u8],
+    encrypted_path: &Path,
+    name: &str,
+    tree_spec: &NodeSpec,
+) -> Result<i64> {
+    key_tree::validate(conn, tree_spec)?;
+    let encrypted_path_str = encrypted_path.to_str().ok_or(Error::InvalidPath)?;
+
+    let data_key = crypto::random_key();
+    let nonce = crypto::random_nonce();
+    let ciphertext = crypto::encrypt(&data_key, &nonce, plaintext);
+
+    storage.write_new(encrypted_path, &ciphertext)?;
 
     let result = (|| -> Result<i64> {
         let tx = conn.transaction()?;
-        let key_id = key_tree::build_tree(&tx, &name, &data_key[..], tree_spec)?;
+        let key_id = key_tree::build_tree(&tx, name, &data_key[..], tree_spec)?;
         tx.execute(
             "INSERT INTO files (name, encrypted_path, key_id, nonce) VALUES (?1, ?2, ?3, ?4)",
             params![name, encrypted_path_str, key_id, nonce.to_vec()],
@@ -74,7 +94,7 @@ pub fn lock_file(
     // is always cleaned up on any failure, including one that happens
     // before a transaction ever opens (e.g. `conn` already has one active).
     if result.is_err() {
-        let _ = fs::remove_file(encrypted_path);
+        let _ = storage.delete(encrypted_path);
     }
     result
 }
@@ -151,9 +171,21 @@ pub fn complete_unlock(
     presented: key_tree::PresentedReconstruction,
     grants: &[UnlockGrant],
 ) -> Result<Vec<u8>> {
+    complete_unlock_in(&NativeStorage, conn, file_id, presented, grants)
+}
+
+/// [`complete_unlock`], reading the ciphertext through `storage`.
+pub fn complete_unlock_in(
+    storage: &dyn Storage,
+    conn: &Connection,
+    file_id: i64,
+    presented: key_tree::PresentedReconstruction,
+    grants: &[UnlockGrant],
+) -> Result<Vec<u8>> {
     let audit_devices = device::format_presentation(&presented.devices);
     let secret = Zeroizing::new(presented.secret);
     let result = decrypt_presented(
+        storage,
         conn,
         file_id,
         secret.as_slice(),
@@ -173,6 +205,7 @@ pub fn complete_unlock(
 }
 
 fn decrypt_presented(
+    storage: &dyn Storage,
     conn: &Connection,
     file_id: i64,
     secret: &[u8],
@@ -189,7 +222,7 @@ fn decrypt_presented(
     let data_key: Zeroizing<[u8; crypto::KEY_LEN]> =
         Zeroizing::new(secret.try_into().map_err(|_| Error::QuorumNotMet)?);
     let nonce: [u8; NONCE_LEN] = nonce.try_into().map_err(|_| Error::IntegrityCheckFailed)?;
-    let ciphertext = fs::read(encrypted_path)?;
+    let ciphertext = storage.read(Path::new(&encrypted_path))?;
     crypto::decrypt(&data_key, &nonce, &ciphertext).map_err(|_| Error::IntegrityCheckFailed)
 }
 

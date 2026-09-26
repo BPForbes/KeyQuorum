@@ -132,6 +132,31 @@ expire `DEVICE_PACKAGE_TTL_DAYS` after they are stored and are never deleted
 on acknowledgement. `src/relay/device_mail.rs` owns the device mailbox;
 `src/relay/device_directory.rs` owns the public descriptor.
 
+`src/storage.rs` is where container files and quorum ciphertext live:
+`NativeStorage` is plain `std::fs` (new files still go through
+`write_owner_only`), and `device::*_in` / `quorum::lock_bytes_in` /
+`quorum::complete_unlock_in` take any `Storage`, which is how the browser lab
+runs the same container and unlock code in memory. The original
+path-based functions are thin wrappers over `NativeStorage`; keep them.
+`src/file_delivery.rs` owns sealed file delivery between labels:
+`KIND_FILE_DELIVERY` / `KIND_FILE_DELIVERY_ACK` `PACKAGE` letters, signed by
+the sender and answered with a signed accept/reject, both checked against
+the signing key the opening store has registered for the claimed label.
+The bridge inbox carries them like any other non-device letter.
+
+`src/lab/` (feature `lab`) is KeyQuorum Lab, the public browser
+demonstration published from `lab/` to GitHub Pages and embedded by
+bailey-forbes.com. It seeds synthetic users, mock USB drives (real
+`device` containers held in memory, with published demo passphrases),
+locked files, and an in-memory relay, then calls the crate's own quorum,
+custody, approval, visibility, and delivery code; it must not
+reimplement any of those rules. `src/lab/wasm.rs` is the only JavaScript
+surface. The lab WASM must never include `provider`: `build.rs` refuses a
+wasm32 build with both features (native `--all-features` builds may
+combine them). Nothing secret may be seeded: everything in the bundle is
+public. The lab's ready handshake posts only to `https://bailey-forbes.com`
+(or a loopback origin for tests), never `*`.
+
 ## Setup / build / test
 
 - Build (customer CLI): `cargo build --release` (no mailbox host subcommand)
@@ -139,6 +164,7 @@ on acknowledgement. `src/relay/device_mail.rs` owns the device mailbox;
   (compiles host capabilities; authorization is a signed `provider.kqcert`)
 - Test: `cargo test --locked --all-targets --all-features`
 - Lint: `cargo clippy --locked --all-targets --all-features -- -D warnings`
+- Lab (`src/lab/`, `lab/`), from `lab/`: `npm run build:wasm`, `npm run build`, `npm run test:browser`
 - Format: `cargo fmt`
 
 Run format, lint, and tests before considering any change complete.

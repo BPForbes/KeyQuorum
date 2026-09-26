@@ -1,0 +1,165 @@
+# Builds, tests, and publishes KeyQuorum Lab (lab/) to GitHub Pages:
+#
+#   native tests -> provider/lab guard -> WASM build -> frontend build
+#   -> browser tests -> project metadata -> Pages deploy
+#
+# Pull requests run everything except the deploy. Only a push to main (or a
+# manual run on main) publishes, and notify-portfolio.yml tells
+# bailey-forbes.com only after the job named "Publish KeyQuorum Lab to
+# GitHub Pages" succeeded, so the portfolio never advertises a commit that
+# is not live.
+#
+# One-time setup: Settings -> Pages -> Build and deployment -> Source:
+# "GitHub Actions".
+
+name: Deploy KeyQuorum Lab
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-lab-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  native:
+    name: Native KeyQuorum tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test
+        run: cargo test --locked --all-targets --all-features
+
+  build:
+    name: Build and validate the lab
+    needs: native
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Refuse a provider + lab WASM build
+        # build.rs names the refusal; --keep-going lets cargo reach it past
+        # provider dependencies that do not compile for wasm32 at all.
+        run: |
+          set -uo pipefail
+          if cargo check --keep-going --locked --lib --target wasm32-unknown-unknown --features lab,provider > guard.log 2>&1; then
+            echo "::error::a wasm32 build with both lab and provider compiled"
+            exit 1
+          fi
+          grep -q "provider and lab builds are mutually exclusive" guard.log
+
+      - name: Read the pinned wasm-bindgen version
+        id: bindgen
+        run: |
+          set -euo pipefail
+          version="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)"
+          test -n "${version}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ steps.bindgen.outputs.version }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: lab/package-lock.json
+      - name: Install lab dependencies
+        working-directory: lab
+        run: npm ci
+
+      - name: Build the lab WASM (lab feature only)
+        working-directory: lab
+        run: npm run build:wasm
+
+      - name: Generate project metadata
+        if: github.event_name != 'pull_request'
+        working-directory: lab
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_WORKFLOW: ${{ github.workflow }}
+          METADATA_OUTPUT: public/project-metadata.json
+        run: npm run generate:metadata
+
+      - name: Script tests
+        working-directory: lab
+        run: npm run test:scripts
+
+      - name: Typecheck and build the frontend
+        working-directory: lab
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: npm run build
+
+      - name: Validate published metadata
+        if: github.event_name != 'pull_request'
+        working-directory: lab
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: npm run validate:metadata
+
+      - name: Install Chromium for browser tests
+        working-directory: lab
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser tests
+        working-directory: lab
+        env:
+          CI: "true"
+        run: npm run test:browser
+
+      - name: Keep the browser test report
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: playwright-report
+          path: lab/playwright-report
+          retention-days: 7
+
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: lab/dist
+
+  deploy:
+    # notify-portfolio.yml reads this job's conclusion by name.
+    name: Publish KeyQuorum Lab to GitHub Pages
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

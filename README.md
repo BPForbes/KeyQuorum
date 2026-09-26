@@ -13,6 +13,28 @@ to a second device that is open at the same time, or through the mailbox
 as a sealed letter when it is not. See Devices and custody,
 and Moving a key between devices.
 
+## Browser lab
+
+[KeyQuorum Lab](https://bpforbes.github.io/KeyQuorum/) runs this crate in a
+browser: the `lab` feature compiles the real quorum, custody, parent-approval,
+visibility, and sealed-delivery code to WebAssembly, over seeded synthetic
+users and mock USB drives. Switch identities, insert and eject drives, unlock
+files, and send files between people, and each action shows the checks
+KeyQuorum made. The mock drives' passphrases are published demo values, so
+the lab demonstrates behavior; it is not hardware-backed security.
+
+```bash
+cargo install wasm-bindgen-cli --version <wasm-bindgen version in Cargo.lock> --locked
+rustup target add wasm32-unknown-unknown
+cd lab
+npm ci
+npm run build:wasm   # cargo build --features lab for wasm32 + bindings
+npm run dev          # or: npm run build && npm run test:browser
+```
+
+`.github/workflows/deploy-lab.yml` tests, builds, and publishes it to
+GitHub Pages from `main`.
+
 ## Concept
 
 - A key — the data key protecting a file, or a secret split for its own sake — can be

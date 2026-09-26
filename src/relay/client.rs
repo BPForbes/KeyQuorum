@@ -1,13 +1,19 @@
 //! HTTP JSON wire types and a synchronous `ureq` client for the relay.
 
+#[cfg(not(target_arch = "wasm32"))]
 use super::device_directory::DeviceDescriptor;
 use crate::error::{Error, Result};
 use crate::key_tree::PublicTree;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::provider::{self, Certificate};
+#[cfg(not(target_arch = "wasm32"))]
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashSet;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::OnceLock;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 use url::Url;
 use utoipa::ToSchema;
@@ -164,6 +170,7 @@ fn is_loopback_url(url: &Url) -> bool {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn relay_request_url(base: &str, path: &str) -> Result<Url> {
     let mut parsed = parse_relay_url(base)?;
     let joined = format!("{}{path}", parsed.path().trim_end_matches('/'));
@@ -171,6 +178,7 @@ fn relay_request_url(base: &str, path: &str) -> Result<Url> {
     Ok(parsed)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn http_agent_builder() -> ureq::AgentBuilder {
     ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(10))
@@ -180,15 +188,18 @@ fn http_agent_builder() -> ureq::AgentBuilder {
         .redirects(0)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn http_agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| http_agent_builder().build())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn with_key(req: ureq::Request, api_key: &str) -> ureq::Request {
     req.set("Authorization", &format!("Bearer {api_key}"))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn read_json<T: serde::de::DeserializeOwned>(
     result: std::result::Result<ureq::Response, ureq::Error>,
 ) -> Result<T> {
@@ -208,6 +219,7 @@ fn read_json<T: serde::de::DeserializeOwned>(
 }
 
 /// Upload one opaque `.kqpb` envelope (no tree update).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn push(base_url: &str, api_key: &str, envelope: &[u8]) -> Result<InboxAccepted> {
     let url = relay_request_url(base_url, "/inbox")?;
     let resp = with_key(http_agent().request_url("POST", &url), api_key)
@@ -217,6 +229,7 @@ pub fn push(base_url: &str, api_key: &str, envelope: &[u8]) -> Result<InboxAccep
 }
 
 /// Upload an envelope and merge the sender's public-tree documents.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn push_with_trees(
     base_url: &str,
     api_key: &str,
@@ -228,6 +241,7 @@ pub fn push_with_trees(
 
 /// Like [`push_with_trees`], and stamps a UTC envelope expiry the host scan
 /// will delete after.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn push_with_trees_until(
     base_url: &str,
     api_key: &str,
@@ -249,6 +263,7 @@ pub fn push_with_trees_until(
 }
 
 /// Fetch one page of envelopes for the pull key's bound fingerprint.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn pull(
     base_url: &str,
     api_key: &str,
@@ -271,6 +286,7 @@ pub fn pull(
 }
 
 /// Ask the relay whether a bearer is live. No `Authorization` header.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn check_key(base_url: &str, token: &str) -> Result<KeyCheckResponse> {
     post_keycheck(
         base_url,
@@ -282,6 +298,7 @@ pub fn check_key(base_url: &str, token: &str) -> Result<KeyCheckResponse> {
 }
 
 /// Revalidate a hash stored on the personal instance. No `Authorization` header.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn check_key_hash(base_url: &str, key_hash: &str) -> Result<KeyCheckResponse> {
     post_keycheck(
         base_url,
@@ -292,6 +309,7 @@ pub fn check_key_hash(base_url: &str, key_hash: &str) -> Result<KeyCheckResponse
     )
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn post_keycheck(base_url: &str, body: &KeyCheckRequest) -> Result<KeyCheckResponse> {
     let json = serde_json::to_string(body).map_err(|e| Error::RelayRequest(e.to_string()))?;
     let url = relay_request_url(base_url, "/keycheck")?;
@@ -305,6 +323,7 @@ fn post_keycheck(base_url: &str, body: &KeyCheckRequest) -> Result<KeyCheckRespo
 /// Challenge the relay for a KeyQuorum-signed provider certificate and a
 /// signature over a fresh nonce. Official clients call this *before*
 /// sending a bearer so a modified host cannot skip authorization.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn authenticate_provider(
     base_url: &str,
     root_public_key: &[u8; 32],
@@ -351,6 +370,7 @@ pub fn authenticate_provider(
 }
 
 /// Replace the relay's canonical public tree (admin scope).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn publish_tree(base_url: &str, api_key: &str, tree: &PublicTree) -> Result<PublicTree> {
     let body = serde_json::to_string(tree).map_err(|e| Error::RelayRequest(e.to_string()))?;
     let url = relay_request_url(base_url, "/trees")?;
@@ -361,6 +381,7 @@ pub fn publish_tree(base_url: &str, api_key: &str, tree: &PublicTree) -> Result<
 }
 
 /// Fetch the public-tree slice for this pull key's bound fingerprint.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn fetch_tree_context(base_url: &str, api_key: &str, label: &str) -> Result<PublicTree> {
     let path = format!("/trees/{}/context", urlencoding_label(label));
     let url = relay_request_url(base_url, &path)?;
@@ -369,6 +390,7 @@ pub fn fetch_tree_context(base_url: &str, api_key: &str, label: &str) -> Result<
 }
 
 /// Upload one sealed device letter (`device.push`).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn push_device_package(base_url: &str, api_key: &str, package: &[u8]) -> Result<InboxAccepted> {
     let url = relay_request_url(base_url, "/devices/packages")?;
     let resp = with_key(http_agent().request_url("POST", &url), api_key)
@@ -378,6 +400,7 @@ pub fn push_device_package(base_url: &str, api_key: &str, package: &[u8]) -> Res
 }
 
 /// Fetch one page of device letters for this pull key's fingerprint.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn pull_device_packages(
     base_url: &str,
     api_key: &str,
@@ -400,6 +423,7 @@ pub fn pull_device_packages(
 }
 
 /// Publish this device's public descriptor (`device.push`).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn put_device(
     base_url: &str,
     api_key: &str,
@@ -414,6 +438,7 @@ pub fn put_device(
 }
 
 /// Read a published public descriptor. `device.push` and `device.pull` both work.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn get_device(base_url: &str, api_key: &str, device_id: &str) -> Result<DeviceDescriptor> {
     let path = format!("/devices/{device_id}");
     let url = relay_request_url(base_url, &path)?;
@@ -421,6 +446,7 @@ pub fn get_device(base_url: &str, api_key: &str, device_id: &str) -> Result<Devi
     read_json(resp)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn urlencoding_label(label: &str) -> String {
     let mut out = String::new();
     for b in label.bytes() {
