@@ -95,6 +95,8 @@ pub struct TreeNodeView {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TreeView {
+    /// The org tree's key id: the `<KEY_ID>` argument of `keyquorum bridge`.
+    pub key_id: i64,
     pub nodes: Vec<TreeNodeView>,
     /// Established undirected links (`key_node_links`), which drive visibility.
     pub bridges: Vec<(String, String)>,

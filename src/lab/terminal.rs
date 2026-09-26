@@ -4,7 +4,10 @@
 
 use super::state::{LabState, Outcome};
 use super::view::{RequirementNode, StepStatus, TraceStep};
+use crate::bridge_command::TreeBridgeCommand;
 use crate::error::Result;
+use clap::error::ErrorKind;
+use clap::Parser;
 
 pub const HELP: &[&str] = &[
     "whoami                      active identity",
@@ -24,13 +27,22 @@ pub const HELP: &[&str] = &[
     "approvals                   unlock approvals you asked for or owe",
     "approve <id> | decline <id> answer an approval request",
     "tree                        org tree from your view",
-    "bridge list                 whitelist and established links",
-    "bridge allow <node> <peer>  whitelist node to link with peer",
-    "bridge deny <node> <peer>   revoke both ways and drop the link",
-    "bridge add <a> <b>          establish a link (needs a whitelist entry)",
-    "bridge remove <a> <b>       tear down a link, keep the whitelist",
+    "bridge <allow|deny|add|remove|list> ...",
+    "                            keyquorum bridge itself; see `bridge --help`",
     "reset                       restore the seeded lab",
 ];
+
+/// `bridge ...` as the `keyquorum` binary parses it: the same clap
+/// subcommands, under a `bridge` program name.
+#[derive(Parser)]
+#[command(
+    name = "bridge",
+    about = "Manage cross-branch whitelist entries and established pairings"
+)]
+struct BridgeLine {
+    #[command(subcommand)]
+    command: TreeBridgeCommand,
+}
 
 /// Parse one line and run it. `reset` is handled by the caller, which owns
 /// the state value; everything else mutates `state` in place.
@@ -250,30 +262,41 @@ pub fn run(state: &mut LabState, line: &str) -> Result<(Outcome, Vec<String>)> {
             for (a, b) in &snapshot.tree.bridges {
                 output.push(format!("bridge {a} <-> {b}"));
             }
+            output.push(format!(
+                "org tree key id {} (e.g. bridge list {})",
+                snapshot.tree.key_id, snapshot.tree.key_id
+            ));
             quiet(true, output)
         }
-        ["bridge"] | ["bridge", "list"] => {
-            let snapshot = state.snapshot()?;
-            let mut output = vec!["Allowed:".to_string()];
-            if snapshot.tree.allowed.is_empty() {
-                output.push("  (none)".into());
+        ["bridge", ..] | ["keyquorum", "bridge", ..] => {
+            let args = words.strip_prefix(&["keyquorum"]).unwrap_or(&words);
+            match BridgeLine::try_parse_from(args) {
+                Ok(parsed) => {
+                    // What the CLI printed, verbatim, then the lab's note
+                    // of whose visible slice changed.
+                    let (outcome, mut output) = state.bridge(line.trim(), parsed.command)?;
+                    if !outcome.ok {
+                        output.push(outcome.message.clone());
+                    }
+                    output.extend(outcome.trace.iter().map(trace_line));
+                    (outcome, output)
+                }
+                Err(err) => {
+                    let ok = matches!(
+                        err.kind(),
+                        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+                    );
+                    quiet(
+                        ok,
+                        err.render()
+                            .to_string()
+                            .lines()
+                            .map(str::to_string)
+                            .collect(),
+                    )
+                }
             }
-            for (node, peer) in &snapshot.tree.allowed {
-                output.push(format!("  {node} -> {peer}"));
-            }
-            output.push("Established:".into());
-            if snapshot.tree.bridges.is_empty() {
-                output.push("  (none)".into());
-            }
-            for (a, b) in &snapshot.tree.bridges {
-                output.push(format!("  {a} <-> {b}"));
-            }
-            quiet(true, output)
         }
-        ["bridge", "allow", node, peer] => with_trace(state.allow_bridge(node, peer)?),
-        ["bridge", "deny", node, peer] => with_trace(state.deny_bridge(node, peer)?),
-        ["bridge", "add", from, to] => with_trace(state.add_bridge(from, to)?),
-        ["bridge", "remove", from, to] => with_trace(state.remove_bridge(from, to)?),
         _ => quiet(
             false,
             vec![format!("Unknown command: {line}. Type `help`.")],

@@ -15,8 +15,8 @@ use keyquorum::key_tree::{NodeSpec, TreeNodeSummary};
 use keyquorum::keys::KeyType;
 use keyquorum::pin::ResourceType;
 use keyquorum::{
-    db, export, key_tree, keys, locked_files, org_update, pin, private_bridge, provider, quorum,
-    relay, sharing, signing, vault,
+    bridge_command, db, export, key_tree, keys, locked_files, org_update, pin, private_bridge,
+    provider, quorum, relay, sharing, signing, vault,
 };
 use rusqlite::Connection;
 use std::collections::{BTreeSet, HashMap};
@@ -503,40 +503,8 @@ enum TreeCommand {
 
 #[derive(Subcommand)]
 enum BridgeCommand {
-    /// Grant --node permission to form a cross-branch link with --peer
-    Allow {
-        key_id: i64,
-        #[arg(long)]
-        node: String,
-        #[arg(long)]
-        peer: String,
-    },
-    /// Revoke that permission and drop any established link between them
-    Deny {
-        key_id: i64,
-        #[arg(long)]
-        node: String,
-        #[arg(long)]
-        peer: String,
-    },
-    /// Establish a pairing if either node's whitelist allows it
-    Add {
-        key_id: i64,
-        #[arg(long)]
-        from: String,
-        #[arg(long)]
-        to: String,
-    },
-    /// Tear down an established pairing (whitelist is left intact)
-    Remove {
-        key_id: i64,
-        #[arg(long)]
-        from: String,
-        #[arg(long)]
-        to: String,
-    },
-    /// List whitelist entries and established pairings
-    List { key_id: i64 },
+    #[command(flatten)]
+    Tree(bridge_command::TreeBridgeCommand),
     /// N-member private sign bridges. Each person (and each department
     /// manager parent) has their own store; this command writes per-recipient
     /// packages instead of sharing sealed secrets in one database.
@@ -1509,41 +1477,7 @@ fn run_reissue(conn: &Connection, args: ReissueArgs) -> Result<()> {
 
 fn run_bridge(conn: &Connection, command: BridgeCommand) -> Result<()> {
     match command {
-        BridgeCommand::Allow { key_id, node, peer } => {
-            key_tree::allow_bridge(conn, key_id, &node, &peer)?;
-            println!("Allowed {node} to bridge to {peer}");
-        }
-        BridgeCommand::Deny { key_id, node, peer } => {
-            key_tree::deny_bridge(conn, key_id, &node, &peer)?;
-            println!("Denied {node} bridging to {peer}");
-        }
-        BridgeCommand::Add { key_id, from, to } => {
-            key_tree::add_bridge(conn, key_id, &from, &to)?;
-            println!("Established bridge {from} <-> {to}");
-        }
-        BridgeCommand::Remove { key_id, from, to } => {
-            key_tree::remove_bridge(conn, key_id, &from, &to)?;
-            println!("Removed bridge {from} <-> {to}");
-        }
-        BridgeCommand::List { key_id } => {
-            let listing = key_tree::list_bridges(conn, key_id)?;
-            println!("Allowed:");
-            if listing.allowed.is_empty() {
-                println!("  (none)");
-            } else {
-                for (node, peer) in listing.allowed {
-                    println!("  {node} -> {peer}");
-                }
-            }
-            println!("Established:");
-            if listing.established.is_empty() {
-                println!("  (none)");
-            } else {
-                for link in listing.established {
-                    println!("  {} <-> {}", link.from, link.to);
-                }
-            }
-        }
+        BridgeCommand::Tree(command) => bridge_command::run(conn, command, &mut io::stdout())?,
         BridgeCommand::Private { command } => run_private_bridge(conn, command)?,
     }
     Ok(())

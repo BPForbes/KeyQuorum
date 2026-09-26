@@ -144,7 +144,12 @@ bailey-forbes.com. It seeds synthetic users, mock USB drives (real
 `device` containers held in memory, with published demo passphrases),
 locked files, and an in-memory relay, then calls the crate's own quorum,
 custody, approval, visibility, and delivery code; it must not
-reimplement any of those rules. `src/lab/wasm.rs` is the only JavaScript
+reimplement any of those rules. `src/bridge_command.rs` holds the
+`keyquorum bridge allow|deny|add|remove|list` clap subcommands and their
+handler; the binary flattens them into `bridge` and the lab terminal
+(and the Organization panel, which sends command lines to it) parses and
+runs the same ones, so lab bridge actions are the CLI's code, not a lab
+copy. `src/lab/wasm.rs` is the only JavaScript
 surface. The lab WASM must never include `provider`: `build.rs` refuses a
 wasm32 build with both features (native `--all-features` builds may
 combine them). Nothing secret may be seeded: everything in the bundle is

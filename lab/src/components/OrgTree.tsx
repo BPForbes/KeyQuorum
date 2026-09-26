@@ -62,12 +62,13 @@ function nodeName(nodes: TreeNodeView[], label: string) {
   return person ? `${label} (${person})` : label;
 }
 
-// The same four operations as `keyquorum bridge allow|deny|add|remove`.
-// Each button is one call into the crate's key_tree functions; whether a
-// link is allowed is decided there, not here.
+// Each button sends a `keyquorum bridge ...` command line through the lab
+// terminal, which parses it with the CLI's own clap definitions and runs
+// the CLI's own handler. Nothing about bridges is decided here.
 function Connections({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
   const id = useId();
-  const { nodes, bridges, allowed } = snapshot.tree;
+  const { keyId, nodes, bridges, allowed } = snapshot.tree;
+  const run = (args: string) => act((client) => client.runCommand(`keyquorum bridge ${args}`));
   const [from, setFrom] = useState(snapshot.activeUser.label);
   const [to, setTo] = useState(nodes.find((node) => node.label !== snapshot.activeUser.label)?.label ?? "");
   const options = nodes.map((node) => (
@@ -82,7 +83,9 @@ function Connections({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
         A bridge is a cross-branch link between two nodes. Linking takes two steps, as with the CLI: a node first
         whitelists a peer with <code>bridge allow</code>, then either side establishes the link with{" "}
         <code>bridge add</code>, which KeyQuorum refuses unless one of the two whitelists names the other. Only
-        established links change who can see whom: each end sees the other end and its ancestors.
+        established links change who can see whom: each end sees the other end and its ancestors. Every button here
+        runs the real <code>keyquorum bridge</code> command against org tree key <code>{keyId}</code>; the same
+        commands work in the Terminal tab.
       </p>
 
       <h4 className="small">Established</h4>
@@ -96,7 +99,7 @@ function Connections({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
               <button
                 type="button"
                 className="btn small-btn"
-                onClick={() => act((client) => client.removeBridge(a, b))}
+                onClick={() => run(`remove ${keyId} --from ${a} --to ${b}`)}
                 aria-label={`Remove bridge ${a} to ${b}`}
               >
                 Remove
@@ -119,7 +122,7 @@ function Connections({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
               <button
                 type="button"
                 className="btn small-btn"
-                onClick={() => act((client) => client.denyBridge(node, peer))}
+                onClick={() => run(`deny ${keyId} --node ${node} --peer ${peer}`)}
                 aria-label={`Deny ${node} bridging to ${peer}`}
               >
                 Deny
@@ -141,10 +144,10 @@ function Connections({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
           {options}
         </select>
         <div className="button-row">
-          <button type="button" className="btn" onClick={() => act((client) => client.allowBridge(from, to))}>
+          <button type="button" className="btn" onClick={() => run(`allow ${keyId} --node ${from} --peer ${to}`)}>
             Allow node → peer
           </button>
-          <button type="button" className="btn btn-primary" onClick={() => act((client) => client.addBridge(from, to))}>
+          <button type="button" className="btn btn-primary" onClick={() => run(`add ${keyId} --from ${from} --to ${to}`)}>
             Establish bridge
           </button>
         </div>

@@ -186,7 +186,7 @@ test.describe("desktop lab", () => {
     await expect(page.getByTestId("active-user-name")).toHaveText("Alice");
     await expect(page.getByTestId("drive-david")).toContainText("Not inserted");
   });
-  test("the visitor can whitelist, establish, and tear down bridges", async ({ page }) => {
+  test("bridge buttons and the terminal run the real keyquorum bridge command", async ({ page }) => {
     await loadLab(page);
     const bridges = page.getByTestId("bridges");
     await expect(bridges.getByTestId("bridge-M.S-M.A")).toBeVisible();
@@ -195,12 +195,12 @@ test.describe("desktop lab", () => {
     await bridges.getByLabel("Node").selectOption("M.S.1");
     await bridges.getByLabel("Peer").selectOption("M.A.1");
     await bridges.getByRole("button", { name: "Establish bridge" }).click();
-    await expect(status(page)).toHaveText("Establish bridge M.S.1 ↔ M.A.1: refused");
+    await expect(status(page)).toHaveText("error: cross-branch link is not whitelisted by either node");
 
     await bridges.getByRole("button", { name: "Allow node → peer" }).click();
     await expect(bridges.getByTestId("allowed-M.S.1-M.A.1")).toBeVisible();
     await bridges.getByRole("button", { name: "Establish bridge" }).click();
-    await expect(status(page)).toHaveText("Establish bridge M.S.1 ↔ M.A.1");
+    await expect(status(page)).toHaveText("Established bridge M.S.1 <-> M.A.1");
     await expect(bridges.getByTestId("bridge-M.S.1-M.A.1")).toBeVisible();
 
     // Removing the seeded manager link hides David from Alice's slice.
@@ -209,7 +209,7 @@ test.describe("desktop lab", () => {
     await expect(bridges.getByTestId("allowed-M.S-M.A")).toBeVisible();
 
     const input = page.getByLabel("Terminal command");
-    await input.fill("bridge list");
+    await input.fill("bridge list 1");
     await input.press("Enter");
     await expect(page.getByTestId("terminal-output")).toContainText("M.S.1 <-> M.A.1");
   });

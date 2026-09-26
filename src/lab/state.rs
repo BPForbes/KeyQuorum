@@ -14,6 +14,7 @@ use super::relay::{LabRelay, MemoryLabRelay};
 use super::seed::{self, Expiry, Protection};
 use super::view::*;
 use crate::authority::{self, UnlockGrant};
+use crate::bridge_command::{self, TreeBridgeCommand};
 use crate::db;
 use crate::device::{self, CustodyMode, CustodyPolicy, SlotSecrets, UnlockApproval, UsedLeaf};
 use crate::envelope;
@@ -590,131 +591,38 @@ impl LabState {
 
     // ----- bridges --------------------------------------------------------
 
-    /// `keyquorum bridge allow`: whitelist `node` to form a link with `peer`.
-    pub fn allow_bridge(&mut self, node: &str, peer: &str) -> Result<Outcome> {
-        let (node, peer) = (self.resolve_label(node), self.resolve_label(peer));
-        let command = format!(
-            "keyquorum bridge allow {} --node {node} --peer {peer}",
-            self.org_key_id
-        );
-        self.bridge_action(
-            format!("Allow {node} to bridge to {peer}"),
-            command,
-            |conn, key_id| key_tree::allow_bridge(conn, key_id, &node, &peer),
-        )
-    }
-
-    /// `keyquorum bridge deny`: revoke that permission in both directions
-    /// and drop any established link between the two.
-    pub fn deny_bridge(&mut self, node: &str, peer: &str) -> Result<Outcome> {
-        let (node, peer) = (self.resolve_label(node), self.resolve_label(peer));
-        let command = format!(
-            "keyquorum bridge deny {} --node {node} --peer {peer}",
-            self.org_key_id
-        );
-        self.bridge_action(
-            format!("Deny {node} bridging to {peer}"),
-            command,
-            |conn, key_id| key_tree::deny_bridge(conn, key_id, &node, &peer),
-        )
-    }
-
-    /// `keyquorum bridge add`: establish a link, which the library refuses
-    /// unless either node's whitelist names the other.
-    pub fn add_bridge(&mut self, from: &str, to: &str) -> Result<Outcome> {
-        let (from, to) = (self.resolve_label(from), self.resolve_label(to));
-        let command = format!(
-            "keyquorum bridge add {} --from {from} --to {to}",
-            self.org_key_id
-        );
-        self.bridge_action(
-            format!("Establish bridge {from} ↔ {to}"),
-            command,
-            |conn, key_id| key_tree::add_bridge(conn, key_id, &from, &to),
-        )
-    }
-
-    /// `keyquorum bridge remove`: tear down a link, leaving the whitelist.
-    pub fn remove_bridge(&mut self, from: &str, to: &str) -> Result<Outcome> {
-        let (from, to) = (self.resolve_label(from), self.resolve_label(to));
-        let command = format!(
-            "keyquorum bridge remove {} --from {from} --to {to}",
-            self.org_key_id
-        );
-        self.bridge_action(
-            format!("Remove bridge {from} ↔ {to}"),
-            command,
-            |conn, key_id| key_tree::remove_bridge(conn, key_id, &from, &to),
-        )
-    }
-
-    /// A tree label as typed, or the label of the lab user it names.
-    fn resolve_label(&self, key: &str) -> String {
-        match self.user_index(key) {
-            Some(index) => self.users[index].label.clone(),
-            None => key.trim().to_string(),
-        }
-    }
-
-    /// Run one `key_tree` bridge operation against the org tree. The library
-    /// alone decides: its refusals (unknown label, self-link, not
-    /// whitelisted, no such link) become a denied outcome, and on success
-    /// the trace reports every person whose visible slice changed.
-    fn bridge_action(
+    /// Run one `keyquorum bridge allow|deny|add|remove|list` subcommand
+    /// through [`bridge_command::run`], the same code the CLI runs, against
+    /// the lab's store. Its printed output becomes the result; an error is
+    /// reported the way the CLI's `main` reports it. The trace adds whose
+    /// visible slice changed, from `key_tree`'s own visibility rule.
+    ///
+    /// Returns the outcome and, separately, exactly what the CLI printed.
+    pub fn bridge(
         &mut self,
-        title: String,
-        command: String,
-        run: impl FnOnce(&Connection, i64) -> Result<()>,
-    ) -> Result<Outcome> {
-        let actor = self.actor();
-        let mut trace = vec![TraceStep::info(format!(
-            "Operator: {} ({}) on org tree key {}",
-            actor.name, actor.label, self.org_key_id
-        ))];
+        line: &str,
+        command: TreeBridgeCommand,
+    ) -> Result<(Outcome, Vec<String>)> {
         let before = self.slices()?;
-        match run(&self.conn, self.org_key_id) {
-            Ok(()) => {}
-            Err(
-                err @ (Error::NodeNotFound
-                | Error::InvalidBridge
-                | Error::BridgeNotWhitelisted
-                | Error::BridgeNotFound),
-            ) => {
-                trace.push(TraceStep::fail(format!("Refused: {err}")));
-                self.log("bridge", "denied", &title, trace.clone(), Some(command));
-                return Ok(Outcome::done(false, format!("{title}: refused"), trace));
-            }
-            Err(err) => return Err(err),
+        let mut stdout = Vec::new();
+        let ran = bridge_command::run(&self.conn, command, &mut stdout);
+        let printed: Vec<String> = String::from_utf8_lossy(&stdout)
+            .lines()
+            .map(str::to_string)
+            .collect();
+        let mut trace: Vec<TraceStep> = printed.iter().map(TraceStep::info).collect();
+        if let Err(err) = ran {
+            let message = format!("error: {err}");
+            trace.push(TraceStep::fail(message.clone()));
+            self.log("bridge", "denied", line, trace, Some(line.to_string()));
+            return Ok((Outcome::done(false, message, vec![]), printed));
         }
-        let listing = key_tree::list_bridges(&self.conn, self.org_key_id)?;
-        trace.push(TraceStep::pass(format!(
-            "Whitelist: {}",
-            join_or_none(
-                listing
-                    .allowed
-                    .iter()
-                    .map(|(node, peer)| format!("{node} → {peer}"))
-            )
-        )));
-        trace.push(TraceStep::pass(format!(
-            "Established: {}",
-            join_or_none(
-                listing
-                    .established
-                    .iter()
-                    .map(|link| format!("{} ↔ {}", link.from, link.to))
-            )
-        )));
         let after = self.slices()?;
-        let mut changed = false;
+        let mut changes = Vec::new();
         for (label, now) in &after {
             let was = &before[label];
             let gained: Vec<&String> = now.difference(was).collect();
             let lost: Vec<&String> = was.difference(now).collect();
-            if gained.is_empty() && lost.is_empty() {
-                continue;
-            }
-            changed = true;
             let mut parts = Vec::new();
             if !gained.is_empty() {
                 parts.push(format!("now sees {}", sorted_join(gained)));
@@ -722,19 +630,18 @@ impl LabState {
             if !lost.is_empty() {
                 parts.push(format!("no longer sees {}", sorted_join(lost)));
             }
-            trace.push(TraceStep::info(format!(
-                "{} {}",
-                self.describe_label(label),
-                parts.join("; ")
-            )));
+            if !parts.is_empty() {
+                changes.push(TraceStep::pass(format!(
+                    "{} {}",
+                    self.describe_label(label),
+                    parts.join("; ")
+                )));
+            }
         }
-        if !changed {
-            trace.push(TraceStep::info(
-                "No one's visible slice changed: visibility follows established links, not the whitelist",
-            ));
-        }
-        self.log("bridge", "granted", &title, trace.clone(), Some(command));
-        Ok(Outcome::done(true, title, trace))
+        trace.extend(changes.iter().cloned());
+        let message = printed.first().cloned().unwrap_or_else(|| line.to_string());
+        self.log("bridge", "granted", line, trace, Some(line.to_string()));
+        Ok((Outcome::done(true, message, changes), printed))
     }
 
     /// Every lab user's visible slice, loading the tree and links once.
@@ -2025,6 +1932,7 @@ impl LabState {
             .map(|edge| (edge.from, edge.to))
             .collect();
         Ok(TreeView {
+            key_id: self.org_key_id,
             nodes,
             bridges,
             allowed: listing.allowed,
@@ -2213,15 +2121,6 @@ fn policy_line(policy: &CustodyPolicy) -> String {
 
 fn short_hex(bytes: &[u8; 16]) -> String {
     hex::encode(&bytes[..4])
-}
-
-fn join_or_none(items: impl Iterator<Item = String>) -> String {
-    let items: Vec<String> = items.collect();
-    if items.is_empty() {
-        "(none)".into()
-    } else {
-        items.join(", ")
-    }
 }
 
 fn sorted_join(labels: Vec<&String>) -> String {
