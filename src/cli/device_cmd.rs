@@ -2,12 +2,12 @@
 //! the container's device id in the org store. One-key files still use
 //! `register` and `--share-file`; those keys count as their own devices.
 
+use crate::device::{self, CustodyMode, CustodyPolicy, UnlockApproval};
+use crate::device_relay;
+use crate::error::{Error, Result};
+use crate::keys::{self, KeyType};
+use crate::relay::{self, ApiKeyScope};
 use clap::Subcommand;
-use keyquorum::device::{self, CustodyMode, CustodyPolicy, UnlockApproval};
-use keyquorum::device_relay;
-use keyquorum::error::{Error, Result};
-use keyquorum::keys::{self, KeyType};
-use keyquorum::relay::{self, ApiKeyScope};
 use rusqlite::Connection;
 use std::path::PathBuf;
 
@@ -35,7 +35,7 @@ pub enum DeviceCommand {
         #[arg(long)]
         slot: String,
         #[arg(long = "type")]
-        key_type: crate::CliKeyType,
+        key_type: super::CliKeyType,
         /// Registry label. Defaults to the slot label.
         #[arg(long)]
         label: Option<String>,
@@ -152,11 +152,11 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
             let container = device::open(&path)?;
             let record = container
                 .slot(&slot)
-                .ok_or(keyquorum::error::Error::InvalidSlot)?;
+                .ok_or(crate::error::Error::InvalidSlot)?;
             let label = label.unwrap_or_else(|| slot.clone());
             let (public, kind) = match key_type {
-                crate::CliKeyType::Encryption => (record.encryption_public, KeyType::Encryption),
-                crate::CliKeyType::Signing => (record.signing_public, KeyType::Signing),
+                super::CliKeyType::Encryption => (record.encryption_public, KeyType::Encryption),
+                super::CliKeyType::Signing => (record.signing_public, KeyType::Signing),
             };
             let id = keys::register_key(conn, &label, kind, &public)?;
             println!("Registered key {id} ({label}, {})", kind.as_str());
@@ -366,7 +366,7 @@ pub fn apply_policy(
     let mode = match custody {
         Some("hardware") => CustodyMode::Hardware,
         Some("logical") => CustodyMode::Logical,
-        Some(_) => return Err(keyquorum::error::Error::InvalidDevice),
+        Some(_) => return Err(crate::error::Error::InvalidDevice),
         None => current.mode,
     };
     let minimum = minimum_physical_devices.unwrap_or(current.minimum_physical_devices);

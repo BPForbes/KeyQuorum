@@ -2,14 +2,14 @@
 //! devices that are both open. Ghosts stay in the hierarchy and are not
 //! exportable. The global `--db` is not used; each device has its own file.
 
+use crate::db;
+use crate::device::{self, Container};
+use crate::device_relay;
+use crate::error::{Error, Result};
+use crate::relay::{self, ApiKeyScope};
+use crate::storage::NativeStorage;
+use crate::transfer::{self, DescendantMode, TransferAuth, TransferOp, TransferRequest};
 use clap::{ArgGroup, Args, Subcommand, ValueEnum};
-use keyquorum::db;
-use keyquorum::device::{self, Container};
-use keyquorum::device_relay;
-use keyquorum::error::{Error, Result};
-use keyquorum::relay::{self, ApiKeyScope};
-use keyquorum::storage::NativeStorage;
-use keyquorum::transfer::{self, DescendantMode, TransferAuth, TransferOp, TransferRequest};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -147,7 +147,7 @@ pub struct TransferArgs {
 }
 
 #[derive(Clone, Copy, ValueEnum)]
-pub(crate) enum CliRelayOp {
+pub enum CliRelayOp {
     Copy,
     Move,
 }
@@ -162,7 +162,7 @@ impl CliRelayOp {
 }
 
 #[derive(Clone, Copy, ValueEnum)]
-pub(crate) enum CliDescendants {
+pub enum CliDescendants {
     KeyOnly,
     DirectChildren,
     AllDescendants,
@@ -342,15 +342,15 @@ fn prompt_new_passphrases(labels: &[String]) -> Result<HashMap<String, String>> 
 }
 
 fn open_db(path: &Path) -> Result<rusqlite::Connection> {
-    let path = path.to_str().ok_or(keyquorum::error::Error::InvalidPath)?;
+    let path = path.to_str().ok_or(crate::error::Error::InvalidPath)?;
     db::open(path)
 }
 
 fn parse_tx(value: &str) -> Result<[u8; 16]> {
-    let bytes = hex::decode(value).map_err(|_| keyquorum::error::Error::TransferIncomplete)?;
+    let bytes = hex::decode(value).map_err(|_| crate::error::Error::TransferIncomplete)?;
     bytes
         .try_into()
-        .map_err(|_| keyquorum::error::Error::TransferIncomplete)
+        .map_err(|_| crate::error::Error::TransferIncomplete)
 }
 
 fn operation_name(operation: TransferOp) -> &'static str {
