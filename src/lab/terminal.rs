@@ -11,10 +11,11 @@ pub const HELP: &[&str] = &[
     "users                       list lab users",
     "su <name|label>             switch user (e.g. su david, su M.A)",
     "usb                         list mock USB drives",
-    "usb insert|eject <drive>    engineering, accounting, executive",
+    "usb insert|eject <drive>    each person's own drive, plus spare",
+    "move <label> <drive>        relocate a slot to another drive",
     "ls                          files visible to you",
-    "status <file>               key tree and custody policy",
-    "unlock <file>               attempt a quorum unlock",
+    "status <file>               key tree, custody policy, and dates",
+    "unlock <file>               attempt a quorum unlock (= view/open)",
     "send <file> <user>          seal a file-delivery letter to a user",
     "inbox                       letters sealed to you",
     "receive <id> | reject <id>  answer a delivery letter",
@@ -99,6 +100,7 @@ pub fn run(state: &mut LabState, line: &str) -> Result<(Outcome, Vec<String>)> {
         }
         ["usb", "insert", drive] => with_trace(state.set_drive(drive, true)?),
         ["usb", "eject", drive] => with_trace(state.set_drive(drive, false)?),
+        ["move", label, drive] => with_trace(state.move_slot(label, drive)?),
         ["ls"] => {
             let snapshot = state.snapshot()?;
             quiet(
@@ -129,6 +131,16 @@ pub fn run(state: &mut LabState, line: &str) -> Result<(Outcome, Vec<String>)> {
                         "custody {} · minimum devices {} · unlock approval {}",
                         policy.custody, policy.minimum_devices, policy.approval
                     ));
+                }
+                if !view.created_at.is_empty() {
+                    output.push(format!("created {} UTC", view.created_at));
+                }
+                match (&view.expires_at, view.expired) {
+                    (Some(expires_at), true) => {
+                        output.push(format!("expired {expires_at} UTC — removed on next access"))
+                    }
+                    (Some(expires_at), false) => output.push(format!("expires {expires_at} UTC")),
+                    (None, _) => output.push("never expires".into()),
                 }
                 quiet(true, output)
             }
@@ -260,9 +272,14 @@ fn requirement_lines(node: &RequirementNode, depth: usize, out: &mut Vec<String>
             node.children.len()
         )),
         None => out.push(format!(
-            "{pad}{} {}",
+            "{pad}{} {}{}",
             node.label,
-            node.holder.as_deref().unwrap_or("")
+            node.holder.as_deref().unwrap_or(""),
+            if node.ghost {
+                " (ghost — evicted)"
+            } else {
+                ""
+            }
         )),
     }
     for child in &node.children {

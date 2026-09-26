@@ -9,7 +9,7 @@ use crate::device;
 use crate::error::{Error, Result};
 use crate::key_tree::{self, NodeSpec, TreeSummary};
 use crate::storage::{NativeStorage, Storage};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -20,6 +20,9 @@ pub struct FileStatus {
     pub name: String,
     pub encrypted_path: String,
     pub created_at: String,
+    /// UTC cutoff (`YYYY-MM-DD HH:MM:00`) after which the file is treated
+    /// as expired. `None` if the file never expires.
+    pub expires_at: Option<String>,
     pub tree: TreeSummary,
 }
 
@@ -67,6 +70,32 @@ pub fn lock_bytes_in(
     name: &str,
     tree_spec: &NodeSpec,
 ) -> Result<i64> {
+    lock_bytes_until_in(
+        storage,
+        conn,
+        plaintext,
+        encrypted_path,
+        name,
+        tree_spec,
+        None,
+    )
+}
+
+/// [`lock_bytes_in`], plus a UTC expiry (`YYYY-MM-DD HH:MM:00`; parse one
+/// with `locked_files::parse_expires_utc`). After that instant,
+/// [`complete_unlock_in`] deletes the ciphertext and the `files` row
+/// instead of decrypting — same TTL convention as
+/// `locked_files::lock_file_until`, kept as a separate table because a
+/// quorum-protected file's expiry sits next to its key tree, not a KDF salt.
+pub fn lock_bytes_until_in(
+    storage: &mut dyn Storage,
+    conn: &mut Connection,
+    plaintext: &[u8],
+    encrypted_path: &Path,
+    name: &str,
+    tree_spec: &NodeSpec,
+    expires_at: Option<&str>,
+) -> Result<i64> {
     key_tree::validate(conn, tree_spec)?;
     let encrypted_path_str = encrypted_path.to_str().ok_or(Error::InvalidPath)?;
 
@@ -80,8 +109,8 @@ pub fn lock_bytes_in(
         let tx = conn.transaction()?;
         let key_id = key_tree::build_tree(&tx, name, &data_key[..], tree_spec)?;
         tx.execute(
-            "INSERT INTO files (name, encrypted_path, key_id, nonce) VALUES (?1, ?2, ?3, ?4)",
-            params![name, encrypted_path_str, key_id, nonce.to_vec()],
+            "INSERT INTO files (name, encrypted_path, key_id, nonce, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![name, encrypted_path_str, key_id, nonce.to_vec(), expires_at],
         )?;
         let file_id = tx.last_insert_rowid();
         tx.commit()?;
@@ -99,13 +128,112 @@ pub fn lock_bytes_in(
     result
 }
 
-pub fn status(conn: &Connection, file_id: i64) -> Result<FileStatus> {
-    let (name, encrypted_path, key_id, created_at): (String, String, i64, String) = conn
+/// Set (or clear, with `None`) a quorum-protected file's date-based TTL.
+/// Does not check the value is in the future; callers wanting that call
+/// `locked_files::require_future_expires_utc` first.
+pub fn set_expires_at(conn: &Connection, file_id: i64, expires_at: Option<&str>) -> Result<()> {
+    conn.query_row(
+        "SELECT id FROM files WHERE id = ?1",
+        params![file_id],
+        |_| Ok(()),
+    )?;
+    conn.execute(
+        "UPDATE files SET expires_at = ?1 WHERE id = ?2",
+        params![expires_at, file_id],
+    )?;
+    Ok(())
+}
+
+/// Whether this file's TTL has passed, without deleting anything — for
+/// display, so a file listing can show "expired" before anyone attempts to
+/// open it. `false` for a file with no expiry.
+pub fn is_expired(conn: &Connection, file_id: i64) -> Result<bool> {
+    conn.query_row(
+        "SELECT expires_at IS NOT NULL AND datetime(expires_at) <= datetime('now')
+         FROM files WHERE id = ?1",
+        params![file_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+/// If this file's date-based TTL has passed, delete the ciphertext and the
+/// `files` row (which cascades its `unlock_events`). No-op when the file
+/// has no expiry, is still live, or was already purged.
+pub fn purge_if_expired_in(
+    storage: &mut dyn Storage,
+    conn: &Connection,
+    file_id: i64,
+) -> Result<()> {
+    let row: Option<(String, bool)> = conn
         .query_row(
-            "SELECT name, encrypted_path, key_id, created_at FROM files WHERE id = ?1",
+            "SELECT encrypted_path,
+                    expires_at IS NOT NULL AND datetime(expires_at) <= datetime('now')
+             FROM files WHERE id = ?1",
             params![file_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )?;
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((encrypted_path, expired)) = row else {
+        return Ok(());
+    };
+    if !expired {
+        return Ok(());
+    }
+    let _ = storage.delete(Path::new(&encrypted_path));
+    conn.execute("DELETE FROM files WHERE id = ?1", params![file_id])?;
+    Err(Error::FileExpired)
+}
+
+/// [`purge_if_expired_in`] against the native filesystem.
+pub fn purge_if_expired(conn: &Connection, file_id: i64) -> Result<()> {
+    purge_if_expired_in(&mut NativeStorage, conn, file_id)
+}
+
+/// Deletes every quorum-protected file whose date-based TTL has passed.
+pub fn purge_expired_in(storage: &mut dyn Storage, conn: &Connection) -> Result<u64> {
+    let mut stmt = conn.prepare(
+        "SELECT id, encrypted_path FROM files
+         WHERE expires_at IS NOT NULL AND datetime(expires_at) <= datetime('now')",
+    )?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<(i64, String)>>>()?;
+    drop(stmt);
+    let mut purged = 0u64;
+    for (file_id, encrypted_path) in rows {
+        let _ = storage.delete(Path::new(&encrypted_path));
+        conn.execute("DELETE FROM files WHERE id = ?1", params![file_id])?;
+        purged += 1;
+    }
+    Ok(purged)
+}
+
+/// [`purge_expired_in`] against the native filesystem.
+pub fn purge_expired(conn: &Connection) -> Result<u64> {
+    purge_expired_in(&mut NativeStorage, conn)
+}
+
+pub fn status(conn: &Connection, file_id: i64) -> Result<FileStatus> {
+    let (name, encrypted_path, key_id, created_at, expires_at): (
+        String,
+        String,
+        i64,
+        String,
+        Option<String>,
+    ) = conn.query_row(
+        "SELECT name, encrypted_path, key_id, created_at, expires_at FROM files WHERE id = ?1",
+        params![file_id],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        },
+    )?;
     let tree = key_tree::describe(conn, key_id)?;
 
     Ok(FileStatus {
@@ -113,6 +241,7 @@ pub fn status(conn: &Connection, file_id: i64) -> Result<FileStatus> {
         name,
         encrypted_path,
         created_at,
+        expires_at,
         tree,
     })
 }
@@ -171,12 +300,14 @@ pub fn complete_unlock(
     presented: key_tree::PresentedReconstruction,
     grants: &[UnlockGrant],
 ) -> Result<Vec<u8>> {
-    complete_unlock_in(&NativeStorage, conn, file_id, presented, grants)
+    complete_unlock_in(&mut NativeStorage, conn, file_id, presented, grants)
 }
 
-/// [`complete_unlock`], reading the ciphertext through `storage`.
+/// [`complete_unlock`], reading the ciphertext through `storage` — and, if
+/// the file's TTL has passed, deleting it through `storage` instead of
+/// decrypting (see [`purge_if_expired_in`]).
 pub fn complete_unlock_in(
-    storage: &dyn Storage,
+    storage: &mut dyn Storage,
     conn: &Connection,
     file_id: i64,
     presented: key_tree::PresentedReconstruction,
@@ -205,7 +336,7 @@ pub fn complete_unlock_in(
 }
 
 fn decrypt_presented(
-    storage: &dyn Storage,
+    storage: &mut dyn Storage,
     conn: &Connection,
     file_id: i64,
     secret: &[u8],
@@ -213,6 +344,7 @@ fn decrypt_presented(
     devices: &[device::PresentedDevice],
     grants: &[UnlockGrant],
 ) -> Result<Vec<u8>> {
+    purge_if_expired_in(storage, conn, file_id)?;
     let (encrypted_path, key_id, nonce): (String, i64, Vec<u8>) = conn.query_row(
         "SELECT encrypted_path, key_id, nonce FROM files WHERE id = ?1",
         params![file_id],

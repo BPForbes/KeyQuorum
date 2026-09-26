@@ -36,6 +36,10 @@ export class LabClient {
     return this.call(this.lab.eject_drive(id));
   }
 
+  moveSlot(label: string, toDriveId: string): ActionResult {
+    return this.call(this.lab.move_slot(label, toDriveId));
+  }
+
   inspectFile(id: string): FileView | null {
     return JSON.parse(this.lab.inspect_file(id)) as FileView | null;
   }

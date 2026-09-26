@@ -17,9 +17,12 @@ and Moving a key between devices.
 
 [KeyQuorum Lab](https://bpforbes.github.io/KeyQuorum/) runs this crate in a
 browser: the `lab` feature compiles the real quorum, custody, parent-approval,
-visibility, and sealed-delivery code to WebAssembly, over seeded synthetic
-users and mock USB drives. Switch identities, insert and eject drives, unlock
-files, and send files between people, and each action shows the checks
+visibility, sealed-delivery, and eviction code to WebAssembly, over seeded
+synthetic people and mock USB drives — each person starts with their own
+drive, and a Windows-Explorer-style file browser (folders, a sortable list
+view, Properties, a viewer) is how you open, send, and inspect the seeded
+files. Switch identities, insert/eject/move drives, unlock or watch a file
+expire, and send files between people — every action shows the checks
 KeyQuorum made. The mock drives' passphrases are published demo values, so
 the lab demonstrates behavior; it is not hardware-backed security.
 

@@ -105,6 +105,10 @@ pub struct RequirementNode {
     pub label: String,
     pub threshold: Option<i64>,
     pub holder: Option<String>,
+    /// A leaf a real person once held, now excluded from every future
+    /// reconstruction (`key_tree::evict_and_refresh`) but kept in the
+    /// tree by label — the crate's real "this person left" state.
+    pub ghost: bool,
     pub children: Vec<RequirementNode>,
 }
 
@@ -128,6 +132,13 @@ pub struct FileView {
     /// `public`, `holder`, `oversight`, `lineage`, or `none` for the active user.
     pub access: String,
     pub size: usize,
+    /// Empty for a public file (no `files` row backs it).
+    pub created_at: String,
+    /// UTC cutoff. `None` means the file never expires.
+    pub expires_at: Option<String>,
+    /// Whether `expires_at` has passed. Computed live, not cached, so it
+    /// stays correct for a file whose row has already been purged.
+    pub expired: bool,
     pub requirement: Option<RequirementNode>,
     pub policy: Option<PolicyView>,
     pub quorum_file_id: Option<i64>,

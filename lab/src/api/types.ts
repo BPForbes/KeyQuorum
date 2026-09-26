@@ -52,6 +52,8 @@ export interface RequirementNode {
   label: string;
   threshold: number | null;
   holder: string | null;
+  /** A leaf a real person once held, evicted (key_tree::evict_and_refresh) and kept only by label. */
+  ghost: boolean;
   children: RequirementNode[];
 }
 
@@ -71,6 +73,12 @@ export interface FileView {
   protection: "public" | "quorum" | "received";
   access: FileAccess;
   size: number;
+  /** Empty for a public file — no `files` row backs it. */
+  createdAt: string;
+  /** UTC cutoff (`YYYY-MM-DD HH:MM:SS`). `null` means the file never expires. */
+  expiresAt: string | null;
+  /** Whether `expiresAt` has passed. Computed live on every snapshot. */
+  expired: boolean;
   requirement: RequirementNode | null;
   policy: PolicyView | null;
   quorumFileId: number | null;

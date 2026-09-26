@@ -11,7 +11,7 @@
 
 use super::drives::{DriveBay, MockDrive};
 use super::relay::{LabRelay, MemoryLabRelay};
-use super::seed::{self, Protection};
+use super::seed::{self, Expiry, Protection};
 use super::view::*;
 use crate::authority::{self, UnlockGrant};
 use crate::db;
@@ -66,6 +66,12 @@ struct LabFile {
     lesson: String,
     kind: FileKind,
     size: usize,
+    /// Cached at lock time, since `created_at` is unreachable once a
+    /// purge removes the `files` row (see [`FileKind::Quorum`]).
+    created_at: String,
+    /// Resolved UTC cutoff (`YYYY-MM-DD HH:MM:SS`), cached the same way
+    /// and for the same reason. `None` if the file never expires.
+    expires_at: Option<String>,
 }
 
 impl LabFile {
@@ -193,6 +199,10 @@ impl LabState {
                 drive.slots,
             ));
         }
+        // Every slot's encryption secret, kept only long enough to seed the
+        // one file that demonstrates a ghost eviction (survivor shares must
+        // be unwrapped to call `key_tree::evict_and_refresh`).
+        let mut slot_secrets: HashMap<String, Zeroizing<[u8; 32]>> = HashMap::new();
         for drive in seed::DRIVES {
             let mount = PathBuf::from(drive.mount);
             let mut container = device::init_in(&mut bay, &mount)?;
@@ -208,6 +218,7 @@ impl LabState {
                 )?;
                 keys::register_key(&conn, slot, KeyType::Signing, &provisioned.signing_public)?;
                 device::bind_slot_in(&bay, &conn, &container, slot, &passphrase)?;
+                slot_secrets.insert(slot.to_string(), provisioned.encryption_secret);
             }
             let seeded = bay.get_mut(drive.id).ok_or(Error::InvalidDevice)?;
             seeded.device_id = *container.device_id();
@@ -229,12 +240,58 @@ impl LabState {
                     custody,
                     minimum_devices,
                     approval,
+                    expires,
                 } => {
+                    let expires_at = resolve_expiry(&conn, expires)?;
                     let leaves = leaves
                         .iter()
                         .map(|label| Ok((label.to_string(), encryption_key_id(&conn, label)?)))
                         .collect::<Result<Vec<_>>>()?;
                     let spec = NodeSpec::flat_split(file.id, *threshold, leaves);
+                    let path = Path::new(FILE_ROOT).join(format!("{}.kqenc", file.name));
+                    let file_id = quorum::lock_bytes_until_in(
+                        &mut disk,
+                        &mut conn,
+                        file.contents.as_bytes(),
+                        &path,
+                        file.name,
+                        &spec,
+                        expires_at.as_deref(),
+                    )?;
+                    let key_id = quorum::status(&conn, file_id)?.tree.key_id;
+                    device::set_custody_policy(
+                        &conn,
+                        key_id,
+                        &CustodyPolicy {
+                            mode: *custody,
+                            minimum_physical_devices: *minimum_devices,
+                            unlock_approval: *approval,
+                        },
+                    )?;
+                    FileKind::Quorum { file_id, key_id }
+                }
+                Protection::QuorumWithGhost {
+                    threshold,
+                    leaves,
+                    ghost_label,
+                    custody,
+                    minimum_devices,
+                } => {
+                    // A key for the departed person, registered but never
+                    // provisioned onto any container: nobody holds its
+                    // secret, so it can never unwrap a share. It exists
+                    // only long enough to be evicted below.
+                    let (_ghost_secret, ghost_public) = keys::generate_encryption_keypair();
+                    keys::register_key(&conn, ghost_label, KeyType::Encryption, &ghost_public)?;
+                    let mut node_leaves: Vec<(String, i64)> = leaves
+                        .iter()
+                        .map(|label| Ok((label.to_string(), encryption_key_id(&conn, label)?)))
+                        .collect::<Result<Vec<_>>>()?;
+                    node_leaves.push((
+                        ghost_label.to_string(),
+                        encryption_key_id(&conn, ghost_label)?,
+                    ));
+                    let spec = NodeSpec::flat_split(file.id, *threshold, node_leaves);
                     let path = Path::new(FILE_ROOT).join(format!("{}.kqenc", file.name));
                     let file_id = quorum::lock_bytes_in(
                         &mut disk,
@@ -251,11 +308,20 @@ impl LabState {
                         &CustodyPolicy {
                             mode: *custody,
                             minimum_physical_devices: *minimum_devices,
-                            unlock_approval: *approval,
+                            unlock_approval: UnlockApproval::None,
                         },
                     )?;
+                    evict_ghost(&mut conn, key_id, ghost_label, leaves, &slot_secrets)?;
                     FileKind::Quorum { file_id, key_id }
                 }
+            };
+            let created_at = match kind {
+                FileKind::Quorum { file_id, .. } => quorum::status(&conn, file_id)?.created_at,
+                _ => String::new(),
+            };
+            let expires_at = match kind {
+                FileKind::Quorum { file_id, .. } => quorum::status(&conn, file_id)?.expires_at,
+                _ => None,
             };
             files.push(LabFile {
                 id: file.id.to_string(),
@@ -264,6 +330,8 @@ impl LabState {
                 lesson: file.lesson.to_string(),
                 kind,
                 size: file.contents.len(),
+                created_at,
+                expires_at,
             });
         }
 
@@ -460,6 +528,113 @@ impl LabState {
             .unwrap_or(false)
     }
 
+    /// Move a slot's token and signed placement to another drive, using
+    /// `device::relocate_slot_in` (delete-then-write, same as the native
+    /// `keyquorum-device` container-to-container move) followed by
+    /// `device::bind_slot_in` so `device_placements` — and so every
+    /// physical-device count — reflects the new container immediately.
+    /// Both drives must be inserted, matching the physical requirement of
+    /// moving a token between two USB drives that are actually plugged in.
+    pub fn move_slot(&mut self, label: &str, to_drive_id: &str) -> Result<Outcome> {
+        let actor_label = self.actor().label.clone();
+        let mut trace = vec![TraceStep::pass(format!(
+            "Active identity: {}",
+            self.describe_label(&actor_label)
+        ))];
+        let Some(from_drive) = self.bay.holding(label).map(|drive| drive.id.clone()) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No drive currently carries the slot {label}"),
+                trace,
+            ));
+        };
+        let Some(to_drive) = self.bay.get(to_drive_id).map(|drive| drive.id.clone()) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No mock drive named {to_drive_id}"),
+                trace,
+            ));
+        };
+        if from_drive == to_drive {
+            return Ok(Outcome::done(
+                true,
+                format!("{label} is already on that drive"),
+                trace,
+            ));
+        }
+        let from_name = self.bay.get(&from_drive).unwrap().name.clone();
+        let to_name = self.bay.get(&to_drive).unwrap().name.clone();
+        if !self.bay.get(&from_drive).unwrap().connected {
+            trace.push(TraceStep::fail(format!(
+                "{from_name} (currently holding {label}) is not inserted"
+            )));
+            return Ok(Outcome::done(
+                false,
+                format!("Insert {from_name} to move {label} off of it"),
+                trace,
+            ));
+        }
+        if !self.bay.get(&to_drive).unwrap().connected {
+            trace.push(TraceStep::fail(format!("{to_name} is not inserted")));
+            return Ok(Outcome::done(
+                false,
+                format!("Insert {to_name} to move {label} onto it"),
+                trace,
+            ));
+        }
+
+        let passphrase = seed::demo_passphrase(label);
+        let from_mount = self.bay.get(&from_drive).unwrap().mount.clone();
+        let to_mount = self.bay.get(&to_drive).unwrap().mount.clone();
+        let mut from_container = device::open_in(&self.bay, &from_mount)?;
+        let mut to_container = device::open_in(&self.bay, &to_mount)?;
+        device::relocate_slot_in(
+            &mut self.bay,
+            &mut from_container,
+            &mut to_container,
+            label,
+            &passphrase,
+        )?;
+        device::bind_slot_in(&self.bay, &self.conn, &to_container, label, &passphrase)?;
+
+        if let Some(drive) = self.bay.get_mut(&from_drive) {
+            drive.slots.retain(|slot| slot != label);
+        }
+        if let Some(drive) = self.bay.get_mut(&to_drive) {
+            drive.slots.push(label.to_string());
+        }
+
+        trace.push(TraceStep::pass(format!(
+            "Slot {label} relocated: {from_name} → {to_name} (device.kq re-signed on both ends)"
+        )));
+        let now_sharing = self
+            .bay
+            .get(&to_drive)
+            .map(|drive| drive.slots.len())
+            .unwrap_or(1);
+        if now_sharing > 1 {
+            trace.push(TraceStep::info(format!(
+                "{to_name} now carries {now_sharing} slots; logical custody lets them meet a threshold together, but they still count as one physical device"
+            )));
+        }
+        trace.push(TraceStep::info(
+            "device_placements re-bound to the new container's device id — quorum evaluation reflects this on the next unlock",
+        ));
+        let message = format!("Moved {label} from {from_name} to {to_name}");
+        self.log(
+            "move",
+            "info",
+            &message,
+            trace.clone(),
+            Some(format!(
+                "keyquorum device relocate --from {from_mount} --to {to_mount} --slot {label}",
+                from_mount = from_mount.display(),
+                to_mount = to_mount.display()
+            )),
+        );
+        Ok(Outcome::done(true, message, trace))
+    }
+
     // ----- files ----------------------------------------------------------
 
     fn file_index(&self, key: &str) -> Option<usize> {
@@ -564,6 +739,7 @@ impl LabState {
         ))];
         let file = &self.files[index];
         let file_name = file.name.clone();
+        let expires_at = file.expires_at.clone();
 
         let (file_id, key_id) = match &file.kind {
             FileKind::Public { contents } => {
@@ -592,6 +768,22 @@ impl LabState {
             satisfied,
             command: None,
         };
+
+        // An expired file is gone before anyone's identity or shares even
+        // matter. The real destroy (ciphertext + `files` row) runs through
+        // `quorum::purge_if_expired_in`, same as an unlock attempt against
+        // the native CLI; this only decides whether to call it.
+        if let Some(expires_at) = &expires_at {
+            if expiry_passed(&self.conn, expires_at)? {
+                trace.push(TraceStep::fail(format!(
+                    "This file expired on {expires_at} UTC and was removed on first access."
+                )));
+                let _ = quorum::purge_if_expired_in(&mut self.disk, &self.conn, file_id);
+                let mut access = denied(trace, vec![]);
+                access.command = Some(format!("keyquorum access quorum --state 1 --id {file_id}"));
+                return Ok(access);
+            }
+        }
 
         match self.access_class(&self.files[index])? {
             "holder" => trace.push(TraceStep::pass(format!(
@@ -793,7 +985,7 @@ impl LabState {
             }
         }
 
-        match quorum::complete_unlock_in(&self.disk, &self.conn, file_id, presented, &grants) {
+        match quorum::complete_unlock_in(&mut self.disk, &self.conn, file_id, presented, &grants) {
             Ok(plaintext) => {
                 trace.push(TraceStep::pass(format!(
                     "Data key reconstructed; {} bytes decrypted with AES-256-GCM",
@@ -1235,7 +1427,8 @@ impl LabState {
                 &letter.file_name,
                 &spec,
             )?;
-            let key_id = quorum::status(&self.conn, quorum_id)?.tree.key_id;
+            let status = quorum::status(&self.conn, quorum_id)?;
+            let key_id = status.tree.key_id;
             let lab_id = format!("received-{count}");
             self.files.push(LabFile {
                 id: lab_id.clone(),
@@ -1252,6 +1445,8 @@ impl LabState {
                     key_id,
                 },
                 size: letter.contents.len(),
+                created_at: status.created_at,
+                expires_at: None,
             });
             trace.push(TraceStep::pass(format!(
                 "{} saved to /received, locked to {actor_label}'s key",
@@ -1449,6 +1644,10 @@ impl LabState {
                 ),
             ),
         };
+        let expired = match &file.expires_at {
+            Some(expires_at) => expiry_passed(&self.conn, expires_at)?,
+            None => false,
+        };
         Ok(FileView {
             id: file.id.clone(),
             folder: file.folder.clone(),
@@ -1457,6 +1656,9 @@ impl LabState {
             protection: protection.into(),
             access: self.access_class(file)?.into(),
             size: file.size,
+            created_at: file.created_at.clone(),
+            expires_at: file.expires_at.clone(),
+            expired,
             requirement,
             policy,
             quorum_file_id,
@@ -1468,10 +1670,23 @@ impl LabState {
         RequirementNode {
             label: node.label.clone(),
             threshold: node.threshold,
-            holder: node
-                .hardware_key_id
-                .and_then(|_| self.user_by_label(&node.label))
-                .map(|user| user.name.clone()),
+            // `None` when the registry label is the same string as the
+            // tree-node label (e.g. the ghost, registered under her own
+            // leaf label): the UI already shows `label`, so repeating it
+            // as `holder` would just read "Priya Priya".
+            holder: node.hardware_key_id.and_then(|_| {
+                self.user_by_label(&node.label)
+                    .map(|user| user.name.clone())
+                    .or_else(|| {
+                        node.hardware_key_label
+                            .clone()
+                            .filter(|label| label != &node.label)
+                    })
+            }),
+            // A leaf a real person once held, kept in the tree by label but
+            // excluded from every future reconstruction — see
+            // `key_tree::evict_and_refresh`.
+            ghost: !node.is_active && node.hardware_key_id.is_some(),
             children: node
                 .children
                 .iter()
@@ -1743,6 +1958,61 @@ fn encryption_key_id(conn: &Connection, label: &str) -> Result<i64> {
         .next()
         .map(|key| key.id)
         .ok_or(Error::NodeNotFound)
+}
+
+/// Resolve a seed [`Expiry`] to a concrete `YYYY-MM-DD HH:MM:SS` UTC
+/// string via SQLite's own clock, so "expires shortly after load" really
+/// does — the same clock every `datetime('now')` comparison in `quorum.rs`
+/// and this module uses.
+fn resolve_expiry(conn: &Connection, expiry: &Expiry) -> Result<Option<String>> {
+    match expiry {
+        Expiry::Never => Ok(None),
+        Expiry::Offset(modifier) => {
+            let resolved: String = conn.query_row(
+                "SELECT strftime('%Y-%m-%d %H:%M:%S', 'now', ?1)",
+                rusqlite::params![modifier],
+                |row| row.get(0),
+            )?;
+            Ok(Some(resolved))
+        }
+    }
+}
+
+/// Whether a resolved expiry has passed, using the same clock. Never
+/// destructive on its own — see `quorum::purge_if_expired_in` for that.
+fn expiry_passed(conn: &Connection, expires_at: &str) -> Result<bool> {
+    conn.query_row(
+        "SELECT datetime(?1) <= datetime('now')",
+        rusqlite::params![expires_at],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+/// Seed a ghost: `ghost_label`'s leaf was included in the split (see the
+/// `QuorumWithGhost` seeding above) and is evicted here, before the lab
+/// hands control to a visitor, via the crate's own
+/// `key_tree::evict_and_refresh` — the exact function a real "this person
+/// left" workflow calls. `survivors` must already hold raw shares
+/// obtainable from `slot_secrets`.
+fn evict_ghost(
+    conn: &mut Connection,
+    key_id: i64,
+    ghost_label: &str,
+    survivors: &[&str],
+    slot_secrets: &HashMap<String, Zeroizing<[u8; 32]>>,
+) -> Result<()> {
+    let tree = KeyQuorumTree::load(conn, key_id)?;
+    let evicted_node_id = tree.nodes[tree.index_by_label(ghost_label)?].db_id;
+    let mut survivor_shares = HashMap::new();
+    for label in survivors {
+        let node_id = tree.nodes[tree.index_by_label(label)?].db_id;
+        let secret = slot_secrets.get(*label).ok_or(Error::NodeNotFound)?;
+        let raw = key_tree::unwrap_leaf_share(conn, node_id, secret.as_slice())?;
+        survivor_shares.insert(node_id, raw);
+    }
+    key_tree::evict_and_refresh(conn, key_id, evicted_node_id, &survivor_shares)?;
+    Ok(())
 }
 
 fn threshold_line(conn: &Connection, key_id: i64) -> Result<String> {

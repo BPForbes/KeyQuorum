@@ -156,6 +156,9 @@ fn migrate(conn: &Connection) -> Result<()> {
                     [],
                 )?;
             }
+            if !table_has_column(conn, "files", "expires_at")? {
+                conn.execute("ALTER TABLE files ADD COLUMN expires_at TEXT", [])?;
+            }
             rebuild_key_nodes_if_share_required(conn)?;
             widen_relay_credential_scopes(conn)?;
             Ok(())

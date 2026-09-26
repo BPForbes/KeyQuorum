@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LabClient } from "./api/lab";
 import { announceReady } from "./api/embed";
-import type { ActionResult, OpenedFile, Snapshot } from "./api/types";
+import type { ActionResult, Snapshot } from "./api/types";
 import { ActiveUser } from "./components/ActiveUser";
 import { ActivityPanel } from "./components/ActivityPanel";
 import { Drives } from "./components/Drives";
@@ -29,7 +29,6 @@ export function App() {
   const [boot, setBoot] = useState<Boot>({ state: "loading" });
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [last, setLast] = useState<ActionResult | null>(null);
-  const [opened, setOpened] = useState<OpenedFile | null>(null);
   const [tab, setTab] = useState<Tab>("files");
   const [terminal, setTerminal] = useState<string[]>([
     "KeyQuorum Lab terminal — same state as the buttons above. Type `help`.",
@@ -65,7 +64,6 @@ export function App() {
       const result = run(client);
       setSnapshot(result.snapshot);
       setLast(result);
-      if (result.opened) setOpened(result.opened);
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -81,14 +79,12 @@ export function App() {
   const reset = () => {
     const result = act((client) => client.reset());
     if (result) {
-      setOpened(null);
       setTerminal(["Lab reset to its seeded state."]);
     }
   };
 
   const switchUser = (id: string) => {
-    const result = act((client) => client.switchUser(id));
-    if (result?.ok) setOpened(null);
+    act((client) => client.switchUser(id));
   };
 
   if (boot.state !== "ready" || !snapshot) {
@@ -161,7 +157,7 @@ export function App() {
       <main className="lab-grid" data-tab={tab}>
         <OrgTree snapshot={snapshot} />
         <Drives snapshot={snapshot} act={act} />
-        <FileExplorer snapshot={snapshot} act={act} opened={opened} onClose={() => setOpened(null)} />
+        <FileExplorer snapshot={snapshot} act={act} />
         <Mailbox snapshot={snapshot} act={act} />
         <ActivityPanel snapshot={snapshot} last={last} />
         <Terminal
@@ -171,7 +167,6 @@ export function App() {
             setTerminal((previous) =>
               [...previous, `$ ${line}`, ...(result ? result.output : ["(lab error)"])].slice(-400),
             );
-            if (line.trim() === "reset") setOpened(null);
           }}
         />
       </main>

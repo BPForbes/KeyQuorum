@@ -1,169 +1,238 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Act } from "../App";
-import type { FileAccess, FileView, OpenedFile, RequirementNode, Snapshot } from "../api/types";
+import type { ActionResult, FileView, Snapshot } from "../api/types";
+import { fileStatus, fileType, formatSize, formatUtc } from "../explorerTypes";
+import { DriveIcon, FileIcon, FolderIcon } from "./icons";
+import { FileViewer } from "./FileViewer";
+import { PropertiesDialog } from "./PropertiesDialog";
 import { SendDialog } from "./SendDialog";
 
-const FOLDERS = ["public", "engineering", "accounting", "executive", "received"];
+const FOLDER_ORDER = ["public", "engineering", "accounting", "executive", "received"];
 
-export const ACCESS_TEXT: Record<FileAccess, string> = {
-  public: "Public",
-  holder: "You hold a share",
-  oversight: "You oversee a holder",
-  lineage: "Your manager holds a share",
-  none: "Not a participant",
-};
+type SortKey = "name" | "modified" | "type" | "size" | "status";
 
-function Requirement({ node }: { node: RequirementNode }) {
-  if (node.threshold === null) {
-    return (
-      <li>
-        <code>{node.label}</code> {node.holder ?? ""}
-      </li>
-    );
+function sortValue(file: FileView, key: SortKey): string | number {
+  switch (key) {
+    case "name":
+      return file.name.toLowerCase();
+    case "modified":
+      return file.createdAt;
+    case "type":
+      return fileType(file.name);
+    case "size":
+      return file.size;
+    case "status":
+      return fileStatus(file).label;
   }
-  return (
-    <li>
-      <strong>
-        {node.threshold} of {node.children.length}
-      </strong>{" "}
-      ({node.label}):
-      <ul>
-        {node.children.map((child) => (
-          <Requirement key={child.label} node={child} />
-        ))}
-      </ul>
-    </li>
-  );
 }
 
-function FileDetail({
-  file,
-  snapshot,
-  act,
-  opened,
-  onClose,
-}: {
+interface ContextMenuState {
+  x: number;
+  y: number;
   file: FileView;
-  snapshot: Snapshot;
-  act: Act;
-  opened: OpenedFile | null;
-  onClose: () => void;
-}) {
-  const [sending, setSending] = useState(false);
-  useEffect(() => setSending(false), [file.id, snapshot.activeUser.id]);
-  const showing = opened && opened.name === file.name ? opened : null;
+}
+
+export function FileExplorer({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
+  const [folder, setFolder] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "name", dir: 1 });
+  const [viewing, setViewing] = useState<{ result: ActionResult; name: string } | null>(null);
+  const [properties, setProperties] = useState<FileView | null>(null);
+  const [sending, setSending] = useState<FileView | null>(null);
+  const [menu, setMenu] = useState<ContextMenuState | null>(null);
+
+  useEffect(() => {
+    const close = () => setMenu(null);
+    window.addEventListener("click", close);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("resize", close);
+    };
+  }, []);
+
+  const folders = useMemo(() => {
+    const present = new Set(snapshot.files.map((file) => file.folder));
+    return FOLDER_ORDER.filter((name) => present.has(name));
+  }, [snapshot.files]);
+
+  const filesInFolder = useMemo(() => {
+    if (folder === null) return [];
+    const list = snapshot.files.filter((file) => file.folder === folder);
+    const sorted = [...list].sort((a, b) => {
+      const av = sortValue(a, sort.key);
+      const bv = sortValue(b, sort.key);
+      if (av < bv) return -1 * sort.dir;
+      if (av > bv) return 1 * sort.dir;
+      return a.name.localeCompare(b.name) * sort.dir;
+    });
+    return sorted;
+  }, [snapshot.files, folder, sort]);
+
+  // The file a modal refers to can change out from under it after an
+  // action (e.g. Send re-fetches the snapshot); keep dialogs in sync
+  // rather than showing stale data.
+  const selectedFile = filesInFolder.find((file) => file.id === selected) ?? null;
+
+  function openFile(file: FileView) {
+    const result = act((client) => client.unlockFile(file.id));
+    if (result) setViewing({ result, name: file.name });
+  }
+
+  function sortBy(key: SortKey) {
+    setSort((current) => (current.key === key ? { key, dir: current.dir === 1 ? -1 : 1 } : { key, dir: 1 }));
+  }
+
+  const columns: { key: SortKey; label: string }[] = [
+    { key: "name", label: "Name" },
+    { key: "modified", label: "Date modified" },
+    { key: "type", label: "Type" },
+    { key: "size", label: "Size" },
+    { key: "status", label: "Status" },
+  ];
+
   return (
-    <div className="file-detail" aria-labelledby="file-detail-heading">
-      <h3 id="file-detail-heading">
-        {file.name} <span className="tag">{ACCESS_TEXT[file.access]}</span>
-      </h3>
-      <p>{file.lesson}</p>
-      {file.receivedFrom ? <p className="small">Received from {file.receivedFrom}.</p> : null}
-      {file.requirement ? (
-        <div className="small">
-          <p>Access requirement:</p>
-          <ul className="requirement">
-            <Requirement node={file.requirement} />
-          </ul>
-          {file.policy ? (
-            <p>
-              Custody <strong>{file.policy.custody}</strong> · minimum physical devices{" "}
-              <strong>{file.policy.minimumDevices}</strong> · parent approval{" "}
-              <strong>{file.policy.approval === "parent" ? "required" : "not required"}</strong>
-            </p>
-          ) : null}
-          {file.quorumFileId !== null ? (
-            <p className="muted">
-              <code>keyquorum access quorum --status --id {file.quorumFileId}</code>
-            </p>
-          ) : null}
-        </div>
-      ) : (
-        <p className="small">No key tree protects this file.</p>
-      )}
-      <div className="button-row">
-        <button type="button" className="btn btn-primary" onClick={() => act((client) => client.unlockFile(file.id))}>
-          {file.protection === "public" ? "Open" : "Unlock"}
+    <section className="panel panel-wide explorer-panel" data-panel="files" aria-labelledby="files-heading">
+      <h2 id="files-heading" className="panel-title">
+        File Explorer
+      </h2>
+
+      <nav className="breadcrumb" aria-label="Folder path">
+        <button type="button" className="breadcrumb-link" onClick={() => setFolder(null)} aria-current={folder === null ? "page" : undefined}>
+          <DriveIcon connected /> This PC
         </button>
-        <button type="button" className="btn" onClick={() => setSending(true)} aria-expanded={sending}>
-          Send…
-        </button>
-        {showing ? (
-          <button type="button" className="btn" onClick={onClose}>
-            Close file
-          </button>
+        {folder !== null ? (
+          <>
+            <span aria-hidden="true">›</span>
+            <span className="breadcrumb-current" aria-current="page">
+              <FolderIcon /> {folder}
+            </span>
+          </>
         ) : null}
-      </div>
+      </nav>
+
+      {folder === null ? (
+        <ul className="folder-tiles">
+          {folders.map((name) => {
+            const count = snapshot.files.filter((file) => file.folder === name).length;
+            return (
+              <li key={name}>
+                <button type="button" className="folder-tile" onDoubleClick={() => setFolder(name)} onClick={() => setFolder(name)}>
+                  <FolderIcon />
+                  <span>{name}</span>
+                  <span className="muted small">
+                    {count} item{count === 1 ? "" : "s"}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <div className="explorer-table-wrap">
+          <table className="explorer-table">
+            <thead>
+              <tr>
+                {columns.map((column) => (
+                  <th key={column.key} aria-sort={sort.key === column.key ? (sort.dir === 1 ? "ascending" : "descending") : "none"}>
+                    <button type="button" onClick={() => sortBy(column.key)}>
+                      {column.label}
+                      {sort.key === column.key ? <span aria-hidden="true">{sort.dir === 1 ? " ▲" : " ▼"}</span> : null}
+                    </button>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filesInFolder.map((file) => {
+                const status = fileStatus(file);
+                return (
+                  <tr
+                    key={file.id}
+                    className={file.id === selected ? "is-selected" : undefined}
+                    data-testid={`file-row-${file.id}`}
+                    onClick={() => setSelected(file.id)}
+                    onDoubleClick={() => {
+                      setSelected(file.id);
+                      openFile(file);
+                    }}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      setSelected(file.id);
+                      setMenu({ x: event.clientX, y: event.clientY, file });
+                    }}
+                  >
+                    <td className="explorer-name-cell">
+                      <FileIcon expired={file.expired} /> {file.name}
+                    </td>
+                    <td>{file.createdAt ? formatUtc(file.createdAt) : "—"}</td>
+                    <td>{fileType(file.name)}</td>
+                    <td>{formatSize(file.size)}</td>
+                    <td>
+                      <span className={`status-pill status-${status.tone}`}>{status.label}</span>
+                    </td>
+                  </tr>
+                );
+              })}
+              {filesInFolder.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="empty">
+                    This folder is empty.
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {selectedFile ? (
+        <div className="explorer-toolbar" role="toolbar" aria-label={`Actions for ${selectedFile.name}`}>
+          <button type="button" className="btn btn-primary" onClick={() => openFile(selectedFile)}>
+            Open
+          </button>
+          <button type="button" className="btn" onClick={() => setSending(selectedFile)}>
+            Send…
+          </button>
+          <button type="button" className="btn" onClick={() => setProperties(selectedFile)}>
+            Properties
+          </button>
+        </div>
+      ) : null}
+
+      {menu ? (
+        <ul className="context-menu" style={{ left: menu.x, top: menu.y }} role="menu">
+          <li role="none">
+            <button type="button" role="menuitem" onClick={() => openFile(menu.file)}>
+              Open
+            </button>
+          </li>
+          <li role="none">
+            <button type="button" role="menuitem" onClick={() => setSending(menu.file)}>
+              Send…
+            </button>
+          </li>
+          <li role="none">
+            <button type="button" role="menuitem" onClick={() => setProperties(menu.file)}>
+              Properties
+            </button>
+          </li>
+        </ul>
+      ) : null}
+
+      {viewing ? <FileViewer result={viewing.result} fileName={viewing.name} onClose={() => setViewing(null)} /> : null}
+      {properties ? <PropertiesDialog file={properties} folder={folder ?? properties.folder} onClose={() => setProperties(null)} /> : null}
       {sending ? (
         <SendDialog
-          file={file}
+          file={sending}
           snapshot={snapshot}
-          onCancel={() => setSending(false)}
+          onCancel={() => setSending(null)}
           onSend={(recipient) => {
-            const result = act((client) => client.sendFile(file.id, recipient));
-            if (result?.ok) setSending(false);
+            const result = act((client) => client.sendFile(sending.id, recipient));
+            if (result?.ok) setSending(null);
           }}
         />
       ) : null}
-      {showing ? (
-        <figure className="opened">
-          <figcaption>
-            {showing.name} — decrypted in this tab
-          </figcaption>
-          <pre data-testid="opened-file">{showing.text}</pre>
-        </figure>
-      ) : null}
-    </div>
-  );
-}
-
-export function FileExplorer({
-  snapshot,
-  act,
-  opened,
-  onClose,
-}: {
-  snapshot: Snapshot;
-  act: Act;
-  opened: OpenedFile | null;
-  onClose: () => void;
-}) {
-  const [selected, setSelected] = useState<string>("architecture");
-  const file = snapshot.files.find((candidate) => candidate.id === selected) ?? snapshot.files[0];
-  return (
-    <section className="panel panel-wide" data-panel="files" aria-labelledby="files-heading">
-      <h2 id="files-heading" className="panel-title">
-        File explorer
-      </h2>
-      <div className="explorer">
-        <nav className="folders" aria-label="Files">
-          {FOLDERS.map((folder) => {
-            const files = snapshot.files.filter((candidate) => candidate.folder === folder);
-            if (files.length === 0) return null;
-            return (
-              <div key={folder} className="folder">
-                <p className="folder-name">/{folder}/</p>
-                <ul>
-                  {files.map((candidate) => (
-                    <li key={candidate.id}>
-                      <button
-                        type="button"
-                        className="file-button"
-                        aria-pressed={candidate.id === file?.id}
-                        onClick={() => setSelected(candidate.id)}
-                      >
-                        <span>{candidate.name}</span>
-                        <span className="small muted">{ACCESS_TEXT[candidate.access]}</span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            );
-          })}
-        </nav>
-        {file ? <FileDetail file={file} snapshot={snapshot} act={act} opened={opened} onClose={onClose} /> : null}
-      </div>
     </section>
   );
 }

@@ -69,6 +69,17 @@ impl KeyQuorumLab {
         to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
     }
 
+    /// Move a slot's token to a different drive (`device::relocate_slot_in`
+    /// plus a `device_placements` re-bind). Both drives must be inserted.
+    pub fn move_slot(
+        &mut self,
+        label: &str,
+        to_drive_id: &str,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self.state.move_slot(label, to_drive_id);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
     pub fn inspect_file(&self, id: &str) -> std::result::Result<String, JsError> {
         let view = self
             .state

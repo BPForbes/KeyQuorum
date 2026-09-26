@@ -157,6 +157,26 @@ combine them). Nothing secret may be seeded: everything in the bundle is
 public. The lab's ready handshake posts only to `https://bailey-forbes.com`
 (or a loopback origin for tests), never `*`.
 
+Every seeded person starts on their own personal mock drive (`src/lab/seed.rs`
+`DRIVES`), not a shared department one — `LabState::move_slot` (real
+`device::relocate_slot_in` plus a `device::bind_slot_in` re-bind, so
+`device_placements` follows immediately) is what puts more than one slot on
+one drive, which is when they start counting as a single physical device.
+Both drives must be inserted to move a slot between them, matching the
+physical requirement of moving a token between two USB drives. Quorum-locked
+files (the `files` table) can carry a UTC `expires_at` the same way
+`password_locked_files` does (`quorum::lock_bytes_until_in`,
+`quorum::set_expires_at`, `quorum::is_expired`, `quorum::purge_if_expired_in`
+— the destructive purge, wired into `quorum::complete_unlock_in`, deletes the
+ciphertext and the `files` row on first touch past the TTL); the lab resolves
+a few seeded files' TTLs relative to load time via SQLite's own clock
+(`strftime('now', modifier)`) so a couple of them expire while the tab is
+open. `legacy-migration-notes.txt` seeds a real ghost: an extra leaf is
+registered, included in the split, and evicted with
+`key_tree::evict_and_refresh` before the lab starts, so a departed person's
+share is genuinely gone from that file's tree rather than merely hidden by
+the UI — `RequirementNode.ghost` (`view.rs`) is how the frontend marks it.
+
 ## Working conventions
 
 - Keep changes minimal and scoped to what's requested — don't scaffold unrelated
