@@ -23,13 +23,17 @@ pub use api_key::{
     rotate as rotate_api_key, ApiKeyInfo, ApiKeyScope, AuthedKey, CreatedApiKey, CreatedLicensee,
     KeyCheck, NewApiKey,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use client::{
     authenticate_provider, check_key, check_key_hash, fetch_tree_context, get_device, publish_tree,
     pull as pull_inbox, pull_device_packages, push as push_inbox, push_device_package,
     push_with_trees as push_inbox_with_trees, push_with_trees_until as push_inbox_with_trees_until,
-    put_device, validate_relay_url, DevicePackageList, DevicePackagePush, InboxAccepted,
-    InboxEnvelope, InboxList, InboxPush, KeyCheckRequest, KeyCheckResponse,
-    ProviderIdentityRequest, ProviderIdentityResponse,
+    put_device,
+};
+pub use client::{
+    validate_relay_url, DevicePackageList, DevicePackagePush, InboxAccepted, InboxEnvelope,
+    InboxList, InboxPush, KeyCheckRequest, KeyCheckResponse, ProviderIdentityRequest,
+    ProviderIdentityResponse,
 };
 pub use device_directory::{
     get as get_device_descriptor, put as put_device_descriptor,

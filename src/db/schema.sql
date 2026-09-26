@@ -143,7 +143,10 @@ CREATE TABLE IF NOT EXISTS files (
     encrypted_path    TEXT NOT NULL UNIQUE,
     key_id            INTEGER NOT NULL REFERENCES keys(id) ON DELETE RESTRICT,
     nonce             BLOB NOT NULL,
-    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    -- UTC cutoff `YYYY-MM-DD HH:MM:00`. NULL means the file does not expire.
+    -- Same convention as `password_locked_files.expires_at`; see quorum.rs.
+    expires_at        TEXT
 );
 
 -- Audit log of unlock attempts, successful or not.

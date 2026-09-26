@@ -71,3 +71,9 @@ scratch/
 # Editor backups
 *~
 *.bak
+
+# Browser lab (lab/): generated WASM bindings and test output
+/lab/src/wasm/
+/lab/test-results/
+/lab/playwright-report/
+/lab/public/project-metadata.json

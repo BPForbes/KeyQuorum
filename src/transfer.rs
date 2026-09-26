@@ -22,6 +22,7 @@ use crate::error::{Error, Result};
 use crate::keys::{self, KeyType};
 use crate::private_bridge::parent_node_label;
 use crate::signing;
+use crate::storage::{NativeStorage, Storage};
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 use rand::RngCore;
@@ -233,11 +234,22 @@ pub fn enroll(
     label: &str,
     passphrase: &str,
 ) -> Result<[u8; 16]> {
+    enroll_in(&mut NativeStorage, conn, container, label, passphrase)
+}
+
+/// [`enroll`] against any [`Storage`].
+pub fn enroll_in(
+    storage: &mut dyn Storage,
+    conn: &Connection,
+    container: &mut Container,
+    label: &str,
+    passphrase: &str,
+) -> Result<[u8; 16]> {
     device::validate_slot_label(label)?;
     if container.slot(label).is_none() {
-        device::provision(container, label, passphrase)?;
+        device::provision_in(storage, container, label, passphrase)?;
     }
-    let secrets = device::open_slot(container, label, passphrase)?;
+    let secrets = device::open_slot_in(storage, container, label, passphrase)?;
     if let Some(existing) = identity_by_label(conn, label)? {
         if existing.enc_public != secrets.encryption_public
             || existing.sign_public != secrets.signing_public
@@ -346,12 +358,24 @@ pub fn sign_active(
     passphrase: &str,
     message: &[u8],
 ) -> Result<[u8; 64]> {
+    sign_active_in(&NativeStorage, conn, container, label, passphrase, message)
+}
+
+/// [`sign_active`] against any [`Storage`].
+pub fn sign_active_in(
+    storage: &dyn Storage,
+    conn: &Connection,
+    container: &Container,
+    label: &str,
+    passphrase: &str,
+    message: &[u8],
+) -> Result<[u8; 64]> {
     match possession(conn, label)? {
         Some(Possession::Active) => {}
         Some(Possession::Ghost) => return Err(Error::GhostDenied),
         None => return Err(Error::TransferDenied),
     }
-    let secrets = device::open_slot(container, label, passphrase)?;
+    let secrets = device::open_slot_in(storage, container, label, passphrase)?;
     Ok(device::sign_message(&secrets, message))
 }
 
@@ -367,8 +391,16 @@ pub fn export_secret_labels(
 pub struct TransferRequest<'a> {
     pub source_conn: &'a Connection,
     pub source: &'a mut Container,
+    /// Where the source container's slot tokens live. Native callers pass
+    /// `&mut NativeStorage`; the browser lab passes its in-memory store.
+    pub source_storage: &'a mut dyn Storage,
     pub dest_conn: &'a Connection,
     pub dest: &'a mut Container,
+    /// [`Storage`] for the destination container, same reasoning as
+    /// `source_storage`. A second handle, even against the same in-memory
+    /// backing, mirrors the physical requirement that a transfer moves a
+    /// token between two distinct containers.
+    pub dest_storage: &'a mut dyn Storage,
     pub actor: &'a str,
     pub label: &'a str,
     pub operation: TransferOp,
@@ -378,7 +410,8 @@ pub struct TransferRequest<'a> {
 }
 
 pub fn transfer(request: TransferRequest<'_>) -> Result<[u8; 16]> {
-    let prepared = prepare(
+    let prepared = prepare_in(
+        request.source_storage,
         request.source_conn,
         request.source,
         request.dest.device_id(),
@@ -397,7 +430,8 @@ pub fn transfer(request: TransferRequest<'_>) -> Result<[u8; 16]> {
             prepared.package(),
             request.auth.allow_ancestor_import,
         )?;
-        write_destination_slots(
+        write_destination_slots_in(
+            request.dest_storage,
             request.dest_conn,
             request.dest,
             request.source,
@@ -413,7 +447,8 @@ pub fn transfer(request: TransferRequest<'_>) -> Result<[u8; 16]> {
             request.auth.allow_ancestor_import,
         )?;
         acknowledge(request.dest_conn, &prepared.id)?;
-        finalize_source(
+        finalize_source_in(
+            request.source_storage,
             request.source_conn,
             request.source,
             request.dest_conn,
@@ -423,7 +458,8 @@ pub fn transfer(request: TransferRequest<'_>) -> Result<[u8; 16]> {
     })();
     if let Err(err) = committed {
         if !destination_committed(request.dest_conn, &prepared.id)? {
-            let _ = abort_transfer(
+            let _ = abort_transfer_in(
+                request.dest_storage,
                 request.source_conn,
                 request.dest_conn,
                 request.dest,
@@ -437,6 +473,34 @@ pub fn transfer(request: TransferRequest<'_>) -> Result<[u8; 16]> {
 
 #[allow(clippy::too_many_arguments)]
 pub fn prepare(
+    conn: &Connection,
+    source: &Container,
+    destination_device_id: &[u8; 16],
+    actor: &str,
+    label: &str,
+    operation: TransferOp,
+    descendants: DescendantMode,
+    passphrases: &HashMap<String, String>,
+    auth: &TransferAuth,
+) -> Result<PreparedTransfer> {
+    prepare_in(
+        &NativeStorage,
+        conn,
+        source,
+        destination_device_id,
+        actor,
+        label,
+        operation,
+        descendants,
+        passphrases,
+        auth,
+    )
+}
+
+/// [`prepare`] against any [`Storage`].
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_in(
+    storage: &dyn Storage,
     conn: &Connection,
     source: &Container,
     destination_device_id: &[u8; 16],
@@ -499,7 +563,7 @@ pub fn prepare(
         let passphrase = passphrases
             .get(secret_label)
             .ok_or(Error::InvalidPassword)?;
-        let secrets = device::open_slot(source, secret_label, passphrase)?;
+        let secrets = device::open_slot_in(storage, source, secret_label, passphrase)?;
         if secrets.encryption_public != row.enc_public || secrets.signing_public != row.sign_public
         {
             return Err(Error::IdentityConflict);
@@ -545,7 +609,7 @@ pub fn prepare(
         root_label: label.to_string(),
         entries,
     };
-    let package = Zeroizing::new(encode_bundle(source, &bundle)?);
+    let package = Zeroizing::new(encode_bundle(storage, source, &bundle)?);
     let hash = sha256(&package);
     let detail = format_detail("prepared", &secret_labels, &hint_labels, &[]);
     let root = identity_by_label(conn, label)?.ok_or(Error::TransferDenied)?;
@@ -639,6 +703,27 @@ pub fn write_destination_slots(
     passphrases: &HashMap<String, String>,
     limit: Option<usize>,
 ) -> Result<()> {
+    write_destination_slots_in(
+        &mut NativeStorage,
+        dest_conn,
+        dest,
+        source,
+        package,
+        passphrases,
+        limit,
+    )
+}
+
+/// [`write_destination_slots`] against any [`Storage`].
+pub fn write_destination_slots_in(
+    storage: &mut dyn Storage,
+    dest_conn: &Connection,
+    dest: &mut Container,
+    source: &Container,
+    package: &[u8],
+    passphrases: &HashMap<String, String>,
+    limit: Option<usize>,
+) -> Result<()> {
     let bundle = open_bundle(package, source, dest)?;
     let state = tx_state(dest_conn, &bundle.id)?.ok_or(Error::TransferIncomplete)?;
     if !matches!(state.as_str(), "transferred" | "writing") {
@@ -659,7 +744,7 @@ pub fn write_destination_slots(
             let passphrase = passphrases
                 .get(&entry.label)
                 .ok_or(Error::InvalidPassword)?;
-            let opened = device::open_slot(dest, &entry.label, passphrase)?;
+            let opened = device::open_slot_in(storage, dest, &entry.label, passphrase)?;
             if opened.encryption_public != entry.enc_public {
                 return Err(Error::IdentityConflict);
             }
@@ -682,7 +767,7 @@ pub fn write_destination_slots(
             .sign_secret
             .as_ref()
             .ok_or(Error::IntegrityCheckFailed)?;
-        device::install_slot(dest, &entry.label, passphrase, enc, sign)?;
+        device::install_slot_in(storage, dest, &entry.label, passphrase, enc, sign)?;
         written += 1;
     }
     Ok(())
@@ -840,16 +925,27 @@ pub fn finalize_source(
     dest_conn: &Connection,
     tx_id: &[u8; 16],
 ) -> Result<()> {
+    finalize_source_in(&mut NativeStorage, source_conn, source, dest_conn, tx_id)
+}
+
+/// [`finalize_source`] against any [`Storage`].
+pub fn finalize_source_in(
+    storage: &mut dyn Storage,
+    source_conn: &Connection,
+    source: &mut Container,
+    dest_conn: &Connection,
+    tx_id: &[u8; 16],
+) -> Result<()> {
     let source_state = tx_state(source_conn, tx_id)?.ok_or(Error::TransferIncomplete)?;
     if source_state == "completed" {
         return Ok(());
     }
     if source_state != "source_finalized" {
-        retire_source_material(source_conn, source, dest_conn, tx_id)?;
+        retire_source_material(storage, source_conn, source, dest_conn, tx_id)?;
     } else {
         // An older finalize committed GHOST and then deleted the token.
         // Recovery still removes a leftover slot before calling the move done.
-        scrub_moved_slots(source_conn, source, tx_id)?;
+        scrub_moved_slots(storage, source_conn, source, tx_id)?;
     }
     let _ = set_state(dest_conn, tx_id, "completed");
     set_state(source_conn, tx_id, "completed")
@@ -874,7 +970,7 @@ pub fn finalize_after_ack(
         return Ok(());
     }
     if source_state == "source_finalized" {
-        scrub_moved_slots(source_conn, source, tx_id)?;
+        scrub_moved_slots(&mut NativeStorage, source_conn, source, tx_id)?;
         return set_state(source_conn, tx_id, "completed");
     }
     if source_state != "prepared" {
@@ -891,7 +987,7 @@ pub fn finalize_after_ack(
     let root = tx_root(source_conn, tx_id)?;
     let descendants = tx_mode(source_conn, tx_id)?;
     let peer = tx_peer(source_conn, tx_id)?;
-    scrub_moved_slots(source_conn, source, tx_id)?;
+    scrub_moved_slots(&mut NativeStorage, source_conn, source, tx_id)?;
     db::with_immediate_transaction(source_conn, || {
         for label in &secret_labels {
             let row = identity_by_label(source_conn, label)?.ok_or(Error::TransferDenied)?;
@@ -941,6 +1037,7 @@ pub fn finalize_after_ack(
 /// until every included token is gone, so a crash cannot report a ghost
 /// that `keyquorum-device` can still open.
 fn retire_source_material(
+    storage: &mut dyn Storage,
     source_conn: &Connection,
     source: &mut Container,
     dest_conn: &Connection,
@@ -966,7 +1063,7 @@ fn retire_source_material(
     let root = tx_root(source_conn, tx_id)?;
     let descendants = tx_mode(source_conn, tx_id)?;
     let peer = tx_peer(source_conn, tx_id)?;
-    scrub_moved_slots(source_conn, source, tx_id)?;
+    scrub_moved_slots(storage, source_conn, source, tx_id)?;
     db::with_immediate_transaction(source_conn, || {
         for label in &secret_labels {
             let row = identity_by_label(source_conn, label)?.ok_or(Error::TransferDenied)?;
@@ -1026,6 +1123,7 @@ fn retire_source_material(
 /// commit runs only after this returns. A crash in between leaves an active
 /// row whose token is already gone; the next finalize records the ghost.
 fn scrub_moved_slots(
+    storage: &mut dyn Storage,
     source_conn: &Connection,
     source: &mut Container,
     tx_id: &[u8; 16],
@@ -1035,7 +1133,7 @@ fn scrub_moved_slots(
     }
     for label in detail_list(&tx_detail(source_conn, tx_id)?, "included") {
         if source.slot(&label).is_some() {
-            device::remove_slot(source, &label)?;
+            device::remove_slot_in(storage, source, &label)?;
         }
     }
     Ok(())
@@ -1047,13 +1145,24 @@ pub fn abort_transfer(
     dest: &mut Container,
     tx_id: &[u8; 16],
 ) -> Result<()> {
+    abort_transfer_in(&mut NativeStorage, source_conn, dest_conn, dest, tx_id)
+}
+
+/// [`abort_transfer`] against any [`Storage`].
+pub fn abort_transfer_in(
+    storage: &mut dyn Storage,
+    source_conn: &Connection,
+    dest_conn: &Connection,
+    dest: &mut Container,
+    tx_id: &[u8; 16],
+) -> Result<()> {
     if destination_committed(dest_conn, tx_id)? {
         return Err(Error::TransferIncomplete);
     }
     if let Ok(detail) = tx_detail(dest_conn, tx_id) {
         for label in detail_list(&detail, "installed") {
             if dest.slot(&label).is_some() {
-                device::remove_slot(dest, &label)?;
+                device::remove_slot_in(storage, dest, &label)?;
             }
         }
         set_state(dest_conn, tx_id, "aborted")?;
@@ -1631,7 +1740,7 @@ fn split_package(package: &[u8]) -> Result<(&[u8], [u8; 64])> {
     Ok((body, signature))
 }
 
-fn encode_bundle(source: &Container, bundle: &Bundle) -> Result<Vec<u8>> {
+fn encode_bundle(storage: &dyn Storage, source: &Container, bundle: &Bundle) -> Result<Vec<u8>> {
     let mut body = Vec::new();
     body.extend_from_slice(&bundle.id);
     body.push(bundle.operation.tag());
@@ -1680,7 +1789,7 @@ fn encode_bundle(source: &Container, bundle: &Bundle) -> Result<Vec<u8>> {
     let mut message = Vec::with_capacity(DOMAIN.len() + body.len());
     message.extend_from_slice(DOMAIN);
     message.extend_from_slice(&body);
-    let secret = device::device_signing_secret(source)?;
+    let secret = device::device_signing_secret_in(storage, source)?;
     let signature = signing::sign(&secret, &message);
     let mut package = Vec::new();
     package.extend_from_slice(MAGIC);

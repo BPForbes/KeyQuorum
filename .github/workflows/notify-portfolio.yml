@@ -1,19 +1,18 @@
 # Tells bailey-forbes.com that KeyQuorum changed, so it refreshes the metadata
 # it displays and redeploys.
 #
-# Waits for Test, not Compile. KeyQuorum publishes nothing — it is a CLI, and
-# the portfolio says so — but the portfolio prints its repository statistics and
-# language balance, so a commit that does not build should not move them.
+# The portfolio embeds the published KeyQuorum Lab (GitHub Pages) and prints
+# KeyQuorum's repository statistics, so it must not move until the lab a
+# visitor can open has moved with it. That is why this waits for
+# "Deploy KeyQuorum Lab" rather than Test: that workflow runs the native
+# tests (`cargo test --locked --all-targets --all-features`, the same gate
+# Test is), the WASM and frontend builds, and the browser tests before it
+# publishes.
 #
-# Test is the stronger of the two gates and makes a separate Compile check
-# unnecessary: `cargo test --locked --all-targets --all-features` compiles every
-# target under every feature, which is a superset of what Compile's
-# `cargo build --locked --all-targets --all-features` covers. Test passing
-# therefore implies Compile would.
-#
-# Both KeyQuorum workflows run on every push and every pull request, so the
-# `branches` filter and the `event == 'push'` check below are what keep this to
-# landed main commits.
+# A green "Deploy KeyQuorum Lab" run is not proof of a publish on its own —
+# the deploy job can be skipped — so the gate job below asks the API what
+# the job named "Publish KeyQuorum Lab to GitHub Pages" actually concluded,
+# and notifies only on success. Anything else leaves the portfolio as it was.
 #
 # The dispatch itself lives in the portfolio repository so all projects share
 # one implementation — see
@@ -23,7 +22,7 @@ name: Notify portfolio
 
 on:
   workflow_run:
-    workflows: ["Test"]
+    workflows: ["Deploy KeyQuorum Lab"]
     types: [completed]
     branches: [main]
 
@@ -34,20 +33,47 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  token:
-    name: Dispatch token
+  gate:
+    name: Confirm the lab was published
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push'
+      github.event.workflow_run.event != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      actions: read
     outputs:
+      published: ${{ steps.check.outputs.published }}
       configured: ${{ steps.presence.outputs.configured }}
     steps:
+      - name: Read the Pages publish job outcome
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          REPOSITORY: ${{ github.repository }}
+          # Must match the `name:` of the deploy job in deploy-lab.yml.
+          DEPLOY_JOB: Publish KeyQuorum Lab to GitHub Pages
+        run: |
+          set -euo pipefail
+
+          conclusion="$(gh api \
+            --paginate \
+            "repos/${REPOSITORY}/actions/runs/${RUN_ID}/jobs" \
+            --jq ".jobs[] | select(.name == \"${DEPLOY_JOB}\") | .conclusion" \
+            | head -n1)"
+
+          echo "Pages publish job concluded: ${conclusion:-did not run}"
+          if [ "${conclusion}" = "success" ]; then
+            echo "published=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "published=false" >> "${GITHUB_OUTPUT}"
+          fi
+
       # The shared notifier exits 1 when this secret is empty. It is a
       # fine-grained PAT added by hand under Actions secrets, and a workflow
       # run cannot create it. Checking here keeps a missing token from failing
-      # Notify after a green Test. The portfolio still refreshes metadata on
+      # Notify after a green deploy. The portfolio still refreshes metadata on
       # its daily sync. Once the secret is set, `notify` below calls the
       # shared notifier unchanged.
       - name: See whether PORTFOLIO_DISPATCH_TOKEN is configured
@@ -66,8 +92,10 @@ jobs:
           fi
 
   notify:
-    needs: token
-    if: needs.token.outputs.configured == 'true'
+    needs: gate
+    if: >-
+      needs.gate.outputs.published == 'true' &&
+      needs.gate.outputs.configured == 'true'
     # Pinned to a commit on the portfolio repo's main rather than @main: this
     # job hands PORTFOLIO_DISPATCH_TOKEN to the called workflow, and a branch
     # reference would let a change pushed to that branch see the token before

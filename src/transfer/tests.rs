@@ -51,8 +51,10 @@ fn run(
     transfer(TransferRequest {
         source_conn: &source.conn,
         source: &mut source.container,
+        source_storage: &mut NativeStorage,
         dest_conn: &dest.conn,
         dest: &mut dest.container,
+        dest_storage: &mut NativeStorage,
         actor,
         label,
         operation,
@@ -1205,12 +1207,19 @@ fn ghost_is_recorded_only_after_the_source_slot_is_gone() {
     assert_eq!(state(&source, "M.A"), Some(Possession::Active));
     assert!(device::open_slot(&source.container, "M.A", PASS).is_ok());
 
-    scrub_moved_slots(&source.conn, &mut source.container, &prepared.id).unwrap();
+    scrub_moved_slots(
+        &mut NativeStorage,
+        &source.conn,
+        &mut source.container,
+        &prepared.id,
+    )
+    .unwrap();
     assert_eq!(state(&source, "M.A"), Some(Possession::Active));
     assert!(device::open_slot(&source.container, "M.A", PASS).is_err());
     assert!(sign_active(&source.conn, &source.container, "M.A", PASS, b"gone").is_err());
 
     retire_source_material(
+        &mut NativeStorage,
         &source.conn,
         &mut source.container,
         &dest.conn,

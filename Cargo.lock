@@ -661,8 +661,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "wasi",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -969,6 +971,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e0c1080212aad755ea003d18543e8768dd432c48819efd73a7bf1e39b7a5a3a"
 dependencies = [
  "cfg-if",
+ "futures-util",
  "wasm-bindgen",
 ]
 
@@ -984,6 +987,7 @@ dependencies = [
  "clap",
  "crypto_box",
  "ed25519-dalek",
+ "getrandom 0.2.17",
  "hex",
  "libc",
  "rand",
@@ -1002,6 +1006,7 @@ dependencies = [
  "url",
  "utoipa",
  "utoipa-swagger-ui",
+ "wasm-bindgen",
  "x25519-dalek",
  "zeroize",
 ]

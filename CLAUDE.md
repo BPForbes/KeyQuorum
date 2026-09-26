@@ -132,6 +132,55 @@ expire `DEVICE_PACKAGE_TTL_DAYS` after they are stored and are never deleted
 on acknowledgement. `src/relay/device_mail.rs` owns the device mailbox;
 `src/relay/device_directory.rs` owns the public descriptor.
 
+`src/storage.rs` is where container files and quorum ciphertext live:
+`NativeStorage` is plain `std::fs` (new files still go through
+`write_owner_only`), and `device::*_in` / `quorum::lock_bytes_in` /
+`quorum::complete_unlock_in` take any `Storage`, which is how the browser lab
+runs the same container and unlock code in memory. The original
+path-based functions are thin wrappers over `NativeStorage`; keep them.
+`src/file_delivery.rs` owns sealed file delivery between labels:
+`KIND_FILE_DELIVERY` / `KIND_FILE_DELIVERY_ACK` `PACKAGE` letters, signed by
+the sender and answered with a signed accept/reject, both checked against
+the signing key the opening store has registered for the claimed label.
+The bridge inbox carries them like any other non-device letter.
+
+`src/lab/` (feature `lab`) is KeyQuorum Lab, the public browser
+demonstration published from `lab/` to GitHub Pages and embedded by
+bailey-forbes.com. It seeds synthetic users, mock USB drives (real
+`device` containers held in memory, with published demo passphrases),
+locked files, and an in-memory relay, then calls the crate's own quorum,
+custody, approval, visibility, and delivery code; it must not
+reimplement any of those rules. `src/lab/wasm.rs` is the only JavaScript
+surface. The lab WASM must never include `provider`: `build.rs` refuses a
+wasm32 build with both features (native `--all-features` builds may
+combine them). Nothing secret may be seeded: everything in the bundle is
+public. The lab's ready handshake posts only to `https://bailey-forbes.com`
+(or a loopback origin for tests), never `*`.
+
+Every seeded person starts on their own personal mock drive (`src/lab/seed.rs`
+`DRIVES`), not a shared department one — `LabState::move_slot` (real
+`device::relocate_slot_in` plus a `device::bind_slot_in` re-bind, so
+`device_placements` follows immediately) is what puts more than one slot on
+one drive, which is when they start counting as a single physical device.
+Both drives must be inserted to move a slot between them, matching the
+physical requirement of moving a token between two USB drives. Quorum-locked
+files (the `files` table) can carry a UTC `expires_at` the same way
+`password_locked_files` does (`quorum::lock_bytes_until_in`,
+`quorum::set_expires_at`, `quorum::is_expired`, `quorum::purge_if_expired_in`
+— the destructive purge, wired into `quorum::complete_unlock_in`, deletes the
+ciphertext and the `files` row on first touch past the TTL); the lab resolves
+a few seeded files' TTLs relative to load time via SQLite's own clock
+(`strftime('now', modifier)`) so a couple of them expire while the tab is
+open. `legacy-migration-notes.txt` seeds a real ghost through
+`transfer.rs`: the departed person's slot is `transfer::enroll`ed, then
+MOVE-transferred (`transfer::transfer`) to a throwaway destination before
+the lab starts, so `transfer::possession` genuinely reports
+`Possession::Ghost` for that label — the same mechanism `keyquorum
+transfer move` uses, not a UI-only flag. She stays an ordinary leaf in
+`legacy-migration-notes.txt`'s tree; `device::leaf_is_ghost` refuses her
+share the moment anyone presents it. `RequirementNode.ghost` (`view.rs`)
+is how the frontend marks it.
+
 ## Working conventions
 
 - Keep changes minimal and scoped to what's requested — don't scaffold unrelated
@@ -142,6 +191,8 @@ on acknowledgement. `src/relay/device_mail.rs` owns the device mailbox;
   `cargo clippy --locked --all-targets --all-features -- -D warnings`, and
   `cargo test --locked --all-targets --all-features` before considering a change
   complete.
+- After lab changes (`src/lab/`, `lab/`), also run, from `lab/`:
+  `npm run build:wasm`, `npm run build`, and `npm run test:browser`.
 - Match existing code style; this repo has no established style guide yet, so follow
   standard Rust conventions (`rustfmt` defaults) unless told otherwise.
 - Put tests in their own file next to the module they cover, not in an inline
