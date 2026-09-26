@@ -160,6 +160,17 @@ test.describe("desktop lab", () => {
     await expect(page.getByRole("dialog")).toContainText("company-handbook.txt Properties");
   });
 
+  test("an open dialog keeps keyboard focus across the periodic snapshot refresh", async ({ page }) => {
+    await loadLab(page);
+    await openFolder(page, "engineering");
+    await page.locator('[data-testid="file-row-architecture"]').click();
+    await page.getByRole("button", { name: "Send…" }).click();
+    const recipient = page.getByLabel("Recipient");
+    await recipient.focus();
+    await page.waitForTimeout(3_500);
+    await expect(recipient).toBeFocused();
+  });
+
   test("terminal and buttons share one state, and reset restores the seed", async ({ page }) => {
     await loadLab(page);
     const input = page.getByLabel("Terminal command");

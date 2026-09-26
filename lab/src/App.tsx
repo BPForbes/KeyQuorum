@@ -28,6 +28,8 @@ export function App() {
   const clientRef = useRef<LabClient | null>(null);
   const [boot, setBoot] = useState<Boot>({ state: "loading" });
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const snapshotRef = useRef<Snapshot | null>(null);
+  snapshotRef.current = snapshot;
   const [last, setLast] = useState<ActionResult | null>(null);
   const [tab, setTab] = useState<Tab>("files");
   const [terminal, setTerminal] = useState<string[]>([
@@ -87,11 +89,12 @@ export function App() {
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setLast((previous) =>
-        previous
-          ? { ...previous, ok: false, message: `Lab error: ${message}`, trace: [], opened: null, output: [] }
-          : null,
-      );
+      setLast((previous) => {
+        const snapshot = previous?.snapshot ?? snapshotRef.current;
+        return snapshot
+          ? { snapshot, ok: false, message: `Lab error: ${message}`, trace: [], opened: null, output: [] }
+          : null;
+      });
       return null;
     }
   }, []);

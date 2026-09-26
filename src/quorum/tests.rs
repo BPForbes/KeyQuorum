@@ -533,3 +533,85 @@ fn an_expired_file_is_purged_even_with_zero_shares_presented() {
     assert!(matches!(result, Err(Error::FileExpired)));
     assert!(!encrypted_path.exists());
 }
+
+/// Wraps a [`crate::storage::MemoryStorage`] but refuses every delete, as a
+/// read-only mount or a permission error would.
+struct UndeletableStorage(crate::storage::MemoryStorage);
+
+impl crate::storage::Storage for UndeletableStorage {
+    fn exists(&self, path: &Path) -> bool {
+        self.0.exists(path)
+    }
+    fn read(&self, path: &Path) -> Result<Vec<u8>> {
+        self.0.read(path)
+    }
+    fn write_new(&mut self, path: &Path, contents: &[u8]) -> Result<()> {
+        self.0.write_new(path, contents)
+    }
+    fn rename(&mut self, from: &Path, to: &Path) -> Result<()> {
+        self.0.rename(from, to)
+    }
+    fn delete(&mut self, _path: &Path) -> Result<()> {
+        Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "read-only",
+        )))
+    }
+    fn create_dir_all(&mut self, path: &Path) -> Result<()> {
+        self.0.create_dir_all(path)
+    }
+    fn remove_empty_dir(&mut self, path: &Path) {
+        self.0.remove_empty_dir(path)
+    }
+    fn list(&self, path: &Path) -> Result<Vec<std::path::PathBuf>> {
+        self.0.list(path)
+    }
+}
+
+#[test]
+fn a_failed_ciphertext_delete_keeps_the_row_so_the_purge_can_retry() {
+    let mut conn = db::open_in_memory().expect("schema should apply");
+    let (id_a, _sk_a) = register_encryption_key(&conn, "a");
+    let spec = NodeSpec::flat_split("root", 1, vec![("a".into(), id_a)]);
+    let past: String = conn
+        .query_row(
+            "SELECT strftime('%Y-%m-%d %H:%M:%S', 'now', '-1 day')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut storage = UndeletableStorage(crate::storage::MemoryStorage::new());
+    let path = Path::new("/files/stuck.kqenc");
+    let file_id = lock_bytes_until_in(
+        &mut storage,
+        &mut conn,
+        b"cannot be deleted",
+        path,
+        "stuck.txt",
+        &spec,
+        Some(&past),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        purge_if_expired_in(&mut storage, &conn, file_id),
+        Err(Error::Io(_))
+    ));
+    assert!(
+        status(&conn, file_id).is_ok(),
+        "row must survive for a retry"
+    );
+    assert!(matches!(
+        purge_expired_in(&mut storage, &conn),
+        Err(Error::Io(_))
+    ));
+    assert!(status(&conn, file_id).is_ok());
+
+    let mut working = storage.0;
+    assert!(matches!(
+        purge_if_expired_in(&mut working, &conn, file_id),
+        Err(Error::FileExpired)
+    ));
+    assert!(!working.exists(path));
+    assert!(status(&conn, file_id).is_err());
+}

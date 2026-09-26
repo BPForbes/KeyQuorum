@@ -13,14 +13,18 @@ export function Modal({
   labelledBy: string;
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
+  // Callers pass a fresh inline onClose on every render, and App re-renders
+  // every 3s; keying the effect on it would yank focus back to Close.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   useEffect(() => {
     closeRef.current?.focus();
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") onCloseRef.current();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, []);
   return (
     <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div className="modal" role="dialog" aria-modal="true" aria-labelledby={labelledBy}>

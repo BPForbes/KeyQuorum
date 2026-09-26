@@ -37,7 +37,8 @@ export function FileExplorer({ snapshot, act }: { snapshot: Snapshot; act: Act }
   const [selected, setSelected] = useState<string | null>(null);
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "name", dir: 1 });
   const [viewing, setViewing] = useState<{ result: ActionResult; name: string } | null>(null);
-  const [properties, setProperties] = useState<FileView | null>(null);
+  const [propertiesId, setPropertiesId] = useState<string | null>(null);
+  const properties = snapshot.files.find((file) => file.id === propertiesId) ?? null;
   const [sending, setSending] = useState<FileView | null>(null);
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
 
@@ -194,7 +195,7 @@ export function FileExplorer({ snapshot, act }: { snapshot: Snapshot; act: Act }
           <button type="button" className="btn" onClick={() => setSending(selectedFile)}>
             Send…
           </button>
-          <button type="button" className="btn" onClick={() => setProperties(selectedFile)}>
+          <button type="button" className="btn" onClick={() => setPropertiesId(selectedFile.id)}>
             Properties
           </button>
         </div>
@@ -213,7 +214,7 @@ export function FileExplorer({ snapshot, act }: { snapshot: Snapshot; act: Act }
             </button>
           </li>
           <li role="none">
-            <button type="button" role="menuitem" onClick={() => setProperties(menu.file)}>
+            <button type="button" role="menuitem" onClick={() => setPropertiesId(menu.file.id)}>
               Properties
             </button>
           </li>
@@ -221,7 +222,7 @@ export function FileExplorer({ snapshot, act }: { snapshot: Snapshot; act: Act }
       ) : null}
 
       {viewing ? <FileViewer result={viewing.result} fileName={viewing.name} onClose={() => setViewing(null)} /> : null}
-      {properties ? <PropertiesDialog file={properties} folder={folder ?? properties.folder} onClose={() => setProperties(null)} /> : null}
+      {properties ? <PropertiesDialog file={properties} folder={folder ?? properties.folder} onClose={() => setPropertiesId(null)} /> : null}
       {sending ? (
         <SendDialog
           file={sending}

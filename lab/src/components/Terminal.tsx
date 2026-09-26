@@ -14,7 +14,7 @@ export function Terminal({ lines, onRun }: { lines: string[]; onRun: (line: stri
       </h2>
       <p className="small muted">
         Runs against the same lab state as the buttons. Try <code>unlock acquisition-plan.txt</code>,{" "}
-        <code>usb insert accounting</code>, or <code>su david</code>.
+        <code>usb insert david</code>, or <code>su david</code>.
       </p>
       <pre className="terminal-output" ref={outputRef} aria-live="polite" data-testid="terminal-output">
         {lines.join("\n")}

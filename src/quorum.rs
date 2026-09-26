@@ -180,7 +180,7 @@ pub fn purge_if_expired_in(
     if !expired {
         return Ok(());
     }
-    let _ = storage.delete(Path::new(&encrypted_path));
+    delete_ciphertext(storage, &encrypted_path)?;
     conn.execute("DELETE FROM files WHERE id = ?1", params![file_id])?;
     Err(Error::FileExpired)
 }
@@ -202,11 +202,20 @@ pub fn purge_expired_in(storage: &mut dyn Storage, conn: &Connection) -> Result<
     drop(stmt);
     let mut purged = 0u64;
     for (file_id, encrypted_path) in rows {
-        let _ = storage.delete(Path::new(&encrypted_path));
+        delete_ciphertext(storage, &encrypted_path)?;
         conn.execute("DELETE FROM files WHERE id = ?1", params![file_id])?;
         purged += 1;
     }
     Ok(purged)
+}
+
+/// An already-missing ciphertext is fine; any other failure keeps the
+/// `files` row so a later purge can retry the delete.
+fn delete_ciphertext(storage: &mut dyn Storage, encrypted_path: &str) -> Result<()> {
+    match storage.delete(Path::new(encrypted_path)) {
+        Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
 }
 
 /// [`purge_expired_in`] against the native filesystem.
