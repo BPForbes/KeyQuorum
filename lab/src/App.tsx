@@ -57,6 +57,26 @@ export function App() {
     if (boot.state === "ready") announceReady(__BUILD_COMMIT__);
   }, [boot.state]);
 
+  // client.snapshot() reads WASM's in-memory state — no network, no
+  // Cloudflare cost — so a light interval is free. Without this, a file
+  // seeded to expire a minute or two after load (sprint-notes.md,
+  // audit-checklist.md) would only flip from live to expired the next
+  // time some other action happened to fetch a fresh snapshot, not while
+  // the tab just sits open watching it.
+  useEffect(() => {
+    if (boot.state !== "ready") return;
+    const id = window.setInterval(() => {
+      const client = clientRef.current;
+      if (!client) return;
+      try {
+        setSnapshot(client.snapshot().snapshot);
+      } catch {
+        // Transient; the next tick retries.
+      }
+    }, 3000);
+    return () => window.clearInterval(id);
+  }, [boot.state]);
+
   const act: Act = useCallback((run) => {
     const client = clientRef.current;
     if (!client) return null;

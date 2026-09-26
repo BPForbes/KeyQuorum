@@ -22,6 +22,11 @@ on:
 
 permissions:
   contents: read
+  # Declaring this block sets every unlisted permission to none, and the
+  # metadata generation step (scripts/generate-project-metadata.mjs, on
+  # push to main) calls GitHub's pulls/pulls-commits REST endpoints with
+  # GITHUB_TOKEN to build the timeline.
+  pull-requests: read
 
 concurrency:
   group: deploy-lab-${{ github.ref }}

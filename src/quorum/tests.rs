@@ -442,3 +442,94 @@ fn set_expires_at_and_purge_expired_cover_a_file_with_no_ttl() {
     assert!(!encrypted_path.exists());
     assert!(status(&conn, file_id).is_err());
 }
+
+#[test]
+fn an_expired_file_is_purged_even_when_the_presented_shares_are_not_enough() {
+    // Regression: the purge must not be reachable only through a
+    // *successful* reconstruction — a P1 review finding on PR #33 pointed
+    // out that gating it inside `complete_unlock_in` alone means an
+    // expired file with too few (or invalid) shares presented would never
+    // be destroyed, since `reconstruct_presented` fails and returns before
+    // ever reaching that check.
+    let mut conn = db::open_in_memory().expect("schema should apply");
+    let (id_a, sk_a) = register_encryption_key(&conn, "a");
+    let (id_b, _sk_b) = register_encryption_key(&conn, "b");
+    let spec = NodeSpec::flat_split("root", 2, vec![("a".into(), id_a), ("b".into(), id_b)]);
+
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let source_path = dir.path().join("secret.txt");
+    let encrypted_path = dir.path().join("secret.txt.kqenc");
+    fs::write(&source_path, b"the quorum has been reached").unwrap();
+
+    let past: String = conn
+        .query_row(
+            "SELECT strftime('%Y-%m-%d %H:%M:%S', 'now', '-1 day')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut storage = crate::storage::NativeStorage;
+    let plaintext = fs::read(&source_path).unwrap();
+    let file_id = lock_bytes_until_in(
+        &mut storage,
+        &mut conn,
+        &plaintext,
+        &encrypted_path,
+        "secret.txt",
+        &spec,
+        Some(&past),
+    )
+    .unwrap();
+    assert!(is_expired(&conn, file_id).unwrap());
+    assert!(encrypted_path.exists());
+
+    // Only one of the two shares needed — reconstruction alone would fail
+    // with QuorumNotMet, never reaching the purge that used to live only
+    // inside `complete_unlock_in`.
+    let key_id = status(&conn, file_id).unwrap().tree.key_id;
+    let leaves = leaf_ids_by_label(&conn, key_id);
+    let raw_a = unwrap_leaf_share(&conn, leaves[&"a".to_string()], &sk_a);
+    let mut shares = HashMap::new();
+    shares.insert(leaves[&"a".to_string()], raw_a);
+
+    let result = unlock_file(&conn, file_id, &shares);
+    assert!(matches!(result, Err(Error::FileExpired)));
+    assert!(!encrypted_path.exists());
+    assert!(status(&conn, file_id).is_err());
+}
+
+#[test]
+fn an_expired_file_is_purged_even_with_zero_shares_presented() {
+    let mut conn = db::open_in_memory().expect("schema should apply");
+    let (id_a, _sk_a) = register_encryption_key(&conn, "a");
+    let spec = NodeSpec::flat_split("root", 1, vec![("a".into(), id_a)]);
+
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let source_path = dir.path().join("secret.txt");
+    let encrypted_path = dir.path().join("secret.txt.kqenc");
+    fs::write(&source_path, b"the quorum has been reached").unwrap();
+
+    let past: String = conn
+        .query_row(
+            "SELECT strftime('%Y-%m-%d %H:%M:%S', 'now', '-1 minute')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut storage = crate::storage::NativeStorage;
+    let plaintext = fs::read(&source_path).unwrap();
+    let file_id = lock_bytes_until_in(
+        &mut storage,
+        &mut conn,
+        &plaintext,
+        &encrypted_path,
+        "secret.txt",
+        &spec,
+        Some(&past),
+    )
+    .unwrap();
+
+    let result = unlock_file(&conn, file_id, &HashMap::new());
+    assert!(matches!(result, Err(Error::FileExpired)));
+    assert!(!encrypted_path.exists());
+}

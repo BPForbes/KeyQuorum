@@ -266,6 +266,13 @@ pub fn unlock_file_with_approval(
     raw_shares: &HashMap<i64, Vec<u8>>,
     grants: &[UnlockGrant],
 ) -> Result<Vec<u8>> {
+    // Same as `locked_files::unlock_file`: the TTL is checked before any
+    // share is even looked at, so an expired file is destroyed on the
+    // first unlock *attempt* — including one whose shares never reconstruct
+    // — rather than only on a full, successful quorum (which the purge
+    // embedded in `complete_unlock_in` alone would require, since a failed
+    // `reconstruct_presented` below returns before ever reaching it).
+    purge_if_expired(conn, file_id)?;
     let key_id: i64 = conn.query_row(
         "SELECT key_id FROM files WHERE id = ?1",
         params![file_id],

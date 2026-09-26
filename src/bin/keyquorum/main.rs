@@ -1990,6 +1990,10 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
         }
         Some(1) => {
             let id = require(args.id, "id");
+            // Before anything else: an expired file is destroyed on the
+            // first unlock attempt, whether or not the presented shares
+            // would have reconstructed it (see quorum::unlock_file_with_approval).
+            quorum::purge_if_expired(conn, id)?;
             let file_status = quorum::status(conn, id)?;
             let shares =
                 collect_shares(conn, &file_status.tree.root, &args.share_files, &args.slots)?;
