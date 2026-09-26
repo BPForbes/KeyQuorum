@@ -126,6 +126,30 @@ impl KeyQuorumLab {
         to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
     }
 
+    /// `keyquorum bridge allow`: whitelist `node` to link with `peer`.
+    pub fn allow_bridge(&mut self, node: &str, peer: &str) -> std::result::Result<String, JsError> {
+        let outcome = self.state.allow_bridge(node, peer);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum bridge deny`: revoke both directions and drop the link.
+    pub fn deny_bridge(&mut self, node: &str, peer: &str) -> std::result::Result<String, JsError> {
+        let outcome = self.state.deny_bridge(node, peer);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum bridge add`: establish a whitelisted link.
+    pub fn add_bridge(&mut self, from: &str, to: &str) -> std::result::Result<String, JsError> {
+        let outcome = self.state.add_bridge(from, to);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum bridge remove`: tear down a link, keeping the whitelist.
+    pub fn remove_bridge(&mut self, from: &str, to: &str) -> std::result::Result<String, JsError> {
+        let outcome = self.state.remove_bridge(from, to);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
     /// One terminal line against the same state the GUI uses.
     pub fn run_command(&mut self, line: &str) -> std::result::Result<String, JsError> {
         if line.trim() == "reset" {

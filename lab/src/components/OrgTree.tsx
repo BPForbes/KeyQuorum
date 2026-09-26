@@ -1,3 +1,5 @@
+import { useId, useState } from "react";
+import type { Act } from "../App";
 import type { Snapshot, TreeNodeView } from "../api/types";
 
 function Node({ node, nodes }: { node: TreeNodeView; nodes: TreeNodeView[] }) {
@@ -55,8 +57,104 @@ function Node({ node, nodes }: { node: TreeNodeView; nodes: TreeNodeView[] }) {
   );
 }
 
-export function OrgTree({ snapshot }: { snapshot: Snapshot }) {
-  const { nodes, bridges } = snapshot.tree;
+function nodeName(nodes: TreeNodeView[], label: string) {
+  const person = nodes.find((node) => node.label === label)?.person;
+  return person ? `${label} (${person})` : label;
+}
+
+// The same four operations as `keyquorum bridge allow|deny|add|remove`.
+// Each button is one call into the crate's key_tree functions; whether a
+// link is allowed is decided there, not here.
+function Connections({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
+  const id = useId();
+  const { nodes, bridges, allowed } = snapshot.tree;
+  const [from, setFrom] = useState(snapshot.activeUser.label);
+  const [to, setTo] = useState(nodes.find((node) => node.label !== snapshot.activeUser.label)?.label ?? "");
+  const options = nodes.map((node) => (
+    <option key={node.label} value={node.label}>
+      {nodeName(nodes, node.label)}
+    </option>
+  ));
+  return (
+    <div className="bridges" data-testid="bridges">
+      <h3 className="bridges-title">Bridges</h3>
+      <p className="muted small">
+        A bridge is a cross-branch link between two nodes. Linking takes two steps, as with the CLI: a node first
+        whitelists a peer with <code>bridge allow</code>, then either side establishes the link with{" "}
+        <code>bridge add</code>, which KeyQuorum refuses unless one of the two whitelists names the other. Only
+        established links change who can see whom: each end sees the other end and its ancestors.
+      </p>
+
+      <h4 className="small">Established</h4>
+      {bridges.length > 0 ? (
+        <ul className="bridge-list">
+          {bridges.map(([a, b]) => (
+            <li key={`${a}-${b}`} data-testid={`bridge-${a}-${b}`}>
+              <code>
+                {a} ↔ {b}
+              </code>
+              <button
+                type="button"
+                className="btn small-btn"
+                onClick={() => act((client) => client.removeBridge(a, b))}
+                aria-label={`Remove bridge ${a} to ${b}`}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="small muted">No established bridges.</p>
+      )}
+
+      <h4 className="small">Whitelist</h4>
+      {allowed.length > 0 ? (
+        <ul className="bridge-list">
+          {allowed.map(([node, peer]) => (
+            <li key={`${node}-${peer}`} data-testid={`allowed-${node}-${peer}`}>
+              <code>
+                {node} → {peer}
+              </code>
+              <button
+                type="button"
+                className="btn small-btn"
+                onClick={() => act((client) => client.denyBridge(node, peer))}
+                aria-label={`Deny ${node} bridging to ${peer}`}
+              >
+                Deny
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="small muted">No whitelist entries.</p>
+      )}
+
+      <form className="bridge-form" onSubmit={(event) => event.preventDefault()}>
+        <label htmlFor={`${id}-from`}>Node</label>
+        <select id={`${id}-from`} value={from} onChange={(event) => setFrom(event.target.value)}>
+          {options}
+        </select>
+        <label htmlFor={`${id}-to`}>Peer</label>
+        <select id={`${id}-to`} value={to} onChange={(event) => setTo(event.target.value)}>
+          {options}
+        </select>
+        <div className="button-row">
+          <button type="button" className="btn" onClick={() => act((client) => client.allowBridge(from, to))}>
+            Allow node → peer
+          </button>
+          <button type="button" className="btn btn-primary" onClick={() => act((client) => client.addBridge(from, to))}>
+            Establish bridge
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+export function OrgTree({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
+  const { nodes } = snapshot.tree;
   const roots = nodes.filter((node) => node.parent === null);
   return (
     <section className="panel" data-panel="organization" aria-labelledby="org-heading">
@@ -75,16 +173,7 @@ export function OrgTree({ snapshot }: { snapshot: Snapshot }) {
           <Node key={node.label} node={node} nodes={nodes} />
         ))}
       </ul>
-      {bridges.length > 0 ? (
-        <p className="small">
-          Established bridge{bridges.length > 1 ? "s" : ""}:{" "}
-          {bridges.map(([a, b]) => (
-            <code key={`${a}-${b}`}>
-              {a} ↔ {b}
-            </code>
-          ))}
-        </p>
-      ) : null}
+      <Connections snapshot={snapshot} act={act} />
     </section>
   );
 }

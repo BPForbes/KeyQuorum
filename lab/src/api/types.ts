@@ -136,7 +136,9 @@ export interface Snapshot {
   activeUser: UserView;
   users: UserView[];
   drives: DriveView[];
-  tree: { nodes: TreeNodeView[]; bridges: [string, string][] };
+  // bridges: established undirected links (drive visibility).
+  // allowed: directed whitelist entries, node → peer.
+  tree: { nodes: TreeNodeView[]; bridges: [string, string][]; allowed: [string, string][] };
   files: FileView[];
   inbox: InboxItemView[];
   pendingAcks: number;

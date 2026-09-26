@@ -22,8 +22,10 @@ synthetic people and mock USB drives — each person starts with their own
 drive, and a Windows-Explorer-style file browser (folders, a sortable list
 view, Properties, a viewer) is how you open, send, and inspect the seeded
 files. Switch identities, insert/eject/move drives, unlock or watch a file
-expire, and send files between people — every action shows the checks
-KeyQuorum made. The mock drives' passphrases are published demo values, so
+expire, send files between people, and whitelist, establish, or tear down
+bridges between any two nodes (the same `key_tree` calls as `keyquorum
+bridge allow|deny|add|remove`, starting from the seeded `M.S ↔ M.A` link) —
+every action shows the checks KeyQuorum made. The mock drives' passphrases are published demo values, so
 the lab demonstrates behavior; it is not hardware-backed security.
 
 ```bash

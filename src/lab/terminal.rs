@@ -24,6 +24,11 @@ pub const HELP: &[&str] = &[
     "approvals                   unlock approvals you asked for or owe",
     "approve <id> | decline <id> answer an approval request",
     "tree                        org tree from your view",
+    "bridge list                 whitelist and established links",
+    "bridge allow <node> <peer>  whitelist node to link with peer",
+    "bridge deny <node> <peer>   revoke both ways and drop the link",
+    "bridge add <a> <b>          establish a link (needs a whitelist entry)",
+    "bridge remove <a> <b>       tear down a link, keep the whitelist",
     "reset                       restore the seeded lab",
 ];
 
@@ -247,6 +252,28 @@ pub fn run(state: &mut LabState, line: &str) -> Result<(Outcome, Vec<String>)> {
             }
             quiet(true, output)
         }
+        ["bridge"] | ["bridge", "list"] => {
+            let snapshot = state.snapshot()?;
+            let mut output = vec!["Allowed:".to_string()];
+            if snapshot.tree.allowed.is_empty() {
+                output.push("  (none)".into());
+            }
+            for (node, peer) in &snapshot.tree.allowed {
+                output.push(format!("  {node} -> {peer}"));
+            }
+            output.push("Established:".into());
+            if snapshot.tree.bridges.is_empty() {
+                output.push("  (none)".into());
+            }
+            for (a, b) in &snapshot.tree.bridges {
+                output.push(format!("  {a} <-> {b}"));
+            }
+            quiet(true, output)
+        }
+        ["bridge", "allow", node, peer] => with_trace(state.allow_bridge(node, peer)?),
+        ["bridge", "deny", node, peer] => with_trace(state.deny_bridge(node, peer)?),
+        ["bridge", "add", from, to] => with_trace(state.add_bridge(from, to)?),
+        ["bridge", "remove", from, to] => with_trace(state.remove_bridge(from, to)?),
         _ => quiet(
             false,
             vec![format!("Unknown command: {line}. Type `help`.")],

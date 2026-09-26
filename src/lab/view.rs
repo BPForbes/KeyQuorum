@@ -96,7 +96,10 @@ pub struct TreeNodeView {
 #[serde(rename_all = "camelCase")]
 pub struct TreeView {
     pub nodes: Vec<TreeNodeView>,
+    /// Established undirected links (`key_node_links`), which drive visibility.
     pub bridges: Vec<(String, String)>,
+    /// Directed whitelist entries (`key_node_bridges`): node may link to peer.
+    pub allowed: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, Serialize)]

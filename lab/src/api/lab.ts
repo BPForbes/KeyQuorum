@@ -68,6 +68,22 @@ export class LabClient {
     return this.call(this.lab.answer_approval(id, approve));
   }
 
+  allowBridge(node: string, peer: string): ActionResult {
+    return this.call(this.lab.allow_bridge(node, peer));
+  }
+
+  denyBridge(node: string, peer: string): ActionResult {
+    return this.call(this.lab.deny_bridge(node, peer));
+  }
+
+  addBridge(from: string, to: string): ActionResult {
+    return this.call(this.lab.add_bridge(from, to));
+  }
+
+  removeBridge(from: string, to: string): ActionResult {
+    return this.call(this.lab.remove_bridge(from, to));
+  }
+
   runCommand(line: string): ActionResult {
     return this.call(this.lab.run_command(line));
   }

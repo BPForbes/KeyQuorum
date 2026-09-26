@@ -178,7 +178,7 @@ export function App() {
       </nav>
 
       <main className="lab-grid" data-tab={tab}>
-        <OrgTree snapshot={snapshot} />
+        <OrgTree snapshot={snapshot} act={act} />
         <Drives snapshot={snapshot} act={act} />
         <FileExplorer snapshot={snapshot} act={act} />
         <Mailbox snapshot={snapshot} act={act} />

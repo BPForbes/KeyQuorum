@@ -556,3 +556,131 @@ fn unlock_records_a_real_audit_row() {
     assert!(command.starts_with("keyquorum access quorum --state 1 --id "));
     assert!(command.contains("--slot /media/alice-usb=M.S.1"));
 }
+
+#[test]
+fn a_link_needs_a_whitelist_entry_first() {
+    let mut state = lab();
+    // Alice (M.S.1) cannot link to Emma (M.A.1) until one of them allows it.
+    let refused = state.add_bridge("alice", "emma").unwrap();
+    assert!(!refused.ok);
+    assert_eq!(
+        failed(&refused),
+        ["Refused: cross-branch link is not whitelisted by either node"]
+    );
+    assert_eq!(snap(&state).tree.bridges, [("M.S".into(), "M.A".into())]);
+
+    assert!(state.allow_bridge("M.A.1", "M.S.1").unwrap().ok);
+    let whitelist = snap(&state).tree.allowed;
+    assert!(whitelist.contains(&("M.A.1".into(), "M.S.1".into())));
+    // Either side's whitelist authorizes the link, whichever end adds it.
+    assert!(state.add_bridge("M.S.1", "M.A.1").unwrap().ok);
+    let bridges = snap(&state).tree.bridges;
+    assert_eq!(bridges.len(), 2);
+    assert!(bridges.contains(&("M.S.1".into(), "M.A.1".into())));
+}
+
+#[test]
+fn a_new_link_widens_the_visible_slice_and_unblocks_delivery() {
+    let mut state = lab();
+    let refused = state.send("project-roadmap.md", "emma").unwrap();
+    assert!(!refused.ok);
+
+    state.allow_bridge("alice", "emma").unwrap();
+    let added = state.add_bridge("alice", "emma").unwrap();
+    assert!(added.ok);
+    assert!(added
+        .trace
+        .iter()
+        .any(|step| step.text == "Alice (M.S.1) now sees M.A.1"));
+    // Emma sees Alice and Alice's ancestors; M, M.S and M.A are already
+    // hers through lineage and the seeded manager bridge.
+    assert!(added
+        .trace
+        .iter()
+        .any(|step| step.text == "Emma (M.A.1) now sees M.S.1"));
+
+    let sent = state.send("project-roadmap.md", "emma").unwrap();
+    assert!(sent.ok, "{:?}", failed(&sent));
+    assert!(sent.trace.iter().any(|step| step
+        .text
+        .contains("reached through the established M.S.1 ↔ M.A.1 bridge")));
+}
+
+#[test]
+fn removing_a_link_keeps_the_whitelist_but_deny_clears_both() {
+    let mut state = lab();
+    let removed = state.remove_bridge("M.A", "M.S").unwrap();
+    assert!(removed.ok);
+    assert!(snap(&state).tree.bridges.is_empty());
+    // Alice loses David, and David loses Sarah's side of the org.
+    assert!(removed
+        .trace
+        .iter()
+        .any(|step| step.text == "Alice (M.S.1) no longer sees M.A"));
+    assert!(!state.send("project-roadmap.md", "david").unwrap().ok);
+
+    // The seeded whitelist survived, so the link can come straight back.
+    assert!(state.add_bridge("M.S", "M.A").unwrap().ok);
+    assert!(state.send("project-roadmap.md", "david").unwrap().ok);
+
+    assert!(state.deny_bridge("M.S", "M.A").unwrap().ok);
+    let tree = snap(&state).tree;
+    assert!(tree.bridges.is_empty() && tree.allowed.is_empty());
+    let refused = state.add_bridge("M.S", "M.A").unwrap();
+    assert_eq!(
+        failed(&refused),
+        ["Refused: cross-branch link is not whitelisted by either node"]
+    );
+}
+
+#[test]
+fn the_library_refuses_malformed_links() {
+    let mut state = lab();
+    let own = state.allow_bridge("alice", "M.S.1").unwrap();
+    assert!(!own.ok);
+    assert!(failed(&own)[0].starts_with("Refused: "));
+    let unknown = state.allow_bridge("M.S.1", "M.Z").unwrap();
+    assert!(!unknown.ok);
+    assert_eq!(
+        failed(&unknown),
+        ["Refused: no node with that label or id exists in this key"]
+    );
+    let missing = state.remove_bridge("alice", "chris").unwrap();
+    assert_eq!(
+        failed(&missing),
+        ["Refused: no established cross-branch link between those nodes"]
+    );
+    let activity = snap(&state).activity;
+    assert_eq!(activity[0].kind, "bridge");
+    assert_eq!(activity[0].outcome, "denied");
+    let command = activity[0].command.as_deref().unwrap();
+    assert!(command.starts_with("keyquorum bridge remove "));
+    assert!(command.ends_with(" --from M.S.1 --to M.A.2"));
+}
+
+#[test]
+fn terminal_bridge_commands_share_the_gui_state() {
+    let mut state = lab();
+    let (_, listing) = terminal::run(&mut state, "bridge list").unwrap();
+    assert_eq!(
+        listing,
+        [
+            "Allowed:",
+            "  M.A -> M.S",
+            "  M.S -> M.A",
+            "Established:",
+            "  M.S <-> M.A"
+        ]
+    );
+    let (outcome, _) = terminal::run(&mut state, "bridge add bob chris").unwrap();
+    assert!(!outcome.ok);
+    let (outcome, _) = terminal::run(&mut state, "bridge allow bob chris").unwrap();
+    assert!(outcome.ok);
+    let (outcome, output) = terminal::run(&mut state, "bridge add bob chris").unwrap();
+    assert!(outcome.ok);
+    assert_eq!(output[0], "Establish bridge M.S.2 ↔ M.A.2");
+    assert!(snap(&state)
+        .tree
+        .bridges
+        .contains(&("M.S.2".into(), "M.A.2".into())));
+}
