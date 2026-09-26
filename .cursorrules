@@ -165,11 +165,15 @@ files (the `files` table) can carry a UTC `expires_at` the same way
 ciphertext and the `files` row on first touch past the TTL); the lab resolves
 a few seeded files' TTLs relative to load time via SQLite's own clock
 (`strftime('now', modifier)`) so a couple of them expire while the tab is
-open. `legacy-migration-notes.txt` seeds a real ghost: an extra leaf is
-registered, included in the split, and evicted with
-`key_tree::evict_and_refresh` before the lab starts, so a departed person's
-share is genuinely gone from that file's tree rather than merely hidden by
-the UI — `RequirementNode.ghost` (`view.rs`) is how the frontend marks it.
+open. `legacy-migration-notes.txt` seeds a real ghost through
+`transfer.rs`: the departed person's slot is `transfer::enroll`ed, then
+MOVE-transferred (`transfer::transfer`) to a throwaway destination before
+the lab starts, so `transfer::possession` genuinely reports
+`Possession::Ghost` for that label — the same mechanism `keyquorum
+transfer move` uses, not a UI-only flag. She stays an ordinary leaf in
+`legacy-migration-notes.txt`'s tree; `device::leaf_is_ghost` refuses her
+share the moment anyone presents it. `RequirementNode.ghost` (`view.rs`)
+is how the frontend marks it.
 
 Rules:
 

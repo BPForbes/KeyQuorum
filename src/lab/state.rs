@@ -24,6 +24,7 @@ use crate::keys::{self, KeyType};
 use crate::private_bridge::{is_ancestor_or_self, parent_node_label};
 use crate::quorum;
 use crate::storage::MemoryStorage;
+use crate::transfer;
 use rand::rngs::OsRng;
 use rand::RngCore;
 use rusqlite::Connection;
@@ -199,10 +200,6 @@ impl LabState {
                 drive.slots,
             ));
         }
-        // Every slot's encryption secret, kept only long enough to seed the
-        // one file that demonstrates a ghost eviction (survivor shares must
-        // be unwrapped to call `key_tree::evict_and_refresh`).
-        let mut slot_secrets: HashMap<String, Zeroizing<[u8; 32]>> = HashMap::new();
         for drive in seed::DRIVES {
             let mount = PathBuf::from(drive.mount);
             let mut container = device::init_in(&mut bay, &mount)?;
@@ -218,7 +215,6 @@ impl LabState {
                 )?;
                 keys::register_key(&conn, slot, KeyType::Signing, &provisioned.signing_public)?;
                 device::bind_slot_in(&bay, &conn, &container, slot, &passphrase)?;
-                slot_secrets.insert(slot.to_string(), provisioned.encryption_secret);
             }
             let seeded = bay.get_mut(drive.id).ok_or(Error::InvalidDevice)?;
             seeded.device_id = *container.device_id();
@@ -226,6 +222,7 @@ impl LabState {
         }
 
         let org_key_id = seed_org_tree(&mut conn)?;
+        seed_ghost(&conn)?;
 
         let mut disk = MemoryStorage::new();
         let mut files = Vec::new();
@@ -268,50 +265,6 @@ impl LabState {
                             unlock_approval: *approval,
                         },
                     )?;
-                    FileKind::Quorum { file_id, key_id }
-                }
-                Protection::QuorumWithGhost {
-                    threshold,
-                    leaves,
-                    ghost_label,
-                    custody,
-                    minimum_devices,
-                } => {
-                    // A key for the departed person, registered but never
-                    // provisioned onto any container: nobody holds its
-                    // secret, so it can never unwrap a share. It exists
-                    // only long enough to be evicted below.
-                    let (_ghost_secret, ghost_public) = keys::generate_encryption_keypair();
-                    keys::register_key(&conn, ghost_label, KeyType::Encryption, &ghost_public)?;
-                    let mut node_leaves: Vec<(String, i64)> = leaves
-                        .iter()
-                        .map(|label| Ok((label.to_string(), encryption_key_id(&conn, label)?)))
-                        .collect::<Result<Vec<_>>>()?;
-                    node_leaves.push((
-                        ghost_label.to_string(),
-                        encryption_key_id(&conn, ghost_label)?,
-                    ));
-                    let spec = NodeSpec::flat_split(file.id, *threshold, node_leaves);
-                    let path = Path::new(FILE_ROOT).join(format!("{}.kqenc", file.name));
-                    let file_id = quorum::lock_bytes_in(
-                        &mut disk,
-                        &mut conn,
-                        file.contents.as_bytes(),
-                        &path,
-                        file.name,
-                        &spec,
-                    )?;
-                    let key_id = quorum::status(&conn, file_id)?.tree.key_id;
-                    device::set_custody_policy(
-                        &conn,
-                        key_id,
-                        &CustodyPolicy {
-                            mode: *custody,
-                            minimum_physical_devices: *minimum_devices,
-                            unlock_approval: UnlockApproval::None,
-                        },
-                    )?;
-                    evict_ghost(&mut conn, key_id, ghost_label, leaves, &slot_secrets)?;
                     FileKind::Quorum { file_id, key_id }
                 }
             };
@@ -1615,7 +1568,7 @@ impl LabState {
                 let summary = key_tree::describe(&self.conn, key_id)?;
                 let policy = device::custody_policy(&self.conn, key_id)?;
                 (
-                    Some(self.requirement(&summary.root)),
+                    Some(self.requirement(&summary.root)?),
                     Some(PolicyView {
                         custody: match policy.mode {
                             CustodyMode::Hardware => "hardware".into(),
@@ -1666,8 +1619,18 @@ impl LabState {
         })
     }
 
-    fn requirement(&self, node: &TreeNodeSummary) -> RequirementNode {
-        RequirementNode {
+    fn requirement(&self, node: &TreeNodeSummary) -> Result<RequirementNode> {
+        // Asks the same question `device::leaf_is_ghost` asks at
+        // reconstruction time: is this leaf's identity a real
+        // `transfer.rs` ghost (see `seed_ghost`), not a cosmetic flag.
+        let ghost = node.hardware_key_id.is_some()
+            && transfer::possession(&self.conn, &node.label)? == Some(transfer::Possession::Ghost);
+        let children = node
+            .children
+            .iter()
+            .map(|child| self.requirement(child))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(RequirementNode {
             label: node.label.clone(),
             threshold: node.threshold,
             // `None` when the registry label is the same string as the
@@ -1683,16 +1646,9 @@ impl LabState {
                             .filter(|label| label != &node.label)
                     })
             }),
-            // A leaf a real person once held, kept in the tree by label but
-            // excluded from every future reconstruction — see
-            // `key_tree::evict_and_refresh`.
-            ghost: !node.is_active && node.hardware_key_id.is_some(),
-            children: node
-                .children
-                .iter()
-                .map(|child| self.requirement(child))
-                .collect(),
-        }
+            ghost,
+            children,
+        })
     }
 
     fn user_view(&self, index: usize, visible: &HashSet<String>) -> UserView {
@@ -1989,29 +1945,57 @@ fn expiry_passed(conn: &Connection, expires_at: &str) -> Result<bool> {
     .map_err(Into::into)
 }
 
-/// Seed a ghost: `ghost_label`'s leaf was included in the split (see the
-/// `QuorumWithGhost` seeding above) and is evicted here, before the lab
-/// hands control to a visitor, via the crate's own
-/// `key_tree::evict_and_refresh` — the exact function a real "this person
-/// left" workflow calls. `survivors` must already hold raw shares
-/// obtainable from `slot_secrets`.
-fn evict_ghost(
-    conn: &mut Connection,
-    key_id: i64,
-    ghost_label: &str,
-    survivors: &[&str],
-    slot_secrets: &HashMap<String, Zeroizing<[u8; 32]>>,
-) -> Result<()> {
-    let tree = KeyQuorumTree::load(conn, key_id)?;
-    let evicted_node_id = tree.nodes[tree.index_by_label(ghost_label)?].db_id;
-    let mut survivor_shares = HashMap::new();
-    for label in survivors {
-        let node_id = tree.nodes[tree.index_by_label(label)?].db_id;
-        let secret = slot_secrets.get(*label).ok_or(Error::NodeNotFound)?;
-        let raw = key_tree::unwrap_leaf_share(conn, node_id, secret.as_slice())?;
-        survivor_shares.insert(node_id, raw);
-    }
-    key_tree::evict_and_refresh(conn, key_id, evicted_node_id, &survivor_shares)?;
+/// Seed a real ghost with `transfer.rs` — the same primitive
+/// `keyquorum transfer move` uses, not a cosmetic label. Enrolls
+/// [`seed::GHOST_LABEL`] as an active identity on a throwaway "before she
+/// left" container, then MOVEs it to a throwaway "archive" device on its
+/// own, empty scratch database: `transfer::transfer`'s destination side
+/// requires a genuinely separate database (`AGENTS.md`: "each device has
+/// its own file"), which a fresh `db::open_in_memory` provides here and
+/// which is discarded once this returns. `finalize_source` (run against
+/// `conn`, the org store) is what leaves the real row behind:
+/// `transfer::possession(conn, GHOST_LABEL) == Some(Possession::Ghost)`.
+/// After this, her identity is registered like any other leaf's — any
+/// file's `NodeSpec` can name her — but `device::leaf_is_ghost` refuses
+/// her share the moment anyone tries to present it, and since nothing in
+/// the lab ever provisions a drive for her, nothing ever can.
+fn seed_ghost(conn: &Connection) -> Result<()> {
+    // Two separate in-memory stores, one per container, mirroring the
+    // physical requirement that a transfer moves a token between two
+    // distinct USB drives.
+    let mut source_storage = MemoryStorage::new();
+    let mut source_container =
+        device::init_in(&mut source_storage, Path::new("/lab/ghost/retired-device"))?;
+    let passphrase = seed::demo_passphrase(seed::GHOST_LABEL);
+    transfer::enroll_in(
+        &mut source_storage,
+        conn,
+        &mut source_container,
+        seed::GHOST_LABEL,
+        &passphrase,
+    )?;
+
+    let archive_conn = db::open_in_memory()?;
+    let mut dest_storage = MemoryStorage::new();
+    let mut archive_container =
+        device::init_in(&mut dest_storage, Path::new("/lab/ghost/archive-device"))?;
+    let mut passphrases = HashMap::new();
+    passphrases.insert(seed::GHOST_LABEL.to_string(), passphrase);
+
+    transfer::transfer(transfer::TransferRequest {
+        source_conn: conn,
+        source: &mut source_container,
+        source_storage: &mut source_storage,
+        dest_conn: &archive_conn,
+        dest: &mut archive_container,
+        dest_storage: &mut dest_storage,
+        actor: seed::GHOST_LABEL,
+        label: seed::GHOST_LABEL,
+        operation: transfer::TransferOp::Move,
+        descendants: transfer::DescendantMode::KeyOnly,
+        passphrases: &passphrases,
+        auth: &transfer::TransferAuth::default(),
+    })?;
     Ok(())
 }
 

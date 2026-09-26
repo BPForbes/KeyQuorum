@@ -106,8 +106,9 @@ pub struct RequirementNode {
     pub threshold: Option<i64>,
     pub holder: Option<String>,
     /// A leaf a real person once held, now excluded from every future
-    /// reconstruction (`key_tree::evict_and_refresh`) but kept in the
-    /// tree by label — the crate's real "this person left" state.
+    /// reconstruction (`transfer::Possession::Ghost`, recorded after a MOVE
+    /// transfer takes her secret away) but kept in the tree by label — the
+    /// crate's real "this person left" state.
     pub ghost: bool,
     pub children: Vec<RequirementNode>,
 }

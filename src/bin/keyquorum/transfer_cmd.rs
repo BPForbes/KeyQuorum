@@ -8,6 +8,7 @@ use keyquorum::device::{self, Container};
 use keyquorum::device_relay;
 use keyquorum::error::{Error, Result};
 use keyquorum::relay::{self, ApiKeyScope};
+use keyquorum::storage::NativeStorage;
 use keyquorum::transfer::{self, DescendantMode, TransferAuth, TransferOp, TransferRequest};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -293,8 +294,10 @@ fn run_transfer(args: TransferArgs, operation: TransferOp) -> Result<()> {
     let id = transfer::transfer(TransferRequest {
         source_conn: &source_conn,
         source: &mut source,
+        source_storage: &mut NativeStorage,
         dest_conn: &dest_conn,
         dest: &mut dest,
+        dest_storage: &mut NativeStorage,
         actor: &actor,
         label: &args.label,
         operation,

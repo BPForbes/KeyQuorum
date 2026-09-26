@@ -7,7 +7,7 @@
     "dev": "vite",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview --strictPort --port 4173",
+    "preview": "vite preview --strictPort --port 4173 --host 127.0.0.1",
     "test:browser": "playwright test",
     "generate:metadata": "node scripts/generate-project-metadata.mjs",
     "validate:metadata": "node scripts/generate-project-metadata.mjs --validate dist/project-metadata.json",

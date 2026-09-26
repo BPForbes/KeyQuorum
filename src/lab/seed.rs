@@ -45,18 +45,6 @@ pub enum Protection {
         approval: UnlockApproval,
         expires: Expiry,
     },
-    /// Like `Quorum`, but one extra leaf is provisioned, included in the
-    /// split, and then evicted (`key_tree::evict_and_refresh`) before the
-    /// lab hands control to the visitor — a real ghost, not a cosmetic
-    /// one. `ghost_label` is that leaf; it is never a `UserSeed` and
-    /// never gets a drive of its own.
-    QuorumWithGhost {
-        threshold: u8,
-        leaves: &'static [&'static str],
-        ghost_label: &'static str,
-        custody: CustodyMode,
-        minimum_devices: u8,
-    },
 }
 
 pub struct FileSeed {
@@ -79,9 +67,12 @@ pub const ORG_TREE: &str = "org";
 /// slices include the other manager, but not that manager's reports.
 pub const ORG_BRIDGE: (&str, &str) = ("M.S", "M.A");
 
-/// A former engineer, evicted from `legacy-migration-notes.txt`'s tree
-/// before the lab starts. Never a `UserSeed`, never has a drive: the
-/// point is that a ghost has no way to present a share at all.
+/// A former engineer. Before the lab starts, her identity is enrolled and
+/// then MOVE-transferred to a throwaway archive device via `transfer.rs`
+/// — the same primitive `keyquorum transfer move` uses — so
+/// `key_possession.state` is a real `ghost` row in the org store, not a
+/// cosmetic label. She is never a `UserSeed` and never gets a drive of her
+/// own: nothing in the lab can ever present her share.
 pub const GHOST_LABEL: &str = "Priya";
 pub const GHOST_NAME: &str = "Priya";
 pub const GHOST_ROLE: &str = "Former Software Engineer (left the company)";
@@ -314,14 +305,15 @@ pub const FILES: &[FileSeed] = &[
         id: "legacy-migration-notes",
         folder: "engineering",
         name: "legacy-migration-notes.txt",
-        lesson: "Originally 2 of 3 with Priya, a former engineer. Her share was evicted (key_tree::evict_and_refresh) when she left, and the survivors' shares were refreshed — now both remaining holders are required.",
+        lesson: "2 of 3, including Priya, a former engineer whose identity was MOVE-transferred to an archive device (transfer::transfer) when she left. Her key_possession row here is a real ghost — nobody can ever present her share again — so the other two holders are effectively both required.",
         contents: "Legacy migration notes (synthetic)\nOwned jointly by the team; Priya wrote the original draft.\n",
-        protection: Protection::QuorumWithGhost {
+        protection: Protection::Quorum {
             threshold: 2,
-            leaves: &["M.S.1", "M.S.2"],
-            ghost_label: GHOST_LABEL,
+            leaves: &["M.S.1", "M.S.2", GHOST_LABEL],
             custody: CustodyMode::Hardware,
             minimum_devices: 1,
+            approval: UnlockApproval::None,
+            expires: Expiry::Never,
         },
     },
     // --- /accounting ---
