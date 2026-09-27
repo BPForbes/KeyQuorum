@@ -153,6 +153,22 @@ struct FileShare {
     revoked: bool,
 }
 
+/// A signature a lab user produced over a public or received file with
+/// `keyquorum sign`, tracked so the panel can list it and let a bridge
+/// member verify it later against the same plaintext.
+struct SignedFile {
+    id: i64,
+    /// The lookup key (`file_index`/`received_path`) that resolves back
+    /// to the exact plaintext this signature covers.
+    source_key: String,
+    file_name: String,
+    /// Tree label of the signer (`M.S` or `M.A`), not their bridge label.
+    signer: String,
+    bridge_uid: String,
+    path: PathBuf,
+    size: usize,
+}
+
 /// What one action did, before the snapshot is attached.
 pub struct Outcome {
     pub ok: bool,
@@ -179,6 +195,8 @@ pub struct LabState {
     files: Vec<LabFile>,
     active: usize,
     org_key_id: i64,
+    /// Uid of the org's one private sign bridge (`LabState::sign_file`).
+    bridge_uid: String,
     mail: HashMap<String, Mailbox>,
     activity: Vec<ActivityView>,
     next_seq: u64,
@@ -187,6 +205,8 @@ pub struct LabState {
     exports: Vec<ExportedBundle>,
     next_export_id: i64,
     file_shares: Vec<FileShare>,
+    signatures: Vec<SignedFile>,
+    next_signature_id: i64,
 }
 
 impl LabState {
@@ -221,6 +241,7 @@ impl LabState {
             files: Vec::new(),
             active,
             org_key_id: 0,
+            bridge_uid: String::new(),
             mail: HashMap::new(),
             activity: Vec::new(),
             next_seq: 1,
@@ -229,6 +250,8 @@ impl LabState {
             exports: Vec::new(),
             next_export_id: 1,
             file_shares: Vec::new(),
+            signatures: Vec::new(),
+            next_signature_id: 1,
         };
         let commands = state.provision()?;
         let home = state.actor().home();
@@ -330,6 +353,64 @@ impl LabState {
             self,
             format!("keyquorum --db {ORG_DB} bridge add {key} --from {a} --to {b}"),
         )?;
+
+        // The org's one private sign bridge, between the same two
+        // managers, each with a personal signing key generated and
+        // registered under its own (undotted) label — see
+        // `seed::BRIDGE_SIGNERS` for why this is not their device slot's
+        // signing key.
+        for (tree_label, signer_label) in seed::BRIDGE_SIGNERS {
+            let generated = run(
+                self,
+                format!(
+                    "keyquorum --db {ORG_DB} generate --type signing --public-key-out {SRV}/keys/{signer_label}.pub --label {signer_label} --register"
+                ),
+            )?;
+            let private_hex = generated
+                .stdout_text()
+                .lines()
+                .next()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .ok_or_else(|| {
+                    Error::Usage("lab setup: no private key on stdout of `generate`".into())
+                })?
+                .to_string();
+            let owner = self.user_by_label(tree_label).ok_or(Error::NodeNotFound)?;
+            let key_path = owner
+                .home()
+                .join("keys")
+                .join(format!("{signer_label}.key"));
+            self.write_file(&key_path, private_hex.as_bytes())?;
+        }
+        let (a_signer, b_signer) = (seed::BRIDGE_SIGNERS[0].1, seed::BRIDGE_SIGNERS[1].1);
+        let bridge_packages = Path::new(SRV).join("bridge-packages");
+        let created = run(
+            self,
+            format!(
+                "keyquorum --db {ORG_DB} bridge private create {key} --member {a_signer}={SRV}/keys/{a}.pub --member {b_signer}={SRV}/keys/{b}.pub --self {a_signer} --output-dir {} --label {}",
+                bridge_packages.display(),
+                seed::PRIVATE_BRIDGE_LABEL,
+            ),
+        )?;
+        self.bridge_uid = created
+            .stdout_text()
+            .lines()
+            .find_map(|line| line.strip_prefix("Created private bridge "))
+            .and_then(|rest| rest.split_whitespace().next())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                Error::Usage("lab setup: no bridge uid in `bridge private create` output".into())
+            })?;
+        // David's own package sits in `bridge_packages` for delivery to
+        // his own store on a real deployment. The lab has only one org
+        // database, and `bridge private import` refuses a bridge this
+        // store already has a row for (`create` just wrote one), so David
+        // stays a full roster member — his signing and encryption public
+        // keys are recorded, and either of them can verify his signature
+        // — without a usable sealed copy of the shared secret to sign
+        // with here. That is the crate's real "at most one store keeps
+        // the local member's sealed copy" rule, not a shortcut.
 
         // A departed engineer: enrolled on her old device now, moved to an
         // archive device once the files naming her are locked.
@@ -1617,6 +1698,218 @@ impl LabState {
             .collect()
     }
 
+    // ----- sign / verify -----------------------------------------------------
+
+    /// A bridge member's own tree label (`M.S`, `M.A`) maps to their
+    /// personal bridge signing identity (`seed::BRIDGE_SIGNERS`).
+    fn bridge_signer_label(&self, tree_label: &str) -> Option<&'static str> {
+        seed::BRIDGE_SIGNERS
+            .iter()
+            .find(|(node, _)| *node == tree_label)
+            .map(|(_, signer)| *signer)
+    }
+
+    fn signature_index(&self, id: i64) -> Option<usize> {
+        self.signatures.iter().position(|entry| entry.id == id)
+    }
+
+    /// Sign a public or received file's plaintext with the active user's
+    /// personal bridge signing key (`keyquorum sign`). Sarah and David
+    /// are both members of the org's one private sign bridge, but only
+    /// Sarah (the bridge's `--self` at seed time) has a sealed copy of
+    /// its shared secret in this shared org store; David's attempt fails
+    /// with the CLI's own `SealedKeyNotHeld` error, same as it would on a
+    /// second person's real, separate store that never imported the
+    /// package addressed to them. Quorum-locked files are not offered
+    /// here: they would first need decrypting to a temporary plaintext
+    /// the same way `send` does, which this build keeps out of scope.
+    pub fn sign_file(&mut self, file_key: &str) -> Result<Outcome> {
+        let actor_label = self.actor().label.clone();
+        let Some(signer_label) = self.bridge_signer_label(&actor_label) else {
+            return Ok(Outcome::done(
+                false,
+                format!(
+                    "{actor_label} holds no personal signing key for the cross-department bridge"
+                ),
+                vec![],
+            ));
+        };
+        let Some(slot) = self.own_slot_arg() else {
+            return Ok(Outcome::done(
+                false,
+                "You have no slot on any drive",
+                vec![],
+            ));
+        };
+        let (source, name, source_key) = if let Some(path) = self.received_path(file_key) {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let key = format!("received/{name}");
+            (path, name, key)
+        } else {
+            let Some(index) = self.file_index(file_key) else {
+                return Ok(Outcome::done(
+                    false,
+                    format!("No file named {file_key}"),
+                    vec![],
+                ));
+            };
+            match &self.files[index].kind {
+                FileKind::Public { path } => (
+                    path.clone(),
+                    self.files[index].name.clone(),
+                    self.files[index].id.clone(),
+                ),
+                FileKind::Quorum { .. } => {
+                    return Ok(Outcome::done(
+                        false,
+                        "Only public or received files can be signed here",
+                        vec![],
+                    ));
+                }
+            }
+        };
+        let signature_out = self
+            .actor()
+            .home()
+            .join("signatures")
+            .join(format!("{name}.sig"));
+        let key_file = self
+            .actor()
+            .home()
+            .join("keys")
+            .join(format!("{signer_label}.key"));
+        let bridge_uid = self.bridge_uid.clone();
+        let line = format!(
+            "keyquorum --db {ORG_DB} sign --bridge-uid {bridge_uid} --node {signer_label} \
+             --signing-key-file {} --slot {slot} --message-file {} --signature-out {}",
+            quote(&key_file.display().to_string()),
+            quote(&source.display().to_string()),
+            quote(&signature_out.display().to_string()),
+        );
+        let run = self.run(&line);
+        let trace = transcript(&run, true);
+        let title = format!("Sign {name}");
+        if !run.ok {
+            let message = format!("{title}: {}", run.error().unwrap_or("failed"));
+            self.log("sign", "denied", &title, trace.clone(), Some(line));
+            return Ok(Outcome::done(false, message, trace));
+        }
+        let size = self
+            .vm()
+            .read(&signature_out)
+            .map(|bytes| bytes.len())
+            .unwrap_or(0);
+        let id = self.next_signature_id;
+        self.signatures.push(SignedFile {
+            id,
+            source_key,
+            file_name: name.clone(),
+            signer: actor_label,
+            bridge_uid: bridge_uid.clone(),
+            path: signature_out,
+            size,
+        });
+        self.next_signature_id += 1;
+        let message = format!("Signed {name} as {signer_label} on bridge {bridge_uid}");
+        self.log("sign", "granted", &title, trace.clone(), Some(line));
+        Ok(Outcome::done(true, message, trace))
+    }
+
+    /// Verify a signature against its bridge's roster (`keyquorum
+    /// verify --bridge-uid`), re-reading the same plaintext it was signed
+    /// over. Either bridge member can verify the other's signature.
+    pub fn verify_signature(&mut self, signature_id: i64) -> Result<Outcome> {
+        let Some(index) = self.signature_index(signature_id) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No signature {signature_id}"),
+                vec![],
+            ));
+        };
+        let (source_key, bridge_uid, sig_path, file_name, signer) = {
+            let entry = &self.signatures[index];
+            (
+                entry.source_key.clone(),
+                entry.bridge_uid.clone(),
+                entry.path.clone(),
+                entry.file_name.clone(),
+                entry.signer.clone(),
+            )
+        };
+        let actor_label = self.actor().label.clone();
+        let Some(verifier_label) = self.bridge_signer_label(&actor_label) else {
+            return Ok(Outcome::done(
+                false,
+                format!(
+                    "{actor_label} is not a member of the private bridge that made this signature"
+                ),
+                vec![],
+            ));
+        };
+        let source = if let Some(path) = self.received_path(&source_key) {
+            path
+        } else if let Some(file_index) = self.file_index(&source_key) {
+            match &self.files[file_index].kind {
+                FileKind::Public { path } => path.clone(),
+                FileKind::Quorum { .. } => {
+                    return Ok(Outcome::done(
+                        false,
+                        "The original file this signature covers is no longer plaintext",
+                        vec![],
+                    ));
+                }
+            }
+        } else {
+            return Ok(Outcome::done(
+                false,
+                "The original file this signature covers no longer exists",
+                vec![],
+            ));
+        };
+        let line = format!(
+            "keyquorum --db {ORG_DB} verify --bridge-uid {bridge_uid} --as-node {verifier_label} \
+             --message-file {} --signature-file {}",
+            quote(&source.display().to_string()),
+            quote(&sig_path.display().to_string()),
+        );
+        let run = self.run(&line);
+        let trace = transcript(&run, true);
+        let title = format!("Verify {file_name}'s signature");
+        let message = if run.ok {
+            format!(
+                "Signature by {} over {file_name} is valid",
+                self.describe_label(&signer)
+            )
+        } else {
+            format!("{title}: {}", run.error().unwrap_or("invalid"))
+        };
+        self.log(
+            "verify",
+            if run.ok { "granted" } else { "denied" },
+            &title,
+            trace.clone(),
+            Some(line),
+        );
+        Ok(Outcome::done(run.ok, message, trace))
+    }
+
+    fn signature_views(&self) -> Vec<SignatureView> {
+        self.signatures
+            .iter()
+            .map(|entry| SignatureView {
+                id: entry.id,
+                file_name: entry.file_name.clone(),
+                signer: entry.signer.clone(),
+                signer_name: self.describe_label(&entry.signer),
+                bridge_uid: entry.bridge_uid.clone(),
+                size: entry.size,
+            })
+            .collect()
+    }
+
     // ----- device slots and the relay ---------------------------------------
 
     /// Provision a new slot on an inserted drive with `keyquorum-device
@@ -1673,6 +1966,132 @@ impl LabState {
             Some(line),
         );
         Ok(Outcome::done(run.ok, message, trace))
+    }
+
+    /// Register a provisioned-but-unregistered slot's keys and insert it
+    /// as a new leaf under an existing org-tree node: `keyquorum device
+    /// register` for both key types, `device bind`, then `keyquorum add`.
+    /// `add` reshares the parent from its existing children's shares at
+    /// their configured threshold — a real consequence of growing a live
+    /// tree, not something this glosses over. Every currently inserted,
+    /// active sibling under `parent_label` is offered as recovery
+    /// material; the command itself decides whether that meets the
+    /// parent's threshold.
+    pub fn register_leaf(
+        &mut self,
+        drive_id: &str,
+        slot_label: &str,
+        parent_label: &str,
+    ) -> Result<Outcome> {
+        if slot_label.trim().is_empty() {
+            return Ok(Outcome::done(false, "A leaf label is required", vec![]));
+        }
+        let Some(drive) = self.vm().bay.get(drive_id) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No mock drive named {drive_id}"),
+                vec![],
+            ));
+        };
+        if !drive.connected {
+            return Ok(Outcome::done(
+                false,
+                format!("{} is not inserted", drive.name),
+                vec![],
+            ));
+        }
+        if !drive.slots().iter().any(|slot| slot == slot_label) {
+            return Ok(Outcome::done(
+                false,
+                format!("{} has no provisioned slot named {slot_label}", drive.name),
+                vec![],
+            ));
+        }
+        let (mount, drive_name) = (drive.mount.clone(), drive.name.clone());
+
+        let key_id = self.org_key_id;
+        let tree = KeyQuorumTree::load(self.org(), key_id)?;
+        let Some(parent) = tree.nodes.iter().find(|node| node.id == parent_label) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No node {parent_label} in the org tree"),
+                vec![],
+            ));
+        };
+        if tree.nodes.iter().any(|node| node.id == slot_label) {
+            return Ok(Outcome::done(
+                false,
+                format!("{slot_label} is already a node in the org tree"),
+                vec![],
+            ));
+        }
+        let siblings: Vec<String> = parent
+            .children_indices
+            .iter()
+            .map(|&index| &tree.nodes[index])
+            .filter(|node| node.is_active && node.hardware_key_id.is_some())
+            .map(|node| node.id.clone())
+            .collect();
+
+        let title = format!("Register {slot_label} under {parent_label}");
+        let public = self.run(&format!(
+            "keyquorum-device public {} --label {slot_label}",
+            mount.display()
+        ));
+        let mut trace = transcript(&public, true);
+        if !public.ok {
+            let message = format!("{title}: {}", public.error().unwrap_or("failed"));
+            self.log(
+                "register-leaf",
+                "denied",
+                &title,
+                trace.clone(),
+                Some(public.line.clone()),
+            );
+            return Ok(Outcome::done(false, message, trace));
+        }
+        let public_line = public.line.clone();
+        self.save_public_key(slot_label, &public)?;
+
+        let mut add_line = format!(
+            "keyquorum --db {ORG_DB} add {key_id} --parent {parent_label} --node {slot_label} \
+             --public-key-file {SRV}/keys/{slot_label}.pub"
+        );
+        for sibling in &siblings {
+            if let Some(sib_drive) = self.drive_holding(sibling).filter(|drive| drive.connected) {
+                add_line.push_str(&format!(" --slot {}={sibling}", sib_drive.mount.display()));
+            }
+        }
+        let lines = [
+            format!(
+                "keyquorum --db {ORG_DB} device register {} --slot {slot_label} --type encryption",
+                mount.display()
+            ),
+            format!(
+                "keyquorum --db {ORG_DB} device register {} --slot {slot_label} --type signing",
+                mount.display()
+            ),
+            format!(
+                "keyquorum --db {ORG_DB} device bind {} --slot {slot_label}",
+                mount.display()
+            ),
+            add_line,
+        ];
+        let (runs, ok) = self.run_all(&lines);
+        trace.extend(transcripts(&runs, true));
+        let message = if ok {
+            format!("Registered {slot_label} on {drive_name} as a new leaf under {parent_label}")
+        } else {
+            format!("{title}: {}", last_error(&runs))
+        };
+        self.log(
+            "register-leaf",
+            if ok { "granted" } else { "denied" },
+            &title,
+            trace.clone(),
+            Some(format!("{public_line}\n{}", lines_run(&runs))),
+        );
+        Ok(Outcome::done(ok, message, trace))
     }
 
     /// Read-only: `keyquorum-device list` for an inserted drive's
@@ -2495,6 +2914,7 @@ impl LabState {
             relay_status: self.relay_status()?,
             exports: self.export_views(),
             file_shares: self.file_share_views(),
+            signatures: self.signature_views(),
         })
     }
 

@@ -1076,3 +1076,119 @@ fn only_the_owner_can_revoke_their_share() {
     let outcome = state.revoke_file_share(share_id).unwrap();
     assert!(!outcome.ok);
 }
+
+// ----- sign / verify --------------------------------------------------------
+
+#[test]
+fn sarah_signs_a_public_file_and_david_verifies_it() {
+    let mut state = lab();
+    state.switch_user("sarah").unwrap();
+    let outcome = state.sign_file("company-handbook").unwrap();
+    assert!(outcome.ok, "{}", said(&outcome));
+    let signatures = snap(&state).signatures;
+    assert_eq!(signatures.len(), 1);
+    assert_eq!(signatures[0].signer, "M.S");
+    assert!(signatures[0].size > 0);
+    let signature_id = signatures[0].id;
+
+    // David is on the same private bridge and can verify Sarah's
+    // signature even though he holds no sealed copy of its secret.
+    state.switch_user("david").unwrap();
+    let verified = state.verify_signature(signature_id).unwrap();
+    assert!(verified.ok, "{}", said(&verified));
+    assert!(verified.message.contains("is valid"));
+}
+
+#[test]
+fn davids_own_signing_attempt_fails_without_a_sealed_bridge_key() {
+    let mut state = lab();
+    state.switch_user("david").unwrap();
+    state.set_drive("david", true).unwrap();
+    let outcome = state.sign_file("company-handbook").unwrap();
+    // David is a full roster member (his signing and encryption public
+    // keys were registered at seed time) but this shared org store only
+    // ever holds Sarah's sealed copy of the bridge secret — the crate's
+    // own "at most one store" rule for a private bridge.
+    assert!(!outcome.ok);
+}
+
+#[test]
+fn only_a_bridge_member_can_sign_or_verify() {
+    let mut state = lab();
+    let outcome = state.sign_file("company-handbook").unwrap();
+    assert!(!outcome.ok, "{}", said(&outcome));
+    assert!(outcome.message.contains("holds no personal signing key"));
+}
+
+#[test]
+fn quorum_locked_files_cannot_be_signed_here() {
+    let mut state = lab();
+    state.switch_user("sarah").unwrap();
+    let outcome = state.sign_file("architecture").unwrap();
+    assert!(!outcome.ok);
+    assert!(outcome.message.contains("Only public or received files"));
+}
+
+// ----- registering a new leaf -----------------------------------------------
+
+#[test]
+fn register_leaf_succeeds_once_enough_siblings_are_present() {
+    let mut state = lab();
+    // M.S's threshold is 2 of {M.S.1, M.S.2}; both must be present to
+    // reshare it for a new sibling. Bob's drive is ejected by default.
+    state.set_drive("bob", true).unwrap();
+    state.set_drive("spare", true).unwrap();
+    state
+        .provision_slot("spare", "M.S.3", &super::seed::demo_passphrase("M.S.3"))
+        .unwrap();
+
+    let outcome = state.register_leaf("spare", "M.S.3", "M.S").unwrap();
+    assert!(outcome.ok, "{}", said(&outcome));
+
+    let tree = snap(&state).tree;
+    let leaf = tree
+        .nodes
+        .iter()
+        .find(|node| node.label == "M.S.3")
+        .expect("M.S.3 should now be in the org tree");
+    assert_eq!(leaf.parent.as_deref(), Some("M.S"));
+    assert_eq!(leaf.kind, "leaf");
+}
+
+#[test]
+fn register_leaf_is_refused_without_enough_siblings() {
+    let mut state = lab();
+    // Bob's drive stays ejected: only M.S.1 can help reshare M.S, short
+    // of its 2-of-2 threshold.
+    state.set_drive("spare", true).unwrap();
+    state
+        .provision_slot("spare", "M.S.3", &super::seed::demo_passphrase("M.S.3"))
+        .unwrap();
+
+    let outcome = state.register_leaf("spare", "M.S.3", "M.S").unwrap();
+    assert!(!outcome.ok, "{}", said(&outcome));
+    let tree = snap(&state).tree;
+    assert!(!tree.nodes.iter().any(|node| node.label == "M.S.3"));
+}
+
+#[test]
+fn register_leaf_rejects_an_unprovisioned_slot() {
+    let mut state = lab();
+    state.set_drive("bob", true).unwrap();
+    state.set_drive("spare", true).unwrap();
+    let outcome = state.register_leaf("spare", "M.S.3", "M.S").unwrap();
+    assert!(!outcome.ok);
+    assert!(outcome.message.contains("no provisioned slot"));
+}
+
+#[test]
+fn register_leaf_rejects_an_unknown_parent() {
+    let mut state = lab();
+    state.set_drive("spare", true).unwrap();
+    state
+        .provision_slot("spare", "M.S.3", &super::seed::demo_passphrase("M.S.3"))
+        .unwrap();
+    let outcome = state.register_leaf("spare", "M.S.3", "M.NOPE").unwrap();
+    assert!(!outcome.ok);
+    assert!(outcome.message.contains("No node"));
+}

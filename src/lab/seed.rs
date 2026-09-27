@@ -67,6 +67,23 @@ pub const ORG_TREE: &str = "org";
 /// slices include the other manager, but not that manager's reports.
 pub const ORG_BRIDGE: (&str, &str) = ("M.S", "M.A");
 
+/// Label of the one private sign bridge the lab seeds between the two
+/// `ORG_BRIDGE` managers (`LabState::sign_file`).
+pub const PRIVATE_BRIDGE_LABEL: &str = "cross-dept-sign";
+
+/// Each `ORG_BRIDGE` manager's own, non-device-backed bridge signing
+/// identity: `keyquorum sign` always signs with "a private bridge plus a
+/// personal signing key" (see its own doc comment), and a device slot's
+/// signing key can never leave its container as a plaintext file, so it
+/// could never be handed to that command. These labels — hyphenated, not
+/// dotted, so `private_bridge::notify_labels` never mistakes one for a
+/// tree node needing its own supervisor — name a second, ordinary Ed25519
+/// keypair each manager also holds, generated and registered once at seed
+/// time (`keyquorum generate --type signing --register`) and kept in
+/// their own home directory, exactly as a real person's personal signing
+/// key would be.
+pub const BRIDGE_SIGNERS: &[(&str, &str)] = &[("M.S", "sarah-signer"), ("M.A", "david-signer")];
+
 /// A former engineer. Before the lab starts, her identity is enrolled and
 /// then MOVE-transferred to a throwaway archive device via `transfer.rs`
 /// — the same primitive `keyquorum transfer move` uses — so

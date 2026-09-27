@@ -239,6 +239,32 @@ impl KeyQuorumLab {
         to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
     }
 
+    /// Sign a public or received file's plaintext with the active user's
+    /// personal cross-department bridge signing key.
+    pub fn sign_file(&mut self, file_id: &str) -> std::result::Result<String, JsError> {
+        let outcome = self.state.sign_file(file_id);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// Verify a signature against its private bridge's roster. Either
+    /// bridge member may verify the other's signature.
+    pub fn verify_signature(&mut self, signature_id: i32) -> std::result::Result<String, JsError> {
+        let outcome = self.state.verify_signature(i64::from(signature_id));
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// Register a provisioned slot's keys and insert it as a new leaf
+    /// under an existing org-tree node.
+    pub fn register_leaf(
+        &mut self,
+        drive_id: &str,
+        slot_label: &str,
+        parent_label: &str,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self.state.register_leaf(drive_id, slot_label, parent_label);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
     /// One terminal line against the same state the GUI uses.
     pub fn run_command(&mut self, line: &str) -> std::result::Result<String, JsError> {
         if line.trim() == "reset" {

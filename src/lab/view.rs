@@ -240,6 +240,18 @@ pub struct FileShareView {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SignatureView {
+    pub id: i64,
+    pub file_name: String,
+    /// Tree label of the signer (`M.S` or `M.A`).
+    pub signer: String,
+    pub signer_name: String,
+    pub bridge_uid: String,
+    pub size: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RelayStatusView {
     pub url: String,
     pub package_letters: i64,
@@ -278,6 +290,9 @@ pub struct Snapshot {
     /// user. Listed for everyone since redemption is bearer-token
     /// authorized, not identity-scoped.
     pub file_shares: Vec<FileShareView>,
+    /// Signatures produced from the FileExplorer's Sign action, across
+    /// every lab user; either private-bridge member can verify one.
+    pub signatures: Vec<SignatureView>,
 }
 
 #[derive(Clone, Debug, Serialize)]
