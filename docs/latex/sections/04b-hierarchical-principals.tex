@@ -1,0 +1,156 @@
+\section{Hierarchical principals}
+\label{sec:hierarchical-principals}
+
+KeyQuorum implements a hierarchical cryptographic principal model in which
+organizational ancestry, delegated authority, threshold key reconstruction,
+and physical key custody are represented as separate but interacting
+security dimensions. The dotted labels seen throughout this manual ---
+\code{M}, \code{M.S}, \code{M.S.1} --- are not just a naming convention.
+Each one is a \emph{principal}: an entity the system can recognize, place
+in an ancestry tree, and reason about independently along each of those
+four dimensions. This section makes that model explicit, because it is
+what a lot of the behavior in Sections~\ref{sec:devices-and-custody},
+\ref{sec:private-bridges}, and \ref{sec:authenticated-updates} is actually
+enforcing.
+
+\subsection{What a hierarchical principal is}
+
+In access-control and cryptographic-key-management literature, a
+\emph{hierarchical principal} scheme is any design where identities are
+arranged in a tree and position in that tree carries meaning: an ancestor
+has some form of standing over its descendants that a sibling or an
+unrelated node does not. Familiar examples differ sharply in \emph{what}
+that standing lets an ancestor do:
+
+\begin{itemize}
+  \item In a \textbf{PKI certificate chain}, the hierarchy \emph{is} the
+  trust chain, and a parent's compromise is total: whoever holds a CA's
+  private key can mint a valid certificate for any descendant, so the
+  hierarchy is really one long single point of failure wearing a tree
+  shape.
+  \item In \textbf{Hierarchical Identity-Based Encryption (HIBE)}, the
+  hierarchy is a \emph{key-derivation function}: a parent's master secret
+  can compute every descendant's private key directly. Delegation and key
+  escrow are the same operation.
+  \item In \textbf{Kerberos realms or Unix group trees}, the hierarchy
+  governs \emph{grants} (who is allowed to do what) but carries no
+  cryptographic material at all.
+\end{itemize}
+
+KeyQuorum's dotted-label tree is closer to the third case than the first
+two, and that is a deliberate design choice, not an omission. An ancestor
+label such as \code{M} or \code{M.S} can \emph{authorize} specific,
+narrowly-scoped changes about a descendant --- but it can never
+\emph{derive}, \emph{recover}, or \emph{stand in for} that descendant's
+private key material. Compromising \code{M}'s signing key lets an attacker
+forge authorization letters; it does not, by itself, decrypt anything
+\code{M.S.1} holds.
+
+\subsection{Four dimensions, four owners}
+
+The tree of dotted labels is the substrate all four dimensions are indexed
+by, but each dimension is a distinct \emph{access structure} --- in the
+secret-sharing sense of the term, a rule for which sets of conditions are
+authorized --- enforced by its own code and its own invariants:
+
+\begin{enumerate}
+  \item \textbf{Organizational ancestry.} A pure naming relation: is
+  \code{M.S} an ancestor of, or equal to, \code{M.S.2}? This question is
+  answered by string structure alone (dotted-label prefixes), independent
+  of what secret, signature, or device sits at either node. It is the one
+  piece of the model that every other dimension is built on top of.
+  \item \textbf{Delegated authority.} A signature capability: which
+  \emph{registered signing keys} may authorize a change addressed to a
+  given label? The rule (Section~\ref{sec:authenticated-updates}) is that
+  the signer must be the subject itself, or a dotted-label ancestor whose
+  signing key this store already has on file. A restructure proposed by a
+  non-root label waits for its direct parent's countersignature; a direct
+  tree update attempted by that same authorizer instead of a proposal is
+  refused outright; and a routine employee reissue by the direct parent
+  stays a single signature. Authority here is the power to \emph{authorize
+  a documented change}, checked fresh against a signature every time --- it
+  is never the power to read or reconstruct what the change is about.
+  \item \textbf{Threshold key reconstruction.} A purely mathematical
+  property of the Shamir split tree (Section~\ref{sec:quorum-files}): an
+  $M$-of-$N$ subset of \emph{sibling} leaf shares reconstructs the secret
+  those siblings were split from. This has nothing to do with ancestry or
+  authority --- reconstructing \code{M}'s secret from \code{M.S} and
+  \code{M.A}'s shares does not require \code{M}'s signature or
+  cooperation, and \code{M} cannot reconstruct it alone by virtue of being
+  the parent label. \flag{unlock_approval = parent} is an optional,
+  additional layer on top of this dimension, not a substitute for it:
+  Shamir's threshold must still be met, \emph{and} each contributing leaf's
+  direct parent must sign off.
+  \item \textbf{Physical custody.} A count of distinct hardware devices
+  (Section~\ref{sec:devices-and-custody}): how many separate device ids
+  back the shares actually consumed by a reconstruction, independent of
+  where those devices' labels sit in the tree. Two slots on one USB drive
+  count as one device no matter how far apart their labels are in the
+  hierarchy; two key files on two different drives count as two devices
+  even if one label is the other's direct parent.
+\end{enumerate}
+
+This split is visible in the codebase's own module boundaries, not just in
+this manual's organization.
+
+\begin{itemize}
+  \item \file{private_bridge.rs} owns the dotted-label ancestry test
+  (\code{is_ancestor_or_self}, \code{parent_node_label}).
+  \item \file{org_update.rs} and \file{authority.rs} own delegated
+  authority.
+  \item The Shamir math for threshold reconstruction lives with the split
+  tree itself.
+  \item \file{keys.rs} and \file{device.rs} own the hardware-key registry
+  and physical-device bookkeeping.
+\end{itemize}
+
+A change to one dimension should not require touching the others.
+
+\subsection{A worked example}
+
+Take \code{M.S.2}, three labels deep under root \code{M} via \code{M.S}.
+The four dimensions give four independent, simultaneous answers about that
+one principal:
+
+\begin{center}
+\begin{tabular}{@{}lp{0.62\linewidth}@{}}
+\toprule
+\textbf{Dimension} & \textbf{Answer for \code{M.S.2}} \\
+\midrule
+Ancestry & \code{M.S} and \code{M} are ancestors; a sibling such as
+  \code{M.S.3} is not. \\
+Delegated authority & \code{M.S.2} itself, \code{M.S}, or \code{M} may sign
+  a reissue naming \code{M.S.2} (Section~\ref{sec:authenticated-updates}),
+  provided this store already holds a registered signing key for whichever
+  one signs. \\
+Threshold reconstruction & Reconstructing the secret \code{M.S.2} is a leaf
+  of needs a threshold of \emph{sibling} shares under \code{M.S} --- not a
+  signature from \code{M.S} or \code{M}, and not \code{M.S.2}'s own share
+  alone unless the threshold is 1. \\
+Physical custody & If \code{minimum_physical_devices} is 2, the shares
+  actually consumed toward that threshold must sit on at least two distinct
+  device ids --- regardless of which labels those devices happen to hold. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+None of these four answers can be derived from another. That independence
+is the extension KeyQuorum makes to a plain hierarchical-principal model:
+instead of one tree carrying one kind of authority (as a CA chain or a HIBE
+key-derivation tree does), the same tree of dotted labels is the shared
+index for four composed access structures, each satisfied on its own
+terms, each owned by a different piece of the system, and each capable of
+tightening independently --- raising a threshold, requiring more physical
+devices, adding a signing-authority ancestor, or reshaping the label tree
+itself --- without weakening the others.
+
+\begin{noteBox}
+This is also why extending the model with a new relationship should not
+mean widening \code{org_update.rs} (the orchestration layer) itself. A new
+authenticated-update primitive belongs in whichever module owns the table
+it actually reads or writes --- \code{key_tree.rs} for tree shape,
+\code{private_bridge.rs} for the dotted-label hierarchy and bridge
+rosters, or \code{keys.rs} for the hardware-key registry --- so that the
+dimension being extended stays legible, and the other three stay exactly
+as strict as they were before.
+\end{noteBox}
