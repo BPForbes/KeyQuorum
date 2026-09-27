@@ -469,12 +469,12 @@ impl Env for LabVm {
 
     fn open_db(&mut self, path: &Path) -> Result<Connection> {
         let path = self.resolve(path);
-        // Every open of the same path attaches to the same named, shared-
-        // cache in-memory database, the way multiple connections to one
+        // Every open of the same path attaches to the same named in-memory
+        // database (SQLite's memdb VFS), the way multiple connections to one
         // real SQLite *file* all see the same rows. The first open for a
         // path also parks a permanent anchor connection in `stores`: SQLite
-        // drops a shared-cache in-memory database once its last connection
-        // closes, and without the anchor that would happen every time a
+        // drops a shared memdb database once its last connection closes,
+        // and without the anchor that would happen every time a
         // command finishes and hands its connection back via `close_db`,
         // silently resetting the store on the next open (the bug behind
         // `transfer_copy --from-db PATH --to-db PATH`, where opening the
@@ -495,21 +495,26 @@ impl Env for LabVm {
     }
 }
 
-/// Open a fresh connection to the named shared-cache in-memory database for
-/// `path` within `db_namespace` (one `LabVm`'s own database names, distinct
-/// from every other `LabVm` alive in the process — SQLite's named
-/// shared-cache in-memory databases are otherwise shared process-wide, which
-/// would leak state between separate lab sessions, or between tests running
-/// concurrently in the same test binary), creating and schema-initializing
-/// it if this is the first connection ever opened for that name. Every
-/// connection returned for the same `(db_namespace, path)` shares the same
-/// underlying data for as long as any connection to it (including the
-/// `LabVm` anchor) stays open.
+/// Open a fresh connection to the named in-memory database for `path` within
+/// `db_namespace` (one `LabVm`'s own database names, distinct from every
+/// other `LabVm` alive in the process — named memdb databases are otherwise
+/// shared process-wide, which would leak state between separate lab
+/// sessions, or between tests running concurrently in the same test binary),
+/// creating and schema-initializing it if this is the first connection ever
+/// opened for that name. Every connection returned for the same
+/// `(db_namespace, path)` shares the same underlying data for as long as any
+/// connection to it (including the `LabVm` anchor) stays open.
+///
+/// This uses the memdb VFS (a `/`-prefixed name is shared between
+/// connections), not `cache=shared`: the browser build's SQLite
+/// (`sqlite-wasm-rs`) is compiled with `SQLITE_OMIT_SHARED_CACHE`, where
+/// `cache=shared` is silently ignored and every connection would get its own
+/// private, empty database.
 fn open_shared_memory_db(db_namespace: u64, path: &Path) -> Result<Connection> {
     let mut hasher = DefaultHasher::new();
     db_namespace.hash(&mut hasher);
     path.hash(&mut hasher);
-    let uri = format!("file:labdb_{:x}?mode=memory&cache=shared", hasher.finish());
+    let uri = format!("file:/labdb_{:x}?vfs=memdb", hasher.finish());
     let conn = Connection::open_with_flags(
         &uri,
         OpenFlags::SQLITE_OPEN_READ_WRITE
