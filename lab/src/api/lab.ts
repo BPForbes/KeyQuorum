@@ -67,4 +67,20 @@ export class LabClient {
   runCommand(line: string): ActionResult {
     return this.call(this.lab.run_command(line));
   }
+
+  lockPasswordFile(name: string, contents: string, password: string, pin?: string): ActionResult {
+    return this.call(this.lab.lock_password_file(name, contents, password, pin));
+  }
+
+  unlockPasswordFile(id: number, password: string, pin?: string): ActionResult {
+    return this.call(this.lab.unlock_password_file(id, password, pin));
+  }
+
+  provisionSlot(driveId: string, label: string, passphrase: string): ActionResult {
+    return this.call(this.lab.provision_slot(driveId, label, passphrase));
+  }
+
+  deviceLog(driveId: string): ActionResult {
+    return this.call(this.lab.device_log(driveId));
+  }
 }

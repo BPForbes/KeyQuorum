@@ -717,6 +717,82 @@ h1 {
   word-break: break-word;
 }
 
+/* ----- Security panel ---------------------------------------------------- */
+
+.security-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
+}
+
+.security-grid h3 {
+  margin: 0 0 0.2rem;
+}
+
+.security-grid h4 {
+  margin: 0.75rem 0 0.3rem;
+  font-size: 0.9rem;
+}
+
+.lock-note-form,
+.provision-form {
+  display: grid;
+  gap: 0.3rem;
+  margin-bottom: 0.5rem;
+}
+
+.lock-note-form input,
+.lock-note-form textarea,
+.lock-note-form select,
+.provision-form input,
+.provision-form select {
+  min-height: var(--tap);
+  padding: 0.4rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-page);
+  color: var(--text);
+  font: inherit;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 400;
+}
+
+.password-file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.unlock-note-form {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.25rem;
+}
+
+.unlock-note-form input {
+  min-height: var(--tap);
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-page);
+  color: var(--text);
+  font: inherit;
+  width: 6.5rem;
+}
+
+@media (max-width: 640px) {
+  .security-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ----- Organization / bridges -------------------------------------------- */
 
 .bridges {
@@ -991,6 +1067,7 @@ h1 {
   .lab-grid[data-tab="usb"] > [data-panel="usb"],
   .lab-grid[data-tab="files"] > [data-panel="files"],
   .lab-grid[data-tab="mailbox"] > [data-panel="mailbox"],
+  .lab-grid[data-tab="security"] > [data-panel="security"],
   .lab-grid[data-tab="activity"] > [data-panel="activity"],
   .lab-grid[data-tab="terminal"] > [data-panel="terminal"] {
     display: block;

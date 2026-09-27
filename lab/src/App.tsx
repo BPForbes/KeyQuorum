@@ -8,6 +8,7 @@ import { Drives } from "./components/Drives";
 import { FileExplorer } from "./components/FileExplorer";
 import { Mailbox } from "./components/Mailbox";
 import { OrgTree } from "./components/OrgTree";
+import { SecurityPanel } from "./components/SecurityPanel";
 import { Terminal } from "./components/Terminal";
 
 type Boot = { state: "loading" } | { state: "ready" } | { state: "error"; message: string };
@@ -19,6 +20,7 @@ const TABS = [
   ["usb", "USB devices"],
   ["files", "Files"],
   ["mailbox", "Inbox"],
+  ["security", "Security & devices"],
   ["activity", "Activity"],
   ["terminal", "Terminal"],
 ] as const;
@@ -183,6 +185,7 @@ export function App() {
         <Drives snapshot={snapshot} act={act} />
         <FileExplorer snapshot={snapshot} act={act} />
         <Mailbox snapshot={snapshot} act={act} />
+        <SecurityPanel snapshot={snapshot} act={act} />
         <ActivityPanel snapshot={snapshot} last={last} />
         <Terminal
           cwd={snapshot.cwd}

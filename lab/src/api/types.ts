@@ -121,6 +121,25 @@ export interface AccessView {
   satisfied: string[];
 }
 
+export interface PasswordFileView {
+  id: number;
+  name: string;
+  /** The lab-user label whose own store holds this file; only they can unlock it. */
+  owner: string;
+  createdAt: string;
+  expiresAt: string | null;
+  pinProtected: boolean;
+}
+
+export interface RelayStatusView {
+  url: string;
+  packageLetters: number;
+  deviceLetters: number;
+  publishedTrees: number;
+  registeredDevices: number;
+  apiKeys: number;
+}
+
 export interface Snapshot {
   activeUser: UserView;
   users: UserView[];
@@ -139,6 +158,8 @@ export interface Snapshot {
   cwd: string;
   // The org store's path, for `keyquorum --db` lines panels build.
   orgDb: string;
+  passwordFiles: PasswordFileView[];
+  relayStatus: RelayStatusView;
 }
 
 export interface OpenedFile {
