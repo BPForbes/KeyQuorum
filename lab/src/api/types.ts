@@ -152,6 +152,16 @@ export interface FileShareView {
   revoked: boolean;
 }
 
+export interface SignatureView {
+  id: number;
+  fileName: string;
+  /** Tree label of the signer (`M.S` or `M.A`). */
+  signer: string;
+  signerName: string;
+  bridgeUid: string;
+  size: number;
+}
+
 export interface RelayStatusView {
   url: string;
   packageLetters: number;
@@ -183,6 +193,7 @@ export interface Snapshot {
   relayStatus: RelayStatusView;
   exports: ExportedBundleView[];
   fileShares: FileShareView[];
+  signatures: SignatureView[];
 }
 
 export interface OpenedFile {

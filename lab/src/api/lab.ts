@@ -111,4 +111,16 @@ export class LabClient {
   revokeFileShare(shareId: number): ActionResult {
     return this.call(this.lab.revoke_file_share(shareId));
   }
+
+  signFile(fileId: string): ActionResult {
+    return this.call(this.lab.sign_file(fileId));
+  }
+
+  verifySignature(signatureId: number): ActionResult {
+    return this.call(this.lab.verify_signature(signatureId));
+  }
+
+  registerLeaf(driveId: string, slotLabel: string, parentLabel: string): ActionResult {
+    return this.call(this.lab.register_leaf(driveId, slotLabel, parentLabel));
+  }
 }

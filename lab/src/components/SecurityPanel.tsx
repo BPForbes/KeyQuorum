@@ -429,6 +429,109 @@ function ProvisionSlotForm({ snapshot, act }: { snapshot: Snapshot; act: Act }) 
   );
 }
 
+/** Insert a slot already provisioned on an inserted drive as a new leaf under an existing org-tree node. */
+function RegisterLeafForm({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
+  const id = useId();
+  const connected = snapshot.drives.filter((drive) => drive.connected);
+  const [driveId, setDriveId] = useState(connected[0]?.id ?? "");
+  const [slotLabel, setSlotLabel] = useState("");
+  const splitNodes = snapshot.tree.nodes.filter((node) => node.kind === "split");
+  const [parent, setParent] = useState(splitNodes[0]?.label ?? "");
+  const [result, setResult] = useState<ActionResult | null>(null);
+
+  if (connected.length === 0 || splitNodes.length === 0) {
+    return <p className="small muted">Insert a drive with a provisioned-but-unregistered slot to grow the org tree.</p>;
+  }
+
+  return (
+    <form
+      className="provision-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!slotLabel.trim() || !parent) return;
+        const outcome = act((client) => client.registerLeaf(driveId, slotLabel.trim(), parent));
+        if (outcome) setResult(outcome);
+        if (outcome?.ok) setSlotLabel("");
+      }}
+    >
+      <label htmlFor={`${id}-drive`}>Drive</label>
+      <select id={`${id}-drive`} value={driveId} onChange={(event) => setDriveId(event.target.value)}>
+        {connected.map((drive) => (
+          <option key={drive.id} value={drive.id}>
+            {drive.name}
+          </option>
+        ))}
+      </select>
+
+      <label htmlFor={`${id}-slot`}>Provisioned slot label</label>
+      <input
+        id={`${id}-slot`}
+        value={slotLabel}
+        onChange={(event) => setSlotLabel(event.target.value)}
+        placeholder="e.g. M.S.3"
+        required
+      />
+
+      <label htmlFor={`${id}-parent`}>Parent node</label>
+      <select id={`${id}-parent`} value={parent} onChange={(event) => setParent(event.target.value)}>
+        {splitNodes.map((node) => (
+          <option key={node.label} value={node.label}>
+            {node.label}
+          </option>
+        ))}
+      </select>
+
+      <button type="submit" className="btn btn-primary">
+        Register as a new leaf
+      </button>
+      <p className="small muted">
+        Registers the slot&rsquo;s encryption and signing keys (<code>keyquorum device register</code>), binds its
+        container (<code>device bind</code>), then adds it under the parent (<code>keyquorum add</code>) — which
+        reshares the parent from its existing children&rsquo;s shares, so every currently inserted, active sibling
+        under it is offered as recovery material.
+      </p>
+      {result ? <p className={`small ${result.ok ? "muted" : "viewer-denied-title"}`}>{result.message}</p> : null}
+    </form>
+  );
+}
+
+function Signatures({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
+  const [results, setResults] = useState<Record<number, ActionResult>>({});
+  if (snapshot.signatures.length === 0) {
+    return <p className="small muted">None yet. Sign a public or received file from the File Explorer.</p>;
+  }
+  return (
+    <ul className="mono-list">
+      {snapshot.signatures.map((signature) => (
+        <li key={signature.id}>
+          <div>
+            <strong>{signature.fileName}</strong>{" "}
+            <span className="muted small">
+              · signed by {signature.signerName} ({signature.signer}) · {signature.size} bytes · bridge{" "}
+              {signature.bridgeUid.slice(0, 8)}…
+            </span>
+          </div>
+          <button
+            type="button"
+            className="btn small-btn"
+            onClick={() => {
+              const outcome = act((client) => client.verifySignature(signature.id));
+              if (outcome) setResults((previous) => ({ ...previous, [signature.id]: outcome }));
+            }}
+          >
+            Verify
+          </button>
+          {results[signature.id] ? (
+            <p className={`small ${results[signature.id].ok ? "muted" : "viewer-denied-title"}`}>
+              {results[signature.id].message}
+            </p>
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function DeviceLogs({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
   const [viewing, setViewing] = useState<{ result: ActionResult; name: string } | null>(null);
   const connected = snapshot.drives.filter((drive) => drive.connected);
@@ -522,6 +625,22 @@ export function SecurityPanel({ snapshot, act }: { snapshot: Snapshot; act: Act 
           <h3>Create a new key</h3>
           <p className="small muted">Provision a fresh slot on an inserted drive, sealed under a passphrase you choose.</p>
           <ProvisionSlotForm snapshot={snapshot} act={act} />
+        </div>
+
+        <div>
+          <h3>Register a new leaf</h3>
+          <p className="small muted">Take a provisioned slot from &ldquo;minted, not in any tree&rdquo; to a registered leaf under a chosen org-tree node.</p>
+          <RegisterLeafForm snapshot={snapshot} act={act} />
+        </div>
+
+        <div>
+          <h3>Signatures</h3>
+          <p className="small muted">
+            Signed with the cross-department private bridge (<code>keyquorum sign</code>/<code>verify</code>). Only
+            Sarah and David are members; Sarah is the only one with a sealed copy of the shared secret in this shared
+            store, so only she can sign here — either of them can verify.
+          </p>
+          <Signatures snapshot={snapshot} act={act} />
         </div>
 
         <div>

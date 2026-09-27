@@ -80,6 +80,16 @@ export function FileExplorer({ snapshot, act }: { snapshot: Snapshot; act: Act }
     if (result) setViewing({ result, name: file.name });
   }
 
+  // Only a public or received file's plaintext can be signed here — a
+  // quorum file would first need decrypting to a temporary plaintext.
+  function canSign(file: FileView) {
+    return file.protection === "public" || file.protection === "received";
+  }
+
+  function signFile(file: FileView) {
+    act((client) => client.signFile(file.id));
+  }
+
   function sortBy(key: SortKey) {
     setSort((current) => (current.key === key ? { key, dir: current.dir === 1 ? -1 : 1 } : { key, dir: 1 }));
   }
@@ -195,6 +205,11 @@ export function FileExplorer({ snapshot, act }: { snapshot: Snapshot; act: Act }
           <button type="button" className="btn" onClick={() => setSending(selectedFile)}>
             Send…
           </button>
+          {canSign(selectedFile) ? (
+            <button type="button" className="btn" onClick={() => signFile(selectedFile)}>
+              Sign
+            </button>
+          ) : null}
           <button type="button" className="btn" onClick={() => setPropertiesId(selectedFile.id)}>
             Properties
           </button>
@@ -213,6 +228,13 @@ export function FileExplorer({ snapshot, act }: { snapshot: Snapshot; act: Act }
               Send…
             </button>
           </li>
+          {canSign(menu.file) ? (
+            <li role="none">
+              <button type="button" role="menuitem" onClick={() => signFile(menu.file)}>
+                Sign
+              </button>
+            </li>
+          ) : null}
           <li role="none">
             <button type="button" role="menuitem" onClick={() => setPropertiesId(menu.file.id)}>
               Properties
