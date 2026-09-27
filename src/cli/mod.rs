@@ -27,6 +27,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use zeroize::Zeroize;
 
+mod deliver_cmd;
 mod device_cmd;
 pub mod device_tool;
 pub mod env;
@@ -347,6 +348,11 @@ pub enum Command {
     Pin {
         #[command(subcommand)]
         command: PinCommand,
+    },
+    /// Send files to registered labels as signed, sealed letters
+    Deliver {
+        #[command(subcommand)]
+        command: deliver_cmd::DeliverCommand,
     },
     /// Push and pull opaque .kqpb envelopes through the mailbox relay
     Relay {
@@ -924,6 +930,7 @@ fn run_in_store(conn: &mut Connection, command: Command) -> Result<()> {
         Command::Export { command } => run_export(conn, command)?,
         Command::Share { command } => run_share(conn, command)?,
         Command::Pin { command } => run_pin(conn, command)?,
+        Command::Deliver { command } => deliver_cmd::run(conn, command)?,
         Command::Device { command } => device_cmd::run(conn, command)?,
         Command::Transfer { .. } | Command::Relay { .. } | Command::Loadkey { .. } => {
             unreachable!("transfer and relay commands are handled before opening the org db")
@@ -1254,6 +1261,7 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
         | Command::Export { .. }
         | Command::Share { .. }
         | Command::Pin { .. }
+        | Command::Deliver { .. }
         | Command::Relay { .. }
         | Command::Loadkey { .. }
         | Command::Device { .. }
@@ -2310,6 +2318,35 @@ fn relay_in_store(conn: &Connection, command: RelayCommand) -> Result<()> {
                     env::write_new(&path, &bytes)?;
                     outln!("Wrote {}", path.display());
                 }
+                let kind = crate::envelope::kind(&bytes)?;
+                if kind == crate::envelope::KIND_FILE_DELIVERY
+                    || kind == crate::envelope::KIND_FILE_DELIVERY_ACK
+                {
+                    // Letters and acknowledgements are opened by `deliver`,
+                    // not imported into the store.
+                    if share_sk.is_some() {
+                        outln!(
+                            "Envelope {} is a file delivery {}; open it with `keyquorum deliver {}`{}",
+                            item.id,
+                            if kind == crate::envelope::KIND_FILE_DELIVERY {
+                                "letter"
+                            } else {
+                                "acknowledgement"
+                            },
+                            if kind == crate::envelope::KIND_FILE_DELIVERY {
+                                "open"
+                            } else {
+                                "ack"
+                            },
+                            if output_dir.is_some() {
+                                ""
+                            } else {
+                                " (pass --output-dir to keep it)"
+                            }
+                        );
+                    }
+                    continue;
+                }
                 if let Some(sk) = share_sk.as_ref() {
                     match org_update::import_any(conn, &bytes, sk)? {
                         org_update::ImportedEnvelope::Bridge(summary) => outln!(
@@ -2749,6 +2786,12 @@ fn encryption_secret_from(
 }
 
 fn open_slot_encryption_secret(entry: &str) -> Result<zeroize::Zeroizing<[u8; 32]>> {
+    Ok(open_slot_secrets(entry)?.encryption_secret)
+}
+
+/// Open the identity slot named by `--slot container=label`, prompting for
+/// its passphrase.
+fn open_slot_secrets(entry: &str) -> Result<device::SlotSecrets> {
     let (path, label) = entry
         .rsplit_once('=')
         .ok_or_else(|| usage("--slot must be container=label"))?;
@@ -2757,8 +2800,7 @@ fn open_slot_encryption_secret(entry: &str) -> Result<zeroize::Zeroizing<[u8; 32
     }
     let container = env::fs(|fs| device::open_in(fs, Path::new(path)))?;
     let passphrase = env::prompt_passphrase(&format!("Passphrase for {label}: "))?;
-    let secrets = env::fs(|fs| device::open_slot_in(fs, &container, label, &passphrase))?;
-    Ok(secrets.encryption_secret)
+    env::fs(|fs| device::open_slot_in(fs, &container, label, &passphrase))
 }
 
 fn add_slot_shares(
