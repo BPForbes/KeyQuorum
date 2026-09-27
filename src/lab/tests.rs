@@ -785,6 +785,65 @@ fn only_the_owner_can_unlock_their_own_password_file() {
     assert!(!outcome.ok);
 }
 
+// ----- issue #36: password-file ids are scoped to the owning store --------
+
+#[test]
+fn a_row_id_collision_across_stores_does_not_deny_the_real_owner() {
+    // Fixes #36: each lab user has their own SQLite store, so Alice's and
+    // Bob's first password-locked file are both row id 1 there. Looking a
+    // file up by id alone used to resolve to whichever tracking entry was
+    // inserted first (Alice's), so Bob's own unlock/export/share of *his*
+    // file 1 was denied as belonging to Alice.
+    let mut state = lab();
+    state
+        .lock_password_file("alice-note.txt", "alice's secret", "alice-password", None)
+        .unwrap();
+    let alice_id = snap(&state).password_files[0].id;
+
+    state.switch_user("bob").unwrap();
+    state
+        .lock_password_file("bob-note.txt", "bob's secret", "bob-password", None)
+        .unwrap();
+    let bob_id = snap(&state)
+        .password_files
+        .iter()
+        .find(|file| file.owner == "M.S.2")
+        .expect("bob's file should be tracked")
+        .id;
+    assert_eq!(
+        alice_id, bob_id,
+        "both stores should hand out the same first row id, or this test proves nothing"
+    );
+
+    // Bob can unlock, export, and share his own file 1...
+    let unlocked = state
+        .unlock_password_file(bob_id, "bob-password", None)
+        .unwrap();
+    assert!(unlocked.ok, "{}", said(&unlocked));
+    let exported = state.export_file(bob_id, "M.S.1", "bob-password").unwrap();
+    assert!(exported.ok, "{}", said(&exported));
+    let shared = state.create_file_share(bob_id, 3600, None).unwrap();
+    assert!(shared.ok, "{}", said(&shared));
+
+    // ...and access to Alice's same-id file 1 is still denied to Bob.
+    state.switch_user("alice").unwrap();
+    let alice_unlock = state
+        .unlock_password_file(alice_id, "alice-password", None)
+        .unwrap();
+    assert!(alice_unlock.ok, "{}", said(&alice_unlock));
+    state.switch_user("bob").unwrap();
+    let cross_owner_unlock = state
+        .unlock_password_file(alice_id, "alice-password", None)
+        .unwrap();
+    assert!(!cross_owner_unlock.ok);
+    let cross_owner_export = state
+        .export_file(alice_id, "M.S.1", "alice-password")
+        .unwrap();
+    assert!(!cross_owner_export.ok);
+    let cross_owner_share = state.create_file_share(alice_id, 3600, None).unwrap();
+    assert!(!cross_owner_share.ok);
+}
+
 #[test]
 fn provisioning_a_new_slot_uses_the_typed_passphrase_not_the_seeded_demo_one() {
     let mut state = lab();
@@ -913,6 +972,83 @@ fn transfer_copy_to_the_same_drive_is_a_no_op_refusal() {
         .unwrap();
     assert!(!outcome.ok);
     assert!(outcome.message.contains("already on that drive"));
+}
+
+// ----- issue #35: one lab database per path across concurrent opens -------
+
+#[test]
+fn concurrent_opens_of_the_same_lab_db_path_share_state() {
+    // `LabVm::open_db` used to `remove` the path's connection from
+    // `stores` and hand back a brand-new empty in-memory database when it
+    // was not there (i.e. already checked out). Two opens of the same
+    // path before either is closed — exactly what `keyquorum transfer
+    // copy --from-db PATH --to-db PATH` does — used to see the second
+    // open land on an unrelated empty database instead of the first
+    // open's data.
+    use super::drives::DriveBay;
+    use super::vm::LabVm;
+    use crate::cli::env::Env;
+
+    let mut vm = LabVm::new(DriveBay::default()).expect("vm should start");
+    let path = std::path::Path::new("/srv/keyquorum/issue-35.sqlite");
+
+    let source_conn = vm.open_db(path).expect("first open");
+    let dest_conn = vm.open_db(path).expect("second, concurrent open");
+    dest_conn
+        .execute_batch("CREATE TABLE IF NOT EXISTS issue_35_probe (id INTEGER PRIMARY KEY)")
+        .unwrap();
+    dest_conn
+        .execute("INSERT INTO issue_35_probe DEFAULT VALUES", [])
+        .unwrap();
+    let seen_from_source: i64 = source_conn
+        .query_row("SELECT COUNT(*) FROM issue_35_probe", [], |row| row.get(0))
+        .expect("the source handle should see the destination handle's write");
+    assert_eq!(seen_from_source, 1);
+
+    // Hand both back in the same order `run_transfer`'s locals drop in
+    // (reverse declaration order: dest, then source) and confirm the
+    // write is still there afterward, not discarded by whichever
+    // connection closed last.
+    vm.close_db(path, dest_conn);
+    vm.close_db(path, source_conn);
+    let reopened = vm.open_db(path).expect("reopen after both close");
+    let count: i64 = reopened
+        .query_row("SELECT COUNT(*) FROM issue_35_probe", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn transfer_copy_with_the_same_from_and_to_db_path_does_not_lose_the_new_device_placement() {
+    // End-to-end version of the same bug through the public API:
+    // `transfer_copy` runs `keyquorum transfer copy --from-db ORG_DB
+    // --to-db ORG_DB`, opening the org store twice in one command
+    // (source, then destination). The old `LabVm::open_db` handed the
+    // second open a brand-new empty database, which made the destination
+    // side of the two-phase transfer protocol (`transfer_transactions`)
+    // see no record of the source's own preparation and refuse it as a
+    // replay the moment a fix made the two opens see real, shared data
+    // (see the `transfer.rs` `stage_destination` same-store handling).
+    // Whichever connection's `close_db` ran last then silently overwrote
+    // the other's commit, discarding the actual copy either way. With
+    // both fixed, the command succeeds and Bob's slot really is copied
+    // onto Alice's drive, which unlocking a file naming both of them
+    // still confirms afterward.
+    let mut state = lab();
+    state.set_drive("bob", true).unwrap();
+    let copied = state
+        .transfer_copy("M.S.2", "alice", &super::seed::demo_passphrase("M.S.2"))
+        .unwrap();
+    assert!(copied.ok, "{}", said(&copied));
+    state.set_drive("bob", false).unwrap();
+    state.set_drive("sarah", false).unwrap();
+
+    // Bob's own drive is now empty of consequence to this file; both
+    // shares it needs (M.S.1 and the copied M.S.2) are satisfied from
+    // Alice's drive alone, proving the copy's new device_placement row
+    // for M.S.2 actually landed in the shared org store.
+    let outcome = state.unlock("deployment-plan.txt").unwrap();
+    assert!(outcome.ok, "{}", said(&outcome));
 }
 
 // ----- export and share links ---------------------------------------------

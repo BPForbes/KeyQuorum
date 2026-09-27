@@ -1272,8 +1272,29 @@ impl LabState {
         Ok(Outcome::done(true, message, trace))
     }
 
-    fn password_file_index(&self, id: i64) -> Option<usize> {
-        self.password_files.iter().position(|file| file.id == id)
+    /// Looks up a password-locked file by its owner's label *and* row id,
+    /// never by id alone: each lab user has their own SQLite store, so two
+    /// users can each have a row 1, and an id-only lookup would resolve to
+    /// whichever entry was tracked first — silently treating a later
+    /// user's own file as someone else's.
+    fn password_file_index(&self, owner: &str, id: i64) -> Option<usize> {
+        self.password_files
+            .iter()
+            .position(|file| file.owner == owner && file.id == id)
+    }
+
+    /// Denial message for a password-locked file id the active user does
+    /// not own: names the real owner and name when some user's row happens
+    /// to share that id, otherwise reports the id as unknown.
+    fn password_file_denial(&self, id: i64) -> String {
+        match self.password_files.iter().find(|file| file.id == id) {
+            Some(file) => format!(
+                "{name} is protected in {owner}'s own store, not yours",
+                name = file.name,
+                owner = file.owner
+            ),
+            None => format!("No password-locked file {id}"),
+        }
     }
 
     /// Open a password-locked file with the password (and PIN, when it was
@@ -1285,24 +1306,14 @@ impl LabState {
         password: &str,
         pin: Option<&str>,
     ) -> Result<Outcome> {
-        let Some(index) = self.password_file_index(id) else {
-            return Ok(Outcome::done(
-                false,
-                format!("No password-locked file {id}"),
-                vec![],
-            ));
+        let owner_label = self.actor().label.clone();
+        let Some(index) = self.password_file_index(&owner_label, id) else {
+            return Ok(Outcome::done(false, self.password_file_denial(id), vec![]));
         };
-        let (owner, name, wants_pin) = {
+        let (name, wants_pin) = {
             let file = &self.password_files[index];
-            (file.owner.clone(), file.name.clone(), file.pin)
+            (file.name.clone(), file.pin)
         };
-        if owner != self.actor().label {
-            return Ok(Outcome::done(
-                false,
-                format!("{name} is protected in {owner}'s own store, not yours"),
-                vec![],
-            ));
-        }
         let store = self.actor().store();
         let line = format!("keyquorum --db {store} access password --state 1 --id {id}");
         let mut secrets = Vec::new();
@@ -1378,24 +1389,11 @@ impl LabState {
                 vec![],
             ));
         }
-        let Some(index) = self.password_file_index(id) else {
-            return Ok(Outcome::done(
-                false,
-                format!("No password-locked file {id}"),
-                vec![],
-            ));
+        let owner = self.actor().label.clone();
+        let Some(index) = self.password_file_index(&owner, id) else {
+            return Ok(Outcome::done(false, self.password_file_denial(id), vec![]));
         };
-        let (owner, name) = {
-            let file = &self.password_files[index];
-            (file.owner.clone(), file.name.clone())
-        };
-        if owner != self.actor().label {
-            return Ok(Outcome::done(
-                false,
-                format!("{name} is protected in {owner}'s own store, not yours"),
-                vec![],
-            ));
-        }
+        let name = self.password_files[index].name.clone();
         let Some(recipient) = self.user_by_label(recipient_label) else {
             return Ok(Outcome::done(
                 false,
@@ -1545,24 +1543,15 @@ impl LabState {
         ttl_seconds: i64,
         pin: Option<&str>,
     ) -> Result<Outcome> {
-        let Some(index) = self.password_file_index(file_id) else {
+        let owner = self.actor().label.clone();
+        let Some(index) = self.password_file_index(&owner, file_id) else {
             return Ok(Outcome::done(
                 false,
-                format!("No password-locked file {file_id}"),
+                self.password_file_denial(file_id),
                 vec![],
             ));
         };
-        let (owner, name) = {
-            let file = &self.password_files[index];
-            (file.owner.clone(), file.name.clone())
-        };
-        if owner != self.actor().label {
-            return Ok(Outcome::done(
-                false,
-                format!("{name} is protected in {owner}'s own store, not yours"),
-                vec![],
-            ));
-        }
+        let name = self.password_files[index].name.clone();
         let store = self.actor().store();
         let mut line = format!(
             "keyquorum --db {store} share create-file {file_id} --ttl-seconds {ttl_seconds}"
