@@ -3,6 +3,7 @@
 
 use crate::crypto::{self, NONCE_LEN};
 use crate::error::{Error, Result};
+use crate::storage::{NativeStorage, Storage};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::fs;
 use std::io::Write;
@@ -36,9 +37,29 @@ pub fn lock_file_until(
     password: &str,
     expires_at: Option<&str>,
 ) -> Result<i64> {
+    lock_file_until_in(
+        &mut NativeStorage,
+        conn,
+        source_path,
+        encrypted_path,
+        password,
+        expires_at,
+    )
+}
+
+/// [`lock_file_until`], reading the source and writing the ciphertext
+/// through `storage`.
+pub fn lock_file_until_in(
+    storage: &mut dyn Storage,
+    conn: &Connection,
+    source_path: &Path,
+    encrypted_path: &Path,
+    password: &str,
+    expires_at: Option<&str>,
+) -> Result<i64> {
     let encrypted_path_str = encrypted_path.to_str().ok_or(Error::InvalidPath)?;
 
-    let plaintext = fs::read(source_path)?;
+    let plaintext = storage.read(source_path)?;
 
     let salt = crypto::random_salt();
     let nonce = crypto::random_nonce();
@@ -50,7 +71,7 @@ pub fn lock_file_until(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
 
-    write_owner_only(encrypted_path, &ciphertext)?;
+    storage.write_new(encrypted_path, &ciphertext)?;
 
     let insert = conn.execute(
         "INSERT INTO password_locked_files (name, encrypted_path, kdf_salt, nonce, expires_at)
@@ -67,7 +88,7 @@ pub fn lock_file_until(
     match insert {
         Ok(_) => Ok(conn.last_insert_rowid()),
         Err(e) => {
-            let _ = fs::remove_file(encrypted_path);
+            let _ = storage.delete(encrypted_path);
             Err(e.into())
         }
     }
@@ -82,7 +103,18 @@ pub fn lock_file_until(
 /// is removed from disk and the database row is dropped before any decrypt
 /// is attempted.
 pub fn unlock_file(conn: &Connection, id: i64, password: &str) -> Result<Vec<u8>> {
-    purge_if_expired(conn, id)?;
+    unlock_file_in(&mut NativeStorage, conn, id, password)
+}
+
+/// [`unlock_file`], reading (or, past the TTL, deleting) the ciphertext
+/// through `storage`.
+pub fn unlock_file_in(
+    storage: &mut dyn Storage,
+    conn: &Connection,
+    id: i64,
+    password: &str,
+) -> Result<Vec<u8>> {
+    purge_if_expired_in(storage, conn, id)?;
 
     let (encrypted_path, salt, nonce): (String, Vec<u8>, Vec<u8>) = conn.query_row(
         "SELECT encrypted_path, kdf_salt, nonce
@@ -91,7 +123,7 @@ pub fn unlock_file(conn: &Connection, id: i64, password: &str) -> Result<Vec<u8>
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
 
-    let ciphertext = fs::read(&encrypted_path)?;
+    let ciphertext = storage.read(Path::new(&encrypted_path))?;
     let key = crypto::derive_key(password, &salt)?;
     let nonce: [u8; NONCE_LEN] = nonce.try_into().map_err(|_| Error::IntegrityCheckFailed)?;
     let plaintext =
@@ -167,6 +199,15 @@ pub fn set_expires_at(conn: &Connection, file_id: i64, expires_at: &str) -> Resu
 /// If this file's date-based TTL has passed, delete the ciphertext and the
 /// tracking row. No-op when the file has no expiry or is still live.
 pub fn purge_if_expired(conn: &Connection, file_id: i64) -> Result<()> {
+    purge_if_expired_in(&mut NativeStorage, conn, file_id)
+}
+
+/// [`purge_if_expired`], deleting the ciphertext through `storage`.
+pub fn purge_if_expired_in(
+    storage: &mut dyn Storage,
+    conn: &Connection,
+    file_id: i64,
+) -> Result<()> {
     let row: Option<(String, bool)> = conn
         .query_row(
             "SELECT encrypted_path,
@@ -182,13 +223,18 @@ pub fn purge_if_expired(conn: &Connection, file_id: i64) -> Result<()> {
     if !expired {
         return Ok(());
     }
-    destroy_file(conn, file_id, &encrypted_path)?;
+    destroy_file(storage, conn, file_id, &encrypted_path)?;
     Err(Error::FileExpired)
 }
 
 /// Deletes every password-locked file whose date-based TTL has passed.
 /// Used by unlock/redeem and by the mailbox host's periodic scan.
 pub fn purge_expired(conn: &Connection) -> Result<u64> {
+    purge_expired_in(&mut NativeStorage, conn)
+}
+
+/// [`purge_expired`], deleting ciphertext through `storage`.
+pub fn purge_expired_in(storage: &mut dyn Storage, conn: &Connection) -> Result<u64> {
     let mut stmt = conn.prepare(
         "SELECT id, encrypted_path FROM password_locked_files
          WHERE expires_at IS NOT NULL AND datetime(expires_at) <= datetime('now')",
@@ -198,14 +244,19 @@ pub fn purge_expired(conn: &Connection) -> Result<u64> {
         .collect::<rusqlite::Result<Vec<(i64, String)>>>()?;
     let mut purged = 0u64;
     for (file_id, encrypted_path) in rows {
-        destroy_file(conn, file_id, &encrypted_path)?;
+        destroy_file(storage, conn, file_id, &encrypted_path)?;
         purged += 1;
     }
     Ok(purged)
 }
 
-fn destroy_file(conn: &Connection, file_id: i64, encrypted_path: &str) -> Result<()> {
-    let _ = fs::remove_file(encrypted_path);
+fn destroy_file(
+    storage: &mut dyn Storage,
+    conn: &Connection,
+    file_id: i64,
+    encrypted_path: &str,
+) -> Result<()> {
+    let _ = storage.delete(Path::new(encrypted_path));
     conn.execute(
         "DELETE FROM pins
          WHERE resource_type = 'file_share'

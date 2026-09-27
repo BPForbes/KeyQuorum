@@ -2,6 +2,7 @@
 //! the container's device id in the org store. One-key files still use
 //! `register` and `--share-file`; those keys count as their own devices.
 
+use super::env::{self, errln, outln};
 use crate::device::{self, CustodyMode, CustodyPolicy, UnlockApproval};
 use crate::device_relay;
 use crate::error::{Error, Result};
@@ -106,39 +107,38 @@ pub enum DeviceCommand {
 pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
     match command {
         DeviceCommand::Init { path } => {
-            let container = device::init(&path)?;
-            println!(
+            let container = env::fs(|fs| device::init_in(fs, &path))?;
+            outln!(
                 "Initialized {} device {}",
                 path.display(),
                 hex::encode(container.device_id())
             );
         }
         DeviceCommand::Provision { path, label } => {
-            let mut container = device::open(&path)?;
-            let passphrase =
-                device::confirm_passphrase("Slot passphrase: ", "Repeat passphrase: ")?;
-            let slot = device::provision(&mut container, &label, &passphrase)?;
-            println!("slot {}", slot.label);
-            println!("  encryption {}", hex::encode(slot.encryption_public));
-            println!("  signing {}", hex::encode(slot.signing_public));
+            let mut container = env::fs(|fs| device::open_in(fs, &path))?;
+            let passphrase = env::confirm_passphrase("Slot passphrase: ", "Repeat passphrase: ")?;
+            let slot = env::fs(|fs| device::provision_in(fs, &mut container, &label, &passphrase))?;
+            outln!("slot {}", slot.label);
+            outln!("  encryption {}", hex::encode(slot.encryption_public));
+            outln!("  signing {}", hex::encode(slot.signing_public));
         }
         DeviceCommand::List { path } => {
-            let container = device::open(&path)?;
-            println!("device {}", hex::encode(container.device_id()));
+            let container = env::fs(|fs| device::open_in(fs, &path))?;
+            outln!("device {}", hex::encode(container.device_id()));
             for slot in container.slots() {
-                println!("slot {}", slot.label);
-                println!("  encryption {}", hex::encode(slot.encryption_public));
-                println!("  signing {}", hex::encode(slot.signing_public));
+                outln!("slot {}", slot.label);
+                outln!("  encryption {}", hex::encode(slot.encryption_public));
+                outln!("  signing {}", hex::encode(slot.signing_public));
             }
         }
         DeviceCommand::Bind { path, slot } => {
-            let container = device::open(&path)?;
-            let passphrase = device::confirm_passphrase(
+            let container = env::fs(|fs| device::open_in(fs, &path))?;
+            let passphrase = env::confirm_passphrase(
                 &format!("Passphrase for {slot}: "),
                 &format!("Repeat passphrase for {slot}: "),
             )?;
-            device::bind_slot(conn, &container, &slot, &passphrase)?;
-            println!(
+            env::fs(|fs| device::bind_slot_in(fs, conn, &container, &slot, &passphrase))?;
+            outln!(
                 "Bound {slot} to device {}",
                 hex::encode(container.device_id())
             );
@@ -149,7 +149,7 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
             key_type,
             label,
         } => {
-            let container = device::open(&path)?;
+            let container = env::fs(|fs| device::open_in(fs, &path))?;
             let record = container
                 .slot(&slot)
                 .ok_or(crate::error::Error::InvalidSlot)?;
@@ -159,15 +159,15 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
                 super::CliKeyType::Signing => (record.signing_public, KeyType::Signing),
             };
             let id = keys::register_key(conn, &label, kind, &public)?;
-            println!("Registered key {id} ({label}, {})", kind.as_str());
+            outln!("Registered key {id} ({label}, {})", kind.as_str());
         }
         DeviceCommand::Publish { path, url, api_key } => {
-            let container = device::open(&path)?;
-            let descriptor = device_relay::public_descriptor(&container)?;
+            let container = env::fs(|fs| device::open_in(fs, &path))?;
+            let descriptor = device_relay::public_descriptor_in(&env::EnvStorage, &container)?;
             let (url, api_key) =
                 super::resolve_relay_auth(conn, url, api_key, ApiKeyScope::DevicePush)?;
-            relay::put_device(&url, &api_key, &descriptor)?;
-            println!("published {}", hex::encode(container.device_id()));
+            relay::put_device(&env::EnvRelay, &url, &api_key, &descriptor)?;
+            outln!("published {}", hex::encode(container.device_id()));
         }
         DeviceCommand::RelayRelocate {
             from,
@@ -177,14 +177,15 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
             url,
             api_key,
         } => {
-            let source = device::open(&from)?;
+            let source = env::fs(|fs| device::open_in(fs, &from))?;
             let destination_device_id = parse_device_id(&to_device_id)?;
             let recipient = super::read_key_array_32(&recipient_key_file)?;
-            let passphrase = device::confirm_passphrase(
+            let passphrase = env::confirm_passphrase(
                 &format!("Passphrase for {label}: "),
                 &format!("Repeat passphrase for {label}: "),
             )?;
-            let sealed = device_relay::seal_relocate(
+            let sealed = device_relay::seal_relocate_in(
+                &env::EnvStorage,
                 &recipient,
                 &source,
                 &label,
@@ -193,8 +194,9 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
             )?;
             let (url, api_key) =
                 super::resolve_relay_auth(conn, url, api_key, ApiKeyScope::DevicePush)?;
-            let accepted = relay::push_device_package(&url, &api_key, &sealed.bytes)?;
-            println!(
+            let accepted =
+                relay::push_device_package(&env::EnvRelay, &url, &api_key, &sealed.bytes)?;
+            outln!(
                 "relocating {label} to {} relocate {} package {}",
                 hex::encode(destination_device_id),
                 hex::encode(sealed.relocate_id),
@@ -208,7 +210,7 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
             api_key,
             push_key,
         } => {
-            let mut dest = device::open(&path)?;
+            let mut dest = env::fs(|fs| device::open_in(fs, &path))?;
             let (url, pull_key) =
                 super::resolve_relay_auth(conn, url, api_key, ApiKeyScope::DevicePull)?;
             let (_push_url, push_key) = super::resolve_relay_auth(
@@ -217,11 +219,11 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
                 push_key,
                 ApiKeyScope::DevicePush,
             )?;
-            let passphrase = device::confirm_passphrase(
+            let passphrase = env::confirm_passphrase(
                 &format!("Passphrase for {slot}: "),
                 &format!("Repeat passphrase for {slot}: "),
             )?;
-            let opener = device::open_slot(&dest, &slot, &passphrase)?;
+            let opener = env::fs(|fs| device::open_slot_in(fs, &dest, &slot, &passphrase))?;
             let packages = super::pull_all_device_packages(&url, &pull_key)?;
             let mut accepted = 0u32;
             for item in packages {
@@ -230,8 +232,12 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
                     Ok(letter) if letter.destination_device_id == *dest.device_id() => letter,
                     _ => continue,
                 };
-                let published =
-                    relay::get_device(&url, &pull_key, &hex::encode(letter.source_device_id))?;
+                let published = relay::get_device(
+                    &env::EnvRelay,
+                    &url,
+                    &pull_key,
+                    &hex::encode(letter.source_device_id),
+                )?;
                 if parse_verify_key(&published.verify_key)? != letter.source_verify_key {
                     continue;
                 }
@@ -247,7 +253,7 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
                 ) {
                     Ok(installed) => installed,
                     Err(Error::InvalidSlot) => {
-                        eprintln!(
+                        errln!(
                             "skipped slot {}: a different key already holds that label",
                             letter.label
                         );
@@ -256,29 +262,32 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
                     Err(err) => return Err(err),
                 };
                 if !installed {
-                    let install_pass = device::confirm_passphrase(
+                    let install_pass = env::confirm_passphrase(
                         &format!("Passphrase for {}: ", letter.label),
                         &format!("Repeat passphrase for {}: ", letter.label),
                     )?;
-                    device::install_slot(
-                        &mut dest,
-                        &letter.label,
-                        &install_pass,
-                        &letter.encryption_secret,
-                        &letter.signing_secret,
-                    )?;
+                    env::fs(|fs| {
+                        device::install_slot_in(
+                            fs,
+                            &mut dest,
+                            &letter.label,
+                            &install_pass,
+                            &letter.encryption_secret,
+                            &letter.signing_secret,
+                        )
+                    })?;
                 }
-                let ack = device_relay::seal_relocate_ack(&letter, &dest)?;
-                relay::push_device_package(&url, &push_key, &ack)?;
+                let ack = device_relay::seal_relocate_ack_in(&env::EnvStorage, &letter, &dest)?;
+                relay::push_device_package(&env::EnvRelay, &url, &push_key, &ack)?;
                 if installed {
-                    println!("acknowledged slot {} again", letter.label);
+                    outln!("acknowledged slot {} again", letter.label);
                 } else {
-                    println!("accepted slot {}", letter.label);
+                    outln!("accepted slot {}", letter.label);
                 }
                 accepted += 1;
             }
             if accepted == 0 {
-                println!("(no device packages)");
+                outln!("(no device packages)");
             }
         }
         DeviceCommand::RelayDrop {
@@ -289,22 +298,26 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
             url,
             api_key,
         } => {
-            let mut container = device::open(&path)?;
+            let mut container = env::fs(|fs| device::open_in(fs, &path))?;
             let relocate_id = parse_device_id(&relocate_id)?;
             let (url, pull_key) =
                 super::resolve_relay_auth(conn, url, api_key, ApiKeyScope::DevicePull)?;
             let destination_device_id = parse_device_id(&to_device_id)?;
-            let published =
-                relay::get_device(&url, &pull_key, &hex::encode(destination_device_id))?;
+            let published = relay::get_device(
+                &env::EnvRelay,
+                &url,
+                &pull_key,
+                &hex::encode(destination_device_id),
+            )?;
             if parse_device_id(&published.device_id)? != destination_device_id {
                 return Err(Error::InvalidDevice);
             }
             let destination_verify = parse_verify_key(&published.verify_key)?;
-            let passphrase = device::confirm_passphrase(
+            let passphrase = env::confirm_passphrase(
                 &format!("Passphrase for {label}: "),
                 &format!("Repeat passphrase for {label}: "),
             )?;
-            let opener = device::open_slot(&container, &label, &passphrase)?;
+            let opener = env::fs(|fs| device::open_slot_in(fs, &container, &label, &passphrase))?;
             let packages = super::pull_all_device_packages(&url, &pull_key)?;
             let mut dropped = false;
             for item in packages {
@@ -324,13 +337,13 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
                 {
                     continue;
                 }
-                device::remove_slot(&mut container, &label)?;
-                println!("dropped {label}");
+                env::fs(|fs| device::remove_slot_in(fs, &mut container, &label))?;
+                outln!("dropped {label}");
                 dropped = true;
                 break;
             }
             if !dropped {
-                println!("(no relocate acknowledgement)");
+                outln!("(no relocate acknowledgement)");
             }
         }
     }

@@ -15,6 +15,7 @@ mod mailbox;
 mod org_tree;
 #[cfg(feature = "provider")]
 mod server;
+pub mod service;
 
 pub use api_key::{
     authenticate, authenticate_licensee, authorize_licensee_or_bootstrap,
@@ -24,6 +25,7 @@ pub use api_key::{
     KeyCheck, NewApiKey,
 };
 #[cfg(not(target_arch = "wasm32"))]
+pub use client::UreqTransport;
 pub use client::{
     authenticate_provider, check_key, check_key_hash, fetch_tree_context, get_device, publish_tree,
     pull as pull_inbox, pull_device_packages, push as push_inbox, push_device_package,
@@ -33,7 +35,7 @@ pub use client::{
 pub use client::{
     validate_relay_url, DevicePackageList, DevicePackagePush, InboxAccepted, InboxEnvelope,
     InboxList, InboxPush, KeyCheckRequest, KeyCheckResponse, ProviderIdentityRequest,
-    ProviderIdentityResponse,
+    ProviderIdentityResponse, RelayHttpRequest, RelayHttpResponse, RelayTransport,
 };
 pub use device_directory::{
     get as get_device_descriptor, put as put_device_descriptor,
@@ -52,7 +54,8 @@ pub use org_tree::{
     merge_public_tree, put_public_tree, slices_for_fingerprint,
 };
 #[cfg(feature = "provider")]
-pub use server::{router, AppState, ProviderIdentity, MAX_ENVELOPE_BYTES};
+pub use server::{router, AppState};
+pub use service::{ProviderIdentity, MAX_ENVELOPE_BYTES};
 
 use crate::error::{Error, Result};
 use rusqlite::{Connection, OptionalExtension};

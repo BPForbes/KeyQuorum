@@ -1,4 +1,5 @@
 use super::super::*;
+use std::fs;
 
 #[test]
 fn collect_shares_unwraps_from_standard_key_files() {

@@ -17,18 +17,19 @@ use crate::key_tree::{NodeSpec, TreeNodeSummary};
 use crate::keys::KeyType;
 use crate::pin::ResourceType;
 use crate::{
-    bridge_command, db, export, key_tree, keys, locked_files, org_update, pin, private_bridge,
-    provider, quorum, relay, sharing, signing, vault,
+    bridge_command, db, device, export, key_tree, keys, locked_files, org_update, pin,
+    private_bridge, provider, quorum, relay, sharing, signing, vault,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use env::{errln, out, outln};
 use rusqlite::Connection;
 use std::collections::{BTreeSet, HashMap};
-use std::fs;
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use zeroize::Zeroize;
 
 mod device_cmd;
+pub mod device_tool;
+pub mod env;
 #[cfg(feature = "provider")]
 pub mod host_args;
 mod transfer_cmd;
@@ -850,12 +851,13 @@ pub fn run(db_path: &Path, command: Command) -> Result<()> {
         _ => {}
     }
 
-    let db_path_str = db_path.to_str().ok_or(Error::InvalidPath)?;
-    let mut conn = db::open(db_path_str)?;
+    env::with_db(db_path, |conn| run_in_store(conn, command))
+}
 
+fn run_in_store(conn: &mut Connection, command: Command) -> Result<()> {
     match command {
-        Command::Vault { command } => run_vault(&conn, command)?,
-        Command::Access { command } => run_access(&mut conn, command)?,
+        Command::Vault { command } => run_vault(conn, command)?,
+        Command::Access { command } => run_access(conn, command)?,
         Command::Generate { .. }
         | Command::Register { .. }
         | Command::List
@@ -868,7 +870,7 @@ pub fn run(db_path: &Path, command: Command) -> Result<()> {
         | Command::Reconstruct { .. }
         | Command::Reissue { .. }
         | Command::Updates { .. }
-        | Command::Bridge { .. } => run_tree_command(&mut conn, command)?,
+        | Command::Bridge { .. } => run_tree_command(conn, command)?,
         Command::Verify {
             public_key_file,
             message_file,
@@ -876,22 +878,21 @@ pub fn run(db_path: &Path, command: Command) -> Result<()> {
             bridge_uid,
             as_node,
         } => {
-            let message = fs::read(&message_file)?;
+            let message = env::read(&message_file)?;
             if let Some(uid) = bridge_uid {
-                let as_node = as_node
-                    .unwrap_or_else(|| fatal_usage_error("verify --bridge-uid requires --as-node"));
-                let bytes = fs::read(&signature_file)?;
+                let as_node =
+                    as_node.ok_or_else(|| usage("verify --bridge-uid requires --as-node"))?;
+                let bytes = env::read(&signature_file)?;
                 let artifact = signing::decode_bridge_signature(&bytes)?;
-                private_bridge::verify_message(&conn, &uid, &as_node, &message, &artifact)?;
-                println!("Private-bridge signature is valid");
+                private_bridge::verify_message(conn, &uid, &as_node, &message, &artifact)?;
+                outln!("Private-bridge signature is valid");
             } else {
-                let public_key_file = public_key_file.unwrap_or_else(|| {
-                    fatal_usage_error("verify requires --public-key-file or --bridge-uid")
-                });
+                let public_key_file = public_key_file
+                    .ok_or_else(|| usage("verify requires --public-key-file or --bridge-uid"))?;
                 let public_key = read_key_array_32(&public_key_file)?;
                 let signature = read_hex_array_64(&signature_file)?;
                 signing::verify_signature(&public_key, &message, &signature)?;
-                println!("Signature is valid");
+                outln!("Signature is valid");
             }
         }
         Command::Sign {
@@ -905,25 +906,25 @@ pub fn run(db_path: &Path, command: Command) -> Result<()> {
         } => {
             let encryption_sk = encryption_secret_from(share_file.as_deref(), slot.as_deref())?;
             let signing_sk = zeroize::Zeroizing::new(read_key_array_32(&signing_key_file)?);
-            let message = fs::read(&message_file)?;
+            let message = env::read(&message_file)?;
             let artifact = private_bridge::sign_message(
-                &conn,
+                conn,
                 &bridge_uid,
                 &node,
                 &encryption_sk,
                 &signing_sk,
                 &message,
             )?;
-            locked_files::write_owner_only(
+            env::write_new(
                 &signature_out,
                 &signing::encode_bridge_signature(&artifact)?,
             )?;
-            println!("Wrote bridge signature to {}", signature_out.display());
+            outln!("Wrote bridge signature to {}", signature_out.display());
         }
-        Command::Export { command } => run_export(&conn, command)?,
-        Command::Share { command } => run_share(&conn, command)?,
-        Command::Pin { command } => run_pin(&conn, command)?,
-        Command::Device { command } => device_cmd::run(&conn, command)?,
+        Command::Export { command } => run_export(conn, command)?,
+        Command::Share { command } => run_share(conn, command)?,
+        Command::Pin { command } => run_pin(conn, command)?,
+        Command::Device { command } => device_cmd::run(conn, command)?,
         Command::Transfer { .. } | Command::Relay { .. } | Command::Loadkey { .. } => {
             unreachable!("transfer and relay commands are handled before opening the org db")
         }
@@ -956,7 +957,7 @@ fn run_vault(conn: &Connection, command: VaultCommand) -> Result<()> {
                 let pin_value = prompt_secret("Set a 4-digit PIN: ")?;
                 set_default_pin(conn, ResourceType::Credential, id, &pin_value)?;
             }
-            println!("Stored credential {id}");
+            outln!("Stored credential {id}");
         }
         VaultCommand::Get { id } => {
             if pin::verification_required(conn, ResourceType::Credential, id)? {
@@ -965,12 +966,12 @@ fn run_vault(conn: &Connection, command: VaultCommand) -> Result<()> {
             }
             let master_password = prompt_secret("Master password: ")?;
             let credential = vault::get_credential(conn, id, &master_password)?;
-            println!("Label:    {}", credential.label);
-            println!(
+            outln!("Label:    {}", credential.label);
+            outln!(
                 "Username: {}",
                 credential.username.as_deref().unwrap_or("-")
             );
-            println!("Password: {}", credential.password);
+            outln!("Password: {}", credential.password);
         }
     }
     Ok(())
@@ -989,15 +990,15 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
                 CliKeyType::Signing => keys::generate_signing_keypair(),
             };
             write_hex_file(&public_key_out, &public_key)?;
-            println!("{}", hex::encode(*secret_key));
-            eprintln!("Public key written to {}", public_key_out.display());
-            eprintln!("Private key printed to stdout above — this tool keeps no copy of it.");
+            outln!("{}", hex::encode(*secret_key));
+            errln!("Public key written to {}", public_key_out.display());
+            errln!("Private key printed to stdout above — this tool keeps no copy of it.");
             if register {
                 let label = label.expect("--register requires --label");
                 let id = keys::register_key(conn, &label, key_type.into(), &public_key)?;
-                eprintln!("Registered {label} as hardware key {id}");
+                errln!("Registered {label} as hardware key {id}");
             } else {
-                eprintln!(
+                errln!(
                     "Register the public key with: keyquorum register --type <encryption|signing> --label <text> --public-key-file {}",
                     public_key_out.display()
                 );
@@ -1010,16 +1011,16 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
         } => {
             let public_key = read_key_bytes(&public_key_file)?;
             let id = keys::register_key(conn, &label, key_type.into(), &public_key)?;
-            println!("Registered key {id}");
+            outln!("Registered key {id}");
         }
         Command::List => {
-            println!("Hardware keys:");
+            outln!("Hardware keys:");
             let hardware = keys::list_keys(conn)?;
             if hardware.is_empty() {
-                println!("  (none)");
+                outln!("  (none)");
             } else {
                 for key in hardware {
-                    println!(
+                    outln!(
                         "  {}\t{}\t{:?}\t{}\t{}",
                         key.id,
                         key.label,
@@ -1029,13 +1030,13 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
                     );
                 }
             }
-            println!("Split trees:");
+            outln!("Split trees:");
             let trees = key_tree::list_trees(conn)?;
             if trees.is_empty() {
-                println!("  (none)");
+                outln!("  (none)");
             } else {
                 for tree in trees {
-                    println!("  {}\t{}", tree.key_id, tree.label);
+                    outln!("  {}\t{}", tree.key_id, tree.label);
                 }
             }
         }
@@ -1065,7 +1066,7 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
         }
         Command::Remove { id } => {
             keys::remove_key(conn, id)?;
-            println!("Removed key {id}");
+            outln!("Removed key {id}");
         }
         Command::Split {
             tree_spec,
@@ -1086,9 +1087,9 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
                 Some(path) => parse_tree_spec(conn, &path)?,
                 None => {
                     if leaves.is_empty() {
-                        fatal_usage_error(
+                        return Err(usage(
                             "split requires --leaf label=pub (repeatable) or --tree-spec FILE",
-                        );
+                        ));
                     }
                     build_spec_from_leaves(
                         conn,
@@ -1105,7 +1106,7 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
                 Some(path) => {
                     let secret = read_key_file_payload(&path)?;
                     let key_id = key_tree::split(conn, &label, &secret, &spec)?;
-                    eprintln!(
+                    errln!(
                         "Split key {key_id} from {}; reconstruct with --output to write the file back.",
                         path.display()
                     );
@@ -1114,8 +1115,8 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
                 None => {
                     let secret = crate::crypto::random_key();
                     let key_id = key_tree::split(conn, &label, &secret[..], &spec)?;
-                    println!("{}", hex::encode(&secret[..]));
-                    eprintln!("Split key {key_id}; secret printed to stdout above — this tool keeps no copy of it.");
+                    outln!("{}", hex::encode(&secret[..]));
+                    errln!("Split key {key_id}; secret printed to stdout above — this tool keeps no copy of it.");
                     key_id
                 }
             };
@@ -1144,7 +1145,7 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
         } => match (peer, public_key_file) {
             (Some(peer), None) => {
                 key_tree::bind_pair(conn, key_id, &node, &peer)?;
-                println!("Bound {node} <-> {peer}");
+                outln!("Bound {node} <-> {peer}");
             }
             (None, Some(public_key_file)) => {
                 let new_id =
@@ -1152,15 +1153,15 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
                 let old_secret = if let Some(slot) = slot {
                     open_slot_encryption_secret(&slot)?
                 } else {
-                    let share_file = share_file.unwrap_or_else(|| {
-                        fatal_usage_error("bind --public-key-file requires --share-file or --slot")
-                    });
+                    let share_file = share_file.ok_or_else(|| {
+                        usage("bind --public-key-file requires --share-file or --slot")
+                    })?;
                     secret_for_named_leaf(conn, key_id, &node, &share_file)?
                 };
                 key_tree::rebind_leaf(conn, key_id, &node, new_id, old_secret.as_ref())?;
-                println!("Rebound {node} to hardware key {new_id}");
+                outln!("Rebound {node} to hardware key {new_id}");
             }
-            _ => fatal_usage_error("bind requires --peer or --public-key-file"),
+            _ => return Err(usage("bind requires --peer or --public-key-file")),
         },
         Command::Add {
             key_id,
@@ -1180,7 +1181,7 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
             let new_id =
                 key_tree::add_leaf_and_reshare(conn, key_id, &parent, &node, hw_id, &shares)?;
             key_tree::bind_leaf_to_active_siblings(conn, key_id, &node)?;
-            println!("Added {node} (node {new_id}); parent shares refreshed");
+            outln!("Added {node} (node {new_id}); parent shares refreshed");
         }
         Command::Tree(args) => run_tree(conn, args)?,
         Command::Reconstruct {
@@ -1231,10 +1232,10 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
         Command::Updates { since } => {
             let rows = org_update::history(conn, since)?;
             if rows.is_empty() {
-                println!("(no applied updates)");
+                outln!("(no applied updates)");
             }
             for row in rows {
-                println!(
+                outln!(
                     "{}\t{}\t{}\t{} {}\tby {}\t{}",
                     row.id,
                     row.applied_at,
@@ -1272,8 +1273,8 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
         }) => {
             let snapshot = key_tree::export_public_tree(conn, key_id)?;
             let (url, api_key) = resolve_relay_auth(conn, url, api_key, relay::ApiKeyScope::Admin)?;
-            let stored = relay::publish_tree(&url, &api_key, &snapshot)?;
-            println!(
+            let stored = relay::publish_tree(&env::EnvRelay, &url, &api_key, &snapshot)?;
+            outln!(
                 "Published {} (generation {}, {} nodes)",
                 stored.label,
                 stored.generation,
@@ -1292,11 +1293,11 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
                 org_update::commit_planned_tree_restructure(conn, &planned).map(|_| ())
             })?;
             for path in written {
-                println!("Wrote {}", path.display());
+                outln!("Wrote {}", path.display());
             }
             if planned.needs_countersign {
                 let parent = planned.countersigner_label.as_deref().unwrap_or("parent");
-                println!(
+                outln!(
                     "Proposal for {} at generation {} is waiting for {parent} to countersign ({} envelope{})",
                     planned.tree_label,
                     planned.generation,
@@ -1304,7 +1305,7 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
                     if planned.packages.len() == 1 { "" } else { "s" }
                 );
             } else {
-                println!(
+                outln!(
                     "{} is now at public generation {} ({} envelope{})",
                     planned.tree_label,
                     planned.generation,
@@ -1313,7 +1314,7 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
                 );
             }
             if !planned.skipped.is_empty() {
-                println!(
+                outln!(
                     "No envelope for {} ({as_node} is not an ancestor)",
                     planned.skipped.join(", ")
                 );
@@ -1338,11 +1339,12 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
                 org_update::commit_planned_countersign(conn, &planned).map(|_| ())
             })?;
             for path in written {
-                println!("Wrote {}", path.display());
+                outln!("Wrote {}", path.display());
             }
-            println!(
+            outln!(
                 "{} countersigned generation {}",
-                as_node, planned.generation
+                as_node,
+                planned.generation
             );
         }
         Some(TreeCommand::Fetch {
@@ -1355,14 +1357,14 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
                 (Some(label), _) => label,
                 (None, Some(id)) => key_tree::tree_label(conn, id)?,
                 (None, None) => {
-                    fatal_usage_error("tree fetch requires a key id or --label");
+                    return Err(usage("tree fetch requires a key id or --label"));
                 }
             };
             let (url, api_key) =
                 resolve_relay_auth(conn, url, api_key, relay::ApiKeyScope::InboxPull)?;
-            let slice = relay::fetch_tree_context(&url, &api_key, &label)?;
+            let slice = relay::fetch_tree_context(&env::EnvRelay, &url, &api_key, &label)?;
             let applied = key_tree::apply_public_tree(conn, key_id, &slice)?;
-            println!(
+            outln!(
                 "Merged {} (generation {}, {} nodes) into key {applied}",
                 slice.label,
                 slice.generation,
@@ -1371,11 +1373,9 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
         }
         None => {
             if args.custody.is_some() || args.minimum_physical_devices.is_some() {
-                let key_id = args.key_id.unwrap_or_else(|| {
-                    fatal_usage_error(
-                        "tree --custody and --minimum-physical-devices require a key id",
-                    );
-                });
+                let key_id = args.key_id.ok_or_else(|| {
+                    usage("tree --custody and --minimum-physical-devices require a key id")
+                })?;
                 device_cmd::apply_policy(
                     conn,
                     key_id,
@@ -1383,22 +1383,22 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
                     args.minimum_physical_devices,
                     None,
                 )?;
-                println!("Updated custody for key {key_id}");
+                outln!("Updated custody for key {key_id}");
             }
             match args.key_id {
                 None => {
                     let trees = key_tree::list_trees(conn)?;
                     if trees.is_empty() {
-                        println!("(no split trees)");
+                        outln!("(no split trees)");
                     } else {
                         for tree in trees {
-                            println!("{}\t{}", tree.key_id, tree.label);
+                            outln!("{}\t{}", tree.key_id, tree.label);
                         }
                     }
                 }
                 Some(key_id) if args.nodes.is_empty() => {
                     let summary = key_tree::describe(conn, key_id)?;
-                    println!("{} (key {})", summary.label, summary.key_id);
+                    outln!("{} (key {})", summary.label, summary.key_id);
                     print_tree_node(&summary.root, 0);
                     if let Some(path) = args.output {
                         write_live_spec(conn, key_id, &path)?;
@@ -1449,9 +1449,9 @@ fn run_reissue(conn: &Connection, args: ReissueArgs) -> Result<()> {
         org_update::commit_planned_key_reissue(conn, &planned).map(|_| ())
     })?;
     for path in written {
-        println!("Wrote {}", path.display());
+        outln!("Wrote {}", path.display());
     }
-    println!(
+    outln!(
         "Reissue {} for {} authorized by {} ({} envelope{})",
         planned.sequence(),
         planned.subject_label(),
@@ -1460,14 +1460,16 @@ fn run_reissue(conn: &Connection, args: ReissueArgs) -> Result<()> {
         if planned.packages.len() == 1 { "" } else { "s" }
     );
     if planned.packages.is_empty() {
-        println!("No other store in this database holds that key.");
+        outln!("No other store in this database holds that key.");
     }
     Ok(())
 }
 
 fn run_bridge(conn: &Connection, command: BridgeCommand) -> Result<()> {
     match command {
-        BridgeCommand::Tree(command) => bridge_command::run(conn, command, &mut io::stdout())?,
+        BridgeCommand::Tree(command) => {
+            env::with_stdout(|out| bridge_command::run(conn, command, out))?
+        }
         BridgeCommand::Private { command } => run_private_bridge(conn, command)?,
     }
     Ok(())
@@ -1500,9 +1502,9 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
                     &notify,
                 ) {
                     Ok(pk) => pk,
-                    Err(_) => fatal_usage_error(&format!(
+                    Err(_) => return Err(usage(&format!(
                         "need an encryption public key for supervisor {notify} (parent of a --member). Pass --supervisor {notify}=FILE.pub"
-                    )),
+                    ))),
                 };
                 supervisor_parties.push(private_bridge::BridgePartyInput {
                     label: notify,
@@ -1521,20 +1523,20 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
                 private_bridge::commit_planned_creation(conn, &planned)
             })?;
             let created = &planned.created;
-            println!(
+            outln!(
                 "Created private bridge {} (generation {}). Notify {} store(s):",
                 created.uid,
                 created.generation,
                 created.packages.len()
             );
             for (pkg, path) in created.packages.iter().zip(&written) {
-                println!("  {} ({:?}) -> {}", pkg.label, pkg.role, path.display());
+                outln!("  {} ({:?}) -> {}", pkg.label, pkg.role, path.display());
             }
         }
         PrivateBridgeCommand::List { key_id } => {
             let listing = private_bridge::list(conn, key_id)?;
             if listing.is_empty() {
-                println!("(no private bridges)");
+                outln!("(no private bridges)");
             } else {
                 for bridge in listing {
                     let status = if bridge.destroyed {
@@ -1542,7 +1544,7 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
                     } else {
                         "live"
                     };
-                    println!(
+                    outln!(
                         "{}\tgen {}\t{}\t{}",
                         bridge.uid,
                         bridge.generation,
@@ -1558,12 +1560,15 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
         PrivateBridgeCommand::Events { uid, since } => {
             let events = private_bridge::events(conn, uid.as_deref(), since)?;
             if events.is_empty() {
-                println!("(no events)");
+                outln!("(no events)");
             } else {
                 for event in events {
-                    println!(
+                    outln!(
                         "{}\t{}\t{}\t{}",
-                        event.id, event.uid, event.event_type, event.detail
+                        event.id,
+                        event.uid,
+                        event.event_type,
+                        event.detail
                     );
                 }
             }
@@ -1576,15 +1581,15 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
             // One inbox carries bridge envelopes and authenticated
             // organization updates alike, so dispatch on the kind byte
             // rather than making the operator sort them by hand.
-            let bytes = fs::read(&file)?;
+            let bytes = env::read(&file)?;
             let sk = encryption_secret_from(share_file.as_deref(), slot.as_deref())?;
             match org_update::import_any(conn, &bytes, &sk)? {
                 org_update::ImportedEnvelope::Bridge(summary) => {
-                    println!("Imported private bridge {}", summary.uid);
+                    outln!("Imported private bridge {}", summary.uid);
                     print_bridge_summary(&summary);
                 }
                 org_update::ImportedEnvelope::Update(applied) => {
-                    println!("{}", describe_applied_update(&applied));
+                    outln!("{}", describe_applied_update(&applied));
                 }
             }
         }
@@ -1603,16 +1608,16 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
             })?;
             let outcome = &planned.outcome;
             if outcome.destroyed {
-                println!("Destroyed private bridge {uid}");
+                outln!("Destroyed private bridge {uid}");
             } else {
-                println!(
+                outln!(
                     "Removed {member} from {uid}; remaining {}",
                     outcome.remaining_members.join(", ")
                 );
             }
-            println!("Deliver these packages to each store:");
+            outln!("Deliver these packages to each store:");
             for (pkg, path) in outcome.packages.iter().zip(&written) {
-                println!("  {} ({:?}) -> {}", pkg.label, pkg.role, path.display());
+                outln!("  {} ({:?}) -> {}", pkg.label, pkg.role, path.display());
             }
         }
     }
@@ -1674,7 +1679,7 @@ impl PendingDelivery {
 impl Drop for PendingDelivery {
     fn drop(&mut self) {
         for path in &self.paths {
-            let _ = fs::remove_file(path);
+            let _ = env::remove_file(path);
         }
     }
 }
@@ -1700,7 +1705,7 @@ fn write_delivery_packages(
 
     let mut pending = PendingDelivery { paths: Vec::new() };
     for (path, bytes) in planned {
-        locked_files::write_owner_only(&path, bytes)?;
+        env::write_new(&path, bytes)?;
         pending.paths.push(path);
     }
     Ok(pending)
@@ -1752,7 +1757,7 @@ fn deliver_then_commit(
     packages: &[impl Envelope],
     commit: impl FnOnce() -> Result<()>,
 ) -> Result<Vec<PathBuf>> {
-    fs::create_dir_all(output_dir)?;
+    env::create_dir_all(output_dir)?;
     let pending = write_delivery_packages(output_dir, packages)?;
     commit()?;
     Ok(pending.keep())
@@ -1774,7 +1779,7 @@ fn sanitize_label(label: &str) -> Result<String> {
 }
 
 fn print_bridge_summary(summary: &private_bridge::BridgeSummary) {
-    println!(
+    outln!(
         "{}  gen {}  {}",
         summary.uid,
         summary.generation,
@@ -1785,15 +1790,18 @@ fn print_bridge_summary(summary: &private_bridge::BridgeSummary) {
         }
     );
     if let Some(label) = &summary.label {
-        println!("  label: {label}");
+        outln!("  label: {label}");
     }
-    println!("  public: {}", hex::encode(summary.public_key));
-    println!("  salt:   {}", hex::encode(summary.salt));
-    println!("  parties:");
+    outln!("  public: {}", hex::encode(summary.public_key));
+    outln!("  salt:   {}", hex::encode(summary.salt));
+    outln!("  parties:");
     for party in &summary.parties {
-        println!(
+        outln!(
             "    {}  {:?}  local={}  sealed={}",
-            party.label, party.role, party.is_local, party.has_sealed_key
+            party.label,
+            party.role,
+            party.is_local,
+            party.has_sealed_key
         );
     }
 }
@@ -1808,8 +1816,8 @@ fn run_access(conn: &mut Connection, command: AccessCommand) -> Result<()> {
 fn run_access_password(conn: &Connection, args: AccessPasswordArgs) -> Result<()> {
     match args.state {
         0 => {
-            let source = require(args.source, "source");
-            let encrypted_path = require(args.encrypted_path, "encrypted-path");
+            let source = require(args.source, "source")?;
+            let encrypted_path = require(args.encrypted_path, "encrypted-path")?;
             let password = prompt_secret("Lock password: ")?;
             let expires_at = match args.expires {
                 Some(expires_at) => {
@@ -1818,7 +1826,8 @@ fn run_access_password(conn: &Connection, args: AccessPasswordArgs) -> Result<()
                 }
                 None => None,
             };
-            let id = locked_files::lock_file_until(
+            let id = locked_files::lock_file_until_in(
+                &mut env::EnvStorage,
                 conn,
                 &source,
                 &encrypted_path,
@@ -1829,53 +1838,54 @@ fn run_access_password(conn: &Connection, args: AccessPasswordArgs) -> Result<()
                 let pin_value = prompt_secret("Set a 4-digit PIN: ")?;
                 set_default_pin(conn, ResourceType::LockedFile, id, &pin_value)?;
             }
-            println!("Locked file {id}");
+            outln!("Locked file {id}");
             if let Some(expires_at) = expires_at {
-                println!("Expires at: {expires_at} UTC");
+                outln!("Expires at: {expires_at} UTC");
             }
         }
         1 => {
-            let id = require(args.id, "id");
-            locked_files::purge_if_expired(conn, id)?;
+            let id = require(args.id, "id")?;
+            locked_files::purge_if_expired_in(&mut env::EnvStorage, conn, id)?;
             if pin::verification_required(conn, ResourceType::LockedFile, id)? {
                 let pin_value = prompt_secret("PIN: ")?;
                 pin::verify_pin(conn, ResourceType::LockedFile, id, &pin_value)?;
             }
             let password = prompt_secret("Unlock password: ")?;
-            let plaintext = locked_files::unlock_file(conn, id, &password)?;
+            let plaintext =
+                locked_files::unlock_file_in(&mut env::EnvStorage, conn, id, &password)?;
             match args.output {
-                Some(path) => locked_files::write_owner_only(&path, &plaintext)?,
-                None => io::stdout().write_all(&plaintext)?,
+                Some(path) => env::write_new(&path, &plaintext)?,
+                None => env::stdout_bytes(&plaintext)?,
             }
         }
-        _ => fatal_usage_error("--state must be 0 (lock) or 1 (unlock)"),
+        _ => return Err(usage("--state must be 0 (lock) or 1 (unlock)")),
     }
     Ok(())
 }
 
 fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()> {
     if args.status {
-        let id = require(args.id, "id");
+        let id = require(args.id, "id")?;
         let file_status = quorum::status(conn, id)?;
-        println!("{} (file {})", file_status.name, file_status.id);
-        println!("Encrypted path: {}", file_status.encrypted_path);
-        println!("Created at:     {}", file_status.created_at);
+        outln!("{} (file {})", file_status.name, file_status.id);
+        outln!("Encrypted path: {}", file_status.encrypted_path);
+        outln!("Created at:     {}", file_status.created_at);
         print_tree_node(&file_status.tree.root, 0);
         return Ok(());
     }
 
     match args.state {
         Some(0) => {
-            let source = require(args.source, "source");
-            let encrypted_path = require(args.encrypted_path, "encrypted-path");
+            let source = require(args.source, "source")?;
+            let encrypted_path = require(args.encrypted_path, "encrypted-path")?;
             let from_leaves = args.tree_spec.is_none();
             let spec = match args.tree_spec {
                 Some(path) => parse_tree_spec(conn, &path)?,
                 None => {
                     if args.leaves.is_empty() {
-                        fatal_usage_error(
+                        return Err(usage(
                             "access quorum --state 0 requires --leaf label=pub or --tree-spec FILE",
-                        );
+                        ));
                     }
                     let name = args
                         .name
@@ -1893,8 +1903,14 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
                     )?
                 }
             };
-            let id =
-                quorum::lock_file(conn, &source, &encrypted_path, args.name.as_deref(), &spec)?;
+            let id = quorum::lock_file_in(
+                &mut env::EnvStorage,
+                conn,
+                &source,
+                &encrypted_path,
+                args.name.as_deref(),
+                &spec,
+            )?;
             if from_leaves {
                 let file_status = quorum::status(conn, id)?;
                 key_tree::bind_all_sibling_leaf_pairs(conn, file_status.tree.key_id)?;
@@ -1902,7 +1918,7 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
                     key_tree::bind_pair(conn, file_status.tree.key_id, &a, &b)?;
                 }
             }
-            println!("Locked file {id}");
+            outln!("Locked file {id}");
             let file_status = quorum::status(conn, id)?;
             device_cmd::apply_policy(
                 conn,
@@ -1913,11 +1929,11 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
             )?;
         }
         Some(1) => {
-            let id = require(args.id, "id");
+            let id = require(args.id, "id")?;
             // Before anything else: an expired file is destroyed on the
             // first unlock attempt, whether or not the presented shares
             // would have reconstructed it (see quorum::unlock_file_with_approval).
-            quorum::purge_if_expired(conn, id)?;
+            quorum::purge_if_expired_in(&mut env::EnvStorage, conn, id)?;
             let file_status = quorum::status(conn, id)?;
             let shares =
                 collect_shares(conn, &file_status.tree.root, &args.share_files, &args.slots)?;
@@ -1943,13 +1959,18 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
                     return Err(err);
                 }
             };
-            let plaintext = quorum::complete_unlock(conn, id, presented, &grants)?;
+            let plaintext =
+                quorum::complete_unlock_in(&mut env::EnvStorage, conn, id, presented, &grants)?;
             match args.output {
-                Some(path) => locked_files::write_owner_only(&path, &plaintext)?,
-                None => io::stdout().write_all(&plaintext)?,
+                Some(path) => env::write_new(&path, &plaintext)?,
+                None => env::stdout_bytes(&plaintext)?,
             }
         }
-        _ => fatal_usage_error("--state must be 0 (lock) or 1 (unlock), or pass --status"),
+        _ => {
+            return Err(usage(
+                "--state must be 0 (lock) or 1 (unlock), or pass --status",
+            ))
+        }
     }
     Ok(())
 }
@@ -1965,8 +1986,8 @@ fn run_export(conn: &Connection, command: ExportCommand) -> Result<()> {
             let master_password = prompt_secret("Master password: ")?;
             let bundle =
                 export::export_credential(conn, id, &master_password, &recipient_public_key)?;
-            locked_files::write_owner_only(&output, &bundle)?;
-            println!("Exported credential {id} to {}", output.display());
+            env::write_new(&output, &bundle)?;
+            outln!("Exported credential {id} to {}", output.display());
         }
         ExportCommand::File {
             id,
@@ -1975,9 +1996,15 @@ fn run_export(conn: &Connection, command: ExportCommand) -> Result<()> {
         } => {
             let recipient_public_key = read_key_array_32(&recipient_key_file)?;
             let password = prompt_secret("Unlock password: ")?;
-            let bundle = export::export_file(conn, id, &password, &recipient_public_key)?;
-            locked_files::write_owner_only(&output, &bundle)?;
-            println!("Exported file {id} to {}", output.display());
+            let bundle = export::export_file_in(
+                &mut env::EnvStorage,
+                conn,
+                id,
+                &password,
+                &recipient_public_key,
+            )?;
+            env::write_new(&output, &bundle)?;
+            outln!("Exported file {id} to {}", output.display());
         }
     }
     Ok(())
@@ -2010,20 +2037,16 @@ fn persist_checked_key(
 /// Official clients verify a KeyQuorum-signed provider certificate before
 /// sending a bearer. A modified relay cannot skip this check.
 fn authenticate_official_relay(url: &str) -> Result<provider::Certificate> {
-    let now = provider::system_now_utc()?;
-    let krl_path = std::env::var("KEYQUORUM_PROVIDER_KRL")
+    let now = env::now_utc()?;
+    let root = env::provider_root();
+    let revoked = match env::var("KEYQUORUM_PROVIDER_KRL")
         .ok()
-        .filter(|s| !s.is_empty());
-    let revoked = provider::load_revocation_list(
-        &provider::KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY,
-        krl_path.as_deref().map(Path::new),
-    )?;
-    relay::authenticate_provider(
-        url,
-        &provider::KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY,
-        &now,
-        &revoked,
-    )
+        .filter(|s| !s.is_empty())
+    {
+        Some(path) => provider::verify_revocation_list(&root, &env::read(Path::new(&path))?)?,
+        None => Default::default(),
+    };
+    relay::authenticate_provider(&env::EnvRelay, url, &root, &now, &revoked)
 }
 
 fn resolve_relay_url(
@@ -2036,7 +2059,7 @@ fn resolve_relay_url(
         relay::validate_relay_url(&url)?;
         return Ok(url);
     }
-    match std::env::var("KEYQUORUM_RELAY_URL") {
+    match env::var("KEYQUORUM_RELAY_URL") {
         Ok(url) if !url.is_empty() => {
             let url = db::relay_credential::normalize_url(&url);
             relay::validate_relay_url(&url)?;
@@ -2070,7 +2093,13 @@ pub(crate) fn pull_all_device_packages(
     let mut after = None;
     let mut packages = Vec::new();
     loop {
-        let page = relay::pull_device_packages(url, api_key, after, Some(relay::MAX_INBOX_PAGE))?;
+        let page = relay::pull_device_packages(
+            &env::EnvRelay,
+            url,
+            api_key,
+            after,
+            Some(relay::MAX_INBOX_PAGE),
+        )?;
         packages.extend(page.packages);
         match page.next_after {
             Some(next) if after.is_none_or(|prev| next > prev) => after = Some(next),
@@ -2095,14 +2124,14 @@ pub(crate) fn resolve_relay_auth(
     let url = resolve_relay_url(conn, explicit_url, required)?;
     authenticate_official_relay(&url)?;
     let provided = explicit_key.filter(|s| !s.is_empty()).or_else(|| {
-        match std::env::var("KEYQUORUM_RELAY_API_KEY") {
+        match env::var("KEYQUORUM_RELAY_API_KEY") {
             Ok(key) if !key.is_empty() => Some(key),
             _ => None,
         }
     });
 
     if let Some(token) = provided {
-        let check = relay::check_key(&url, &token)?;
+        let check = relay::check_key(&env::EnvRelay, &url, &token)?;
         if !check.valid {
             return Err(Error::InvalidApiKey);
         }
@@ -2115,7 +2144,7 @@ pub(crate) fn resolve_relay_auth(
 
     match db::relay_credential::get(conn, &url, required.as_str())? {
         Some(stored) => {
-            let check = relay::check_key_hash(&url, &stored.key_hash)?;
+            let check = relay::check_key_hash(&env::EnvRelay, &url, &stored.key_hash)?;
             if !check.valid {
                 db::relay_credential::delete(conn, &url, required.as_str())?;
                 return Err(Error::RelayRequest(format!(
@@ -2134,12 +2163,14 @@ pub(crate) fn resolve_relay_auth(
 }
 
 fn run_loadkey(db_path: &Path, api_key: Option<String>, url: Option<String>) -> Result<()> {
-    let db_path_str = db_path.to_str().ok_or(Error::InvalidPath)?;
-    let conn = db::open(db_path_str)?;
+    env::with_db(db_path, |conn| loadkey_in_store(conn, api_key, url))
+}
+
+fn loadkey_in_store(conn: &Connection, api_key: Option<String>, url: Option<String>) -> Result<()> {
     let url = if let Some(url) = url.filter(|s| !s.is_empty()) {
         db::relay_credential::normalize_url(&url)
     } else {
-        match std::env::var("KEYQUORUM_RELAY_URL") {
+        match env::var("KEYQUORUM_RELAY_URL") {
             Ok(url) if !url.is_empty() => db::relay_credential::normalize_url(&url),
             _ => {
                 return Err(Error::RelayRequest(
@@ -2154,20 +2185,22 @@ fn run_loadkey(db_path: &Path, api_key: Option<String>, url: Option<String>) -> 
         Some(token) => token,
         None => prompt_secret("Relay API key: ")?,
     };
-    let check = relay::check_key(&url, &token)?;
-    persist_checked_key(&conn, &url, &token, &check)?;
+    let check = relay::check_key(&env::EnvRelay, &url, &token)?;
+    persist_checked_key(conn, &url, &token, &check)?;
     let scope = check.scope.as_deref().unwrap_or("unknown");
-    print!("Stored {scope} API key for {url}");
+    out!("Stored {scope} API key for {url}");
     if let Some(label) = check.label.as_deref().filter(|s| !s.is_empty()) {
-        print!(" ({label})");
+        out!(" ({label})");
     }
-    println!();
+    outln!();
     Ok(())
 }
 
 fn run_relay(db_path: &Path, command: RelayCommand) -> Result<()> {
-    let db_path_str = db_path.to_str().ok_or(Error::InvalidPath)?;
-    let conn = db::open(db_path_str)?;
+    env::with_db(db_path, |conn| relay_in_store(conn, command))
+}
+
+fn relay_in_store(conn: &Connection, command: RelayCommand) -> Result<()> {
     match command {
         RelayCommand::Push {
             dir,
@@ -2176,24 +2209,22 @@ fn run_relay(db_path: &Path, command: RelayCommand) -> Result<()> {
             expires,
         } => {
             if let Some(expires) = expires.as_deref() {
-                locked_files::require_future_expires_utc(&conn, expires)?;
+                locked_files::require_future_expires_utc(conn, expires)?;
             }
             let (url, api_key) =
-                resolve_relay_auth(&conn, url, api_key, relay::ApiKeyScope::InboxPush)?;
-            let trees = export_local_public_trees(&conn)?;
+                resolve_relay_auth(conn, url, api_key, relay::ApiKeyScope::InboxPush)?;
+            let trees = export_local_public_trees(conn)?;
             let mut uploaded = 0usize;
-            let mut entries: Vec<_> = fs::read_dir(&dir)?.collect::<std::io::Result<_>>()?;
-            entries.sort_by_key(|e| e.path());
-            for entry in entries {
-                let path = entry.path();
+            for path in env::read_dir(&dir)? {
                 if path.extension().and_then(|s| s.to_str()) != Some("kqpb") {
                     continue;
                 }
-                let bytes = fs::read(&path)?;
+                let bytes = env::read(&path)?;
                 let attach_trees = !trees.is_empty() && uploaded == 0;
                 let accepted = if expires.is_some() || attach_trees {
                     let trees = if attach_trees { trees.as_slice() } else { &[] };
                     relay::push_inbox_with_trees_until(
+                        &env::EnvRelay,
                         &url,
                         &api_key,
                         &bytes,
@@ -2201,9 +2232,9 @@ fn run_relay(db_path: &Path, command: RelayCommand) -> Result<()> {
                         expires.as_deref(),
                     )?
                 } else {
-                    relay::push_inbox(&url, &api_key, &bytes)?
+                    relay::push_inbox(&env::EnvRelay, &url, &api_key, &bytes)?
                 };
-                println!(
+                outln!(
                     "{} -> id {} ({})",
                     path.display(),
                     accepted.id,
@@ -2218,7 +2249,7 @@ fn run_relay(db_path: &Path, command: RelayCommand) -> Result<()> {
                 )));
             }
             if !trees.is_empty() {
-                println!(
+                outln!(
                     "Updated relay public-tree context ({} tree{})",
                     trees.len(),
                     if trees.len() == 1 { "" } else { "s" }
@@ -2236,14 +2267,14 @@ fn run_relay(db_path: &Path, command: RelayCommand) -> Result<()> {
             limit,
         } => {
             let (url, api_key) =
-                resolve_relay_auth(&conn, url, api_key, relay::ApiKeyScope::InboxPull)?;
+                resolve_relay_auth(conn, url, api_key, relay::ApiKeyScope::InboxPull)?;
             if !(1..=relay::MAX_INBOX_PAGE).contains(&limit) {
                 return Err(Error::InvalidInboxPage);
             }
-            let listed = relay::pull_inbox(&url, &api_key, after, Some(limit))?;
+            let listed = relay::pull_inbox(&env::EnvRelay, &url, &api_key, after, Some(limit))?;
             for slice in &listed.trees {
-                let applied = key_tree::apply_public_tree(&conn, None, slice)?;
-                println!(
+                let applied = key_tree::apply_public_tree(conn, None, slice)?;
+                outln!(
                     "Merged {} (generation {}, {} nodes) into key {applied}",
                     slice.label,
                     slice.generation,
@@ -2252,7 +2283,7 @@ fn run_relay(db_path: &Path, command: RelayCommand) -> Result<()> {
             }
             if listed.envelopes.is_empty() {
                 if listed.trees.is_empty() {
-                    println!("(no envelopes)");
+                    outln!("(no envelopes)");
                 }
                 return Ok(());
             }
@@ -2267,7 +2298,7 @@ fn run_relay(db_path: &Path, command: RelayCommand) -> Result<()> {
             };
 
             if let Some(output_dir) = &output_dir {
-                fs::create_dir_all(output_dir)?;
+                env::create_dir_all(output_dir)?;
             }
 
             for item in &listed.envelopes {
@@ -2276,16 +2307,18 @@ fn run_relay(db_path: &Path, command: RelayCommand) -> Result<()> {
                         .map_err(|_| Error::InvalidBridgePackage)?;
                 if let Some(output_dir) = &output_dir {
                     let path = output_dir.join(format!("{}.kqpb", item.id));
-                    locked_files::write_owner_only(&path, &bytes)?;
-                    println!("Wrote {}", path.display());
+                    env::write_new(&path, &bytes)?;
+                    outln!("Wrote {}", path.display());
                 }
                 if let Some(sk) = share_sk.as_ref() {
-                    match org_update::import_any(&conn, &bytes, sk)? {
-                        org_update::ImportedEnvelope::Bridge(summary) => println!(
+                    match org_update::import_any(conn, &bytes, sk)? {
+                        org_update::ImportedEnvelope::Bridge(summary) => outln!(
                             "Imported envelope {} as private bridge {} gen {}",
-                            item.id, summary.uid, summary.generation
+                            item.id,
+                            summary.uid,
+                            summary.generation
                         ),
-                        org_update::ImportedEnvelope::Update(applied) => println!(
+                        org_update::ImportedEnvelope::Update(applied) => outln!(
                             "Imported envelope {}: {}",
                             item.id,
                             describe_applied_update(&applied)
@@ -2294,7 +2327,7 @@ fn run_relay(db_path: &Path, command: RelayCommand) -> Result<()> {
                 }
             }
             if let Some(cursor) = listed.next_after {
-                println!("More envelopes remain; pass --after {cursor} to continue");
+                outln!("More envelopes remain; pass --after {cursor} to continue");
             }
         }
     }
@@ -2388,7 +2421,7 @@ fn run_share(conn: &Connection, command: ShareCommand) -> Result<()> {
             pin_required_every_use,
         } => {
             if ttl_seconds.is_some() && expires.is_some() {
-                fatal_usage_error("use --expires or --ttl-seconds, not both");
+                return Err(usage("use --expires or --ttl-seconds, not both"));
             }
             let share = match expires {
                 Some(raw) => {
@@ -2423,26 +2456,26 @@ fn run_share(conn: &Connection, command: ShareCommand) -> Result<()> {
                 pin::verify_pin(conn, ResourceType::CredentialShare, share_id, &pin_value)?;
             }
             let credential_id = sharing::redeem_credential_share(conn, &token)?;
-            println!("Redeemed credential {credential_id}");
+            outln!("Redeemed credential {credential_id}");
         }
         ShareCommand::RedeemFile => {
             let token = prompt_secret("File share token: ")?;
-            sharing::purge_expired_file_share(conn, &token)?;
+            sharing::purge_expired_file_share_in(&mut env::EnvStorage, conn, &token)?;
             let share_id = sharing::file_share_id_for_token(conn, &token)?;
             if pin::verification_required(conn, ResourceType::FileShare, share_id)? {
                 let pin_value = prompt_secret("PIN: ")?;
                 pin::verify_pin(conn, ResourceType::FileShare, share_id, &pin_value)?;
             }
-            let file_id = sharing::redeem_file_share(conn, &token)?;
-            println!("Redeemed file {file_id}");
+            let file_id = sharing::redeem_file_share_in(&mut env::EnvStorage, conn, &token)?;
+            outln!("Redeemed file {file_id}");
         }
         ShareCommand::RevokeCredential { share_id } => {
             sharing::revoke_credential_share(conn, share_id)?;
-            println!("Revoked credential share {share_id}");
+            outln!("Revoked credential share {share_id}");
         }
         ShareCommand::RevokeFile { share_id } => {
             sharing::revoke_file_share(conn, share_id)?;
-            println!("Revoked file share {share_id}");
+            outln!("Revoked file share {share_id}");
         }
     }
     Ok(())
@@ -2452,29 +2485,29 @@ fn run_pin(conn: &Connection, command: PinCommand) -> Result<()> {
     match command {
         PinCommand::Relock { resource, id } => {
             pin::relock(conn, resource.into(), id)?;
-            println!("Relocked PIN for resource {id}");
+            outln!("Relocked PIN for resource {id}");
         }
     }
     Ok(())
 }
 
 fn print_share(share: &sharing::Share) {
-    println!("Share id:   {}", share.id);
-    println!("Token:      {}", share.token);
-    println!("Expires at: {}", share.expires_at);
+    outln!("Share id:   {}", share.id);
+    outln!("Token:      {}", share.token);
+    outln!("Expires at: {}", share.expires_at);
 }
 
 fn print_tree_node(node: &TreeNodeSummary, depth: usize) {
     let indent = "  ".repeat(depth);
     let inactive = if node.is_active { "" } else { " [inactive]" };
     match &node.hardware_key_label {
-        Some(label) => println!(
+        Some(label) => outln!(
             "{indent}{} (node {}){inactive} -> hardware key {} ({label})",
             node.label,
             node.id,
             node.hardware_key_id.unwrap_or(-1)
         ),
-        None => println!(
+        None => outln!(
             "{indent}{} (node {}){inactive} [{} of {}]",
             node.label,
             node.id,
@@ -2483,7 +2516,7 @@ fn print_tree_node(node: &TreeNodeSummary, depth: usize) {
         ),
     }
     if !node.allowed_bridges.is_empty() {
-        println!(
+        outln!(
             "{indent}  allowed bridges: {}",
             node.allowed_bridges.join(", ")
         );
@@ -2523,19 +2556,21 @@ fn apply_hardware_revoke(conn: &mut Connection, args: HardwareRevokeArgs<'_>) ->
         let _node = leaf_backed_by(&tree, node_label, hardware_id)?;
         for peer in remove_peers {
             key_tree::remove_bridge(conn, key_id, node_label, peer)?;
-            println!("Removed bridge {node_label} <-> {peer}");
+            outln!("Removed bridge {node_label} <-> {peer}");
         }
         for peer in deny_peers {
             key_tree::deny_bridge(conn, key_id, node_label, peer)?;
-            println!("Denied {node_label} bridging to {peer}");
+            outln!("Denied {node_label} bridging to {peer}");
         }
     }
 
     let leaves = key_tree::drop_bindings_for_hardware(conn, hardware_id)?;
     for leaf in &leaves {
-        println!(
+        outln!(
             "Dropped binds for {} (node {}) on tree {}",
-            leaf.label, leaf.node_id, leaf.key_id
+            leaf.label,
+            leaf.node_id,
+            leaf.key_id
         );
     }
 
@@ -2549,18 +2584,22 @@ fn apply_hardware_revoke(conn: &mut Connection, args: HardwareRevokeArgs<'_>) ->
             }
             _ => match leaves.as_slice() {
                 [leaf] => (leaf.key_id, leaf.node_id),
-                [] => fatal_usage_error(
-                    "revoke --evict needs a live leaf; this hardware key backs none",
-                ),
-                _ => fatal_usage_error(
-                    "this hardware key backs more than one leaf; pass --key-id and --node",
-                ),
+                [] => {
+                    return Err(usage(
+                        "revoke --evict needs a live leaf; this hardware key backs none",
+                    ))
+                }
+                _ => {
+                    return Err(usage(
+                        "this hardware key backs more than one leaf; pass --key-id and --node",
+                    ))
+                }
             },
         };
         let summary = key_tree::describe(conn, target.0)?;
         let shares = collect_shares(conn, &summary.root, share_files, slots)?;
         let changes = key_tree::evict_and_refresh(conn, target.0, target.1, &shares)?;
-        println!("Evicted node {}; survivor shares refreshed", target.1);
+        outln!("Evicted node {}; survivor shares refreshed", target.1);
         evict_changes = changes;
     }
 
@@ -2576,7 +2615,7 @@ fn apply_hardware_revoke(conn: &mut Connection, args: HardwareRevokeArgs<'_>) ->
     }
 
     keys::revoke_key(conn, hardware_id)?;
-    println!("Revoked key {hardware_id}");
+    outln!("Revoked key {hardware_id}");
 
     write_bridge_change_notices(&evict_changes)?;
     write_bridge_change_notices(&revoke_changes)?;
@@ -2589,11 +2628,13 @@ fn write_bridge_change_notices(changes: &[private_bridge::BridgeChange]) -> Resu
             private_bridge::BridgeChangeKind::NeedsMemberRotate => "remaining members must rotate",
             private_bridge::BridgeChangeKind::Destroyed => "bridge destroyed",
         };
-        println!(
+        outln!(
             "Private bridge {}: removed {}; {}.",
-            change.uid, change.removed_member, kind
+            change.uid,
+            change.removed_member,
+            kind
         );
-        println!(
+        outln!(
             "  Notify these stores (members + department managers): {}",
             change.notify.join(", ")
         );
@@ -2602,8 +2643,8 @@ fn write_bridge_change_notices(changes: &[private_bridge::BridgeChange]) -> Resu
             change.uid,
             sanitize_label(&change.removed_member)?
         );
-        locked_files::write_owner_only(Path::new(&notice_path), &change.notice)?;
-        println!("  Wrote notice {notice_path}");
+        env::write_new(Path::new(&notice_path), &change.notice)?;
+        outln!("  Wrote notice {notice_path}");
     }
     Ok(())
 }
@@ -2616,7 +2657,7 @@ fn print_lca(conn: &Connection, key_id: i64, nodes: &[String]) -> Result<()> {
     }
     let lca_idx = tree.find_lowest_common_ancestor_of(&indices)?;
     let lca = &tree.nodes[lca_idx];
-    println!("{} (node {})", lca.id, lca.db_id);
+    outln!("{} (node {})", lca.id, lca.db_id);
     Ok(())
 }
 
@@ -2631,7 +2672,7 @@ fn resolve_node_index(
         return Ok(idx);
     }
     let path = Path::new(token);
-    if !path.is_file() {
+    if !env::is_file(path) {
         return Err(Error::NodeNotFound);
     }
     let raw = read_key_bytes(path)?;
@@ -2656,9 +2697,9 @@ fn resolve_node_index(
     match matches.as_slice() {
         [idx] => Ok(*idx),
         [] => Err(Error::NodeNotFound),
-        _ => fatal_usage_error(&format!(
+        _ => Err(usage(&format!(
             "{token} backs more than one leaf; pass the node label from `tree`"
-        )),
+        ))),
     }
 }
 
@@ -2670,9 +2711,9 @@ fn leaf_backed_by<'a>(
     let idx = tree.index_by_label(label)?;
     let node = &tree.nodes[idx];
     if node.hardware_key_id != Some(hardware_id) {
-        fatal_usage_error(&format!(
+        return Err(usage(&format!(
             "--node '{label}' is not a leaf backed by hardware key {hardware_id}"
-        ));
+        )));
     }
     Ok(node)
 }
@@ -2686,11 +2727,13 @@ fn signing_secret_from(
         return read_key_array_32(path);
     }
     let (Some(path), Some(slot)) = (device_path, slot) else {
-        fatal_usage_error("countersign requires --signing-key-file or --device and --slot");
+        return Err(usage(
+            "countersign requires --signing-key-file or --device and --slot",
+        ));
     };
-    let container = crate::device::open(path)?;
-    let passphrase = crate::device::prompt_passphrase(&format!("Passphrase for {slot}: "))?;
-    let secrets = crate::device::open_slot(&container, slot, &passphrase)?;
+    let container = env::fs(|fs| device::open_in(fs, path))?;
+    let passphrase = env::prompt_passphrase(&format!("Passphrase for {slot}: "))?;
+    let secrets = env::fs(|fs| device::open_slot_in(fs, &container, slot, &passphrase))?;
     Ok(*secrets.signing_secret)
 }
 
@@ -2701,20 +2744,20 @@ fn encryption_secret_from(
     match (share_file, slot) {
         (Some(path), None) => Ok(zeroize::Zeroizing::new(read_key_array_32(Path::new(path))?)),
         (None, Some(spec)) => open_slot_encryption_secret(spec),
-        _ => fatal_usage_error("pass --share-file or --slot container=label"),
+        _ => Err(usage("pass --share-file or --slot container=label")),
     }
 }
 
 fn open_slot_encryption_secret(entry: &str) -> Result<zeroize::Zeroizing<[u8; 32]>> {
     let (path, label) = entry
         .rsplit_once('=')
-        .unwrap_or_else(|| fatal_usage_error("--slot must be container=label"));
+        .ok_or_else(|| usage("--slot must be container=label"))?;
     if path.is_empty() || label.is_empty() {
-        fatal_usage_error("--slot must be container=label");
+        return Err(usage("--slot must be container=label"));
     }
-    let container = crate::device::open(Path::new(path))?;
-    let passphrase = crate::device::prompt_passphrase(&format!("Passphrase for {label}: "))?;
-    let secrets = crate::device::open_slot(&container, label, &passphrase)?;
+    let container = env::fs(|fs| device::open_in(fs, Path::new(path)))?;
+    let passphrase = env::prompt_passphrase(&format!("Passphrase for {label}: "))?;
+    let secrets = env::fs(|fs| device::open_slot_in(fs, &container, label, &passphrase))?;
     Ok(secrets.encryption_secret)
 }
 
@@ -2732,13 +2775,13 @@ fn add_slot_shares(
     for entry in slots {
         let (path, label) = entry
             .rsplit_once('=')
-            .unwrap_or_else(|| fatal_usage_error("--slot must be container=label"));
+            .ok_or_else(|| usage("--slot must be container=label"))?;
         if path.is_empty() || label.is_empty() {
-            fatal_usage_error("--slot must be container=label");
+            return Err(usage("--slot must be container=label"));
         }
-        let container = crate::device::open(Path::new(path))?;
-        let passphrase = crate::device::prompt_passphrase(&format!("Passphrase for {label}: "))?;
-        let secrets = crate::device::open_slot(&container, label, &passphrase)?;
+        let container = env::fs(|fs| device::open_in(fs, Path::new(path)))?;
+        let passphrase = env::prompt_passphrase(&format!("Passphrase for {label}: "))?;
+        let secrets = env::fs(|fs| device::open_slot_in(fs, &container, label, &passphrase))?;
         unwrap_leaves_for_secret(conn, &leaves, shares, secrets.encryption_secret.as_slice())?;
     }
     Ok(())
@@ -2747,7 +2790,7 @@ fn add_slot_shares(
 fn approval_grants(
     file_id: i64,
     key_id: i64,
-    devices: &[crate::device::PresentedDevice],
+    devices: &[device::PresentedDevice],
     approves: &[String],
 ) -> Result<Vec<crate::authority::UnlockGrant>> {
     if approves.is_empty() {
@@ -2757,9 +2800,9 @@ fn approval_grants(
     device_ids.sort();
     let mut grants = Vec::with_capacity(approves.len());
     for entry in approves {
-        let (leaf, spec) = entry.split_once('=').unwrap_or_else(|| {
-            fatal_usage_error("--approve must be leaf=key-file or leaf=container>slot")
-        });
+        let (leaf, spec) = entry
+            .split_once('=')
+            .ok_or_else(|| usage("--approve must be leaf=key-file or leaf=container>slot"))?;
         let parent = private_bridge::parent_node_label(leaf)
             .ok_or(Error::UnlockApprovalRequired)?
             .to_string();
@@ -2771,10 +2814,10 @@ fn approval_grants(
             &device_ids,
         )?;
         let signature = if let Some((container, slot)) = spec.split_once('>') {
-            let opened = crate::device::open(Path::new(container))?;
-            let passphrase = crate::device::prompt_passphrase(&format!("Passphrase for {slot}: "))?;
-            let secrets = crate::device::open_slot(&opened, slot, &passphrase)?;
-            crate::device::sign_message(&secrets, &preimage)
+            let opened = env::fs(|fs| device::open_in(fs, Path::new(container)))?;
+            let passphrase = env::prompt_passphrase(&format!("Passphrase for {slot}: "))?;
+            let secrets = env::fs(|fs| device::open_slot_in(fs, &opened, slot, &passphrase))?;
+            device::sign_message(&secrets, &preimage)
         } else {
             let secret = zeroize::Zeroizing::new(read_key_array_32(Path::new(spec))?);
             signing::sign(&secret, &preimage)
@@ -2808,7 +2851,7 @@ fn collect_shares(
     for entry in share_files {
         if let Some((node_id_str, path)) = entry.split_once('=') {
             if let Ok(node_id) = node_id_str.parse::<i64>() {
-                apply_raw_share_file(&leaves, &mut shares, node_id, Path::new(path));
+                apply_raw_share_file(&leaves, &mut shares, node_id, Path::new(path))?;
                 continue;
             }
         }
@@ -2829,11 +2872,11 @@ fn collect_shares(
             continue;
         }
         let path = Path::new(trimmed);
-        if path.exists() {
+        if env::exists(path) {
             apply_key_file(conn, &leaves, &mut shares, path)?;
         } else {
             let secret = hex::decode(trimmed)
-                .unwrap_or_else(|_| fatal_usage_error("key must be a file path or hex-encoded"));
+                .map_err(|_| usage("key must be a file path or hex-encoded"))?;
             unwrap_leaves_for_secret(conn, &leaves, &mut shares, &secret)?;
         }
     }
@@ -2846,20 +2889,21 @@ fn apply_raw_share_file(
     shares: &mut HashMap<i64, Vec<u8>>,
     node_id: i64,
     path: &Path,
-) {
+) -> Result<()> {
     if !leaves.iter().any(|(id, _, _)| *id == node_id) {
-        fatal_usage_error(&format!(
+        return Err(usage(&format!(
             "--share-file references node {node_id}, which isn't a leaf in this tree \
              (see `tree`/`--status` for valid leaf node ids)"
-        ));
+        )));
     }
     if shares.contains_key(&node_id) {
-        fatal_usage_error(&format!(
+        return Err(usage(&format!(
             "--share-file for node {node_id} was given more than once"
-        ));
+        )));
     }
-    let bytes = read_hex_bytes(path).unwrap_or_else(|err| fatal_usage_error(&err.to_string()));
+    let bytes = read_hex_bytes(path).map_err(|err| usage(&err.to_string()))?;
     shares.insert(node_id, bytes);
+    Ok(())
 }
 
 fn apply_key_file(
@@ -2870,7 +2914,10 @@ fn apply_key_file(
 ) -> Result<()> {
     let raw = read_key_bytes(path)?;
     if raw.len() != 32 {
-        fatal_usage_error(&format!("{} is not a 32-byte key file", path.display()));
+        return Err(usage(&format!(
+            "{} is not a 32-byte key file",
+            path.display()
+        )));
     }
     let arr: [u8; 32] = raw.as_slice().try_into().expect("length checked above");
     let secret = match keys::get_key_by_public_key(conn, &arr) {
@@ -2885,18 +2932,18 @@ fn resolve_private_for_public(
     public_key: &[u8; 32],
 ) -> Result<zeroize::Zeroizing<[u8; 32]>> {
     let sibling = public_path.with_extension("key");
-    if sibling != public_path && sibling.is_file() {
+    if sibling != public_path && env::is_file(&sibling) {
         let raw = read_key_bytes(&sibling)?;
         let secret: [u8; 32] = raw
             .as_slice()
             .try_into()
             .map_err(|_| Error::InvalidPublicKey)?;
         if keys::encryption_public_from_secret(&secret) != *public_key {
-            fatal_usage_error(&format!(
+            return Err(usage(&format!(
                 "{} does not match public key {}",
                 sibling.display(),
                 public_path.display()
-            ));
+            )));
         }
         return Ok(zeroize::Zeroizing::new(secret));
     }
@@ -2907,10 +2954,10 @@ fn resolve_private_for_public(
     ))?;
     let trimmed = entered.trim();
     if trimmed.is_empty() {
-        fatal_usage_error(&format!(
+        return Err(usage(&format!(
             "{} is a public key; pass the matching .key file or enter the private key",
             public_path.display()
-        ));
+        )));
     }
     let raw = keys::parse_key_text(trimmed)?;
     let secret: [u8; 32] = raw
@@ -2918,10 +2965,10 @@ fn resolve_private_for_public(
         .try_into()
         .map_err(|_| Error::InvalidPublicKey)?;
     if keys::encryption_public_from_secret(&secret) != *public_key {
-        fatal_usage_error(&format!(
+        return Err(usage(&format!(
             "private key does not match {}",
             public_path.display()
-        ));
+        )));
     }
     Ok(zeroize::Zeroizing::new(secret))
 }
@@ -2950,10 +2997,10 @@ fn unwrap_leaves_for_secret(
         );
     }
     if !matched {
-        fatal_usage_error(&format!(
+        return Err(usage(&format!(
             "key file is registered as hardware key {} but does not back any leaf in this tree",
             hardware.id
-        ));
+        )));
     }
     Ok(())
 }
@@ -3003,7 +3050,7 @@ fn infer_root_label(
 ) -> Result<String> {
     if let Some(root) = explicit {
         if root.is_empty() {
-            fatal_usage_error("--root must not be empty");
+            return Err(usage("--root must not be empty"));
         }
         return Ok(root.to_string());
     }
@@ -3014,24 +3061,28 @@ fn infer_root_label(
     if prefixes.iter().all(|prefix| prefix.is_some()) {
         let first = prefixes[0].expect("all prefixes are Some");
         if first.is_empty() || prefixes.iter().any(|prefix| prefix != &Some(first)) {
-            fatal_usage_error("dotted --leaf labels do not share a common parent; pass --root");
+            return Err(usage(
+                "dotted --leaf labels do not share a common parent; pass --root",
+            ));
         }
         return Ok(first.to_string());
     }
     if prefixes.iter().all(|prefix| prefix.is_none()) {
         return Ok(fallback.to_string());
     }
-    fatal_usage_error("mix of dotted and undotted --leaf labels; pass --root");
+    Err(usage(
+        "mix of dotted and undotted --leaf labels; pass --root",
+    ))
 }
 
 fn parse_bind_pairs(args: &[String]) -> Result<Vec<(String, String)>> {
     let mut pairs = Vec::with_capacity(args.len());
     for entry in args {
-        let (a, b) = entry.split_once('=').unwrap_or_else(|| {
-            fatal_usage_error("--bind must be in the form label=peer (e.g. M.S=M.A)")
-        });
+        let (a, b) = entry
+            .split_once('=')
+            .ok_or_else(|| usage("--bind must be in the form label=peer (e.g. M.S=M.A)"))?;
         if a.is_empty() || b.is_empty() || a == b {
-            fatal_usage_error("--bind must name two different labels");
+            return Err(usage("--bind must name two different labels"));
         }
         pairs.push((a.to_string(), b.to_string()));
     }
@@ -3055,13 +3106,13 @@ fn resolve_or_register_pub(
     match keys::get_key_by_public_key(conn, &public_key) {
         Ok(hardware) => {
             if register {
-                eprintln!("Using existing hardware key {} for {label}", hardware.id);
+                errln!("Using existing hardware key {} for {label}", hardware.id);
             }
             Ok(hardware.id)
         }
         Err(_) if register => {
             let id = keys::register_key(conn, label, keys::KeyType::Encryption, &public_key)?;
-            eprintln!("Registered {label} as hardware key {id}");
+            errln!("Registered {label} as hardware key {id}");
             Ok(id)
         }
         Err(err) => Err(err),
@@ -3104,8 +3155,8 @@ fn find_tree_node<'a>(node: &'a TreeNodeSummary, label: &str) -> Option<&'a Tree
 fn write_live_spec(conn: &Connection, key_id: i64, path: &Path) -> Result<()> {
     let spec = key_tree::export_spec(conn, key_id)?;
     let rendered = serde_json::to_string_pretty(&spec).map_err(|_| Error::InvalidTreeSpec)?;
-    fs::write(path, format!("{rendered}\n"))?;
-    eprintln!("Wrote live spec to {}", path.display());
+    env::write(path, format!("{rendered}\n").as_bytes())?;
+    errln!("Wrote live spec to {}", path.display());
     Ok(())
 }
 
@@ -3118,13 +3169,11 @@ fn parse_spec_leaves(args: &[String]) -> Result<Vec<SpecLeaf>> {
     let mut leaves = Vec::with_capacity(args.len());
     let mut seen = std::collections::HashSet::new();
     for entry in args {
-        let (label, path) = entry.split_once('=').unwrap_or_else(|| {
-            fatal_usage_error(
-                "--leaf must be in the form label=path (e.g. M.S=SoftwareDepartment.pub)",
-            )
-        });
+        let (label, path) = entry.split_once('=').ok_or_else(|| {
+            usage("--leaf must be in the form label=path (e.g. M.S=SoftwareDepartment.pub)")
+        })?;
         if label.is_empty() || path.is_empty() {
-            fatal_usage_error("--leaf must be in the form label=path");
+            return Err(usage("--leaf must be in the form label=path"));
         }
         if !seen.insert(label.to_string()) {
             return Err(Error::DuplicateNodeLabel);
@@ -3138,28 +3187,28 @@ fn parse_spec_leaves(args: &[String]) -> Result<Vec<SpecLeaf>> {
 }
 
 fn generate_leaf_keypair(pub_path: &Path) -> Result<()> {
-    if pub_path.exists() {
-        fatal_usage_error(&format!(
+    if env::exists(pub_path) {
+        return Err(usage(&format!(
             "refusing to overwrite existing key file {}",
             pub_path.display()
-        ));
+        )));
     }
     let key_path = pub_path.with_extension("key");
-    if key_path.exists() {
-        fatal_usage_error(&format!(
+    if env::exists(&key_path) {
+        return Err(usage(&format!(
             "refusing to overwrite existing key file {}",
             key_path.display()
-        ));
+        )));
     }
     if let Some(parent) = pub_path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            fs::create_dir_all(parent)?;
+        if !parent.as_os_str().is_empty() && !env::exists(parent) {
+            env::create_dir_all(parent)?;
         }
     }
     let (secret, public) = keys::generate_encryption_keypair();
     write_hex_file(pub_path, &public)?;
     write_hex_file(&key_path, secret.as_ref())?;
-    eprintln!(
+    errln!(
         "Generated {} and {}",
         pub_path.display(),
         key_path.display()
@@ -3168,7 +3217,7 @@ fn generate_leaf_keypair(pub_path: &Path) -> Result<()> {
 }
 
 fn parse_tree_spec(conn: &Connection, path: &Path) -> Result<NodeSpec> {
-    let contents = fs::read_to_string(path)?;
+    let contents = env::read_to_string(path)?;
     let mut value: serde_json::Value =
         serde_json::from_str(&contents).map_err(|_| Error::InvalidTreeSpec)?;
     let base = path.parent().unwrap_or_else(|| Path::new("."));
@@ -3208,7 +3257,7 @@ fn resolve_public_key_files(
 
 /// Exact file bytes for `--source`, after checking the text parses as a key.
 fn read_key_file_payload(path: &Path) -> Result<Vec<u8>> {
-    let contents = fs::read(path)?;
+    let contents = env::read(path)?;
     let text = std::str::from_utf8(&contents).map_err(|_| Error::InvalidPublicKey)?;
     keys::parse_key_text(text)?;
     if contents.is_empty() {
@@ -3220,16 +3269,16 @@ fn read_key_file_payload(path: &Path) -> Result<Vec<u8>> {
 fn write_reassembled_secret(secret: &[u8], output: Option<&Path>) -> Result<()> {
     match output {
         Some(path) => {
-            locked_files::write_owner_only(path, secret)?;
-            eprintln!("Wrote reassembled key to {}", path.display());
+            env::write_new(path, secret)?;
+            errln!("Wrote reassembled key to {}", path.display());
         }
-        None => println!("{}", hex::encode(secret)),
+        None => outln!("{}", hex::encode(secret)),
     }
     Ok(())
 }
 
 fn read_key_bytes(path: &Path) -> Result<Vec<u8>> {
-    let contents = fs::read_to_string(path)?;
+    let contents = env::read_to_string(path)?;
     keys::parse_key_text(&contents)
 }
 
@@ -3240,7 +3289,7 @@ pub(crate) fn read_key_array_32(path: &Path) -> Result<[u8; 32]> {
 }
 
 fn read_hex_bytes(path: &Path) -> Result<Vec<u8>> {
-    let contents = fs::read_to_string(path)?;
+    let contents = env::read_to_string(path)?;
     hex::decode(contents.trim()).map_err(|_| Error::InvalidPublicKey)
 }
 
@@ -3251,27 +3300,23 @@ fn read_hex_array_64(path: &Path) -> Result<[u8; 64]> {
 }
 
 fn write_hex_file(path: &Path, bytes: &[u8]) -> Result<()> {
-    locked_files::write_owner_only(path, hex::encode(bytes).as_bytes())
+    env::write_new(path, hex::encode(bytes).as_bytes())
 }
 
-/// Prints `message` and exits immediately (clap's own convention: exit
-/// code 2 for a usage error). Used for CLI-argument-shape problems — a
-/// missing conditionally-required flag, a malformed `--share-file` value —
-/// which are usage mistakes, not library/crypto/DB errors, so they don't
-/// belong funneled through `crate::error::Error`.
-fn fatal_usage_error(message: &str) -> ! {
-    eprintln!("error: {message}");
-    std::process::exit(2);
+/// A CLI-argument-shape problem — a missing conditionally-required flag, a
+/// malformed `--share-file` value — as opposed to a library, crypto, or DB
+/// failure. The binary reports it and exits with code 2, clap's own
+/// convention for usage errors.
+fn usage(message: &str) -> Error {
+    Error::Usage(message.to_string())
 }
 
-fn require<T>(value: Option<T>, flag: &str) -> T {
-    value.unwrap_or_else(|| {
-        fatal_usage_error(&format!("--{flag} is required for this --state value"))
-    })
+fn require<T>(value: Option<T>, flag: &str) -> Result<T> {
+    value.ok_or_else(|| usage(&format!("--{flag} is required for this --state value")))
 }
 
 fn prompt_secret(prompt: &str) -> Result<String> {
-    rpassword::prompt_password(prompt).map_err(Error::from)
+    env::prompt_secret(prompt)
 }
 
 fn set_default_pin(

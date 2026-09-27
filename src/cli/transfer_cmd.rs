@@ -2,12 +2,11 @@
 //! devices that are both open. Ghosts stay in the hierarchy and are not
 //! exportable. The global `--db` is not used; each device has its own file.
 
-use crate::db;
+use super::env::{self, outln};
 use crate::device::{self, Container};
 use crate::device_relay;
 use crate::error::{Error, Result};
 use crate::relay::{self, ApiKeyScope};
-use crate::storage::NativeStorage;
 use crate::transfer::{self, DescendantMode, TransferAuth, TransferOp, TransferRequest};
 use clap::{ArgGroup, Args, Subcommand, ValueEnum};
 use std::collections::HashMap;
@@ -192,21 +191,34 @@ pub fn run(command: TransferCommand) -> Result<()> {
             let tx_id = parse_tx(&transaction)?;
             let source_conn = open_db(&from_db)?;
             let dest_conn = open_db(&to_db)?;
-            let mut source = device::open(&from_device)?;
-            let mut dest = device::open(&to_device)?;
-            let outcome =
-                transfer::recover_pair(&source_conn, &mut source, &dest_conn, &mut dest, &tx_id)?;
-            println!("recovery {outcome:?}");
+            let mut source = env::fs(|fs| device::open_in(fs, &from_device))?;
+            let mut dest = env::fs(|fs| device::open_in(fs, &to_device))?;
+            let outcome = transfer::recover_pair_in(
+                &mut env::EnvStorage,
+                &mut env::EnvStorage,
+                &source_conn,
+                &mut source,
+                &dest_conn,
+                &mut dest,
+                &tx_id,
+            )?;
+            outln!("recovery {outcome:?}");
         }
         TransferCommand::Enroll { device, db, label } => {
             let conn = open_db(&db)?;
-            let mut container = device::open(&device)?;
-            let passphrase = device::confirm_passphrase(
+            let mut container = env::fs(|fs| device::open_in(fs, &device))?;
+            let passphrase = env::confirm_passphrase(
                 &format!("Passphrase for {label}: "),
                 &format!("Repeat passphrase for {label}: "),
             )?;
-            let id = transfer::enroll(&conn, &mut container, &label, &passphrase)?;
-            println!("enrolled {label} {}", hex::encode(id));
+            let id = transfer::enroll_in(
+                &mut env::EnvStorage,
+                &conn,
+                &mut container,
+                &label,
+                &passphrase,
+            )?;
+            outln!("enrolled {label} {}", hex::encode(id));
         }
         TransferCommand::RelaySend {
             operation,
@@ -262,10 +274,10 @@ pub fn run(command: TransferCommand) -> Result<()> {
             let conn = open_db(&db)?;
             let rows = transfer::list_identities(&conn, all)?;
             if rows.is_empty() {
-                println!("(no identities)");
+                outln!("(no identities)");
             }
             for row in rows {
-                println!(
+                outln!(
                     "{}\t{}\t{}\tgeneration {}",
                     row.label,
                     match row.state {
@@ -284,8 +296,8 @@ pub fn run(command: TransferCommand) -> Result<()> {
 fn run_transfer(args: TransferArgs, operation: TransferOp) -> Result<()> {
     let source_conn = open_db(&args.from_db)?;
     let dest_conn = open_db(&args.to_db)?;
-    let mut source = device::open(&args.from_device)?;
-    let mut dest = device::open(&args.to_device)?;
+    let mut source = env::fs(|fs| device::open_in(fs, &args.from_device))?;
+    let mut dest = env::fs(|fs| device::open_in(fs, &args.to_device))?;
     let actor = args.actor.unwrap_or_else(|| args.label.clone());
     let mode = args.descendants.mode();
     let labels = transfer::export_secret_labels(&source_conn, &args.label, mode)?;
@@ -294,10 +306,10 @@ fn run_transfer(args: TransferArgs, operation: TransferOp) -> Result<()> {
     let id = transfer::transfer(TransferRequest {
         source_conn: &source_conn,
         source: &mut source,
-        source_storage: &mut NativeStorage,
+        source_storage: &mut env::EnvStorage,
         dest_conn: &dest_conn,
         dest: &mut dest,
-        dest_storage: &mut NativeStorage,
+        dest_storage: &mut env::EnvStorage,
         actor: &actor,
         label: &args.label,
         operation,
@@ -305,7 +317,7 @@ fn run_transfer(args: TransferArgs, operation: TransferOp) -> Result<()> {
         passphrases: &passphrases,
         auth: &auth,
     })?;
-    println!(
+    outln!(
         "{} {} {}",
         operation_name(operation),
         args.label,
@@ -320,7 +332,7 @@ fn prompt_passphrases(source: &Container, labels: &[String]) -> Result<HashMap<S
         if source.slot(label).is_none() {
             continue;
         }
-        let passphrase = device::confirm_passphrase(
+        let passphrase = env::confirm_passphrase(
             &format!("Passphrase for {label}: "),
             &format!("Repeat passphrase for {label}: "),
         )?;
@@ -332,7 +344,7 @@ fn prompt_passphrases(source: &Container, labels: &[String]) -> Result<HashMap<S
 fn prompt_new_passphrases(labels: &[String]) -> Result<HashMap<String, String>> {
     let mut passphrases = HashMap::new();
     for label in labels {
-        let passphrase = device::confirm_passphrase(
+        let passphrase = env::confirm_passphrase(
             &format!("Passphrase for {label}: "),
             &format!("Repeat passphrase for {label}: "),
         )?;
@@ -341,9 +353,8 @@ fn prompt_new_passphrases(labels: &[String]) -> Result<HashMap<String, String>> 
     Ok(passphrases)
 }
 
-fn open_db(path: &Path) -> Result<rusqlite::Connection> {
-    let path = path.to_str().ok_or(crate::error::Error::InvalidPath)?;
-    db::open(path)
+fn open_db(path: &Path) -> Result<env::Store> {
+    env::open_store(path)
 }
 
 fn parse_tx(value: &str) -> Result<[u8; 16]> {
@@ -374,7 +385,7 @@ fn run_relay_send(
     api_key: Option<String>,
 ) -> Result<()> {
     let source_conn = open_db(from_db)?;
-    let source = device::open(from_device)?;
+    let source = env::fs(|fs| device::open_in(fs, from_device))?;
     let actor = actor.unwrap_or(label).to_string();
     let mode = descendants.mode();
     let labels = transfer::export_secret_labels(&source_conn, label, mode)?;
@@ -385,7 +396,8 @@ fn run_relay_send(
         .slot(&actor)
         .ok_or(Error::InvalidSlot)?
         .encryption_public;
-    let prepared = transfer::prepare(
+    let prepared = transfer::prepare_in(
+        &env::EnvStorage,
         &source_conn,
         &source,
         &destination_device_id,
@@ -399,8 +411,8 @@ fn run_relay_send(
     let sealed = device_relay::seal_transfer(&recipient, &return_public, prepared.package())?;
     let (url, api_key) =
         super::resolve_relay_auth(&source_conn, url, api_key, ApiKeyScope::DevicePush)?;
-    let accepted = relay::push_device_package(&url, &api_key, &sealed)?;
-    println!(
+    let accepted = relay::push_device_package(&env::EnvRelay, &url, &api_key, &sealed)?;
+    outln!(
         "sent {} {} {} package {}",
         operation_name(operation.operation()),
         label,
@@ -422,7 +434,7 @@ fn run_relay_collect(
     push_key: Option<String>,
 ) -> Result<()> {
     let dest_conn = open_db(to_db)?;
-    let mut dest = device::open(to_device)?;
+    let mut dest = env::fs(|fs| device::open_in(fs, to_device))?;
     let (url, pull_key) =
         super::resolve_relay_auth(&dest_conn, url, api_key, ApiKeyScope::DevicePull)?;
     let (_push_url, push_key) = super::resolve_relay_auth(
@@ -432,11 +444,11 @@ fn run_relay_collect(
         ApiKeyScope::DevicePush,
     )?;
     let (source_id, source_verify) = source_identity(&url, &pull_key, from_device, from_device_id)?;
-    let passphrase = device::confirm_passphrase(
+    let passphrase = env::confirm_passphrase(
         &format!("Passphrase for {slot}: "),
         &format!("Repeat passphrase for {slot}: "),
     )?;
-    let opener = device::open_slot(&dest, slot, &passphrase)?;
+    let opener = env::fs(|fs| device::open_slot_in(fs, &dest, slot, &passphrase))?;
     let packages = super::pull_all_device_packages(&url, &pull_key)?;
     let mut accepted = 0u32;
     for item in packages {
@@ -462,7 +474,8 @@ fn run_relay_collect(
             &dest,
         )?;
         let passphrases = prompt_new_passphrases(&labels)?;
-        let id = transfer::accept_package(
+        let id = transfer::accept_package_in(
+            &mut env::EnvStorage,
             &dest_conn,
             &mut dest,
             &source_id,
@@ -472,13 +485,19 @@ fn run_relay_collect(
             false,
         )?;
         let hash = transfer::package_hash(opened.package.as_slice());
-        let ack = device_relay::seal_transfer_ack(&dest, &opened.return_public, &header, &hash)?;
-        relay::push_device_package(&url, &push_key, &ack)?;
-        println!("accepted {}", hex::encode(id));
+        let ack = device_relay::seal_transfer_ack_in(
+            &env::EnvStorage,
+            &dest,
+            &opened.return_public,
+            &header,
+            &hash,
+        )?;
+        relay::push_device_package(&env::EnvRelay, &url, &push_key, &ack)?;
+        outln!("accepted {}", hex::encode(id));
         accepted += 1;
     }
     if accepted == 0 {
-        println!("(no device packages)");
+        outln!("(no device packages)");
     }
     Ok(())
 }
@@ -492,20 +511,25 @@ fn run_relay_finalize(
     api_key: Option<String>,
 ) -> Result<()> {
     let source_conn = open_db(from_db)?;
-    let mut source = device::open(from_device)?;
+    let mut source = env::fs(|fs| device::open_in(fs, from_device))?;
     let (url, pull_key) =
         super::resolve_relay_auth(&source_conn, url, api_key, ApiKeyScope::DevicePull)?;
     let destination_device_id = parse_device_id(to_device_id)?;
-    let published = relay::get_device(&url, &pull_key, &hex::encode(destination_device_id))?;
+    let published = relay::get_device(
+        &env::EnvRelay,
+        &url,
+        &pull_key,
+        &hex::encode(destination_device_id),
+    )?;
     if parse_device_id(&published.device_id)? != destination_device_id {
         return Err(Error::InvalidDevice);
     }
     let destination_verify = parse_verify_key(&published.verify_key)?;
-    let passphrase = device::confirm_passphrase(
+    let passphrase = env::confirm_passphrase(
         &format!("Passphrase for {slot}: "),
         &format!("Repeat passphrase for {slot}: "),
     )?;
-    let opener = device::open_slot(&source, slot, &passphrase)?;
+    let opener = env::fs(|fs| device::open_slot_in(fs, &source, slot, &passphrase))?;
     let packages = super::pull_all_device_packages(&url, &pull_key)?;
     let mut finalized = 0u32;
     for item in packages {
@@ -521,12 +545,18 @@ fn run_relay_finalize(
         if !transfer::has_transfer(&source_conn, &ack.tx_id)? {
             continue;
         }
-        transfer::finalize_after_ack(&source_conn, &mut source, &ack.tx_id, &ack.package_hash)?;
-        println!("finalized {}", hex::encode(ack.tx_id));
+        transfer::finalize_after_ack_in(
+            &mut env::EnvStorage,
+            &source_conn,
+            &mut source,
+            &ack.tx_id,
+            &ack.package_hash,
+        )?;
+        outln!("finalized {}", hex::encode(ack.tx_id));
         finalized += 1;
     }
     if finalized == 0 {
-        println!("(no device packages)");
+        outln!("(no device packages)");
     }
     Ok(())
 }
@@ -539,12 +569,13 @@ fn source_identity(
 ) -> Result<([u8; 16], [u8; 32])> {
     match (from_device, from_device_id) {
         (Some(path), None) => {
-            let source = device::open(path)?;
+            let source = env::fs(|fs| device::open_in(fs, path))?;
             Ok((*source.device_id(), *source.verify_key()))
         }
         (None, Some(id)) => {
             let source_id = parse_device_id(id)?;
-            let published = relay::get_device(url, pull_key, &hex::encode(source_id))?;
+            let published =
+                relay::get_device(&env::EnvRelay, url, pull_key, &hex::encode(source_id))?;
             if parse_device_id(&published.device_id)? != source_id {
                 return Err(Error::InvalidDevice);
             }

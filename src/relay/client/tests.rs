@@ -75,19 +75,23 @@ async fn live_listener_round_trip_with_ureq() {
         let url = url.clone();
         let push = push.clone();
         let envelope = envelope.clone();
-        tokio::task::spawn_blocking(move || relay::push_inbox(&url, &push, &envelope))
-            .await
-            .expect("join")
-            .expect("push")
+        tokio::task::spawn_blocking(move || {
+            relay::push_inbox(&relay::UreqTransport, &url, &push, &envelope)
+        })
+        .await
+        .expect("join")
+        .expect("push")
     };
     assert_eq!(accepted.recipient_fingerprint, fingerprint);
     let listed = {
         let url = url.clone();
         let pull = pull.clone();
-        tokio::task::spawn_blocking(move || relay::pull_inbox(&url, &pull, None, None))
-            .await
-            .expect("join")
-            .expect("pull")
+        tokio::task::spawn_blocking(move || {
+            relay::pull_inbox(&relay::UreqTransport, &url, &pull, None, None)
+        })
+        .await
+        .expect("join")
+        .expect("pull")
     };
     assert_eq!(listed.envelopes.len(), 1);
     assert!(listed.trees.is_empty());
@@ -121,7 +125,13 @@ async fn pushing_an_envelope_updates_full_tree_and_pull_returns_a_slice() {
         let envelope = envelope.clone();
         let tree = tree.clone();
         tokio::task::spawn_blocking(move || {
-            relay::push_inbox_with_trees(&url, &push, &envelope, std::slice::from_ref(&tree))
+            relay::push_inbox_with_trees(
+                &relay::UreqTransport,
+                &url,
+                &push,
+                &envelope,
+                std::slice::from_ref(&tree),
+            )
         })
         .await
         .expect("join")
@@ -131,10 +141,12 @@ async fn pushing_an_envelope_updates_full_tree_and_pull_returns_a_slice() {
     let for_member = {
         let url = url.clone();
         let pull_s2 = pull_s2.clone();
-        tokio::task::spawn_blocking(move || relay::pull_inbox(&url, &pull_s2, None, None))
-            .await
-            .expect("join")
-            .expect("member pull")
+        tokio::task::spawn_blocking(move || {
+            relay::pull_inbox(&relay::UreqTransport, &url, &pull_s2, None, None)
+        })
+        .await
+        .expect("join")
+        .expect("member pull")
     };
     assert!(for_member.envelopes.is_empty());
     assert_eq!(for_member.trees.len(), 1);
@@ -154,7 +166,13 @@ async fn pushing_an_envelope_updates_full_tree_and_pull_returns_a_slice() {
         let push = push.clone();
         let envelope = envelope.clone();
         tokio::task::spawn_blocking(move || {
-            relay::push_inbox_with_trees(&url, &push, &envelope, std::slice::from_ref(&with_ma1))
+            relay::push_inbox_with_trees(
+                &relay::UreqTransport,
+                &url,
+                &push,
+                &envelope,
+                std::slice::from_ref(&with_ma1),
+            )
         })
         .await
         .expect("join")
@@ -163,10 +181,12 @@ async fn pushing_an_envelope_updates_full_tree_and_pull_returns_a_slice() {
     let expanded = {
         let url = url.clone();
         let pull_s2 = pull_s2.clone();
-        tokio::task::spawn_blocking(move || relay::pull_inbox(&url, &pull_s2, None, None))
-            .await
-            .expect("join")
-            .expect("expanded")
+        tokio::task::spawn_blocking(move || {
+            relay::pull_inbox(&relay::UreqTransport, &url, &pull_s2, None, None)
+        })
+        .await
+        .expect("join")
+        .expect("expanded")
     };
     assert_eq!(expanded.trees[0].generation, 2);
     assert!(expanded.trees[0]
@@ -177,10 +197,12 @@ async fn pushing_an_envelope_updates_full_tree_and_pull_returns_a_slice() {
     let mail = {
         let url = url.clone();
         let pull_mailbox = pull_mailbox.clone();
-        tokio::task::spawn_blocking(move || relay::pull_inbox(&url, &pull_mailbox, None, None))
-            .await
-            .expect("join")
-            .expect("mailbox pull")
+        tokio::task::spawn_blocking(move || {
+            relay::pull_inbox(&relay::UreqTransport, &url, &pull_mailbox, None, None)
+        })
+        .await
+        .expect("join")
+        .expect("mailbox pull")
     };
     assert_eq!(mail.envelopes.len(), 1);
     assert!(mail.trees.is_empty());
@@ -216,7 +238,13 @@ async fn personal_store_push_does_not_erase_unrelated_relay_nodes() {
         let envelope = envelope.clone();
         let tree = tree.clone();
         tokio::task::spawn_blocking(move || {
-            relay::push_inbox_with_trees(&url, &push, &envelope, std::slice::from_ref(&tree))
+            relay::push_inbox_with_trees(
+                &relay::UreqTransport,
+                &url,
+                &push,
+                &envelope,
+                std::slice::from_ref(&tree),
+            )
         })
         .await
         .expect("join")
@@ -232,7 +260,13 @@ async fn personal_store_push_does_not_erase_unrelated_relay_nodes() {
         let push = push.clone();
         let envelope = envelope.clone();
         tokio::task::spawn_blocking(move || {
-            relay::push_inbox_with_trees(&url, &push, &envelope, std::slice::from_ref(&personal))
+            relay::push_inbox_with_trees(
+                &relay::UreqTransport,
+                &url,
+                &push,
+                &envelope,
+                std::slice::from_ref(&personal),
+            )
         })
         .await
         .expect("join")
@@ -241,10 +275,12 @@ async fn personal_store_push_does_not_erase_unrelated_relay_nodes() {
     let for_a1 = {
         let url = url.clone();
         let pull_a1 = pull_a1.clone();
-        tokio::task::spawn_blocking(move || relay::pull_inbox(&url, &pull_a1, None, None))
-            .await
-            .expect("join")
-            .expect("unrelated pull")
+        tokio::task::spawn_blocking(move || {
+            relay::pull_inbox(&relay::UreqTransport, &url, &pull_a1, None, None)
+        })
+        .await
+        .expect("join")
+        .expect("unrelated pull")
     };
     assert!(for_a1.trees[0]
         .nodes
@@ -267,10 +303,12 @@ async fn check_key_client_and_stored_hash_can_push() {
     let base = format!("http://{addr}");
     let token_c = token.clone();
     let base_c = base.clone();
-    let check = tokio::task::spawn_blocking(move || relay::check_key(&base_c, &token_c))
-        .await
-        .unwrap()
-        .expect("check_key");
+    let check = tokio::task::spawn_blocking(move || {
+        relay::check_key(&relay::UreqTransport, &base_c, &token_c)
+    })
+    .await
+    .unwrap()
+    .expect("check_key");
     assert!(check.valid);
     let hash = relay::hash_bearer(&token).expect("hash");
     let org = crate::db::open_in_memory().expect("org");
@@ -288,10 +326,12 @@ async fn check_key_client_and_stored_hash_can_push() {
     .expect("save");
     let base_h = base.clone();
     let hash_c = hash.clone();
-    let recheck = tokio::task::spawn_blocking(move || relay::check_key_hash(&base_h, &hash_c))
-        .await
-        .unwrap()
-        .expect("check_key_hash");
+    let recheck = tokio::task::spawn_blocking(move || {
+        relay::check_key_hash(&relay::UreqTransport, &base_h, &hash_c)
+    })
+    .await
+    .unwrap()
+    .expect("check_key_hash");
     assert!(recheck.valid);
     let stored = crate::db::relay_credential::get(&org, &base, "inbox.push")
         .expect("get")
@@ -299,10 +339,12 @@ async fn check_key_client_and_stored_hash_can_push() {
     let env = envelope.clone();
     let base_p = base.clone();
     let tok = stored.token.clone();
-    let accepted = tokio::task::spawn_blocking(move || relay::push_inbox(&base_p, &tok, &env))
-        .await
-        .unwrap()
-        .expect("push");
+    let accepted = tokio::task::spawn_blocking(move || {
+        relay::push_inbox(&relay::UreqTransport, &base_p, &tok, &env)
+    })
+    .await
+    .unwrap()
+    .expect("push");
     assert!(accepted.id > 0);
 }
 
@@ -331,7 +373,13 @@ async fn authenticate_provider_accepts_a_signed_identity() {
     let url = format!("http://{addr}");
     let root = issued.root_public;
     let cert = tokio::task::spawn_blocking(move || {
-        authenticate_provider(&url, &root, "2026-09-02 12:00:00", &empty_revoked())
+        authenticate_provider(
+            &UreqTransport,
+            &url,
+            &root,
+            "2026-09-02 12:00:00",
+            &empty_revoked(),
+        )
     })
     .await
     .expect("join")
@@ -360,6 +408,7 @@ async fn authenticate_provider_rejects_missing_expired_and_revoked() {
     let missing_url = url.clone();
     let missing = tokio::task::spawn_blocking(move || {
         authenticate_provider(
+            &UreqTransport,
             &missing_url,
             &[0u8; 32],
             "2026-09-02 12:00:00",
@@ -390,7 +439,13 @@ async fn authenticate_provider_rejects_missing_expired_and_revoked() {
     let url = format!("http://{addr}");
     let root = expired.root_public;
     let err = tokio::task::spawn_blocking(move || {
-        authenticate_provider(&url, &root, "2026-09-02 12:00:00", &empty_revoked())
+        authenticate_provider(
+            &UreqTransport,
+            &url,
+            &root,
+            "2026-09-02 12:00:00",
+            &empty_revoked(),
+        )
     })
     .await
     .expect("join")
@@ -418,7 +473,7 @@ async fn authenticate_provider_rejects_missing_expired_and_revoked() {
     let err = tokio::task::spawn_blocking(move || {
         let mut revoked = HashSet::new();
         revoked.insert("KQP-000184".into());
-        authenticate_provider(&url, &root, "2026-09-02 12:00:00", &revoked)
+        authenticate_provider(&UreqTransport, &url, &root, "2026-09-02 12:00:00", &revoked)
     })
     .await
     .expect("join")

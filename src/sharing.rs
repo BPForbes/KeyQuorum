@@ -10,6 +10,7 @@
 
 use crate::error::{Error, Result};
 use crate::locked_files;
+use crate::storage::{NativeStorage, Storage};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use rand::rngs::OsRng;
@@ -247,6 +248,15 @@ pub fn create_file_share_until(
 /// Drops an expired date-based TTL file (ciphertext + row) when the share
 /// token resolves to one. Unknown tokens are left for redemption to reject.
 pub fn purge_expired_file_share(conn: &Connection, token: &str) -> Result<()> {
+    purge_expired_file_share_in(&mut NativeStorage, conn, token)
+}
+
+/// [`purge_expired_file_share`], deleting the ciphertext through `storage`.
+pub fn purge_expired_file_share_in(
+    storage: &mut dyn Storage,
+    conn: &Connection,
+    token: &str,
+) -> Result<()> {
     let token_hash = hash_token(token)?;
     let file_id: Option<i64> = conn
         .query_row(
@@ -258,11 +268,20 @@ pub fn purge_expired_file_share(conn: &Connection, token: &str) -> Result<()> {
     let Some(file_id) = file_id else {
         return Ok(());
     };
-    locked_files::purge_if_expired(conn, file_id)
+    locked_files::purge_if_expired_in(storage, conn, file_id)
 }
 
 pub fn redeem_file_share(conn: &Connection, token: &str) -> Result<i64> {
-    purge_expired_file_share(conn, token)?;
+    redeem_file_share_in(&mut NativeStorage, conn, token)
+}
+
+/// [`redeem_file_share`], purging an expired file through `storage`.
+pub fn redeem_file_share_in(
+    storage: &mut dyn Storage,
+    conn: &Connection,
+    token: &str,
+) -> Result<i64> {
+    purge_expired_file_share_in(storage, conn, token)?;
     redeem_share(conn, "file_shares", "file_id", token)
 }
 

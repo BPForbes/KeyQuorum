@@ -1,15 +1,13 @@
-//! HTTP JSON wire types and a synchronous `ureq` client for the relay.
+//! HTTP JSON wire types and a synchronous client for the relay. Requests go
+//! through a [`RelayTransport`]: `ureq` over HTTPS natively, or an
+//! in-process relay in the browser lab.
 
-#[cfg(not(target_arch = "wasm32"))]
 use super::device_directory::DeviceDescriptor;
 use crate::error::{Error, Result};
 use crate::key_tree::PublicTree;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::provider::{self, Certificate};
-#[cfg(not(target_arch = "wasm32"))]
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashSet;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::OnceLock;
@@ -61,7 +59,6 @@ pub struct InboxPush {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-#[cfg_attr(not(feature = "provider"), allow(dead_code))]
 pub struct ErrorBody {
     pub error: String,
 }
@@ -170,12 +167,70 @@ fn is_loopback_url(url: &Url) -> bool {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn relay_request_url(base: &str, path: &str) -> Result<Url> {
     let mut parsed = parse_relay_url(base)?;
     let joined = format!("{}{path}", parsed.path().trim_end_matches('/'));
     parsed.set_path(&joined);
     Ok(parsed)
+}
+
+/// One relay request, already validated and addressed. The transport only
+/// has to deliver it.
+pub struct RelayHttpRequest {
+    pub method: &'static str,
+    pub url: Url,
+    /// Sent as `Authorization: Bearer …`.
+    pub bearer: Option<String>,
+    pub content_type: Option<&'static str>,
+    pub body: Vec<u8>,
+}
+
+/// The relay's answer: status code and raw body.
+pub struct RelayHttpResponse {
+    pub status: u16,
+    pub body: Vec<u8>,
+}
+
+/// How relay requests travel. [`UreqTransport`] is HTTPS to a hosted
+/// relay; the browser lab delivers them to an in-process relay instead
+/// (`relay::service::dispatch`). Every client function below takes one, so
+/// the request shapes, bearer handling, and provider check are the same
+/// either way.
+pub trait RelayTransport {
+    fn send(&self, request: RelayHttpRequest) -> Result<RelayHttpResponse>;
+}
+
+/// HTTPS (or loopback HTTP) through `ureq`, with bounded timeouts and no
+/// redirects.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UreqTransport;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl RelayTransport for UreqTransport {
+    fn send(&self, request: RelayHttpRequest) -> Result<RelayHttpResponse> {
+        let mut req = http_agent().request_url(request.method, &request.url);
+        if let Some(bearer) = &request.bearer {
+            req = req.set("Authorization", &format!("Bearer {bearer}"));
+        }
+        if let Some(content_type) = request.content_type {
+            req = req.set("Content-Type", content_type);
+        }
+        let result = if request.method == "GET" {
+            req.call()
+        } else {
+            req.send_bytes(&request.body)
+        };
+        let (status, resp) = match result {
+            Ok(resp) => (resp.status(), resp),
+            Err(ureq::Error::Status(code, resp)) => (code, resp),
+            Err(e) => return Err(Error::RelayRequest(e.to_string())),
+        };
+        let mut body = Vec::new();
+        std::io::Read::read_to_end(&mut resp.into_reader(), &mut body)
+            .map_err(|e| Error::RelayRequest(e.to_string()))?;
+        Ok(RelayHttpResponse { status, body })
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -194,55 +249,82 @@ fn http_agent() -> &'static ureq::Agent {
     AGENT.get_or_init(|| http_agent_builder().build())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn with_key(req: ureq::Request, api_key: &str) -> ureq::Request {
-    req.set("Authorization", &format!("Bearer {api_key}"))
+fn request(
+    method: &'static str,
+    url: Url,
+    bearer: Option<&str>,
+    content_type: Option<&'static str>,
+    body: Vec<u8>,
+) -> RelayHttpRequest {
+    RelayHttpRequest {
+        method,
+        url,
+        bearer: bearer.map(str::to_owned),
+        content_type,
+        body,
+    }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn read_json<T: serde::de::DeserializeOwned>(
-    result: std::result::Result<ureq::Response, ureq::Error>,
-) -> Result<T> {
-    match result {
-        Ok(resp) => {
-            let body = resp
-                .into_string()
-                .map_err(|e| Error::RelayRequest(e.to_string()))?;
-            serde_json::from_str(&body).map_err(|e| Error::RelayRequest(e.to_string()))
-        }
-        Err(ureq::Error::Status(code, resp)) => {
-            let body = resp.into_string().unwrap_or_default();
-            Err(Error::RelayRequest(format!("HTTP {code}: {body}")))
-        }
-        Err(e) => Err(Error::RelayRequest(e.to_string())),
+fn json_body<T: Serialize>(value: &T) -> Result<Vec<u8>> {
+    serde_json::to_vec(value).map_err(|e| Error::RelayRequest(e.to_string()))
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(response: RelayHttpResponse) -> Result<T> {
+    if !(200..300).contains(&response.status) {
+        let body = String::from_utf8_lossy(&response.body);
+        return Err(Error::RelayRequest(format!(
+            "HTTP {}: {body}",
+            response.status
+        )));
+    }
+    serde_json::from_slice(&response.body).map_err(|e| Error::RelayRequest(e.to_string()))
+}
+
+fn page_query(url: &mut Url, after: Option<i64>, limit: Option<i64>) {
+    let mut params = Vec::new();
+    if let Some(after) = after {
+        params.push(format!("after={after}"));
+    }
+    if let Some(limit) = limit {
+        params.push(format!("limit={limit}"));
+    }
+    if !params.is_empty() {
+        url.set_query(Some(&params.join("&")));
     }
 }
 
 /// Upload one opaque `.kqpb` envelope (no tree update).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn push(base_url: &str, api_key: &str, envelope: &[u8]) -> Result<InboxAccepted> {
+pub fn push(
+    transport: &dyn RelayTransport,
+    base_url: &str,
+    api_key: &str,
+    envelope: &[u8],
+) -> Result<InboxAccepted> {
     let url = relay_request_url(base_url, "/inbox")?;
-    let resp = with_key(http_agent().request_url("POST", &url), api_key)
-        .set("Content-Type", "application/octet-stream")
-        .send_bytes(envelope);
-    read_json(resp)
+    read_json(transport.send(request(
+        "POST",
+        url,
+        Some(api_key),
+        Some("application/octet-stream"),
+        envelope.to_vec(),
+    ))?)
 }
 
 /// Upload an envelope and merge the sender's public-tree documents.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn push_with_trees(
+    transport: &dyn RelayTransport,
     base_url: &str,
     api_key: &str,
     envelope: &[u8],
     trees: &[PublicTree],
 ) -> Result<InboxAccepted> {
-    push_with_trees_until(base_url, api_key, envelope, trees, None)
+    push_with_trees_until(transport, base_url, api_key, envelope, trees, None)
 }
 
 /// Like [`push_with_trees`], and stamps a UTC envelope expiry the host scan
 /// will delete after.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn push_with_trees_until(
+    transport: &dyn RelayTransport,
     base_url: &str,
     api_key: &str,
     envelope: &[u8],
@@ -254,41 +336,37 @@ pub fn push_with_trees_until(
         trees: trees.to_vec(),
         expires_at: expires_at.map(str::to_owned),
     };
-    let json = serde_json::to_string(&body).map_err(|e| Error::RelayRequest(e.to_string()))?;
     let url = relay_request_url(base_url, "/inbox")?;
-    let resp = with_key(http_agent().request_url("POST", &url), api_key)
-        .set("Content-Type", "application/json")
-        .send_string(&json);
-    read_json(resp)
+    read_json(transport.send(request(
+        "POST",
+        url,
+        Some(api_key),
+        Some("application/json"),
+        json_body(&body)?,
+    ))?)
 }
 
 /// Fetch one page of envelopes for the pull key's bound fingerprint.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn pull(
+    transport: &dyn RelayTransport,
     base_url: &str,
     api_key: &str,
     after: Option<i64>,
     limit: Option<i64>,
 ) -> Result<InboxList> {
-    let mut params = Vec::new();
-    if let Some(after) = after {
-        params.push(format!("after={after}"));
-    }
-    if let Some(limit) = limit {
-        params.push(format!("limit={limit}"));
-    }
     let mut url = relay_request_url(base_url, "/inbox")?;
-    if !params.is_empty() {
-        url.set_query(Some(&params.join("&")));
-    }
-    let resp = with_key(http_agent().request_url("GET", &url), api_key).call();
-    read_json(resp)
+    page_query(&mut url, after, limit);
+    read_json(transport.send(request("GET", url, Some(api_key), None, Vec::new()))?)
 }
 
 /// Ask the relay whether a bearer is live. No `Authorization` header.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn check_key(base_url: &str, token: &str) -> Result<KeyCheckResponse> {
+pub fn check_key(
+    transport: &dyn RelayTransport,
+    base_url: &str,
+    token: &str,
+) -> Result<KeyCheckResponse> {
     post_keycheck(
+        transport,
         base_url,
         &KeyCheckRequest {
             token: Some(token.to_string()),
@@ -298,9 +376,13 @@ pub fn check_key(base_url: &str, token: &str) -> Result<KeyCheckResponse> {
 }
 
 /// Revalidate a hash stored on the personal instance. No `Authorization` header.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn check_key_hash(base_url: &str, key_hash: &str) -> Result<KeyCheckResponse> {
+pub fn check_key_hash(
+    transport: &dyn RelayTransport,
+    base_url: &str,
+    key_hash: &str,
+) -> Result<KeyCheckResponse> {
     post_keycheck(
+        transport,
         base_url,
         &KeyCheckRequest {
             token: None,
@@ -309,22 +391,26 @@ pub fn check_key_hash(base_url: &str, key_hash: &str) -> Result<KeyCheckResponse
     )
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn post_keycheck(base_url: &str, body: &KeyCheckRequest) -> Result<KeyCheckResponse> {
-    let json = serde_json::to_string(body).map_err(|e| Error::RelayRequest(e.to_string()))?;
+fn post_keycheck(
+    transport: &dyn RelayTransport,
+    base_url: &str,
+    body: &KeyCheckRequest,
+) -> Result<KeyCheckResponse> {
     let url = relay_request_url(base_url, "/keycheck")?;
-    let resp = http_agent()
-        .request_url("POST", &url)
-        .set("Content-Type", "application/json")
-        .send_string(&json);
-    read_json(resp)
+    read_json(transport.send(request(
+        "POST",
+        url,
+        None,
+        Some("application/json"),
+        json_body(body)?,
+    ))?)
 }
 
 /// Challenge the relay for a KeyQuorum-signed provider certificate and a
 /// signature over a fresh nonce. Official clients call this *before*
 /// sending a bearer so a modified host cannot skip authorization.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn authenticate_provider(
+    transport: &dyn RelayTransport,
     base_url: &str,
     root_public_key: &[u8; 32],
     now_utc: &str,
@@ -334,26 +420,22 @@ pub fn authenticate_provider(
     let body = ProviderIdentityRequest {
         challenge: base64::engine::general_purpose::STANDARD.encode(challenge),
     };
-    let json = serde_json::to_string(&body).map_err(|e| Error::RelayRequest(e.to_string()))?;
     let url = relay_request_url(base_url, "/provider-identity")?;
-    let result = http_agent()
-        .request_url("POST", &url)
-        .set("Content-Type", "application/json")
-        .send_string(&json);
-    let response: ProviderIdentityResponse = match result {
-        Ok(resp) => {
-            let body = resp
-                .into_string()
-                .map_err(|e| Error::RelayRequest(e.to_string()))?;
-            serde_json::from_str(&body).map_err(|_| Error::UntrustedRelay)?
-        }
-        Err(ureq::Error::Status(503, _)) => return Err(Error::UntrustedRelay),
-        Err(ureq::Error::Status(400, _)) => return Err(Error::InvalidProviderChallenge),
-        Err(ureq::Error::Status(code, resp)) => {
-            let body = resp.into_string().unwrap_or_default();
+    let response = transport.send(request(
+        "POST",
+        url,
+        None,
+        Some("application/json"),
+        json_body(&body)?,
+    ))?;
+    let response: ProviderIdentityResponse = match response.status {
+        200..=299 => serde_json::from_slice(&response.body).map_err(|_| Error::UntrustedRelay)?,
+        503 => return Err(Error::UntrustedRelay),
+        400 => return Err(Error::InvalidProviderChallenge),
+        code => {
+            let body = String::from_utf8_lossy(&response.body);
             return Err(Error::RelayRequest(format!("HTTP {code}: {body}")));
         }
-        Err(e) => return Err(Error::RelayRequest(e.to_string())),
     };
     let cert_bytes = base64::engine::general_purpose::STANDARD
         .decode(response.certificate.as_bytes())
@@ -370,83 +452,93 @@ pub fn authenticate_provider(
 }
 
 /// Replace the relay's canonical public tree (admin scope).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn publish_tree(base_url: &str, api_key: &str, tree: &PublicTree) -> Result<PublicTree> {
-    let body = serde_json::to_string(tree).map_err(|e| Error::RelayRequest(e.to_string()))?;
+pub fn publish_tree(
+    transport: &dyn RelayTransport,
+    base_url: &str,
+    api_key: &str,
+    tree: &PublicTree,
+) -> Result<PublicTree> {
     let url = relay_request_url(base_url, "/trees")?;
-    let resp = with_key(http_agent().request_url("PUT", &url), api_key)
-        .set("Content-Type", "application/json")
-        .send_string(&body);
-    read_json(resp)
+    read_json(transport.send(request(
+        "PUT",
+        url,
+        Some(api_key),
+        Some("application/json"),
+        json_body(tree)?,
+    ))?)
 }
 
 /// Fetch the public-tree slice for this pull key's bound fingerprint.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn fetch_tree_context(base_url: &str, api_key: &str, label: &str) -> Result<PublicTree> {
+pub fn fetch_tree_context(
+    transport: &dyn RelayTransport,
+    base_url: &str,
+    api_key: &str,
+    label: &str,
+) -> Result<PublicTree> {
     let path = format!("/trees/{}/context", urlencoding_label(label));
     let url = relay_request_url(base_url, &path)?;
-    let resp = with_key(http_agent().request_url("GET", &url), api_key).call();
-    read_json(resp)
+    read_json(transport.send(request("GET", url, Some(api_key), None, Vec::new()))?)
 }
 
 /// Upload one sealed device letter (`device.push`).
-#[cfg(not(target_arch = "wasm32"))]
-pub fn push_device_package(base_url: &str, api_key: &str, package: &[u8]) -> Result<InboxAccepted> {
+pub fn push_device_package(
+    transport: &dyn RelayTransport,
+    base_url: &str,
+    api_key: &str,
+    package: &[u8],
+) -> Result<InboxAccepted> {
     let url = relay_request_url(base_url, "/devices/packages")?;
-    let resp = with_key(http_agent().request_url("POST", &url), api_key)
-        .set("Content-Type", "application/octet-stream")
-        .send_bytes(package);
-    read_json(resp)
+    read_json(transport.send(request(
+        "POST",
+        url,
+        Some(api_key),
+        Some("application/octet-stream"),
+        package.to_vec(),
+    ))?)
 }
 
 /// Fetch one page of device letters for this pull key's fingerprint.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn pull_device_packages(
+    transport: &dyn RelayTransport,
     base_url: &str,
     api_key: &str,
     after: Option<i64>,
     limit: Option<i64>,
 ) -> Result<DevicePackageList> {
-    let mut params = Vec::new();
-    if let Some(after) = after {
-        params.push(format!("after={after}"));
-    }
-    if let Some(limit) = limit {
-        params.push(format!("limit={limit}"));
-    }
     let mut url = relay_request_url(base_url, "/devices/packages")?;
-    if !params.is_empty() {
-        url.set_query(Some(&params.join("&")));
-    }
-    let resp = with_key(http_agent().request_url("GET", &url), api_key).call();
-    read_json(resp)
+    page_query(&mut url, after, limit);
+    read_json(transport.send(request("GET", url, Some(api_key), None, Vec::new()))?)
 }
 
 /// Publish this device's public descriptor (`device.push`).
-#[cfg(not(target_arch = "wasm32"))]
 pub fn put_device(
+    transport: &dyn RelayTransport,
     base_url: &str,
     api_key: &str,
     descriptor: &DeviceDescriptor,
 ) -> Result<DeviceDescriptor> {
-    let body = serde_json::to_string(descriptor).map_err(|e| Error::RelayRequest(e.to_string()))?;
     let url = relay_request_url(base_url, "/devices")?;
-    let resp = with_key(http_agent().request_url("PUT", &url), api_key)
-        .set("Content-Type", "application/json")
-        .send_string(&body);
-    read_json(resp)
+    read_json(transport.send(request(
+        "PUT",
+        url,
+        Some(api_key),
+        Some("application/json"),
+        json_body(descriptor)?,
+    ))?)
 }
 
 /// Read a published public descriptor. `device.push` and `device.pull` both work.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn get_device(base_url: &str, api_key: &str, device_id: &str) -> Result<DeviceDescriptor> {
+pub fn get_device(
+    transport: &dyn RelayTransport,
+    base_url: &str,
+    api_key: &str,
+    device_id: &str,
+) -> Result<DeviceDescriptor> {
     let path = format!("/devices/{device_id}");
     let url = relay_request_url(base_url, &path)?;
-    let resp = with_key(http_agent().request_url("GET", &url), api_key).call();
-    read_json(resp)
+    read_json(transport.send(request("GET", url, Some(api_key), None, Vec::new()))?)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn urlencoding_label(label: &str) -> String {
     let mut out = String::new();
     for b in label.bytes() {

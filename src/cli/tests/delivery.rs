@@ -1,4 +1,5 @@
 use super::super::*;
+use std::fs;
 
 /// A signing member, with the encryption secret their own store would hold.
 fn party(

@@ -838,6 +838,31 @@ pub fn accept_package(
     passphrases: &HashMap<String, String>,
     allow_ancestor_import: bool,
 ) -> Result<[u8; 16]> {
+    accept_package_in(
+        &mut NativeStorage,
+        dest_conn,
+        dest,
+        source_device_id,
+        source_verify_key,
+        package,
+        passphrases,
+        allow_ancestor_import,
+    )
+}
+
+/// [`accept_package`], writing the destination's slot tokens through
+/// `storage`.
+#[allow(clippy::too_many_arguments)]
+pub fn accept_package_in(
+    storage: &mut dyn Storage,
+    dest_conn: &Connection,
+    dest: &mut Container,
+    source_device_id: &[u8; 16],
+    source_verify_key: &[u8; 32],
+    package: &[u8],
+    passphrases: &HashMap<String, String>,
+    allow_ancestor_import: bool,
+) -> Result<[u8; 16]> {
     let header = authenticated_package(package)?;
     if header.source_device_id != *source_device_id || header.verify_key != *source_verify_key {
         return Err(Error::SignatureVerificationFailed);
@@ -847,6 +872,7 @@ pub fn accept_package(
     }
     if let Some(state) = tx_state(dest_conn, &header.id)? {
         return resume_accept(
+            storage,
             dest_conn,
             dest,
             source_device_id,
@@ -860,7 +886,15 @@ pub fn accept_package(
     }
     let source = device::verification_container(*source_device_id, *source_verify_key);
     stage_destination(dest_conn, dest, &source, package, allow_ancestor_import)?;
-    write_destination_slots(dest_conn, dest, &source, package, passphrases, None)?;
+    write_destination_slots_in(
+        storage,
+        dest_conn,
+        dest,
+        &source,
+        package,
+        passphrases,
+        None,
+    )?;
     commit_destination_rows(dest_conn, dest, &source, package, allow_ancestor_import)?;
     acknowledge(dest_conn, &header.id)?;
     Ok(header.id)
@@ -868,6 +902,7 @@ pub fn accept_package(
 
 #[allow(clippy::too_many_arguments)]
 fn resume_accept(
+    storage: &mut dyn Storage,
     dest_conn: &Connection,
     dest: &mut Container,
     source_device_id: &[u8; 16],
@@ -891,7 +926,15 @@ fn resume_accept(
         return Err(Error::TransferReplay);
     }
     let source = device::verification_container(*source_device_id, *source_verify_key);
-    write_destination_slots(dest_conn, dest, &source, package, passphrases, None)?;
+    write_destination_slots_in(
+        storage,
+        dest_conn,
+        dest,
+        &source,
+        package,
+        passphrases,
+        None,
+    )?;
     commit_destination_rows(dest_conn, dest, &source, package, allow_ancestor_import)?;
     acknowledge(dest_conn, tx_id)?;
     Ok(*tx_id)
@@ -965,12 +1008,23 @@ pub fn finalize_after_ack(
     tx_id: &[u8; 16],
     ack_hash: &[u8; 32],
 ) -> Result<()> {
+    finalize_after_ack_in(&mut NativeStorage, source_conn, source, tx_id, ack_hash)
+}
+
+/// [`finalize_after_ack`], removing the moved slot tokens through `storage`.
+pub fn finalize_after_ack_in(
+    storage: &mut dyn Storage,
+    source_conn: &Connection,
+    source: &mut Container,
+    tx_id: &[u8; 16],
+    ack_hash: &[u8; 32],
+) -> Result<()> {
     let source_state = tx_state(source_conn, tx_id)?.ok_or(Error::TransferIncomplete)?;
     if source_state == "completed" {
         return Ok(());
     }
     if source_state == "source_finalized" {
-        scrub_moved_slots(&mut NativeStorage, source_conn, source, tx_id)?;
+        scrub_moved_slots(storage, source_conn, source, tx_id)?;
         return set_state(source_conn, tx_id, "completed");
     }
     if source_state != "prepared" {
@@ -987,7 +1041,7 @@ pub fn finalize_after_ack(
     let root = tx_root(source_conn, tx_id)?;
     let descendants = tx_mode(source_conn, tx_id)?;
     let peer = tx_peer(source_conn, tx_id)?;
-    scrub_moved_slots(&mut NativeStorage, source_conn, source, tx_id)?;
+    scrub_moved_slots(storage, source_conn, source, tx_id)?;
     db::with_immediate_transaction(source_conn, || {
         for label in &secret_labels {
             let row = identity_by_label(source_conn, label)?.ok_or(Error::TransferDenied)?;
@@ -1183,6 +1237,28 @@ pub fn recover_pair(
     dest: &mut Container,
     tx_id: &[u8; 16],
 ) -> Result<Recovery> {
+    recover_pair_in(
+        &mut NativeStorage,
+        &mut NativeStorage,
+        source_conn,
+        source,
+        dest_conn,
+        dest,
+        tx_id,
+    )
+}
+
+/// [`recover_pair`], with each container's slot tokens behind its own
+/// [`Storage`].
+pub fn recover_pair_in(
+    source_storage: &mut dyn Storage,
+    dest_storage: &mut dyn Storage,
+    source_conn: &Connection,
+    source: &mut Container,
+    dest_conn: &Connection,
+    dest: &mut Container,
+    tx_id: &[u8; 16],
+) -> Result<Recovery> {
     let source_state = tx_state(source_conn, tx_id)?.ok_or(Error::TransferIncomplete)?;
     let dest_state = tx_state(dest_conn, tx_id)?;
     if let Some(dest_state) = dest_state.as_deref() {
@@ -1205,7 +1281,7 @@ pub fn recover_pair(
         return Ok(Recovery::AlreadyComplete);
     }
     if source_state == "source_finalized" {
-        finalize_source(source_conn, source, dest_conn, tx_id)?;
+        finalize_source_in(source_storage, source_conn, source, dest_conn, tx_id)?;
         return Ok(Recovery::AlreadyComplete);
     }
     let dest_ready = matches!(
@@ -1216,10 +1292,10 @@ pub fn recover_pair(
             | Some("source_finalized")
     );
     if dest_ready {
-        finalize_source(source_conn, source, dest_conn, tx_id)?;
+        finalize_source_in(source_storage, source_conn, source, dest_conn, tx_id)?;
         return Ok(Recovery::Finalized);
     }
-    abort_transfer(source_conn, dest_conn, dest, tx_id)?;
+    abort_transfer_in(dest_storage, source_conn, dest_conn, dest, tx_id)?;
     Ok(Recovery::Aborted)
 }
 

@@ -26,6 +26,7 @@
 
 use crate::envelope::{self, push_len_prefixed};
 use crate::error::Result;
+use crate::storage::{NativeStorage, Storage};
 use crate::{locked_files, vault};
 use rusqlite::{params, Connection};
 
@@ -57,12 +58,29 @@ pub fn export_file(
     password: &str,
     recipient_public_key: &[u8; 32],
 ) -> Result<Vec<u8>> {
+    export_file_in(
+        &mut NativeStorage,
+        conn,
+        file_id,
+        password,
+        recipient_public_key,
+    )
+}
+
+/// [`export_file`], reading the locked file's ciphertext through `storage`.
+pub fn export_file_in(
+    storage: &mut dyn Storage,
+    conn: &Connection,
+    file_id: i64,
+    password: &str,
+    recipient_public_key: &[u8; 32],
+) -> Result<Vec<u8>> {
     let name: String = conn.query_row(
         "SELECT name FROM password_locked_files WHERE id = ?1",
         params![file_id],
         |row| row.get(0),
     )?;
-    let plaintext = locked_files::unlock_file(conn, file_id, password)?;
+    let plaintext = locked_files::unlock_file_in(storage, conn, file_id, password)?;
 
     let mut payload = Vec::new();
     push_len_prefixed(&mut payload, name.as_bytes())?;

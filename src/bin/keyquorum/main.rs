@@ -27,7 +27,12 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("error: {err}");
-            ExitCode::FAILURE
+            // Usage mistakes exit 2, clap's own convention.
+            if matches!(err, keyquorum::error::Error::Usage(_)) {
+                ExitCode::from(2)
+            } else {
+                ExitCode::FAILURE
+            }
         }
     }
 }
