@@ -320,6 +320,47 @@ impl LabState {
             }
         }
 
+        // `seed::RESTRUCTURE_AUTHORITY`'s own authority signing key,
+        // replacing the one just registered from her device slot above:
+        // `reissue`/`tree restructure` need a plaintext private key file
+        // to authorize `--as`, which a device slot can never produce.
+        {
+            let authority_label = seed::RESTRUCTURE_AUTHORITY;
+            let old_signing =
+                keys::active_keys_for(self.org(), authority_label, keys::KeyType::Signing)?
+                    .into_iter()
+                    .next()
+                    .ok_or(Error::NodeNotFound)?;
+            run(
+                self,
+                format!("keyquorum --db {ORG_DB} revoke {}", old_signing.id),
+            )?;
+            let generated = run(
+                self,
+                format!(
+                    "keyquorum --db {ORG_DB} generate --type signing --public-key-out {SRV}/keys/{authority_label}-authority.pub --label {authority_label} --register"
+                ),
+            )?;
+            let private_hex = generated
+                .stdout_text()
+                .lines()
+                .next()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .ok_or_else(|| {
+                    Error::Usage("lab setup: no private key on stdout of `generate`".into())
+                })?
+                .to_string();
+            let owner = self
+                .user_by_label(authority_label)
+                .ok_or(Error::NodeNotFound)?;
+            let key_path = owner
+                .home()
+                .join("keys")
+                .join(format!("{authority_label}-authority.key"));
+            self.write_file(&key_path, private_hex.as_bytes())?;
+        }
+
         // The org tree whose topology drives visibility, and its one bridge.
         self.write_file(
             &Path::new(SRV).join("org-tree.json"),
@@ -2195,6 +2236,301 @@ impl LabState {
         Ok(Outcome::done(run.ok, message, trace))
     }
 
+    // ----- reissue ------------------------------------------------------------
+
+    /// Reissue a node's hardware key onto an already-provisioned
+    /// replacement token (`Self::provision_slot`, the same precondition
+    /// `register_leaf` has), authorized "as" `seed::RESTRUCTURE_AUTHORITY`
+    /// — the only label in this lab holding a plaintext signing key (see
+    /// its own doc comment). `keyquorum reissue` only rewrites the key
+    /// registry (and, for the subject's own encryption key, the tree's
+    /// `hardware_key_id` via `key_tree::adopt_reissued_hardware_key`); it
+    /// never touches a device container itself, so this binds the
+    /// replacement slot afterward the same way `register_leaf` binds a
+    /// brand-new leaf. The real CLI, not this method, decides whether the
+    /// authorizer actually has standing: asking to reissue a node outside
+    /// her subtree (anyone but `M.A`, `M.A.1`, `M.A.2`) reaches
+    /// `org_update::plan_key_reissue` and comes back `UpdateNotAuthorized`.
+    pub fn reissue_key(
+        &mut self,
+        node_label: &str,
+        to_drive_id: &str,
+        passphrase: &str,
+    ) -> Result<Outcome> {
+        if passphrase.is_empty() {
+            return Ok(Outcome::done(false, "A passphrase is required", vec![]));
+        }
+        let key_id = self.org_key_id;
+        let tree = KeyQuorumTree::load(self.org(), key_id)?;
+        let Some(node) = tree.nodes.iter().find(|node| node.id == node_label) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No node {node_label} in the org tree"),
+                vec![],
+            ));
+        };
+        if node.hardware_key_id.is_none() {
+            return Ok(Outcome::done(
+                false,
+                format!("{node_label} is a split node, not a hardware-backed leaf"),
+                vec![],
+            ));
+        }
+        let Some(drive) = self.vm().bay.get(to_drive_id) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No mock drive named {to_drive_id}"),
+                vec![],
+            ));
+        };
+        if !drive.connected {
+            return Ok(Outcome::done(
+                false,
+                format!("{} is not inserted", drive.name),
+                vec![],
+            ));
+        }
+        if !drive.slots().iter().any(|slot| slot == node_label) {
+            return Ok(Outcome::done(
+                false,
+                format!(
+                    "{} has no provisioned slot named {node_label}; provision the replacement token first",
+                    drive.name
+                ),
+                vec![],
+            ));
+        }
+        let (mount, drive_name) = (drive.mount.clone(), drive.name.clone());
+        let authority_label = seed::RESTRUCTURE_AUTHORITY;
+        let Some(authority_owner) = self.user_by_label(authority_label) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No authority signing key registered for {authority_label}"),
+                vec![],
+            ));
+        };
+        let authority_key_file = authority_owner
+            .home()
+            .join("keys")
+            .join(format!("{authority_label}-authority.key"));
+
+        let title = format!("Reissue {node_label}'s hardware key");
+        let public = self.run(&format!(
+            "keyquorum-device public {} --label {node_label}",
+            mount.display()
+        ));
+        let mut trace = transcript(&public, true);
+        if !public.ok {
+            let message = format!("{title}: {}", public.error().unwrap_or("failed"));
+            self.log(
+                "reissue",
+                "denied",
+                &title,
+                trace.clone(),
+                Some(public.line.clone()),
+            );
+            return Ok(Outcome::done(false, message, trace));
+        }
+        let (new_encryption, new_signing) = slot_public_keys(&public)?;
+        let enc_path = Path::new(SRV)
+            .join("keys")
+            .join(format!("{node_label}-reissue-encryption.pub"));
+        let sign_path = Path::new(SRV)
+            .join("keys")
+            .join(format!("{node_label}-reissue-signing.pub"));
+        self.write_file(&enc_path, new_encryption.as_bytes())?;
+        self.write_file(&sign_path, new_signing.as_bytes())?;
+
+        let output_dir = Path::new(SRV).join("reissue-packages");
+        let reissue_line = format!(
+            "keyquorum --db {ORG_DB} reissue --node {node_label} --key-id {key_id} \
+             --encryption-public-key-file {} --signing-public-key-file {} --as {authority_label} \
+             --signing-key-file {} --revoke-previous --output-dir {}",
+            enc_path.display(),
+            sign_path.display(),
+            authority_key_file.display(),
+            output_dir.display(),
+        );
+        let reissue_run = self.run(&reissue_line);
+        trace.extend(transcript(&reissue_run, true));
+        if !reissue_run.ok {
+            let message = format!("{title}: {}", reissue_run.error().unwrap_or("failed"));
+            self.log(
+                "reissue",
+                "denied",
+                &title,
+                trace.clone(),
+                Some(reissue_line),
+            );
+            return Ok(Outcome::done(false, message, trace));
+        }
+
+        self.vm_mut()
+            .stage_secrets([passphrase.to_string(), passphrase.to_string()]);
+        let bind = self.run(&format!(
+            "keyquorum --db {ORG_DB} device bind {} --slot {node_label}",
+            mount.display()
+        ));
+        self.vm_mut().clear_pending_secrets();
+        trace.extend(transcript(&bind, true));
+        let ok = bind.ok;
+        let message = if ok {
+            format!(
+                "Reissued {node_label}'s hardware key onto {drive_name}, authorized by {authority_label}; the old token is revoked"
+            )
+        } else {
+            format!(
+                "Reissue applied, but binding the new device failed: {}",
+                bind.error().unwrap_or("failed")
+            )
+        };
+        self.log(
+            "reissue",
+            if ok { "granted" } else { "denied" },
+            &title,
+            trace.clone(),
+            Some(reissue_line),
+        );
+        Ok(Outcome::done(ok, message, trace))
+    }
+
+    // ----- tree restructure -----------------------------------------------
+
+    /// `seed::RESTRUCTURE_AUTHORITY` proposes republishing the org tree at
+    /// its next public generation (`keyquorum tree restructure`). She is
+    /// not the root, so `org_update::plan_tree_restructure` marks this a
+    /// proposal rather than applying it: it lands in `pending_org_actions`
+    /// (surfaced to the countersigner as `Snapshot::pending_restructures`)
+    /// and only takes effect once her parent, `M`, countersigns it with
+    /// [`Self::countersign_restructure`].
+    pub fn propose_restructure(&mut self) -> Result<Outcome> {
+        let authorizer_label = seed::RESTRUCTURE_AUTHORITY;
+        let Some(owner) = self.user_by_label(authorizer_label) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No authority signing key registered for {authorizer_label}"),
+                vec![],
+            ));
+        };
+        let authority_key_file = owner
+            .home()
+            .join("keys")
+            .join(format!("{authorizer_label}-authority.key"));
+        let key_id = self.org_key_id;
+        let output_dir = Path::new(SRV)
+            .join("restructure-packages")
+            .join("proposals");
+        let line = format!(
+            "keyquorum --db {ORG_DB} tree restructure {key_id} --as {authorizer_label} \
+             --signing-key-file {} --output-dir {}",
+            authority_key_file.display(),
+            output_dir.display(),
+        );
+        let run = self.run(&line);
+        let trace = transcript(&run, true);
+        let title = format!("Propose a tree restructure as {authorizer_label}");
+        let message = if run.ok {
+            run.stdout_text()
+                .lines()
+                .find(|line| line.contains("waiting for"))
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{authorizer_label} proposed a restructure"))
+        } else {
+            format!("{title}: {}", run.error().unwrap_or("failed"))
+        };
+        self.log(
+            "restructure-propose",
+            if run.ok { "granted" } else { "denied" },
+            &title,
+            trace.clone(),
+            Some(line),
+        );
+        Ok(Outcome::done(run.ok, message, trace))
+    }
+
+    /// The active user countersigns every pending restructure proposal
+    /// addressed to them (`keyquorum tree countersign`), using their own
+    /// device slot rather than a plaintext key file — unlike `restructure`
+    /// and `reissue`, `tree countersign` accepts `--device`/`--slot`, so
+    /// the root never needs a personal signing keypair of her own.
+    pub fn countersign_restructure(&mut self, passphrase: &str) -> Result<Outcome> {
+        if passphrase.is_empty() {
+            return Ok(Outcome::done(false, "A passphrase is required", vec![]));
+        }
+        let actor_label = self.actor().label.clone();
+        let pending = self.pending_restructure_views()?;
+        if !pending
+            .iter()
+            .any(|proposal| proposal.countersigner_label == actor_label)
+        {
+            return Ok(Outcome::done(
+                false,
+                format!("{actor_label} has no pending restructure to countersign"),
+                vec![],
+            ));
+        }
+        let Some(mount) = self
+            .drive_holding(&actor_label)
+            .filter(|drive| drive.connected)
+            .map(|drive| drive.mount.clone())
+        else {
+            return Ok(Outcome::done(
+                false,
+                format!("{actor_label}'s drive is not inserted"),
+                vec![],
+            ));
+        };
+        let key_id = self.org_key_id;
+        let output_dir = Path::new(SRV)
+            .join("restructure-packages")
+            .join("countersigned");
+        let line = format!(
+            "keyquorum --db {ORG_DB} tree countersign {key_id} --as {actor_label} --device {} \
+             --slot {actor_label} --output-dir {}",
+            mount.display(),
+            output_dir.display(),
+        );
+        self.vm_mut().stage_secret(passphrase.to_string());
+        let run = self.run(&line);
+        self.vm_mut().clear_pending_secrets();
+        let trace = transcript(&run, true);
+        let title = format!("Countersign the pending restructure as {actor_label}");
+        let message = if run.ok {
+            format!("{actor_label} countersigned the restructure; it is now in effect")
+        } else {
+            format!("{title}: {}", run.error().unwrap_or("failed"))
+        };
+        self.log(
+            "restructure-countersign",
+            if run.ok { "granted" } else { "denied" },
+            &title,
+            trace.clone(),
+            Some(line),
+        );
+        Ok(Outcome::done(run.ok, message, trace))
+    }
+
+    /// Read-only: every proposal still waiting on a countersignature, for
+    /// `Snapshot::pending_restructures`. Nothing here decides anything —
+    /// `tree countersign` is what applies or refuses one.
+    fn pending_restructure_views(&self) -> Result<Vec<RestructureProposalView>> {
+        let mut stmt = self.org().prepare(
+            "SELECT tree_label, authorizer_label, countersigner_label, generation
+             FROM pending_org_actions WHERE key_id = ?1 ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![self.org_key_id], |row| {
+                Ok(RestructureProposalView {
+                    tree_label: row.get(0)?,
+                    authorizer_label: row.get(1)?,
+                    countersigner_label: row.get(2)?,
+                    generation: row.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     // ----- transfer ---------------------------------------------------------
 
     /// Copy an active identity to a second drive with `keyquorum transfer
@@ -2915,6 +3251,7 @@ impl LabState {
             exports: self.export_views(),
             file_shares: self.file_share_views(),
             signatures: self.signature_views(),
+            pending_restructures: self.pending_restructure_views()?,
         })
     }
 
@@ -3063,6 +3400,24 @@ fn last_error(runs: &[CommandRun]) -> String {
         .find_map(|run| run.error())
         .unwrap_or("failed")
         .to_string()
+}
+
+/// Both public keys from `keyquorum-device public`'s "encryption "/"signing "
+/// stdout lines (see `device_tool::print_slot`).
+fn slot_public_keys(run: &CommandRun) -> Result<(String, String)> {
+    let text = run.stdout_text();
+    let encryption = text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("encryption "))
+        .map(str::to_string);
+    let signing = text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("signing "))
+        .map(str::to_string);
+    match (encryption, signing) {
+        (Some(encryption), Some(signing)) => Ok((encryption, signing)),
+        _ => Err(Error::InvalidPublicKey),
+    }
 }
 
 fn sorted_join(labels: Vec<&String>) -> String {

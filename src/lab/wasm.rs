@@ -265,6 +265,35 @@ impl KeyQuorumLab {
         to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
     }
 
+    /// Reissue a node's hardware key onto a freshly provisioned replacement
+    /// token, authorized by the lab's one org-update authority label.
+    pub fn reissue_key(
+        &mut self,
+        node_label: &str,
+        to_drive_id: &str,
+        passphrase: &str,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self.state.reissue_key(node_label, to_drive_id, passphrase);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// Propose republishing the org tree at its next public generation.
+    /// Not the root, so this only records a pending proposal.
+    pub fn propose_restructure(&mut self) -> std::result::Result<String, JsError> {
+        let outcome = self.state.propose_restructure();
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// Countersign every pending restructure proposal addressed to the
+    /// active user, using their own device slot passphrase.
+    pub fn countersign_restructure(
+        &mut self,
+        passphrase: &str,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self.state.countersign_restructure(passphrase);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
     /// One terminal line against the same state the GUI uses.
     pub fn run_command(&mut self, line: &str) -> std::result::Result<String, JsError> {
         if line.trim() == "reset" {

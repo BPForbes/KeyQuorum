@@ -263,6 +263,18 @@ pub struct RelayStatusView {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RestructureProposalView {
+    pub tree_label: String,
+    /// Label that proposed the restructure (`seed::RESTRUCTURE_AUTHORITY`
+    /// in this lab).
+    pub authorizer_label: String,
+    /// Parent label that must countersign before this takes effect.
+    pub countersigner_label: String,
+    pub generation: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub active_user: UserView,
     pub users: Vec<UserView>,
@@ -293,6 +305,8 @@ pub struct Snapshot {
     /// Signatures produced from the FileExplorer's Sign action, across
     /// every lab user; either private-bridge member can verify one.
     pub signatures: Vec<SignatureView>,
+    /// Tree restructure proposals still waiting on their countersigner.
+    pub pending_restructures: Vec<RestructureProposalView>,
 }
 
 #[derive(Clone, Debug, Serialize)]

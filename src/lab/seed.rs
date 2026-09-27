@@ -84,6 +84,29 @@ pub const PRIVATE_BRIDGE_LABEL: &str = "cross-dept-sign";
 /// key would be.
 pub const BRIDGE_SIGNERS: &[(&str, &str)] = &[("M.S", "sarah-signer"), ("M.A", "david-signer")];
 
+/// The tree label that authorizes `keyquorum reissue` and `keyquorum tree
+/// restructure` in this lab. Both `--as` arguments take only
+/// `--signing-key-file`, unlike `tree countersign`, which also accepts
+/// `--device`/`--slot` — so proposing a restructure or reissuing an
+/// employee's token needs a *plaintext* private key file for the
+/// authorizing label, and (per `BRIDGE_SIGNERS` above) a device slot's
+/// signing secret never leaves its container as one. This label's own
+/// device-registered signing key is therefore revoked once at seed time
+/// and replaced with a second, personal signing keypair registered
+/// directly under her real tree label (not hyphenated like
+/// `BRIDGE_SIGNERS`: `org_update`'s authorizer check is keyed on the exact
+/// dotted ancestor label, so it has to be `"M.A"` itself). Her hardware
+/// key keeps its ENCRYPTION half — and her leaf's place in the tree —
+/// untouched; only the SIGNING half of her identity moves off the device.
+/// This has to be `M.A`, not `M.S`: the one `UnlockApproval::Parent` file
+/// in this lab (`prod-credentials`) needs `M.S` to countersign an unlock
+/// with her own device slot, so `M.S`'s device-registered signing key
+/// must stay exactly what it is; `M.A` has no such file naming her.
+/// `M`, the root, never needs a personal key either: she is always the
+/// countersigner, and `tree countersign` accepts `--device`/`--slot`, so
+/// she approves with her own device passphrase like any other action here.
+pub const RESTRUCTURE_AUTHORITY: &str = "M.A";
+
 /// A former engineer. Before the lab starts, her identity is enrolled and
 /// then MOVE-transferred to a throwaway archive device via `transfer.rs`
 /// — the same primitive `keyquorum transfer move` uses — so

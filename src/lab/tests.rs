@@ -1192,3 +1192,123 @@ fn register_leaf_rejects_an_unknown_parent() {
     assert!(!outcome.ok);
     assert!(outcome.message.contains("No node"));
 }
+
+// ----- reissue --------------------------------------------------------------
+
+#[test]
+fn reissue_replaces_an_employees_hardware_key_when_authorized_by_their_manager() {
+    let mut state = lab();
+    state.set_drive("spare", true).unwrap();
+    state
+        .provision_slot("spare", "M.A.1", &super::seed::demo_passphrase("M.A.1"))
+        .unwrap();
+
+    let outcome = state
+        .reissue_key("M.A.1", "spare", &super::seed::demo_passphrase("M.A.1"))
+        .unwrap();
+    assert!(outcome.ok, "{}", said(&outcome));
+    assert!(
+        outcome.message.contains("Reissued M.A.1"),
+        "{}",
+        outcome.message
+    );
+
+    // The replacement token is now bound in the org store.
+    let dest_log = state.device_log("spare").unwrap();
+    assert!(dest_log
+        .opened
+        .map(|opened| opened.text)
+        .unwrap_or_default()
+        .contains("slot M.A.1"));
+
+    // M.A.1 is still a live, hardware-backed leaf under M.A.
+    let tree = snap(&state).tree;
+    let leaf = tree
+        .nodes
+        .iter()
+        .find(|node| node.label == "M.A.1")
+        .expect("M.A.1 should still be in the org tree");
+    assert_eq!(leaf.kind, "leaf");
+    assert_eq!(leaf.parent.as_deref(), Some("M.A"));
+}
+
+#[test]
+fn reissue_is_refused_for_a_node_outside_the_authoritys_subtree() {
+    let mut state = lab();
+    state.set_drive("spare", true).unwrap();
+    state
+        .provision_slot("spare", "M.S.1", &super::seed::demo_passphrase("M.S.1"))
+        .unwrap();
+
+    // `M.S.1` answers to `M.S`, not `M.A` — the only label in this lab
+    // holding a plaintext authorizer key — so the real CLI's own
+    // `is_ancestor_or_self` check refuses this before anything changes.
+    let outcome = state
+        .reissue_key("M.S.1", "spare", &super::seed::demo_passphrase("M.S.1"))
+        .unwrap();
+    assert!(!outcome.ok, "{}", said(&outcome));
+}
+
+#[test]
+fn reissue_requires_the_replacement_token_provisioned_first() {
+    let mut state = lab();
+    state.set_drive("spare", true).unwrap();
+    let outcome = state
+        .reissue_key("M.A.1", "spare", &super::seed::demo_passphrase("M.A.1"))
+        .unwrap();
+    assert!(!outcome.ok);
+    assert!(outcome.message.contains("no provisioned slot"));
+}
+
+// ----- tree restructure ------------------------------------------------------
+
+#[test]
+fn m_a_proposes_and_m_countersigns_a_restructure() {
+    let mut state = lab();
+    let proposed = state.propose_restructure().unwrap();
+    assert!(proposed.ok, "{}", said(&proposed));
+
+    // One proposal per active leaf under `M.A` (`M.A.1`, `M.A.2`) — `M.A`
+    // herself is a split node, not a hardware-backed recipient.
+    let pending = snap(&state).pending_restructures;
+    assert_eq!(pending.len(), 2);
+    assert!(pending
+        .iter()
+        .all(|proposal| proposal.authorizer_label == "M.A" && proposal.countersigner_label == "M"));
+
+    state.switch_user("morgan").unwrap();
+    state.set_drive("morgan", true).unwrap();
+    let countersigned = state
+        .countersign_restructure(&super::seed::demo_passphrase("M"))
+        .unwrap();
+    assert!(countersigned.ok, "{}", said(&countersigned));
+
+    assert!(snap(&state).pending_restructures.is_empty());
+}
+
+#[test]
+fn countersign_is_refused_for_someone_with_no_pending_proposal() {
+    let mut state = lab();
+    state.propose_restructure().unwrap();
+
+    // The default active user (Alice, `M.S.1`) is not the countersigner
+    // any pending proposal names.
+    let outcome = state
+        .countersign_restructure(&super::seed::demo_passphrase("M.S.1"))
+        .unwrap();
+    assert!(!outcome.ok, "{}", said(&outcome));
+    assert!(outcome.message.contains("no pending restructure"));
+}
+
+#[test]
+fn countersign_rejects_the_wrong_passphrase() {
+    let mut state = lab();
+    state.propose_restructure().unwrap();
+    state.switch_user("morgan").unwrap();
+    state.set_drive("morgan", true).unwrap();
+    let outcome = state
+        .countersign_restructure("not-the-real-passphrase")
+        .unwrap();
+    assert!(!outcome.ok);
+    assert!(!snap(&state).pending_restructures.is_empty());
+}
