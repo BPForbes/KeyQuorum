@@ -9,7 +9,10 @@
 //! - one SQLite store per `--db` path, held in memory for the session;
 //! - a terminal whose passphrase prompts are answered with the published
 //!   demo passphrases (see [`super::seed::demo_passphrase`]) and echoed as
-//!   `********`, so the transcript shows every prompt the CLI asked;
+//!   `********`, so the transcript shows every prompt the CLI asked. A GUI
+//!   action that lets a person type their own secret stages it first with
+//!   [`LabVm::stage_secret`]/[`stage_secrets`](LabVm::stage_secrets), which
+//!   the next prompt(s) consume before falling back to the demo answer;
 //! - a relay: the crate's own relay request handling
 //!   ([`relay::service::dispatch`]) run in process, reachable only at
 //!   [`RELAY_URL`], presenting a provider certificate issued for this
@@ -32,7 +35,7 @@ use crate::storage::{MemoryStorage, Storage};
 use clap::error::ErrorKind;
 use clap::Parser;
 use rusqlite::Connection;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
@@ -85,6 +88,11 @@ pub struct LabVm {
     vars: HashMap<String, String>,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+    /// Secrets a GUI action staged for the next command's prompts, consumed
+    /// in order (one per `prompt_secret` call) before falling back to the
+    /// seeded demo answer. Lets a person type their own passphrase, PIN, or
+    /// password instead of always getting the published demo value.
+    pending_secrets: VecDeque<String>,
 }
 
 impl LabVm {
@@ -128,7 +136,31 @@ impl LabVm {
             vars,
             stdout: Vec::new(),
             stderr: Vec::new(),
+            pending_secrets: VecDeque::new(),
         })
+    }
+
+    /// Stage one secret to answer the next `prompt_secret` call instead of
+    /// the seeded demo answer. Call this before running a command whose
+    /// prompt should be answered with a person's own choice; the value is
+    /// consumed by the first matching prompt.
+    pub fn stage_secret(&mut self, value: impl Into<String>) {
+        self.pending_secrets.push_back(value.into());
+    }
+
+    /// Stage several secrets for a command that prompts more than once
+    /// (e.g. a passphrase entered twice, or a password followed by a PIN),
+    /// consumed in the order given.
+    pub fn stage_secrets(&mut self, values: impl IntoIterator<Item = String>) {
+        self.pending_secrets.extend(values);
+    }
+
+    /// Drop any staged secrets that a command did not consume, so a later,
+    /// unrelated prompt never accidentally reuses a stale value. Callers
+    /// that stage a secret should call this after running the command,
+    /// whether or not it succeeded.
+    pub fn clear_pending_secrets(&mut self) {
+        self.pending_secrets.clear();
     }
 
     pub fn cwd(&self) -> &Path {
@@ -383,7 +415,10 @@ impl Env for LabVm {
     }
 
     fn prompt_secret(&mut self, prompt: &str) -> Result<String> {
-        let answer = Self::answer(prompt);
+        let answer = self
+            .pending_secrets
+            .pop_front()
+            .unwrap_or_else(|| Self::answer(prompt));
         let shown = if answer.is_empty() { "" } else { "********" };
         let _ = writeln!(self.stderr, "{prompt}{shown}");
         Ok(answer)
