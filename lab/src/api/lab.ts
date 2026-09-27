@@ -91,4 +91,24 @@ export class LabClient {
   transferCopy(label: string, toDriveId: string, passphrase: string): ActionResult {
     return this.call(this.lab.transfer_copy(label, toDriveId, passphrase));
   }
+
+  exportFile(id: number, recipientLabel: string, password: string): ActionResult {
+    return this.call(this.lab.export_file(id, recipientLabel, password));
+  }
+
+  viewExport(id: number): ActionResult {
+    return this.call(this.lab.view_export(id));
+  }
+
+  createFileShare(fileId: number, ttlSeconds: number, pin?: string): ActionResult {
+    return this.call(this.lab.create_file_share(fileId, ttlSeconds, pin));
+  }
+
+  redeemFileShare(shareId: number, token: string, pin?: string): ActionResult {
+    return this.call(this.lab.redeem_file_share(shareId, token, pin));
+  }
+
+  revokeFileShare(shareId: number): ActionResult {
+    return this.call(this.lab.revoke_file_share(shareId));
+  }
 }

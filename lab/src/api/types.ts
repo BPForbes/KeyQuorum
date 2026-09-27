@@ -131,6 +131,27 @@ export interface PasswordFileView {
   pinProtected: boolean;
 }
 
+export interface ExportedBundleView {
+  id: number;
+  fileName: string;
+  /** The lab-user label whose own store the source file's row lives in. */
+  owner: string;
+  recipient: string;
+  recipientName: string;
+  size: number;
+  createdAt: string;
+}
+
+export interface FileShareView {
+  id: number;
+  fileName: string;
+  /** The lab-user label who created this share; only they may revoke it. */
+  owner: string;
+  pinProtected: boolean;
+  expiresAt: string;
+  revoked: boolean;
+}
+
 export interface RelayStatusView {
   url: string;
   packageLetters: number;
@@ -160,6 +181,8 @@ export interface Snapshot {
   orgDb: string;
   passwordFiles: PasswordFileView[];
   relayStatus: RelayStatusView;
+  exports: ExportedBundleView[];
+  fileShares: FileShareView[];
 }
 
 export interface OpenedFile {

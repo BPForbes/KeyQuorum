@@ -735,7 +735,9 @@ h1 {
 }
 
 .lock-note-form,
-.provision-form {
+.provision-form,
+.export-form,
+.share-form {
   display: grid;
   gap: 0.3rem;
   margin-bottom: 0.5rem;
@@ -745,7 +747,11 @@ h1 {
 .lock-note-form textarea,
 .lock-note-form select,
 .provision-form input,
-.provision-form select {
+.provision-form select,
+.export-form input,
+.export-form select,
+.share-form input,
+.share-form select {
   min-height: var(--tap);
   padding: 0.4rem;
   border: 1px solid var(--border-strong);
@@ -770,13 +776,17 @@ h1 {
   gap: 0.5rem;
 }
 
-.unlock-note-form {
+.unlock-note-form,
+.redeem-share-form {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.4rem;
   margin-top: 0.25rem;
+  align-items: center;
 }
 
-.unlock-note-form input {
+.unlock-note-form input,
+.redeem-share-form input {
   min-height: var(--tap);
   padding: 0.3rem 0.5rem;
   border: 1px solid var(--border-strong);
@@ -785,6 +795,17 @@ h1 {
   color: var(--text);
   font: inherit;
   width: 6.5rem;
+}
+
+.redeem-share-form input:first-of-type {
+  width: 12rem;
+}
+
+.password-file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.25rem;
 }
 
 @media (max-width: 640px) {

@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 import type { Act } from "../App";
-import type { ActionResult, PasswordFileView, Snapshot } from "../api/types";
+import type { ActionResult, FileShareView, PasswordFileView, Snapshot } from "../api/types";
 import { formatUtc } from "../explorerTypes";
 import { FileViewer } from "./FileViewer";
 
@@ -129,6 +129,249 @@ function UnlockPasswordFile({ file, act }: { file: PasswordFileView; act: Act })
   );
 }
 
+/** Seal a copy of a password-locked file to another lab user's public key. */
+function ExportFileForm({ file, snapshot, act }: { file: PasswordFileView; snapshot: Snapshot; act: Act }) {
+  const id = useId();
+  const others = snapshot.users.filter((user) => user.label !== file.owner);
+  const [recipient, setRecipient] = useState(others[0]?.label ?? "");
+  const [password, setPassword] = useState("");
+  const [open, setOpen] = useState(false);
+
+  if (others.length === 0) return null;
+
+  return (
+    <>
+      <button type="button" className="btn small-btn" onClick={() => setOpen((value) => !value)}>
+        {open ? "Cancel export" : "Export…"}
+      </button>
+      {open ? (
+        <form
+          className="export-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!password) return;
+            const result = act((client) => client.exportFile(file.id, recipient, password));
+            if (result?.ok) {
+              setPassword("");
+              setOpen(false);
+            }
+          }}
+        >
+          <label htmlFor={`${id}-recipient`}>Recipient</label>
+          <select id={`${id}-recipient`} value={recipient} onChange={(event) => setRecipient(event.target.value)}>
+            {others.map((user) => (
+              <option key={user.label} value={user.label}>
+                {user.name}
+              </option>
+            ))}
+          </select>
+          <label htmlFor={`${id}-password`} className="visually-hidden">
+            {file.name}&rsquo;s lock password
+          </label>
+          <input
+            id={`${id}-password`}
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            placeholder="This file's lock password"
+            required
+          />
+          <button type="submit" className="btn small-btn">
+            Seal bundle
+          </button>
+        </form>
+      ) : null}
+    </>
+  );
+}
+
+/** Create a time-limited, revocable share link for a password-locked file. */
+function CreateShareForm({ file, act }: { file: PasswordFileView; act: Act }) {
+  const id = useId();
+  const [ttlSeconds, setTtlSeconds] = useState(3600);
+  const [wantsPin, setWantsPin] = useState(false);
+  const [pin, setPin] = useState("");
+  const [open, setOpen] = useState(false);
+  const [viewing, setViewing] = useState<ActionResult | null>(null);
+
+  return (
+    <>
+      <button type="button" className="btn small-btn" onClick={() => setOpen((value) => !value)}>
+        {open ? "Cancel share" : "Share…"}
+      </button>
+      {open ? (
+        <form
+          className="share-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const result = act((client) => client.createFileShare(file.id, ttlSeconds, wantsPin ? pin : undefined));
+            if (result) setViewing(result);
+            if (result?.ok) {
+              setOpen(false);
+              setPin("");
+              setWantsPin(false);
+            }
+          }}
+        >
+          <label htmlFor={`${id}-ttl`}>Link lasts (seconds)</label>
+          <input
+            id={`${id}-ttl`}
+            type="number"
+            min={1}
+            value={ttlSeconds}
+            onChange={(event) => setTtlSeconds(Number(event.target.value))}
+            required
+          />
+          <label className="checkbox-row">
+            <input type="checkbox" checked={wantsPin} onChange={(event) => setWantsPin(event.target.checked)} />
+            Also require a 4-digit PIN
+          </label>
+          {wantsPin ? (
+            <input
+              value={pin}
+              onChange={(event) => setPin(event.target.value)}
+              inputMode="numeric"
+              pattern="[0-9]{4}"
+              maxLength={4}
+              placeholder="0000"
+              required
+            />
+          ) : null}
+          <button type="submit" className="btn small-btn">
+            Create link
+          </button>
+        </form>
+      ) : null}
+      {viewing ? (
+        <FileViewer result={viewing} fileName={`Share link for ${file.name}`} onClose={() => setViewing(null)} />
+      ) : null}
+    </>
+  );
+}
+
+function ExportedBundles({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
+  const [viewing, setViewing] = useState<ActionResult | null>(null);
+  const mine = snapshot.exports.filter((bundle) => bundle.owner === snapshot.activeUser.label);
+  return (
+    <div>
+      {mine.length === 0 ? (
+        <p className="small muted">None yet.</p>
+      ) : (
+        <ul className="mono-list">
+          {mine.map((bundle) => (
+            <li key={bundle.id}>
+              <div>
+                <strong>{bundle.fileName}</strong>{" "}
+                <span className="muted small">
+                  · for {bundle.recipientName} · {bundle.size} bytes · sealed {formatUtc(bundle.createdAt)}
+                </span>
+              </div>
+              <button
+                type="button"
+                className="btn small-btn"
+                onClick={() => {
+                  const result = act((client) => client.viewExport(bundle.id));
+                  if (result) setViewing(result);
+                }}
+              >
+                View sealed bytes
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {viewing ? (
+        <FileViewer result={viewing} fileName={viewing.opened?.name ?? "bundle"} onClose={() => setViewing(null)} />
+      ) : null}
+    </div>
+  );
+}
+
+/** Redeem a file share's bearer token: not scoped to any lab user — whoever has the token may use it. */
+function RedeemShareForm({ share, act }: { share: FileShareView; act: Act }) {
+  const id = useId();
+  const [token, setToken] = useState("");
+  const [pin, setPin] = useState("");
+  const [result, setResult] = useState<ActionResult | null>(null);
+
+  if (share.revoked) {
+    return <p className="small muted">Revoked.</p>;
+  }
+
+  return (
+    <form
+      className="redeem-share-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!token) return;
+        const outcome = act((client) => client.redeemFileShare(share.id, token, pin || undefined));
+        if (outcome) setResult(outcome);
+        setToken("");
+        setPin("");
+      }}
+    >
+      <label htmlFor={`${id}-token`} className="visually-hidden">
+        Share token for {share.fileName}
+      </label>
+      <input
+        id={`${id}-token`}
+        value={token}
+        onChange={(event) => setToken(event.target.value)}
+        placeholder="Paste the token you were given"
+        required
+      />
+      {share.pinProtected ? (
+        <input
+          value={pin}
+          onChange={(event) => setPin(event.target.value)}
+          placeholder="PIN"
+          inputMode="numeric"
+          maxLength={4}
+        />
+      ) : null}
+      <button type="submit" className="btn small-btn">
+        Redeem
+      </button>
+      {result ? <p className={`small ${result.ok ? "muted" : "viewer-denied-title"}`}>{result.message}</p> : null}
+    </form>
+  );
+}
+
+function ShareLinks({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
+  return (
+    <div>
+      {snapshot.fileShares.length === 0 ? (
+        <p className="small muted">None yet.</p>
+      ) : (
+        <ul className="password-file-list">
+          {snapshot.fileShares.map((share) => (
+            <li key={share.id}>
+              <div>
+                <strong>{share.fileName}</strong>{" "}
+                <span className="muted small">
+                  · from {share.owner} · expires {formatUtc(share.expiresAt)}
+                  {share.pinProtected ? " · PIN required" : ""}
+                  {share.revoked ? " · revoked" : ""}
+                </span>
+              </div>
+              <RedeemShareForm share={share} act={act} />
+              {share.owner === snapshot.activeUser.label && !share.revoked ? (
+                <button
+                  type="button"
+                  className="btn small-btn"
+                  onClick={() => act((client) => client.revokeFileShare(share.id))}
+                >
+                  Revoke
+                </button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function ProvisionSlotForm({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
   const id = useId();
   const connected = snapshot.drives.filter((drive) => drive.connected);
@@ -247,10 +490,32 @@ export function SecurityPanel({ snapshot, act }: { snapshot: Snapshot; act: Act 
                     </span>
                   </div>
                   <UnlockPasswordFile file={file} act={act} />
+                  <div className="password-file-actions">
+                    <ExportFileForm file={file} snapshot={snapshot} act={act} />
+                    <CreateShareForm file={file} act={act} />
+                  </div>
                 </li>
               ))}
             </ul>
           )}
+        </div>
+
+        <div>
+          <h3>Exported bundles</h3>
+          <p className="small muted">
+            Portable <code>KQXB</code> bundles you sealed to another lab user&rsquo;s public key (
+            <code>keyquorum export file</code>). No import step exists yet, so this only shows the sealed bytes.
+          </p>
+          <ExportedBundles snapshot={snapshot} act={act} />
+        </div>
+
+        <div>
+          <h3>Share links</h3>
+          <p className="small muted">
+            Time-limited, revocable links (<code>keyquorum share create-file</code>). A bearer token authorizes
+            redemption, not identity — anyone given the token can use it below.
+          </p>
+          <ShareLinks snapshot={snapshot} act={act} />
         </div>
 
         <div>
