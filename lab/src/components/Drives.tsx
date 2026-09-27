@@ -10,6 +10,7 @@ function MoveSlot({ label, currentDriveId, snapshot, act }: { label: string; cur
   return (
     <form
       className="move-slot"
+      data-testid={`move-slot-${label}`}
       onSubmit={(event) => {
         event.preventDefault();
         act((client) => client.moveSlot(label, target));
@@ -41,6 +42,7 @@ function CopySlot({ label, currentDriveId, snapshot, act }: { label: string; cur
   return (
     <form
       className="move-slot"
+      data-testid={`copy-slot-${label}`}
       onSubmit={(event) => {
         event.preventDefault();
         if (!passphrase) return;

@@ -198,25 +198,36 @@ export function Tutorial({
   }, [rect, step]);
 
   if (pickerOpen && !module) {
+    const categories = [
+      ["identities", "Identities & drives", "People, keys, organization policy, and physical custody."],
+      ["files", "Files & unlocking", "Protection schemes, access decisions, portability, and evidence."],
+      ["mailbox", "Mailbox: sending & receiving", "Delivery decisions and the protocols carried by sealed letters."],
+    ] as const;
     return (
       <Modal title="Guided tutorials" onClose={onPickerClose} labelledBy="tutorial-picker-heading">
         <p className="small muted">
           Short, self-contained walkthroughs of one part of the lab. Pick whichever covers what you want to learn —
           you don&rsquo;t need to do them in order, or do all of them.
         </p>
-        <ul className="tutorial-picker-list">
-          {TUTORIALS.map((candidate) => (
-            <li key={candidate.id} className="tutorial-picker-item">
-              <div>
-                <strong>{candidate.title}</strong>
-                <p className="small muted">{candidate.summary}</p>
-              </div>
-              <button type="button" className="btn btn-primary" onClick={() => start(candidate.id)}>
-                Start
-              </button>
-            </li>
-          ))}
-        </ul>
+        {categories.map(([id, title, summary]) => (
+          <section key={id} className="tutorial-category" aria-labelledby={`tutorial-category-${id}`}>
+            <h3 id={`tutorial-category-${id}`}>{title}</h3>
+            <p className="small muted">{summary}</p>
+            <ul className="tutorial-picker-list">
+              {TUTORIALS.filter((candidate) => candidate.category === id).map((candidate) => (
+                <li key={candidate.id} className="tutorial-picker-item">
+                  <div>
+                    <strong>{candidate.title}</strong>
+                    <p className="small muted">{candidate.summary}</p>
+                  </div>
+                  <button type="button" className="btn btn-primary" onClick={() => start(candidate.id)}>
+                    Start
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))}
       </Modal>
     );
   }

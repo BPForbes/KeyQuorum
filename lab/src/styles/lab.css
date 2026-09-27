@@ -1108,6 +1108,17 @@ h1 {
 
 /* ----- Guided tutorials --------------------------------------------------- */
 
+.tutorial-category + .tutorial-category {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.tutorial-category > h3,
+.tutorial-category > p {
+  margin: 0 0 0.45rem;
+}
+
 .tutorial-picker-list {
   list-style: none;
   margin: 0;

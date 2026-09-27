@@ -204,7 +204,7 @@ export function FileExplorer({ snapshot, act }: { snapshot: Snapshot; act: Act }
       )}
 
       {selectedFile ? (
-        <div className="explorer-toolbar" role="toolbar" aria-label={`Actions for ${selectedFile.name}`}>
+        <div className="explorer-toolbar" data-testid="file-actions" role="toolbar" aria-label={`Actions for ${selectedFile.name}`}>
           <button type="button" className="btn btn-primary" onClick={() => openFile(selectedFile)}>
             Open
           </button>

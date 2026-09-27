@@ -75,7 +75,7 @@ export function Mailbox({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
               sealed to your key. Insert your USB so <code>keyquorum deliver ack</code> can open them.
             </p>
           ) : null}
-          <button type="button" className="btn" onClick={() => act((client) => client.refreshInbox())}>
+          <button type="button" className="btn" data-testid="mailbox-refresh" onClick={() => act((client) => client.refreshInbox())}>
             Check relay for acknowledgements
           </button>
           {snapshot.sent.length === 0 ? <p className="empty">Nothing sent yet.</p> : null}

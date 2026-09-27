@@ -56,6 +56,7 @@ export interface TutorialStep {
 
 export interface TutorialModule {
   id: string;
+  category: "identities" | "files" | "mailbox";
   title: string;
   summary: string;
   steps: TutorialStep[];
@@ -103,9 +104,21 @@ const ensureDriveDisconnected =
     return result?.snapshot ?? snapshot;
   };
 
+const ensureDrivesConnected =
+  (...driveIds: string[]) =>
+  (snapshot: Snapshot, act: Act): Snapshot => {
+    let current = snapshot;
+    for (const driveId of driveIds) {
+      if (current.drives.find((drive) => drive.id === driveId)?.connected) continue;
+      current = act((client) => client.insertDrive(driveId))?.snapshot ?? current;
+    }
+    return current;
+  };
+
 export const TUTORIALS: TutorialModule[] = [
   {
     id: "identities-and-drives",
+    category: "identities",
     title: "Identities & drives",
     summary: "Who you're acting as, and how a mock USB drive stands in for a physical device.",
     steps: [
@@ -172,6 +185,7 @@ export const TUTORIALS: TutorialModule[] = [
   },
   {
     id: "files-and-unlocking",
+    category: "files",
     title: "Files & unlocking",
     summary: "Open a public file, then see what a quorum-protected one asks for.",
     steps: [
@@ -225,6 +239,7 @@ export const TUTORIALS: TutorialModule[] = [
   },
   {
     id: "mailbox",
+    category: "mailbox",
     title: "Mailbox: sending & receiving",
     summary: "Seal a file to someone else, then switch identity and receive it.",
     steps: [
@@ -289,6 +304,292 @@ export const TUTORIALS: TutorialModule[] = [
         ),
         tab: "mailbox",
         target: () => ['[data-panel="mailbox"]'],
+      },
+    ],
+  },
+  {
+    id: "slot-custody",
+    category: "identities",
+    title: "Move & copy slots",
+    summary: "Move and copy slots, then inspect how containers affect physical-device policy.",
+    steps: [
+      {
+        title: "Two similar-looking operations",
+        body: <p><strong>Move</strong> relocates a slot to another container; <strong>Copy</strong> creates another active copy. Neither creates a ghost. Insert both source and destination drives before trying either operation.</p>,
+        tab: "usb",
+        target: () => ['[data-testid="drive-alice"]'],
+      },
+      {
+        title: "Try it: move a slot",
+        body: <p>Choose a destination beside Alice&rsquo;s slot and press <strong>Move</strong>. Both drives must be inserted. The lab runs <code>keyquorum-device relocate</code> and immediately rebinds the placement.</p>,
+        tab: "usb",
+        target: () => ['[data-testid="move-slot-M.S.1"]'],
+        ensure: ensureDrivesConnected("alice", "morgan"),
+        requiredKind: "move",
+        isDone: (_snapshot, latest) => latest?.kind === "move" && latest.outcome !== "denied",
+      },
+      {
+        title: "Copy keeps the source active",
+        body: <p>The adjacent <strong>Copy</strong> form runs <code>transfer copy</code>. It needs the slot&rsquo;s published demo passphrase and leaves the source usable, unlike a transfer move.</p>,
+        tab: "usb",
+        target: () => ['[data-testid^="copy-slot-"]'],
+      },
+      {
+        title: "Custody is about containers",
+        body: <p>Open a protected file&rsquo;s <strong>Properties</strong> to see hardware/logical custody, minimum physical devices, and parent approval. Multiple logical slots on one drive still count as one physical device.</p>,
+        tab: "files",
+        target: () => ['[data-testid="file-actions"]', '[data-panel="files"]'],
+      },
+      {
+        title: "Ghosts are deliberately read-only here",
+        body: <p>A ghost is created by <code>transfer move</code>, not the Move or Copy controls. The lab exposes no interactive ghost-creation action. Its real pre-seeded ghost is visible only in the Properties requirements for <code>legacy-migration-notes.txt</code>.</p>,
+        tab: "files",
+        target: (snapshot) => [fileRow(snapshot, "legacy-migration-notes.txt"), '[data-panel="files"]'],
+      },
+    ],
+  },
+  {
+    id: "identity-enrollment",
+    category: "identities",
+    title: "Provision & register a leaf",
+    summary: "Provision a fresh device slot, then register it in the organization tree.",
+    steps: [
+      {
+        title: "Provision first",
+        body: <p>In <strong>Create a new key</strong>, choose an inserted drive, a new dotted label, and a passphrase. Provisioning mints keys on the device but does not yet grant an organization role.</p>,
+        tab: "security",
+        target: () => ['[data-testid="provision-slot"]'],
+      },
+      {
+        title: "Register the leaf separately",
+        body: <p>Use <strong>Register a new leaf</strong> after provisioning. Registration binds the container and adds that exact slot below a selected split node, resharing with the active siblings the CLI can collect.</p>,
+        tab: "security",
+        target: () => ['[data-testid="register-leaf"]'],
+      },
+      {
+        title: "Confirm it in the tree",
+        body: <p>The organization view is the result, not a second implementation: it renders the personal store&rsquo;s visible slice after the real CLI mutates the tree.</p>,
+        tab: "organization",
+        target: () => ['[data-panel="organization"]'],
+      },
+    ],
+  },
+  {
+    id: "key-administration",
+    category: "identities",
+    title: "Key administration",
+    summary: "Revoke, reissue, restructure, countersign, and understand parent approval.",
+    steps: [
+      {
+        title: "Revoke versus reissue",
+        body: <p><strong>Revoke key</strong> bans a leaf&rsquo;s current hardware key. <strong>Reissue</strong> adopts an already-provisioned replacement token and authenticates an update to affected stores. These are related, but distinct, operations.</p>,
+        tab: "organization",
+        target: () => ['[data-testid="tree-node-M.A.1"]', '[data-panel="organization"]'],
+      },
+      {
+        title: "Restructure is a two-person workflow",
+        body: <p>The authority proposes the next public generation here. A non-root proposal remains pending until its parent switches in and countersigns with that parent&rsquo;s device passphrase.</p>,
+        tab: "organization",
+        target: () => ['[data-testid="restructure-admin"]'],
+      },
+      {
+        title: "Parent approval is enforced at unlock",
+        body: <p>A file&rsquo;s Properties dialog reports whether <code>unlock_approval = parent</code>. It is policy, not a toggle in this lab; when required, the approving parent&rsquo;s participation is part of the real unlock path.</p>,
+        tab: "files",
+        target: () => ['[data-testid="file-actions"]', '[data-panel="files"]'],
+      },
+    ],
+  },
+  {
+    id: "bridges-and-device-relay",
+    category: "identities",
+    title: "Bridges & remote devices",
+    summary: "Manage cross-branch visibility and distinguish local device actions from relay transfer.",
+    steps: [
+      {
+        title: "Whitelist before linking",
+        body: <p>Select a node and peer, then <strong>Allow node → peer</strong>. Establishing a bridge is refused until one endpoint has whitelisted the other.</p>,
+        tab: "organization",
+        target: () => ['[data-testid="bridges"]'],
+      },
+      {
+        title: "Establish, remove, or deny",
+        body: <p><strong>Establish bridge</strong> changes each endpoint&rsquo;s visible slice. The Established and Whitelist lists then expose <strong>Remove</strong> and <strong>Deny</strong>. This same private bridge supports file signing and verification.</p>,
+        tab: "organization",
+        target: () => ['[data-testid="bridges"]'],
+      },
+      {
+        title: "Remote device transfer is not a GUI action",
+        body: <p>Device publish, relay-send, collect, and finalize are intentionally not buttons in this lab. They use opaque device letters in the same in-process relay; use the Terminal to explore the CLI. The read-only relay counters show those letters without opening them.</p>,
+        tab: "security",
+        target: () => ['[data-testid="relay-status"]'],
+      },
+    ],
+  },
+  {
+    id: "successful-quorum",
+    category: "files",
+    title: "Complete a quorum unlock",
+    summary: "Read a file's requirements, connect cooperating devices, and complete an unlock.",
+    steps: [
+      {
+        title: "Start with Properties",
+        body: <p>Select a protected file and open <strong>Properties</strong>. The requirement tree tells you which leaves can satisfy each threshold; policy below it tells you how many distinct physical devices are required.</p>,
+        tab: "files",
+        target: () => ['[data-testid="file-actions"]', '[data-panel="files"]'],
+      },
+      {
+        title: "Bring the required devices online",
+        body: <p>Insert enough separate drives in <strong>USB devices</strong>. Slots moved onto the same container may satisfy logical shares, but still contribute only one physical device.</p>,
+        tab: "usb",
+        target: () => ['[data-panel="usb"]'],
+      },
+      {
+        title: "Try it: unlock successfully",
+        body: <p>Return to Files and open the protected file. A successful attempt decrypts it; a denied attempt leaves a precise trace so you can adjust the connected drives and retry.</p>,
+        tab: "files",
+        target: () => ['[data-testid="file-actions"]', '[data-panel="files"]'],
+        requiredKind: "access",
+        isDone: (_snapshot, latest) => latest?.kind === "access" && latest.outcome === "granted",
+      },
+      {
+        title: "Audit the decision",
+        body: <p>The Activity panel records the command and every custody, quorum, ghost, expiry, and approval check that led to the result.</p>,
+        tab: "activity",
+        target: () => ['[data-panel="activity"]'],
+      },
+    ],
+  },
+  {
+    id: "password-files",
+    category: "files",
+    title: "Passwords & PINs",
+    summary: "Create and unlock the lab's second, independent protection scheme.",
+    steps: [
+      {
+        title: "Create a password-locked note",
+        body: <p>Fill in a name, contents, and your own password. Optionally enable the four-digit PIN. This protection is separate from organization quorum shares.</p>,
+        tab: "security",
+        target: () => ['[data-testid="password-lock"]'],
+        requiredKind: "password-lock",
+        isDone: (_snapshot, latest) => latest?.kind === "password-lock" && latest.outcome === "granted",
+      },
+      {
+        title: "Try the unlock path",
+        body: <p>Your new file appears directly below the form. Enter the same password and PIN, if selected, then press <strong>Unlock</strong>.</p>,
+        tab: "security",
+        target: () => ['[data-testid="password-files"]'],
+        requiredKind: "password-access",
+        isDone: (_snapshot, latest) => latest?.kind === "password-access" && latest.outcome === "granted",
+      },
+    ],
+  },
+  {
+    id: "portable-sharing",
+    category: "files",
+    title: "Export bundles & share links",
+    summary: "Contrast recipient-sealed export bundles with bearer share links.",
+    steps: [
+      {
+        title: "Export is recipient-bound",
+        body: <p>On one of your password files, open <strong>Export…</strong>, choose another user, and enter the file password. The resulting <code>KQXB</code> is sealed to that recipient; <strong>View sealed bytes</strong> shows the portable artifact.</p>,
+        tab: "security",
+        target: () => ['[data-testid="password-files"]'],
+      },
+      {
+        title: "A share link is a bearer capability",
+        body: <p>Open <strong>Share…</strong>, choose its lifetime and optional PIN, and create it. Copy the displayed token into <strong>Redeem</strong>; possession of the token, not lab identity, authorizes access.</p>,
+        tab: "security",
+        target: () => ['[data-testid="share-links"]'],
+      },
+      {
+        title: "Revocation ends future redemption",
+        body: <p>The owner can press <strong>Revoke</strong> beside a live share. Export bundles are independent sealed files and are not revoked by this control.</p>,
+        tab: "security",
+        target: () => ['[data-testid="share-links"]'],
+      },
+    ],
+  },
+  {
+    id: "signatures-properties-expiry",
+    category: "files",
+    title: "Signatures, properties & expiry",
+    summary: "Sign and verify through a bridge, inspect properties, and observe destructive expiry.",
+    steps: [
+      {
+        title: "Signing starts in Files",
+        body: <p>Select a public or received file and press <strong>Sign</strong>. This uses the private-bridge signing path; it is not a second kind of signing operation.</p>,
+        tab: "files",
+        target: () => ['[data-testid="file-actions"]', '[data-panel="files"]'],
+      },
+      {
+        title: "Verification finishes the same workflow",
+        body: <p>The signature appears under <strong>Signatures</strong>. An eligible bridge member can press <strong>Verify</strong> to check the artifact and the registered signer key.</p>,
+        tab: "security",
+        target: () => ['[data-testid="signatures"]'],
+      },
+      {
+        title: "Properties explains before you act",
+        body: <p>Properties shows type, size, source, expiry, requirement tree, ghosts, custody mode, minimum devices, and parent approval without attempting an unlock.</p>,
+        tab: "files",
+        target: () => ['[data-testid="file-actions"]', '[data-panel="files"]'],
+      },
+      {
+        title: "Expiry purges on first touch",
+        body: <p>Some seeded files expire while the tab is open. Their timestamp updates passively; the first unlock attempt after expiry runs the real destructive purge, deleting ciphertext and its database row.</p>,
+        tab: "files",
+        target: () => ['[data-panel="files"]'],
+      },
+    ],
+  },
+  {
+    id: "mailbox-decisions",
+    category: "mailbox",
+    title: "Reject & acknowledge",
+    summary: "Exercise the rejection path and explicitly refresh a sender's acknowledgement state.",
+    steps: [
+      {
+        title: "Reject is a signed decision too",
+        body: <p>On a new inbox letter, <strong>Reject</strong> opens and authenticates the envelope, records no received file, and sends a signed rejection acknowledgement.</p>,
+        tab: "mailbox",
+        target: () => ['[data-testid^="inbox-"]', '[data-panel="mailbox"]'],
+      },
+      {
+        title: "Check the sender's relay state",
+        body: <p>Switch back to the sender, select <strong>Sent</strong>, then click <strong>Check relay for acknowledgements</strong>. Refresh is a real relay action, not an automatic tutorial shortcut.</p>,
+        tab: "mailbox",
+        target: () => ['[data-testid="mailbox-refresh"]', '[data-panel="mailbox"]'],
+        requiredKind: "receive",
+        isDone: (_snapshot, latest) =>
+          latest?.kind === "receive" &&
+          latest.outcome === "info" &&
+          (latest.title === "Inbox up to date" || latest.title.includes("new envelope")),
+      },
+    ],
+  },
+  {
+    id: "mailbox-protocols",
+    category: "mailbox",
+    title: "Updates & device letters",
+    summary: "See which higher-level workflows use sealed letters and where their controls actually live.",
+    steps: [
+      {
+        title: "Organization updates live in Organization",
+        body: <p>Reissue and restructure/countersign produce authenticated sealed update letters underneath, but they are organization actions—not mailbox buttons. Their only GUI controls are here.</p>,
+        tab: "organization",
+        target: () => ['[data-testid="restructure-admin"]', '[data-panel="organization"]'],
+      },
+      {
+        title: "Bridge membership lives here too",
+        body: <p>Allow, establish, remove, and deny are all managed in the Bridges panel. The inbox transports resulting private bridge packages, but does not duplicate those controls.</p>,
+        tab: "organization",
+        target: () => ['[data-testid="bridges"]'],
+      },
+      {
+        title: "Device letters remain opaque",
+        body: <p>Remote copy/move/relocate handshakes use the relay&rsquo;s device mailbox. This lab has no GUI buttons for publish, relay-send, collect, or finalize; the Relay status panel exposes only counts, while Device logs report inserted containers.</p>,
+        tab: "security",
+        target: () => ['[data-testid="device-logs"]', '[data-testid="relay-status"]'],
       },
     ],
   },

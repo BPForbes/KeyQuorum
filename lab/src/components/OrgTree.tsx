@@ -87,6 +87,7 @@ function Node({ node, nodes, act, snapshot }: { node: TreeNodeView; nodes: TreeN
     <li>
       <div
         className="tree-node"
+        data-testid={`tree-node-${node.label}`}
         data-active={node.activeUser || undefined}
         data-visible={node.visible}
         data-required={node.required || undefined}

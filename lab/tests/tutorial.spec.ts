@@ -8,6 +8,21 @@ async function loadLab(page: Page) {
 test.describe("guided tutorials", () => {
   test.skip(({ isMobile }) => isMobile, "desktop layout");
 
+  test("the picker groups multiple workflows under each major category", async ({ page }) => {
+    await loadLab(page);
+    await page.getByRole("button", { name: "Tutorials" }).click();
+
+    for (const [heading, workflowCount] of [
+      ["Identities & drives", 5],
+      ["Files & unlocking", 5],
+      ["Mailbox: sending & receiving", 3],
+    ] as const) {
+      const category = page.getByRole("region", { name: heading });
+      await expect(category).toBeVisible();
+      await expect(category.getByRole("button", { name: "Start" })).toHaveCount(workflowCount);
+    }
+  });
+
   test("a gated step only advances once the real action happens", async ({ page }) => {
     await loadLab(page);
 
