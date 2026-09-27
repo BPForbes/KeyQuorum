@@ -85,7 +85,7 @@ test.describe("desktop lab", () => {
     await loadLab(page);
     await page.getByRole("button", { name: "Insert Bob's USB" }).click();
     const bobDrive = page.getByTestId("drive-bob");
-    await bobDrive.locator("select").selectOption("alice");
+    await bobDrive.getByLabel(/^Move/).selectOption("alice");
     await bobDrive.getByRole("button", { name: "Move" }).click();
     await expect(bobDrive).toContainText("No slots on this drive.");
     const aliceDrive = page.getByTestId("drive-alice");
