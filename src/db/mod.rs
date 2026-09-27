@@ -79,7 +79,7 @@ pub fn open_in_memory() -> Result<Connection> {
     Ok(conn)
 }
 
-fn init(conn: &Connection) -> Result<()> {
+pub(crate) fn init(conn: &Connection) -> Result<()> {
     // Block briefly on lock contention instead of failing immediately with
     // SQLITE_BUSY, so concurrent access from multiple connections (e.g. a
     // share redemption race) resolves in commit order rather than erroring.

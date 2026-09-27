@@ -34,8 +34,10 @@ use crate::relay::{self, ProviderIdentity, RelayHttpRequest, RelayHttpResponse};
 use crate::storage::{MemoryStorage, Storage};
 use clap::error::ErrorKind;
 use clap::Parser;
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
@@ -83,6 +85,11 @@ pub struct LabVm {
     files: MemoryStorage,
     pub bay: DriveBay,
     stores: HashMap<PathBuf, Connection>,
+    /// Distinguishes this VM's shared-cache database names from every other
+    /// `LabVm` alive in the same process (see `open_shared_memory_db`), so
+    /// two lab sessions (or two tests) that both use `ORG_DB` never share
+    /// SQLite's process-wide shared cache with each other.
+    db_namespace: u64,
     relay: RelayHost,
     cwd: PathBuf,
     vars: HashMap<String, String>,
@@ -120,10 +127,12 @@ impl LabVm {
         drop(root_private);
         let mut vars = HashMap::new();
         vars.insert("KEYQUORUM_RELAY_URL".to_string(), RELAY_URL.to_string());
+        static NEXT_NAMESPACE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         Ok(Self {
             files: MemoryStorage::new(),
             bay,
             stores: HashMap::new(),
+            db_namespace: NEXT_NAMESPACE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             relay: RelayHost {
                 conn,
                 identity: ProviderIdentity {
@@ -460,16 +469,55 @@ impl Env for LabVm {
 
     fn open_db(&mut self, path: &Path) -> Result<Connection> {
         let path = self.resolve(path);
-        match self.stores.remove(&path) {
-            Some(conn) => Ok(conn),
-            None => Ok(crate::db::open_in_memory()?),
+        // Every open of the same path attaches to the same named, shared-
+        // cache in-memory database, the way multiple connections to one
+        // real SQLite *file* all see the same rows. The first open for a
+        // path also parks a permanent anchor connection in `stores`: SQLite
+        // drops a shared-cache in-memory database once its last connection
+        // closes, and without the anchor that would happen every time a
+        // command finishes and hands its connection back via `close_db`,
+        // silently resetting the store on the next open (the bug behind
+        // `transfer_copy --from-db PATH --to-db PATH`, where opening the
+        // source used to remove it from `stores` and opening the
+        // destination would then find nothing and create an unrelated
+        // empty database).
+        if !self.stores.contains_key(&path) {
+            let anchor = open_shared_memory_db(self.db_namespace, &path)?;
+            self.stores.insert(path.clone(), anchor);
         }
+        open_shared_memory_db(self.db_namespace, &path)
     }
 
-    fn close_db(&mut self, path: &Path, conn: Connection) {
-        let path = self.resolve(path);
-        self.stores.insert(path, conn);
+    fn close_db(&mut self, _path: &Path, conn: Connection) {
+        // The anchor in `stores` (see `open_db`) is what keeps this path's
+        // data alive; the checked-out handle itself can simply close.
+        drop(conn);
     }
+}
+
+/// Open a fresh connection to the named shared-cache in-memory database for
+/// `path` within `db_namespace` (one `LabVm`'s own database names, distinct
+/// from every other `LabVm` alive in the process — SQLite's named
+/// shared-cache in-memory databases are otherwise shared process-wide, which
+/// would leak state between separate lab sessions, or between tests running
+/// concurrently in the same test binary), creating and schema-initializing
+/// it if this is the first connection ever opened for that name. Every
+/// connection returned for the same `(db_namespace, path)` shares the same
+/// underlying data for as long as any connection to it (including the
+/// `LabVm` anchor) stays open.
+fn open_shared_memory_db(db_namespace: u64, path: &Path) -> Result<Connection> {
+    let mut hasher = DefaultHasher::new();
+    db_namespace.hash(&mut hasher);
+    path.hash(&mut hasher);
+    let uri = format!("file:labdb_{:x}?mode=memory&cache=shared", hasher.finish());
+    let conn = Connection::open_with_flags(
+        &uri,
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_URI,
+    )?;
+    crate::db::init(&conn)?;
+    Ok(conn)
 }
 
 /// Split a command line into words: whitespace separates, single and

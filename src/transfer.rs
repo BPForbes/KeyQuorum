@@ -659,7 +659,17 @@ pub fn stage_destination(
     allow_ancestor_import: bool,
 ) -> Result<()> {
     let bundle = open_bundle(package, source, dest)?;
-    if tx_exists(dest_conn, &bundle.id)? {
+    // `--from-db`/`--to-db` pointed at the *same* store (one org's own
+    // shared registry, transferring custody between two of its own
+    // devices) means `source_conn` and `dest_conn` see the same row here:
+    // `prepare_in` already inserted it, role `source`, state `prepared`.
+    // That is this transfer's own preparation, not a destination-side
+    // replay, so only an existing `destination`-role row (a genuine prior
+    // delivery) is refused; a `source`-role row is carried forward in
+    // place instead of a second `INSERT` (the id is the table's primary
+    // key either way).
+    let existing_role = tx_role(dest_conn, &bundle.id)?;
+    if existing_role.as_deref() == Some("destination") {
         audit_bundle(dest_conn, &bundle, "denied", "reason=replay")?;
         return Err(Error::TransferReplay);
     }
@@ -676,18 +686,32 @@ pub fn stage_destination(
     let (included, excluded) = bundle_labels(&bundle);
     let detail = format_detail("transferred", &included, &excluded, &[]);
     db::with_immediate_transaction(dest_conn, || {
-        insert_tx(
-            dest_conn,
-            &bundle.id,
-            bundle.operation,
-            "destination",
-            "transferred",
-            &bundle.source_device_id,
-            &bundle.root_label,
-            bundle.descendants,
-            &hash,
-            &detail,
-        )?;
+        if existing_role.is_some() {
+            update_tx(
+                dest_conn,
+                &bundle.id,
+                "destination",
+                "transferred",
+                &bundle.source_device_id,
+                &bundle.root_label,
+                bundle.descendants,
+                &hash,
+                &detail,
+            )?;
+        } else {
+            insert_tx(
+                dest_conn,
+                &bundle.id,
+                bundle.operation,
+                "destination",
+                "transferred",
+                &bundle.source_device_id,
+                &bundle.root_label,
+                bundle.descendants,
+                &hash,
+                &detail,
+            )?;
+        }
         audit_bundle(dest_conn, &bundle, "transferred", &detail)
     })?;
     Ok(())
@@ -2111,6 +2135,50 @@ fn tx_exists(conn: &Connection, id: &[u8; 16]) -> Result<bool> {
         )
         .optional()?;
     Ok(found.is_some())
+}
+
+fn tx_role(conn: &Connection, id: &[u8; 16]) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT role FROM transfer_transactions WHERE id = ?1",
+        params![id.to_vec()],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Error::from)
+}
+
+/// Carry an existing row (see `stage_destination`'s same-store case)
+/// forward to the destination's own bookkeeping instead of a second
+/// `INSERT`, which would violate the primary key on `id`.
+#[allow(clippy::too_many_arguments)]
+fn update_tx(
+    conn: &Connection,
+    id: &[u8; 16],
+    role: &str,
+    state: &str,
+    peer: &[u8; 16],
+    root: &str,
+    descendants: DescendantMode,
+    hash: &[u8; 32],
+    detail: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE transfer_transactions
+         SET role = ?2, state = ?3, peer_device_id = ?4, root_label = ?5,
+             descendant_mode = ?6, package_hash = ?7, detail = ?8
+         WHERE id = ?1",
+        params![
+            id.to_vec(),
+            role,
+            state,
+            peer.to_vec(),
+            root,
+            descendants.as_str(),
+            hash.to_vec(),
+            detail,
+        ],
+    )?;
+    Ok(())
 }
 
 fn tx_state(conn: &Connection, id: &[u8; 16]) -> Result<Option<String>> {
