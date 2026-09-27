@@ -833,3 +833,84 @@ fn relay_status_counts_reflect_what_the_seeded_lab_has_stored() {
     assert!(snapshot.relay_status.api_keys > 0);
     assert_eq!(snapshot.relay_status.url, super::vm::RELAY_URL);
 }
+
+#[test]
+fn revoking_a_leafs_hardware_key_bans_it_from_future_trees() {
+    let mut state = lab();
+    let outcome = state.revoke_key("M.S.2").unwrap();
+    assert!(outcome.ok, "{}", said(&outcome));
+    assert!(said(&outcome).contains("Revoked key"), "{}", said(&outcome));
+}
+
+#[test]
+fn revoking_a_split_node_is_refused() {
+    let mut state = lab();
+    let outcome = state.revoke_key("M.S").unwrap();
+    assert!(!outcome.ok);
+}
+
+#[test]
+fn revoking_an_unknown_node_is_refused() {
+    let mut state = lab();
+    let outcome = state.revoke_key("M.Nope").unwrap();
+    assert!(!outcome.ok);
+}
+
+#[test]
+fn transfer_copy_leaves_the_source_active_and_writes_the_destination_slot() {
+    let mut state = lab();
+    state.set_drive("spare", true).unwrap();
+    let outcome = state
+        .transfer_copy("M.S.1", "spare", &super::seed::demo_passphrase("M.S.1"))
+        .unwrap();
+    assert!(outcome.ok, "{}", said(&outcome));
+    assert!(
+        said(&outcome).contains("copied M.S.1"),
+        "{}",
+        said(&outcome)
+    );
+
+    // The source drive still carries M.S.1 (COPY leaves it active)...
+    let source_log = state.device_log("alice").unwrap();
+    assert!(source_log
+        .opened
+        .map(|opened| opened.text)
+        .unwrap_or_default()
+        .contains("slot M.S.1"));
+    // ...and the destination now carries a copy of the same slot.
+    let dest_log = state.device_log("spare").unwrap();
+    assert!(dest_log
+        .opened
+        .map(|opened| opened.text)
+        .unwrap_or_default()
+        .contains("slot M.S.1"));
+}
+
+#[test]
+fn transfer_copy_requires_the_destination_drive_inserted() {
+    let mut state = lab();
+    let outcome = state
+        .transfer_copy("M.S.1", "spare", &super::seed::demo_passphrase("M.S.1"))
+        .unwrap();
+    assert!(!outcome.ok, "{}", said(&outcome));
+}
+
+#[test]
+fn transfer_copy_rejects_the_wrong_passphrase() {
+    let mut state = lab();
+    state.set_drive("spare", true).unwrap();
+    let outcome = state
+        .transfer_copy("M.S.1", "spare", "not-the-real-passphrase")
+        .unwrap();
+    assert!(!outcome.ok);
+}
+
+#[test]
+fn transfer_copy_to_the_same_drive_is_a_no_op_refusal() {
+    let mut state = lab();
+    let outcome = state
+        .transfer_copy("M.S.1", "alice", &super::seed::demo_passphrase("M.S.1"))
+        .unwrap();
+    assert!(!outcome.ok);
+    assert!(outcome.message.contains("already on that drive"));
+}

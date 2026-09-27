@@ -164,6 +164,25 @@ impl KeyQuorumLab {
         to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
     }
 
+    /// Ban a node's hardware key from any future tree and drop its
+    /// existing bindings and bridge pairings.
+    pub fn revoke_key(&mut self, node_label: &str) -> std::result::Result<String, JsError> {
+        let outcome = self.state.revoke_key(node_label);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// Copy an active identity to a second drive, leaving the source
+    /// active, using the passphrase that already unlocks its slot.
+    pub fn transfer_copy(
+        &mut self,
+        label: &str,
+        to_drive_id: &str,
+        passphrase: &str,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self.state.transfer_copy(label, to_drive_id, passphrase);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
     /// One terminal line against the same state the GUI uses.
     pub fn run_command(&mut self, line: &str) -> std::result::Result<String, JsError> {
         if line.trim() == "reset" {

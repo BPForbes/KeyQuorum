@@ -1311,6 +1311,160 @@ impl LabState {
         })
     }
 
+    // ----- revocation -------------------------------------------------------
+
+    /// Ban a node's hardware key from any future tree and drop its existing
+    /// bindings and bridge pairings (`keyquorum revoke`). `revoke` is not
+    /// itself access-controlled in the CLI — it does not check who is
+    /// asking, only that the key and, when given, the leaf it backs, exist
+    /// — so this lets any lab visitor revoke any node's key, same as the
+    /// bridge allow/add/deny/remove buttons already do against the shared
+    /// org tree. This does not pass `--evict`: refreshing survivor shares
+    /// needs their key files or slots collected up front, which the GUI
+    /// does not do; a maintainer can still run that from the Terminal tab.
+    pub fn revoke_key(&mut self, node_label: &str) -> Result<Outcome> {
+        let tree = KeyQuorumTree::load(self.org(), self.org_key_id)?;
+        let Some(node) = tree.nodes.iter().find(|node| node.id == node_label) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No node {node_label} in the org tree"),
+                vec![],
+            ));
+        };
+        let Some(hardware_id) = node.hardware_key_id else {
+            return Ok(Outcome::done(
+                false,
+                format!("{node_label} is a split node, not a hardware-backed leaf"),
+                vec![],
+            ));
+        };
+        let key_id = self.org_key_id;
+        let line = format!(
+            "keyquorum --db {ORG_DB} revoke {hardware_id} --key-id {key_id} --node {node_label}"
+        );
+        let run = self.run(&line);
+        let trace = transcript(&run, true);
+        let title = format!("Revoke {node_label}'s hardware key");
+        let message = if run.ok {
+            format!("Revoked {node_label}'s hardware key; its bindings and pairings are dropped")
+        } else {
+            format!("{title}: {}", run.error().unwrap_or("failed"))
+        };
+        self.log(
+            "revoke",
+            if run.ok { "granted" } else { "denied" },
+            &title,
+            trace.clone(),
+            Some(line),
+        );
+        Ok(Outcome::done(run.ok, message, trace))
+    }
+
+    // ----- transfer ---------------------------------------------------------
+
+    /// Copy an active identity to a second drive with `keyquorum transfer
+    /// copy` (`COPY leaves the source active`, unlike `move_slot`, which
+    /// relocates the one token a drive already carries). The first copy of
+    /// a node's identity also enrolls it as a transfer identity
+    /// (`keyquorum transfer enroll`), same as the seeded ghost was; later
+    /// copies skip that step since it is idempotent but would otherwise
+    /// prompt again. Both steps unwrap (and reseal) the slot with the same
+    /// passphrase the person typed, since the CLI does not ask for a new
+    /// one at the destination.
+    pub fn transfer_copy(
+        &mut self,
+        label: &str,
+        to_drive_id: &str,
+        passphrase: &str,
+    ) -> Result<Outcome> {
+        if passphrase.is_empty() {
+            return Ok(Outcome::done(false, "A passphrase is required", vec![]));
+        }
+        let Some(from_drive) = self.drive_holding(label) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No drive currently carries the slot {label}"),
+                vec![],
+            ));
+        };
+        if !from_drive.connected {
+            return Ok(Outcome::done(
+                false,
+                format!("{}'s drive is not inserted", from_drive.name),
+                vec![],
+            ));
+        }
+        let from = from_drive.mount.clone();
+        let Some(to_drive) = self.vm().bay.get(to_drive_id) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No mock drive named {to_drive_id}"),
+                vec![],
+            ));
+        };
+        if !to_drive.connected {
+            return Ok(Outcome::done(
+                false,
+                format!("{} is not inserted", to_drive.name),
+                vec![],
+            ));
+        }
+        let (to, to_name) = (to_drive.mount.clone(), to_drive.name.clone());
+        if from == to {
+            return Ok(Outcome::done(
+                false,
+                format!("{label} is already on that drive"),
+                vec![],
+            ));
+        }
+
+        let mut steps: Vec<(String, Vec<String>)> = Vec::new();
+        if transfer::identity(self.org(), label)?.is_none() {
+            steps.push((
+                format!(
+                    "keyquorum transfer enroll --device {} --db {ORG_DB} --label {label}",
+                    from.display()
+                ),
+                vec![passphrase.to_string(), passphrase.to_string()],
+            ));
+        }
+        steps.push((
+            format!(
+                "keyquorum transfer copy --from-device {} --from-db {ORG_DB} --to-device {} --to-db {ORG_DB} --label {label} --as {label}",
+                from.display(),
+                to.display()
+            ),
+            vec![passphrase.to_string(), passphrase.to_string()],
+        ));
+
+        let mut runs = Vec::new();
+        let mut ok = true;
+        for (line, secrets) in steps {
+            self.vm_mut().stage_secrets(secrets);
+            let run = self.run(&line);
+            self.vm_mut().clear_pending_secrets();
+            ok = run.ok;
+            runs.push(run);
+            if !ok {
+                break;
+            }
+        }
+        let trace = transcripts(&runs, true);
+        let message = if ok {
+            format!("Copied {label} to {to_name}; {label} stays active on its original drive")
+        } else {
+            format!("Could not copy {label}: {}", last_error(&runs))
+        };
+        self.log(
+            "transfer-copy",
+            if ok { "granted" } else { "denied" },
+            &message,
+            trace.clone(),
+            Some(lines_run(&runs)),
+        );
+        Ok(Outcome::done(ok, message, trace))
+    }
+
     // ----- delivery -------------------------------------------------------
 
     /// Send a file with `keyquorum deliver send --push`. A quorum-locked
