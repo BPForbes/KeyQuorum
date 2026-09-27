@@ -6,7 +6,7 @@
 // no action to check just explains something and advances on demand.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import type { Tab } from "../App";
+import type { Act, Tab } from "../App";
 import type { Snapshot } from "../api/types";
 import { TUTORIALS, type TutorialMemory, type TutorialModule } from "../tutorial/modules";
 import { Modal } from "./Modal";
@@ -43,12 +43,14 @@ export function Tutorial({
   snapshot,
   tab,
   setTab,
+  act,
 }: {
   pickerOpen: boolean;
   onPickerClose: () => void;
   snapshot: Snapshot;
   tab: Tab;
   setTab: (tab: Tab) => void;
+  act: Act;
 }) {
   const [progress, setProgress] = useState<{ moduleId: string; stepIndex: number } | null>(null);
   const [finishedModule, setFinishedModule] = useState<TutorialModule | null>(null);
@@ -58,6 +60,8 @@ export function Tutorial({
 
   const snapshotRef = useRef(snapshot);
   snapshotRef.current = snapshot;
+  const actRef = useRef(act);
+  actRef.current = act;
   const advanceTimerRef = useRef<number | null>(null);
   // The activity-log seq at the moment the current step began: isDone is
   // only ever evaluated once a *newer* entry appears, so a condition left
@@ -119,7 +123,13 @@ export function Tutorial({
     clearAdvanceTimer();
     setStepDone(false);
     setRect(null);
-    stepStartSeqRef.current = snapshotRef.current.activity[0]?.seq ?? -1;
+    // ensure runs a real action (e.g. switch away from a blocked identity)
+    // before the cursor is captured, so that corrective action can never
+    // itself be mistaken for the visitor's own -- and the step's precise
+    // starting point (already-there vs. blocked) is settled every time it
+    // is entered, including by clicking Back into it.
+    const effective = step?.ensure ? step.ensure(snapshotRef.current, actRef.current) : snapshotRef.current;
+    stepStartSeqRef.current = effective.activity[0]?.seq ?? -1;
     if (step?.tab && step.tab !== tab) setTab(step.tab);
     headingRef.current?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -139,7 +149,8 @@ export function Tutorial({
       if (step.isDone && !stepDone) {
         const latest = currentSnapshot.activity[0];
         const isFresh = (latest?.seq ?? -1) > stepStartSeqRef.current;
-        if (isFresh && step.isDone(currentSnapshot, latest, memoryRef.current)) {
+        const kindMatches = !step.requiredKind || latest?.kind === step.requiredKind;
+        if (isFresh && kindMatches && step.isDone(currentSnapshot, latest, memoryRef.current)) {
           if (step.remember) {
             memoryRef.current = { ...memoryRef.current, ...step.remember(currentSnapshot, latest) };
           }

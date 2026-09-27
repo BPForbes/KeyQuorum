@@ -125,4 +125,67 @@ test.describe("guided tutorials", () => {
       timeout: 3_000,
     });
   });
+
+  test("an unrelated action while a state-gated step is open does not satisfy it", async ({ page }) => {
+    await loadLab(page);
+
+    // Pre-existing state: David's USB is already connected, as if from
+    // before this tutorial run started.
+    await page.getByRole("button", { name: "Insert David's USB" }).click();
+    await expect(page.getByTestId("drive-david")).toContainText("Connected");
+
+    await page.getByRole("button", { name: "Tutorials" }).click();
+    await page
+      .getByRole("listitem")
+      .filter({ hasText: "Identities & drives" })
+      .getByRole("button", { name: "Start" })
+      .click();
+    await page.getByRole("button", { name: "Next" }).click(); // step 1 -> 2
+
+    // Entering the step corrects the precondition instead of treating it
+    // as already satisfied: the drive is ejected again so the action is
+    // genuinely there to demonstrate.
+    await expect(page.getByRole("heading", { name: "Try it: insert David's USB" })).toBeVisible();
+    await expect(page.getByTestId("drive-david")).toContainText("Not inserted");
+    await expect(page.getByText("Waiting for you to try it…")).toBeVisible();
+
+    // An unrelated action creates a new activity-log entry, but not of the
+    // kind this step requires -- it must not satisfy the gate.
+    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /Morgan/ }).click();
+    await page.waitForTimeout(800);
+    await expect(page.getByRole("heading", { name: "Try it: insert David's USB" })).toBeVisible();
+    await expect(page.getByText("Waiting for you to try it…")).toBeVisible();
+
+    // The real action does satisfy it.
+    await page.getByRole("button", { name: "Insert David's USB" }).click();
+    await expect(page.getByRole("heading", { name: "The organization key tree" })).toBeVisible({ timeout: 3_000 });
+  });
+
+  test("the mailbox module's send step stays usable even if David is already active", async ({ page }) => {
+    await loadLab(page);
+    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /David/ }).click();
+    await expect(page.getByTestId("active-user-name")).toHaveText("David");
+
+    await page.getByRole("button", { name: "Tutorials" }).click();
+    await page
+      .getByRole("listitem")
+      .filter({ hasText: "Mailbox: sending & receiving" })
+      .getByRole("button", { name: "Start" })
+      .click();
+
+    // Entering the step switches away from David first: SendDialog
+    // excludes the active user from their own recipient list, so this
+    // step would otherwise be unrunnable, not just already-satisfied.
+    await expect(page.getByTestId("active-user-name")).not.toHaveText("David", { timeout: 3_000 });
+
+    await page.getByRole("button", { name: "public" }).click();
+    await page.getByTestId("file-row-company-handbook").click();
+    await page.getByRole("button", { name: "Send…" }).click();
+    await expect(page.getByLabel("Recipient")).toContainText("David");
+    await page.getByLabel("Recipient").selectOption("david");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Try it: become the recipient" })).toBeVisible({
+      timeout: 3_000,
+    });
+  });
 });

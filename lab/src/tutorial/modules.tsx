@@ -7,7 +7,7 @@
 // snapshot / activity log) — it does not just advance on a timer or a
 // "Next" click standing in for the real thing.
 import type { ReactNode } from "react";
-import type { Tab } from "../App";
+import type { Act, Tab } from "../App";
 import type { ActivityView, Snapshot } from "../api/types";
 
 /** Free-form data one step's `remember` captures for a later step's `isDone` to read. */
@@ -27,13 +27,29 @@ export interface TutorialStep {
    */
   target: (snapshot: Snapshot) => (string | null)[];
   /**
+   * Called once, when the step starts (including re-entering it via Back),
+   * to put the lab into a state where the step's own action is actually
+   * possible and meaningful -- e.g. if a "switch to David" step began while
+   * David was already active, undo that first. Runs a real action through
+   * `act` (never fakes state) and returns whatever snapshot that leaves;
+   * return the input unchanged if nothing needed fixing. The gate's
+   * activity cursor is taken *after* this runs, so the corrective action
+   * itself can never be mistaken for the visitor's own.
+   */
+  ensure?: (snapshot: Snapshot, act: Act) => Snapshot;
+  /**
    * Undefined means "read this, then click Next." Defined means "do this to
    * advance." Tutorial only ever calls this once a *new* activity-log entry
    * has appeared since the step started, so a condition already true when
-   * the step began (a leftover action from before this run) cannot satisfy
-   * it by itself.
+   * the step began (a leftover action from before this run, or from
+   * `ensure` above) cannot satisfy it by itself. If `requiredKind` is also
+   * set, that new entry must be of that activity kind too -- otherwise an
+   * unrelated action (e.g. switching identity while a drive-connected
+   * check happens to already be true) could satisfy a state check it had
+   * nothing to do with.
    */
   isDone?: (snapshot: Snapshot, latest: ActivityView | undefined, memory: TutorialMemory) => boolean;
+  requiredKind?: ActivityView["kind"];
   /** Called once, right when isDone flips true, to capture data a later step in the same module can read via `memory`. */
   remember?: (snapshot: Snapshot, latest: ActivityView | undefined) => TutorialMemory;
 }
@@ -64,6 +80,29 @@ const wasSentTo = (latest: ActivityView | undefined, recipientName: string) =>
 
 const wasReceived = (latest: ActivityView | undefined) => latest?.kind === "receive" && latest.outcome === "granted";
 
+// Precondition helpers for `TutorialStep.ensure`. Each takes a real action
+// through `act` -- never fakes the resulting snapshot -- so a step that
+// asks the visitor to switch to, or connect, something specific can't
+// start already satisfied (nothing to demonstrate) or blocked (e.g.
+// SendDialog excludes the active user from its own recipient list, so a
+// "send to David" step is impossible while David is already active).
+const ensureActiveUserIsNot =
+  (blockedId: string, fallbackId: string) =>
+  (snapshot: Snapshot, act: Act): Snapshot => {
+    if (snapshot.activeUser.id !== blockedId) return snapshot;
+    const result = act((client) => client.switchUser(fallbackId));
+    return result?.snapshot ?? snapshot;
+  };
+
+const ensureDriveDisconnected =
+  (driveId: string) =>
+  (snapshot: Snapshot, act: Act): Snapshot => {
+    const drive = snapshot.drives.find((candidate) => candidate.id === driveId);
+    if (!drive?.connected) return snapshot;
+    const result = act((client) => client.ejectDrive(driveId));
+    return result?.snapshot ?? snapshot;
+  };
+
 export const TUTORIALS: TutorialModule[] = [
   {
     id: "identities-and-drives",
@@ -90,6 +129,8 @@ export const TUTORIALS: TutorialModule[] = [
         ),
         tab: "usb",
         target: () => ['[data-testid="drive-david"]'],
+        ensure: ensureDriveDisconnected("david"),
+        requiredKind: "usb",
         isDone: (snapshot) => snapshot.drives.find((drive) => drive.id === "david")?.connected === true,
       },
       {
@@ -113,6 +154,8 @@ export const TUTORIALS: TutorialModule[] = [
           </p>
         ),
         target: () => ['[aria-label="Switch user"]'],
+        ensure: ensureActiveUserIsNot("david", "alice"),
+        requiredKind: "user",
         isDone: (snapshot) => snapshot.activeUser.id === "david",
       },
       {
@@ -195,6 +238,11 @@ export const TUTORIALS: TutorialModule[] = [
         ),
         tab: "files",
         target: () => ['[data-panel="files"]'],
+        // SendDialog excludes the active user from their own recipient
+        // list, so this step is unrunnable, not just already-satisfied,
+        // if David happens to be active when it starts (e.g. right after
+        // the "Identities & drives" module, which ends on David).
+        ensure: ensureActiveUserIsNot("david", "alice"),
         isDone: (_snapshot, latest) => wasSentTo(latest, "David"),
         // Remember which delivery this was, so the receive step below can
         // require that specific letter rather than "any granted receive"
@@ -210,6 +258,8 @@ export const TUTORIALS: TutorialModule[] = [
           </p>
         ),
         target: () => ['[aria-label="Switch user"]'],
+        ensure: ensureActiveUserIsNot("david", "alice"),
+        requiredKind: "user",
         isDone: (snapshot) => snapshot.activeUser.id === "david",
       },
       {

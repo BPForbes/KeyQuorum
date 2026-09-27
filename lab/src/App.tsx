@@ -237,6 +237,7 @@ export function App() {
         snapshot={snapshot}
         tab={tab}
         setTab={setTab}
+        act={act}
       />
     </div>
   );
