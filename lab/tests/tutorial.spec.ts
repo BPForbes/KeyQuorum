@@ -1,0 +1,191 @@
+import { expect, test, type Page } from "@playwright/test";
+
+async function loadLab(page: Page) {
+  await page.goto("./");
+  await expect(page.locator("[data-lab-state=ready]")).toBeVisible({ timeout: 30_000 });
+}
+
+test.describe("guided tutorials", () => {
+  test.skip(({ isMobile }) => isMobile, "desktop layout");
+
+  test("a gated step only advances once the real action happens", async ({ page }) => {
+    await loadLab(page);
+
+    await page.getByRole("button", { name: "Tutorials" }).click();
+    await expect(page.getByRole("heading", { name: "Guided tutorials" })).toBeVisible();
+    await page.getByRole("listitem").filter({ hasText: "Identities & drives" }).getByRole("button", { name: "Start" }).click();
+
+    // Step 1 is informational; advance with Next.
+    await expect(page.getByRole("heading", { name: "This is you" })).toBeVisible();
+    await page.getByRole("button", { name: "Next" }).click();
+
+    // Step 2 is gated on David's USB actually being connected.
+    await expect(page.getByRole("heading", { name: "Try it: insert David's USB" })).toBeVisible();
+    await expect(page.getByText("Waiting for you to try it…")).toBeVisible();
+    await expect(page.getByTestId("drive-david")).toContainText("Not inserted");
+
+    await page.getByRole("button", { name: "Insert David's USB" }).click();
+    await expect(page.getByTestId("drive-david")).toContainText("Connected");
+
+    // The gate should flip and auto-advance to the next step on its own.
+    await expect(page.getByText("✓ Nice — that's it.")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "The organization key tree" })).toBeVisible({ timeout: 3_000 });
+
+    await page.getByRole("button", { name: "Exit tutorial" }).click();
+    await expect(page.getByRole("heading", { name: "The organization key tree" })).toBeHidden();
+  });
+
+  test("switching users satisfies a gate driven by the active user chip", async ({ page }) => {
+    await loadLab(page);
+    await page.getByRole("button", { name: "Tutorials" }).click();
+    await page.getByRole("listitem").filter({ hasText: "Identities & drives" }).getByRole("button", { name: "Start" }).click();
+    await page.getByRole("button", { name: "Next" }).click(); // step 1 -> 2
+    await page.getByRole("button", { name: "Skip this step" }).click(); // step 2 -> 3 (insert)
+    await page.getByRole("button", { name: "Next" }).click(); // step 3 -> 4 (org tree info)
+
+    await expect(page.getByRole("heading", { name: "Try it: switch to David" })).toBeVisible();
+    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /David/ }).click();
+    await expect(page.getByTestId("active-user-name")).toHaveText("David");
+    await expect(page.getByRole("heading", { name: "That's the basics" })).toBeVisible({ timeout: 3_000 });
+
+    await page.getByRole("button", { name: "Finish" }).click();
+    await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible();
+  });
+
+  test("the mailbox module's receive gate ignores a denied attempt and an unrelated refresh", async ({ page }) => {
+    await loadLab(page);
+    await page.getByRole("button", { name: "Tutorials" }).click();
+    await page
+      .getByRole("listitem")
+      .filter({ hasText: "Mailbox: sending & receiving" })
+      .getByRole("button", { name: "Start" })
+      .click();
+
+    // Step 1 is gated on a delivery actually addressed to David.
+    await expect(page.getByRole("heading", { name: "Try it: send a file" })).toBeVisible();
+    await page.getByRole("button", { name: "public" }).click();
+    await page.getByTestId("file-row-company-handbook").click();
+    await page.getByRole("button", { name: "Send…" }).click();
+    await page.getByLabel("Recipient").selectOption("david");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Try it: become the recipient" })).toBeVisible({ timeout: 3_000 });
+
+    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /David/ }).click();
+    await expect(page.getByRole("heading", { name: "Try it: receive the letter" })).toBeVisible({ timeout: 3_000 });
+
+    // David's own drive is not inserted here, so Receive is denied — this
+    // must NOT satisfy the gate (the bug Codex flagged: kind === "receive"
+    // alone also matches a denied attempt and the inbox-refresh button).
+    const letter = page.locator("[data-testid^=inbox-]").first();
+    await letter.getByRole("button", { name: /^Receive/ }).click();
+    await expect(page.locator(".lab-status")).toHaveText("Insert your USB to open the letter");
+    await expect(page.getByRole("heading", { name: "Try it: receive the letter" })).toBeVisible();
+    await expect(page.getByText("Waiting for you to try it…")).toBeVisible();
+
+    // A real, successful receive does satisfy it.
+    await page.getByRole("button", { name: "Insert David's USB" }).click();
+    await letter.getByRole("button", { name: /^Receive/ }).click();
+    await expect(page.getByRole("heading", { name: "Sent and acknowledged" })).toBeVisible({ timeout: 3_000 });
+
+    await page.getByRole("button", { name: "Finish" }).click();
+    await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible();
+  });
+
+  test("a send made before the module starts does not satisfy its send gate", async ({ page }) => {
+    await loadLab(page);
+
+    // A send to David happens first, entirely outside the tutorial.
+    await page.getByRole("button", { name: "public" }).click();
+    await page.getByTestId("file-row-company-handbook").click();
+    await page.getByRole("button", { name: "Send…" }).click();
+    await page.getByLabel("Recipient").selectOption("david");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(page.locator(".lab-status")).toHaveText("Transfer delivered to the relay for David");
+
+    // Only now does the visitor open the mailbox module. Its first step
+    // must still be gated: the send above is stale, from before the step
+    // (and the module) ever started.
+    await page.getByRole("button", { name: "Tutorials" }).click();
+    await page
+      .getByRole("listitem")
+      .filter({ hasText: "Mailbox: sending & receiving" })
+      .getByRole("button", { name: "Start" })
+      .click();
+    await expect(page.getByRole("heading", { name: "Try it: send a file" })).toBeVisible();
+    await expect(page.getByText("Waiting for you to try it…")).toBeVisible();
+    await page.waitForTimeout(1_500);
+    await expect(page.getByRole("heading", { name: "Try it: send a file" })).toBeVisible();
+
+    // A genuinely new send does satisfy it.
+    await page.getByTestId("file-row-project-roadmap").click();
+    await page.getByRole("button", { name: "Send…" }).click();
+    await page.getByLabel("Recipient").selectOption("david");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Try it: become the recipient" })).toBeVisible({
+      timeout: 3_000,
+    });
+  });
+
+  test("an unrelated action while a state-gated step is open does not satisfy it", async ({ page }) => {
+    await loadLab(page);
+
+    // Pre-existing state: David's USB is already connected, as if from
+    // before this tutorial run started.
+    await page.getByRole("button", { name: "Insert David's USB" }).click();
+    await expect(page.getByTestId("drive-david")).toContainText("Connected");
+
+    await page.getByRole("button", { name: "Tutorials" }).click();
+    await page
+      .getByRole("listitem")
+      .filter({ hasText: "Identities & drives" })
+      .getByRole("button", { name: "Start" })
+      .click();
+    await page.getByRole("button", { name: "Next" }).click(); // step 1 -> 2
+
+    // Entering the step corrects the precondition instead of treating it
+    // as already satisfied: the drive is ejected again so the action is
+    // genuinely there to demonstrate.
+    await expect(page.getByRole("heading", { name: "Try it: insert David's USB" })).toBeVisible();
+    await expect(page.getByTestId("drive-david")).toContainText("Not inserted");
+    await expect(page.getByText("Waiting for you to try it…")).toBeVisible();
+
+    // An unrelated action creates a new activity-log entry, but not of the
+    // kind this step requires -- it must not satisfy the gate.
+    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /Morgan/ }).click();
+    await page.waitForTimeout(800);
+    await expect(page.getByRole("heading", { name: "Try it: insert David's USB" })).toBeVisible();
+    await expect(page.getByText("Waiting for you to try it…")).toBeVisible();
+
+    // The real action does satisfy it.
+    await page.getByRole("button", { name: "Insert David's USB" }).click();
+    await expect(page.getByRole("heading", { name: "The organization key tree" })).toBeVisible({ timeout: 3_000 });
+  });
+
+  test("the mailbox module's send step stays usable even if David is already active", async ({ page }) => {
+    await loadLab(page);
+    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /David/ }).click();
+    await expect(page.getByTestId("active-user-name")).toHaveText("David");
+
+    await page.getByRole("button", { name: "Tutorials" }).click();
+    await page
+      .getByRole("listitem")
+      .filter({ hasText: "Mailbox: sending & receiving" })
+      .getByRole("button", { name: "Start" })
+      .click();
+
+    // Entering the step switches away from David first: SendDialog
+    // excludes the active user from their own recipient list, so this
+    // step would otherwise be unrunnable, not just already-satisfied.
+    await expect(page.getByTestId("active-user-name")).not.toHaveText("David", { timeout: 3_000 });
+
+    await page.getByRole("button", { name: "public" }).click();
+    await page.getByTestId("file-row-company-handbook").click();
+    await page.getByRole("button", { name: "Send…" }).click();
+    await expect(page.getByLabel("Recipient")).toContainText("David");
+    await page.getByLabel("Recipient").selectOption("david");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Try it: become the recipient" })).toBeVisible({
+      timeout: 3_000,
+    });
+  });
+});

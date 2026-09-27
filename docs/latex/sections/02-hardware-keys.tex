@@ -1,0 +1,39 @@
+\section{Hardware keys}
+
+Hardware and tree verbs are top-level commands (\code{generate},
+\code{split}, \code{bind}, and so on).
+
+\begin{lstlisting}
+# Generate a keypair. The private key is printed to stdout ONCE and never
+# written to disk by this tool -- redirect it yourself. Since the shell,
+# not keyquorum, creates that redirected file, set a restrictive umask
+# first so it is not created world- or group-readable.
+umask 077
+keyquorum generate --type encryption --public-key-out alice.pub \
+  --label alice --register > alice.key
+keyquorum register --type encryption --label bob --public-key-file bob.pub
+keyquorum list
+\end{lstlisting}
+
+\begin{securityBox}
+A file created by shell redirection (\code{> alice.key}) gets whatever
+permissions your shell's umask allows --- \code{keyquorum} never writes to
+it and cannot restrict it after the fact. Always set a restrictive umask
+(or move the file into owner-only permissions yourself) before redirecting
+a generated private key to disk. This applies to every \code{generate ...
+> key-file} line in this manual, not only this one.
+\end{securityBox}
+
+\code{generate --register} writes the public key and records it in one
+step. \code{register} brings in a public key that already exists elsewhere
+(a PEM or OpenSSH file, or another person's \file{.pub}) under a chosen
+label. \code{list} shows every registered hardware key and every live split
+tree.
+
+\begin{noteBox}
+Two key types are used throughout this manual: \flag{--type encryption}
+keys unwrap sealed shares and envelopes; \flag{--type signing} keys produce
+and verify Ed25519 signatures (private bridges, \code{sign} / \code{verify},
+authenticated updates). A label commonly needs both --- an encryption key
+to receive things, and a signing key to authorize or countersign them.
+\end{noteBox}

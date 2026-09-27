@@ -1,0 +1,112 @@
+\section{The tabs}
+
+At desktop width every tab's panel is visible at once, stacked on one
+scrolling page; the tab row itself only appears at phone width, where it
+switches which single panel is shown. What follows is every panel, in the
+order they appear on the page.
+
+\subsection{Organization key tree}
+
+The org-wide split tree, drawn as the dotted-label hierarchy it is:
+\code{M}, \code{M.S}, \code{M.S.1}, and so on. You only ever see your own
+slice --- your lineage, your descendants, siblings, and established-bridge
+peers. A leaf tagged \emph{required} contributed a share the last time you
+unlocked a file; \emph{satisfied} means that share was actually presented.
+
+\begin{itemize}
+  \item \textbf{Revoke key} bans a leaf's hardware key outright; it drops
+  that leaf's bindings and pairings but does not evict it or refresh
+  survivor shares.
+  \item \textbf{Reissue\ldots} replaces a leaf's hardware key onto an
+  already-provisioned replacement token.
+  \item \textbf{Bridges} whitelists and establishes cross-branch links, the
+  same two-step allow-then-add process the CLI uses.
+  \item \textbf{Tree restructure} walks through proposing a new public
+  generation and collecting the parent's countersignature when one is
+  required.
+\end{itemize}
+
+\Screenshot{docs/latex/images/lab/organization.png}{The organization key
+tree, showing the dotted-label hierarchy, per-leaf slot status, and the
+Revoke/Reissue controls.}
+
+\subsection{Mock USB devices}
+
+Each card is one device container: a signed device descriptor plus one
+sealed token per slot. \textbf{Insert} / \textbf{Eject} plug a drive in or
+pull it out. \textbf{Move} asks for a destination drive (both drives must
+be inserted) and relocates a slot's keypair onto it --- the point where two
+people's tokens land in one physical container and start counting as a
+single device toward any multi-device quorum. \textbf{Copy} instead leaves
+the original slot active and seals a second copy elsewhere, using the same
+passphrase that already unlocks it.
+
+\Screenshot{docs/latex/images/lab/usb.png}{Mock USB devices: connected
+state, the slots each drive carries, and the Move / Copy controls.}
+
+\subsection{File Explorer}
+
+A Windows-Explorer-style view onto the active user's files, grouped into
+folders. Double-clicking a file (or selecting it and pressing
+\textbf{Open}) unlocks and views it --- a quorum file prompts for the
+shares it needs, a password file for its password. \textbf{Send\ldots}
+seals a copy to another label's key and drops it in their inbox;
+\textbf{Sign} is only offered on public or received plaintext;
+\textbf{Properties} shows the file's protection, size, and timestamps.
+Right-clicking a row offers the same actions. A file with an expiry stamp
+shows a status pill that flips to \emph{expired} on its own while the tab
+is open.
+
+\Screenshot{docs/latex/images/lab/files.png}{The File Explorer, showing the
+public folder's contents and their status pills.}
+
+\subsection{Inbox and sent}
+
+Letters are sealed to a recipient's key and routed by the mailbox relay
+without it ever reading them --- sender and contents stay hidden until
+\textbf{Receive} unseals a letter with your own slot. \textbf{Reject}
+answers with a signed refusal instead. The Sent view tracks whether a
+delivery is still awaiting the recipient's signed acknowledgement, and
+\textbf{Check relay for acknowledgements} pulls any that are waiting.
+
+\Screenshot{docs/latex/images/lab/mailbox.png}{Inbox and sent, in the empty
+seeded state.}
+
+\subsection{Security \& devices}
+
+Everything that is not the hardware-key quorum tree or a file: locking a
+note with a password (and optionally a PIN), exporting a file or credential
+as a portable sealed bundle, minting a time-limited share link,
+provisioning a fresh slot on an inserted drive and registering it as a new
+leaf, signing or verifying with a private sign bridge you belong to, and,
+further down, read-only device logs and relay counters for the in-process
+mailbox this lab runs against.
+
+\Screenshot{docs/latex/images/lab/security.png}{Security \& devices: the
+password-lock form, exported bundles, share links, and key/leaf
+provisioning.}
+
+\subsection{Activity and access trace}
+
+Every action taken leaves a trace here: which checks ran, in order, and
+whether each one passed. The \textbf{Equivalent operation} line under the
+latest trace is the literal command line that action ran --- the same one
+that could be typed in the Terminal tab. The full log below keeps every
+action for the session, not just the last one.
+
+\subsection{Terminal}
+
+A real shell on the same lab machine. Every button on every other tab runs
+a command here under the hood; typing it directly works identically,
+including commands no button exposes yet.
+
+\begin{lstlisting}
+keyquorum-device list /media/alice-usb
+bridge list 1
+usb insert david
+su david
+\end{lstlisting}
+
+\code{usb insert} / \code{usb eject} and \code{su} are lab-only shell verbs
+for drive and identity control; every other line is an ordinary
+\code{keyquorum} / \code{keyquorum-device} command.

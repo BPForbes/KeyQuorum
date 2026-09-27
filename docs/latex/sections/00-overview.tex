@@ -1,0 +1,86 @@
+\section{Overview}
+\label{sec:overview}
+
+KeyQuorum is a secure file-sharing system centered on hardware key sharing.
+Files are encrypted and bound to registered physical tokens, such as USB
+devices. Access requires the necessary hardware keys to be presented before
+a protected file can be unlocked, providing layered, hardware-backed access
+control.
+
+\begin{noteBox}
+This physical binding depends on a key actually being placed in a
+\code{keyquorum-device} container (Section~\ref{sec:devices-and-custody}).
+An unplaced \flag{--share-file} key file is classified by its own key
+identity: two such files can both count toward
+\code{minimum_physical_devices} even while sitting on the same physical
+drive, since nothing ties either one to a container's \code{device_id}.
+\end{noteBox}
+
+\subsection{Concept}
+
+\begin{itemize}
+  \item A \textbf{key} --- the data key protecting a file, or a secret split
+  for its own sake --- can be divided recursively: split into parts, any of
+  which can itself be split further, forming a tree. A company master key
+  can split across departments, and one department's own share can split
+  again across its team. A flat ``$M$-of-$N$ hardware keys'' quorum is just
+  the simplest one-level tree.
+  \item \textbf{Unlocking} a protected file means reconstructing its key's
+  tree: presenting a quorum of the registered keys, rather than a single
+  token or password.
+  \item The goal is layered, hardware-backed access control that resists
+  single-point compromise. A lost or stolen key alone should not be enough
+  to unlock protected data.
+\end{itemize}
+
+\subsection{What this manual covers}
+
+This manual documents the \code{keyquorum} and \code{keyquorum-device}
+command-line tools: generating and registering hardware keys, building and
+reconstructing quorum trees, protecting files and credentials, private
+signing bridges, authenticated updates to a live tree, moving identities
+between physical devices, sending files directly to another person, and
+the mailbox relay that carries all of the above between machines that are
+not open at the same time.
+
+\begin{noteBox}
+Passwords, PINs, and hardware-key material are always prompted for
+interactively, or read from a \flag{--share-file} key path, rather than
+taken as plain command-line arguments. This keeps secrets out of shell
+history and process listings.
+\end{noteBox}
+
+\subsection{Status}
+
+The CLI covers most of what this manual describes. Hardware-key quorum
+splitting and reconstruction are implemented in software: a key file with no
+container placement is still one device, several identities can share one
+container, a non-root tree restructure waits for its parent to countersign,
+and \code{transfer copy} / \code{transfer move} carry an active identity to
+a second device that is open at the same time, or through the mailbox as a
+sealed letter when it is not.
+
+Two things remain outside the current scope: persisted private-key custody
+beyond a key file or a \code{keyquorum-device} container (for example an OS
+keychain), and \code{import} of password-vault or locked-file
+\code{export} bundles (the bundle format itself is final; private-bridge
+\code{.kqpb} import is already implemented).
+
+\subsection{Browser lab}
+
+KeyQuorum Lab runs this crate in a browser as a small sandboxed machine,
+compiled to WebAssembly. It has its own files, a SQLite store per person,
+mock USB drives, and a relay answering in the page. Every button and every
+terminal line runs the real \code{keyquorum} and \code{keyquorum-device}
+commands, so the lab demonstrates the same behavior described in this
+manual --- with published demo passphrases, so it is not hardware-backed
+security. It is a good place to try the command sequences in this manual
+without provisioning real hardware.
+
+\begin{noteBox}
+The lab's own GUI --- its tabs, the Active user bar, and its guided
+in-browser tutorials --- is documented separately in the \emph{KeyQuorum
+Lab} manual, not in this one. This manual covers the \code{keyquorum} /
+\code{keyquorum-device} CLI itself, which the lab runs underneath its
+interface unchanged.
+\end{noteBox}

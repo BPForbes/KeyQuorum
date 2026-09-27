@@ -128,7 +128,13 @@ export function FileExplorer({ snapshot, act }: { snapshot: Snapshot; act: Act }
             const count = snapshot.files.filter((file) => file.folder === name).length;
             return (
               <li key={name}>
-                <button type="button" className="folder-tile" onDoubleClick={() => setFolder(name)} onClick={() => setFolder(name)}>
+                <button
+                  type="button"
+                  className="folder-tile"
+                  data-testid={`folder-${name}`}
+                  onDoubleClick={() => setFolder(name)}
+                  onClick={() => setFolder(name)}
+                >
                   <FolderIcon />
                   <span>{name}</span>
                   <span className="muted small">

@@ -1,0 +1,131 @@
+\section{Moving a key between devices}
+\label{sec:device-transfer}
+
+\code{keyquorum transfer} copies or moves an active identity between two
+devices that are both open. Each side has its own container and its own
+database; the global \flag{--db} is not used. Enroll a slot before the
+first transfer so this device has an active identity for that label.
+
+\begin{lstlisting}
+keyquorum transfer enroll --device ./usb --db ./alice.sqlite --label M.S
+keyquorum transfer copy \
+  --from-device ./usb --from-db ./alice.sqlite \
+  --to-device ./usb2 --to-db ./bob.sqlite \
+  --label M.S
+keyquorum transfer move \
+  --from-device ./usb --from-db ./alice.sqlite \
+  --to-device ./usb2 --to-db ./bob.sqlite \
+  --label M.S --descendants key-only
+keyquorum transfer list --db ./bob.sqlite
+keyquorum transfer list --db ./alice.sqlite --all
+keyquorum transfer recover \
+  --from-device ./usb --from-db ./alice.sqlite \
+  --to-device ./usb2 --to-db ./bob.sqlite \
+  --transaction <hex-id>
+\end{lstlisting}
+
+The identity id is stable; the dotted label is only the current place in the
+hierarchy. Possession on a device is \code{active} (the slot secret is
+here), \code{ghost} (the hierarchy row remains and the secret does not), or
+absent. \code{transfer list} hides ghosts unless \flag{--all} is set.
+
+\begin{itemize}
+  \item \textbf{COPY} leaves the source active and records that the
+  destination may hold a legitimate copy.
+  \item \textbf{MOVE} leaves the source row active until the destination has
+  committed and the source slot token is gone. The ghost row is written
+  only after that deletion, so a reported ghost cannot still be opened by
+  \code{keyquorum-device}. A transfer that stops before the destination
+  commits keeps the usable copy on the source.
+\end{itemize}
+
+\code{transfer recover} finishes a transfer whose destination already
+committed, or rolls back one that did not.
+
+\flag{--descendants} selects what travels with the label: \code{key-only}
+(the default), \code{direct-children}, or \code{all-descendants} (the full
+subtree). A parent can move without its children, and a child can move
+while the parent stays. \flag{--as} names the active identity authorizing
+the transfer and defaults to \flag{--label}.
+
+\begin{noteBox}
+A ghost keeps hierarchy and provenance and holds no usable private key. It
+cannot sign, satisfy a quorum, authorize an import, or be exported. An
+active child under a ghost ancestor stays usable. Ghosts do not authorize an
+incoming key.
+\end{noteBox}
+
+An empty receiver accepts the package. A receiver that already holds active
+identities accepts an incoming key only when it is a descendant of one of
+those identities. The same identity id with the same public keys reconciles;
+the same id or the same label with different key material is refused.
+
+\subsection{Package format and audit}
+
+The package magic is \code{KQTX}. The source device key signs it, and it is
+bound to the destination device id. Replay, tamper, and a bad source are
+refused. Every attempt is audited without private key material; SQLite
+stores the transfer state and the audit row. The raw \code{KQTX} package
+stays off the mailbox.
+
+\subsection{Transferring through the mailbox}
+
+When the two devices are not open together, the commands below seal that
+package, or a slot relocate, into a \file{.kqpb} letter, and the mailbox
+stores only that letter.
+
+\begin{lstlisting}
+# Bob prepares the receiving side first: a slot to collect into, and a
+# published descriptor so relay-finalize can later fetch his verify key.
+# `provision` prints the new slot's encryption and signing public keys;
+# save the printed encryption hex to bob-slot.pub and send it to Alice
+# out of band (relay-send needs it before either device is online together).
+keyquorum-device provision ./usb2 --label recv
+keyquorum device publish ./usb2 --url https://relay.example.com
+
+keyquorum device publish ./usb --url https://relay.example.com
+keyquorum transfer relay-send \
+  --operation move \
+  --from-device ./usb --from-db ./alice.sqlite \
+  --label M.S \
+  --to-device-id <hex-device-id> \
+  --recipient-key-file ./bob-slot.pub \
+  --url https://relay.example.com
+keyquorum transfer relay-collect \
+  --to-device ./usb2 --to-db ./bob.sqlite \
+  --slot recv \
+  --from-device-id <hex-source-id> \
+  --url https://relay.example.com
+keyquorum transfer relay-finalize \
+  --from-device ./usb --from-db ./alice.sqlite \
+  --slot M.S \
+  --to-device-id <hex-device-id> \
+  --url https://relay.example.com
+keyquorum device relay-relocate \
+  --from ./usb --label M.S \
+  --to-device-id <hex-device-id> \
+  --recipient-key-file ./bob-slot.pub \
+  --url https://relay.example.com
+keyquorum device relay-accept ./usb2 --slot recv \
+  --url https://relay.example.com
+keyquorum device relay-drop ./usb --label M.S \
+  --to-device-id <hex-device-id> \
+  --relocate-id <hex-relocate-id> \
+  --url https://relay.example.com
+\end{lstlisting}
+
+\code{relay-send} leaves the source prepared. COPY stays active. MOVE
+deletes the source slot token and writes the ghost only when
+\code{relay-finalize} checks the destination's signed acknowledgement.
+\code{relay-relocate} prints a relocate id and leaves the source slot in
+place until \code{relay-drop} checks an acknowledgement signed for that id
+--- an acknowledgement from an earlier relocation of the same slot does not
+match. \code{relay-accept} acknowledges a slot that is already installed
+with the same keys again, so a retry after a failed upload finishes.
+
+The mailbox keeps device letters and acknowledgements for 30 days and never
+deletes them on acknowledgement. Load a \code{device.push} key for sends and
+publishes, and a \code{device.pull} key bound to the recipient fingerprint
+for collects, finalizes, and drops. \code{relay-collect} and
+\code{relay-accept} also need \code{device.push} to post the
+acknowledgement (\flag{--push-key}, or a stored key of that scope).
