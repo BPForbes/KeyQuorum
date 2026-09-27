@@ -2,6 +2,7 @@ use super::*;
 use crate::db;
 use crate::key_tree::NodeSpec;
 use crate::keys::{self, KeyType};
+use std::fs;
 
 fn register_encryption_key(conn: &Connection, label: &str) -> (i64, crypto_box::SecretKey) {
     let secret_key = crypto_box::SecretKey::generate(&mut rand::rngs::OsRng);

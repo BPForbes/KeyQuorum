@@ -6,6 +6,8 @@ compile_error!(
 );
 
 pub mod authority;
+pub mod bridge_command;
+pub mod cli;
 pub mod crypto;
 pub mod db;
 pub mod device;

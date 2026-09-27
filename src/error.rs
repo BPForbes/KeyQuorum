@@ -5,6 +5,8 @@ pub enum Error {
     Db(rusqlite::Error),
     Io(std::io::Error),
     InvalidPath,
+    /// A command-line usage mistake, reported with exit code 2.
+    Usage(String),
     KeyDerivationFailed,
     InvalidPassword,
     InvalidShareToken,
@@ -120,6 +122,7 @@ impl fmt::Display for Error {
             Error::Db(e) => write!(f, "database error: {e}"),
             Error::Io(e) => write!(f, "I/O error: {e}"),
             Error::InvalidPath => write!(f, "path is not valid UTF-8"),
+            Error::Usage(message) => f.write_str(message),
             Error::KeyDerivationFailed => write!(f, "key derivation failed"),
             Error::InvalidPassword => write!(f, "incorrect password"),
             Error::InvalidShareToken => write!(f, "invalid share token"),

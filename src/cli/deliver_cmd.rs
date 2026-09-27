@@ -1,0 +1,326 @@
+//! `keyquorum deliver`: sealed file delivery between labels
+//! ([`crate::file_delivery`]). A letter is signed by the sender, sealed to
+//! the recipient's registered encryption key, and carried by `relay push`
+//! (or `--push`) like any other `.kqpb`; the recipient opens it, which
+//! verifies the sender against the signing key this store has registered,
+//! and answers with a signed accept/reject sealed back to the sender.
+
+use super::env::{self, errln, outln};
+use super::{read_key_array_32, resolve_relay_auth, usage, write_delivery_packages, Envelope};
+use crate::device::SlotSecrets;
+use crate::error::{Error, Result};
+use crate::keys::{self, KeyType};
+use crate::relay::{self, ApiKeyScope};
+use crate::{file_delivery, private_bridge};
+use clap::Subcommand;
+use rusqlite::Connection;
+use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
+
+#[derive(Subcommand)]
+pub enum DeliverCommand {
+    /// Seal a file to a registered label. Signed with your signing key and
+    /// sealed to the recipient's encryption key; answers come back to your
+    /// registered encryption key.
+    Send {
+        /// File to send
+        #[arg(long)]
+        file: PathBuf,
+        /// Recipient label (its encryption key must be registered here)
+        #[arg(long)]
+        to: String,
+        /// Your label
+        #[arg(long = "as")]
+        as_label: String,
+        /// Your identity slot, container=label (signs the letter)
+        #[arg(
+            long = "slot",
+            required_unless_present = "signing_key_file",
+            conflicts_with = "signing_key_file"
+        )]
+        slot: Option<String>,
+        /// Your signing private key file, instead of --slot
+        #[arg(long)]
+        signing_key_file: Option<PathBuf>,
+        /// Name the recipient sees (defaults to the file's name)
+        #[arg(long)]
+        name: Option<String>,
+        /// Write the sealed letter to this directory
+        #[arg(long, required_unless_present = "push")]
+        output_dir: Option<PathBuf>,
+        /// Upload the letter to the relay (inbox.push key)
+        #[arg(long)]
+        push: bool,
+        #[arg(long, requires = "push")]
+        url: Option<String>,
+        #[arg(long, requires = "push")]
+        api_key: Option<String>,
+    },
+    /// Open a letter addressed to you: verify the sender, keep the file, and
+    /// seal a signed acknowledgement back to them
+    Open {
+        /// The delivery letter (.kqpb)
+        #[arg(long)]
+        file: PathBuf,
+        /// Your identity slot, container=label (unseals and signs the answer)
+        #[arg(
+            long = "slot",
+            required_unless_present = "share_file",
+            conflicts_with_all = ["share_file", "signing_key_file"]
+        )]
+        slot: Option<String>,
+        /// Your encryption private key file, instead of --slot
+        #[arg(long, requires = "signing_key_file")]
+        share_file: Option<String>,
+        /// Your signing private key file, with --share-file
+        #[arg(long, requires = "share_file")]
+        signing_key_file: Option<PathBuf>,
+        /// Write the file here instead of stdout
+        #[arg(long, conflicts_with_all = ["reject", "save_dir"])]
+        save: Option<PathBuf>,
+        /// Write the file into this directory under the name the sender gave it
+        #[arg(long, conflicts_with = "reject")]
+        save_dir: Option<PathBuf>,
+        /// Refuse the file and say so in the acknowledgement
+        #[arg(long)]
+        reject: bool,
+        /// Write the sealed acknowledgement to this directory
+        #[arg(long, required_unless_present = "push_ack")]
+        ack_dir: Option<PathBuf>,
+        /// Upload the acknowledgement to the relay (inbox.push key)
+        #[arg(long)]
+        push_ack: bool,
+        #[arg(long, requires = "push_ack")]
+        url: Option<String>,
+        #[arg(long, requires = "push_ack")]
+        api_key: Option<String>,
+    },
+    /// Check an acknowledgement sealed back to you
+    Ack {
+        /// The acknowledgement (.kqpb)
+        #[arg(long)]
+        file: PathBuf,
+        /// Your identity slot, container=label
+        #[arg(
+            long = "slot",
+            required_unless_present = "share_file",
+            conflicts_with = "share_file"
+        )]
+        slot: Option<String>,
+        /// Your encryption private key file, instead of --slot
+        #[arg(long)]
+        share_file: Option<String>,
+    },
+}
+
+pub fn run(conn: &Connection, command: DeliverCommand) -> Result<()> {
+    match command {
+        DeliverCommand::Send {
+            file,
+            to,
+            as_label,
+            slot,
+            signing_key_file,
+            name,
+            output_dir,
+            push,
+            url,
+            api_key,
+        } => {
+            let contents = env::read(&file)?;
+            let file_name = match name {
+                Some(name) => name,
+                None => file
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .ok_or_else(|| usage("--file has no file name; pass --name"))?,
+            };
+            let (signing_secret, encryption_public) = match (slot, signing_key_file) {
+                (Some(slot), None) => {
+                    let secrets = super::open_slot_secrets(&slot)?;
+                    (secrets.signing_secret, secrets.encryption_public)
+                }
+                (None, Some(path)) => (
+                    Zeroizing::new(read_key_array_32(&path)?),
+                    private_bridge::encryption_public_for_label(conn, None, &as_label)?,
+                ),
+                _ => return Err(usage("pass --slot or --signing-key-file")),
+            };
+            let recipient = registered_encryption_key(conn, &to)?;
+            let sealed = file_delivery::seal_letter(&file_delivery::Outgoing {
+                sender_label: &as_label,
+                sender_signing_secret: &signing_secret,
+                sender_encryption_public: &encryption_public,
+                recipient_label: &to,
+                recipient_encryption_public: &recipient,
+                file_name: &file_name,
+                contents: &contents,
+            })?;
+            let letter = Letter {
+                name: hex::encode(sealed.delivery_id),
+                bytes: sealed.bytes,
+            };
+            outln!(
+                "Sealed {file_name} to {to} (delivery {})",
+                hex::encode(sealed.delivery_id)
+            );
+            carry(conn, &letter, output_dir.as_deref(), push, url, api_key)?;
+        }
+        DeliverCommand::Open {
+            file,
+            slot,
+            share_file,
+            signing_key_file,
+            save,
+            save_dir,
+            reject,
+            ack_dir,
+            push_ack,
+            url,
+            api_key,
+        } => {
+            let bytes = env::read(&file)?;
+            let secrets = recipient_secrets(slot, share_file, signing_key_file)?;
+            let letter = file_delivery::open_letter(conn, &secrets.encryption, &bytes)?;
+            errln!(
+                "From {} to {}: {} ({} bytes), signature verified",
+                letter.sender_label,
+                letter.recipient_label,
+                letter.file_name,
+                letter.contents.len()
+            );
+            let accepted = !reject;
+            if accepted {
+                let target = match (save, save_dir) {
+                    (Some(path), _) => Some(path),
+                    (None, Some(dir)) => {
+                        env::create_dir_all(&dir)?;
+                        Some(dir.join(super::sanitize_label(&letter.file_name)?))
+                    }
+                    (None, None) => None,
+                };
+                match target {
+                    Some(path) => {
+                        env::write_new(&path, &letter.contents)?;
+                        outln!("Saved {} to {}", letter.file_name, path.display());
+                    }
+                    None => env::stdout_bytes(&letter.contents)?,
+                }
+            } else {
+                errln!("Rejected {}", letter.file_name);
+            }
+            let ack = Letter {
+                name: format!("{}-ack", hex::encode(letter.delivery_id)),
+                bytes: file_delivery::seal_ack(&letter, &secrets.signing, accepted)?,
+            };
+            carry(conn, &ack, ack_dir.as_deref(), push_ack, url, api_key)?;
+        }
+        DeliverCommand::Ack {
+            file,
+            slot,
+            share_file,
+        } => {
+            let bytes = env::read(&file)?;
+            let secret = super::encryption_secret_from(share_file.as_deref(), slot.as_deref())?;
+            let ack = file_delivery::open_ack(conn, &secret, &bytes)?;
+            outln!(
+                "Delivery {} {} by {}",
+                hex::encode(ack.delivery_id),
+                if ack.accepted { "accepted" } else { "rejected" },
+                ack.recipient_label
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A sealed `.kqpb` addressed by its delivery id.
+struct Letter {
+    name: String,
+    bytes: Vec<u8>,
+}
+
+impl Envelope for Letter {
+    fn label(&self) -> &str {
+        &self.name
+    }
+
+    fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+/// Write the letter to `output_dir`, upload it, or both.
+fn carry(
+    conn: &Connection,
+    letter: &Letter,
+    output_dir: Option<&Path>,
+    push: bool,
+    url: Option<String>,
+    api_key: Option<String>,
+) -> Result<()> {
+    if let Some(dir) = output_dir {
+        env::create_dir_all(dir)?;
+        let written = write_delivery_packages(dir, std::slice::from_ref(letter))?.keep();
+        for path in written {
+            outln!("Wrote {}", path.display());
+        }
+    }
+    if push {
+        let (url, api_key) = resolve_relay_auth(conn, url, api_key, ApiKeyScope::InboxPush)?;
+        let accepted = relay::push_inbox(&env::EnvRelay, &url, &api_key, &letter.bytes)?;
+        outln!(
+            "Relay stored letter {} for {}",
+            accepted.id,
+            accepted.recipient_fingerprint
+        );
+    }
+    Ok(())
+}
+
+fn registered_encryption_key(conn: &Connection, label: &str) -> Result<[u8; 32]> {
+    let key = keys::active_keys_for(conn, label, KeyType::Encryption)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            usage(&format!(
+                "no encryption key is registered for {label} in this store; register one first"
+            ))
+        })?;
+    key.public_key
+        .as_slice()
+        .try_into()
+        .map_err(|_| Error::InvalidPublicKey)
+}
+
+struct RecipientSecrets {
+    encryption: Zeroizing<[u8; 32]>,
+    signing: Zeroizing<[u8; 32]>,
+}
+
+fn recipient_secrets(
+    slot: Option<String>,
+    share_file: Option<String>,
+    signing_key_file: Option<PathBuf>,
+) -> Result<RecipientSecrets> {
+    match (slot, share_file, signing_key_file) {
+        (Some(slot), None, None) => {
+            let SlotSecrets {
+                encryption_secret,
+                signing_secret,
+                ..
+            } = super::open_slot_secrets(&slot)?;
+            Ok(RecipientSecrets {
+                encryption: encryption_secret,
+                signing: signing_secret,
+            })
+        }
+        (None, Some(share_file), Some(signing_key_file)) => Ok(RecipientSecrets {
+            encryption: Zeroizing::new(read_key_array_32(Path::new(&share_file))?),
+            signing: Zeroizing::new(read_key_array_32(&signing_key_file)?),
+        }),
+        _ => Err(usage(
+            "pass --slot, or --share-file with --signing-key-file",
+        )),
+    }
+}

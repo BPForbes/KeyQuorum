@@ -26,6 +26,18 @@ pub trait Storage {
     fn remove_empty_dir(&mut self, path: &Path);
     /// Direct children of `path`, sorted.
     fn list(&self, path: &Path) -> Result<Vec<PathBuf>>;
+    /// A regular file, not a directory.
+    fn is_file(&self, path: &Path) -> bool {
+        self.exists(path) && self.read(path).is_ok()
+    }
+    /// Create or replace `path`, like `std::fs::write` (no owner-only
+    /// guarantee; use [`Storage::write_new`] for secrets).
+    fn write(&mut self, path: &Path, contents: &[u8]) -> Result<()> {
+        if self.exists(path) {
+            self.delete(path)?;
+        }
+        self.write_new(path, contents)
+    }
 }
 
 /// The real filesystem, as every native command has always used it.
@@ -59,6 +71,14 @@ impl Storage for NativeStorage {
 
     fn remove_empty_dir(&mut self, path: &Path) {
         let _ = fs::remove_dir(path);
+    }
+
+    fn is_file(&self, path: &Path) -> bool {
+        path.is_file()
+    }
+
+    fn write(&mut self, path: &Path, contents: &[u8]) -> Result<()> {
+        Ok(fs::write(path, contents)?)
     }
 
     fn list(&self, path: &Path) -> Result<Vec<PathBuf>> {

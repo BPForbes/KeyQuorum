@@ -95,8 +95,13 @@ pub struct TreeNodeView {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TreeView {
+    /// The org tree's key id: the `<KEY_ID>` argument of `keyquorum bridge`.
+    pub key_id: i64,
     pub nodes: Vec<TreeNodeView>,
+    /// Established undirected links (`key_node_links`), which drive visibility.
     pub bridges: Vec<(String, String)>,
+    /// Directed whitelist entries (`key_node_bridges`): node may link to peer.
+    pub allowed: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -172,21 +177,6 @@ pub struct SentItemView {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ApprovalView {
-    pub id: u64,
-    pub file_name: String,
-    pub leaf: String,
-    pub approver: String,
-    pub requested_by: String,
-    pub devices: Vec<String>,
-    /// `pending`, `approved`, or `declined`.
-    pub status: String,
-    /// The active user is the one who can answer it.
-    pub actionable: bool,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ActivityView {
     pub seq: u64,
     pub actor: String,
@@ -210,6 +200,81 @@ pub struct AccessView {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PasswordFileView {
+    pub id: i64,
+    pub name: String,
+    /// The lab-user label whose own store holds this file's row; only that
+    /// person can unlock it.
+    pub owner: String,
+    pub created_at: String,
+    pub expires_at: Option<String>,
+    pub pin_protected: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportedBundleView {
+    pub id: i64,
+    pub file_name: String,
+    /// The lab-user label whose own store the source file's row lives in.
+    pub owner: String,
+    pub recipient: String,
+    pub recipient_name: String,
+    pub size: usize,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileShareView {
+    pub id: i64,
+    pub file_name: String,
+    /// The lab-user label whose own store created this share; only they
+    /// may revoke it. Redemption itself is not identity-scoped — the
+    /// bearer token is what authorizes it, same as a real share link.
+    pub owner: String,
+    pub pin_protected: bool,
+    pub expires_at: String,
+    pub revoked: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignatureView {
+    pub id: i64,
+    pub file_name: String,
+    /// Tree label of the signer (`M.S` or `M.A`).
+    pub signer: String,
+    pub signer_name: String,
+    pub bridge_uid: String,
+    pub size: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayStatusView {
+    pub url: String,
+    pub package_letters: i64,
+    pub device_letters: i64,
+    pub published_trees: i64,
+    pub registered_devices: i64,
+    pub api_keys: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestructureProposalView {
+    pub tree_label: String,
+    /// Label that proposed the restructure (`seed::RESTRUCTURE_AUTHORITY`
+    /// in this lab).
+    pub authorizer_label: String,
+    /// Parent label that must countersign before this takes effect.
+    pub countersigner_label: String,
+    pub generation: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub active_user: UserView,
     pub users: Vec<UserView>,
@@ -220,9 +285,28 @@ pub struct Snapshot {
     /// Acknowledgements sealed to the active user that are still unopened.
     pub pending_acks: usize,
     pub sent: Vec<SentItemView>,
-    pub approvals: Vec<ApprovalView>,
     pub activity: Vec<ActivityView>,
     pub last_access: Option<AccessView>,
+    /// The terminal's working directory in the lab VM.
+    pub cwd: String,
+    /// The shared org store's path, for `keyquorum --db` lines the panels build.
+    pub org_db: String,
+    /// Password-locked files created from the Security panel, across every
+    /// lab user (each is only unlockable by its own owner).
+    pub password_files: Vec<PasswordFileView>,
+    pub relay_status: RelayStatusView,
+    /// Portable `KQXB` bundles created from the Security panel, across
+    /// every lab user (each only viewable by its own exporter).
+    pub exports: Vec<ExportedBundleView>,
+    /// Share links created from the Security panel, across every lab
+    /// user. Listed for everyone since redemption is bearer-token
+    /// authorized, not identity-scoped.
+    pub file_shares: Vec<FileShareView>,
+    /// Signatures produced from the FileExplorer's Sign action, across
+    /// every lab user; either private-bridge member can verify one.
+    pub signatures: Vec<SignatureView>,
+    /// Tree restructure proposals still waiting on their countersigner.
+    pub pending_restructures: Vec<RestructureProposalView>,
 }
 
 #[derive(Clone, Debug, Serialize)]

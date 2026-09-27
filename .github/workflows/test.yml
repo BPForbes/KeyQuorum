@@ -2,6 +2,7 @@ name: Test
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -19,5 +20,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
       - name: Test
-        run: cargo test --locked --all-targets --all-features
+        run: cargo nextest run --locked --all-targets --all-features

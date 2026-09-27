@@ -11,7 +11,6 @@ use crate::key_tree::{self, NodeSpec, TreeSummary};
 use crate::storage::{NativeStorage, Storage};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
-use std::fs;
 use std::path::Path;
 use zeroize::Zeroizing;
 
@@ -42,21 +41,44 @@ pub fn lock_file(
     name: Option<&str>,
     tree_spec: &NodeSpec,
 ) -> Result<i64> {
+    lock_file_until_in(
+        &mut NativeStorage,
+        conn,
+        source_path,
+        encrypted_path,
+        name,
+        tree_spec,
+        None,
+    )
+}
+
+/// [`lock_file`], reading the source and writing the ciphertext through
+/// `storage`, with an optional UTC expiry (see [`lock_bytes_until_in`]).
+pub fn lock_file_until_in(
+    storage: &mut dyn Storage,
+    conn: &mut Connection,
+    source_path: &Path,
+    encrypted_path: &Path,
+    name: Option<&str>,
+    tree_spec: &NodeSpec,
+    expires_at: Option<&str>,
+) -> Result<i64> {
     key_tree::validate(conn, tree_spec)?;
-    let plaintext = fs::read(source_path)?;
+    let plaintext = storage.read(source_path)?;
     let name = name.map(str::to_owned).unwrap_or_else(|| {
         source_path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default()
     });
-    lock_bytes_in(
-        &mut NativeStorage,
+    lock_bytes_until_in(
+        storage,
         conn,
         &plaintext,
         encrypted_path,
         &name,
         tree_spec,
+        expires_at,
     )
 }
 

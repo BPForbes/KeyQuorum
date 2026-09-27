@@ -103,17 +103,6 @@ export interface SentItemView {
   status: "delivered" | "acknowledged" | "rejected";
 }
 
-export interface ApprovalView {
-  id: number;
-  fileName: string;
-  leaf: string;
-  approver: string;
-  requestedBy: string;
-  devices: string[];
-  status: "pending" | "approved" | "declined";
-  actionable: boolean;
-}
-
 export interface ActivityView {
   seq: number;
   actor: string;
@@ -132,18 +121,89 @@ export interface AccessView {
   satisfied: string[];
 }
 
+export interface PasswordFileView {
+  id: number;
+  name: string;
+  /** The lab-user label whose own store holds this file; only they can unlock it. */
+  owner: string;
+  createdAt: string;
+  expiresAt: string | null;
+  pinProtected: boolean;
+}
+
+export interface ExportedBundleView {
+  id: number;
+  fileName: string;
+  /** The lab-user label whose own store the source file's row lives in. */
+  owner: string;
+  recipient: string;
+  recipientName: string;
+  size: number;
+  createdAt: string;
+}
+
+export interface FileShareView {
+  id: number;
+  fileName: string;
+  /** The lab-user label who created this share; only they may revoke it. */
+  owner: string;
+  pinProtected: boolean;
+  expiresAt: string;
+  revoked: boolean;
+}
+
+export interface SignatureView {
+  id: number;
+  fileName: string;
+  /** Tree label of the signer (`M.S` or `M.A`). */
+  signer: string;
+  signerName: string;
+  bridgeUid: string;
+  size: number;
+}
+
+export interface RelayStatusView {
+  url: string;
+  packageLetters: number;
+  deviceLetters: number;
+  publishedTrees: number;
+  registeredDevices: number;
+  apiKeys: number;
+}
+
+export interface RestructureProposalView {
+  treeLabel: string;
+  /** Label that proposed the restructure. */
+  authorizerLabel: string;
+  /** Parent label that must countersign before this takes effect. */
+  countersignerLabel: string;
+  generation: number;
+}
+
 export interface Snapshot {
   activeUser: UserView;
   users: UserView[];
   drives: DriveView[];
-  tree: { nodes: TreeNodeView[]; bridges: [string, string][] };
+  // keyId: the org tree's `<KEY_ID>` for `keyquorum bridge`.
+  // bridges: established undirected links (drive visibility).
+  // allowed: directed whitelist entries, node → peer.
+  tree: { keyId: number; nodes: TreeNodeView[]; bridges: [string, string][]; allowed: [string, string][] };
   files: FileView[];
   inbox: InboxItemView[];
   pendingAcks: number;
   sent: SentItemView[];
-  approvals: ApprovalView[];
   activity: ActivityView[];
   lastAccess: AccessView | null;
+  // The terminal's working directory in the lab machine.
+  cwd: string;
+  // The org store's path, for `keyquorum --db` lines panels build.
+  orgDb: string;
+  passwordFiles: PasswordFileView[];
+  relayStatus: RelayStatusView;
+  exports: ExportedBundleView[];
+  fileShares: FileShareView[];
+  signatures: SignatureView[];
+  pendingRestructures: RestructureProposalView[];
 }
 
 export interface OpenedFile {

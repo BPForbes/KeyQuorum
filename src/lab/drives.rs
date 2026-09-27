@@ -5,6 +5,7 @@
 //! missing mount point would, so ejecting a drive removes its slots from
 //! every quorum evaluation without any lab-side special casing.
 
+use crate::device;
 use crate::error::{Error, Result};
 use crate::storage::{MemoryStorage, Storage};
 use std::path::{Path, PathBuf};
@@ -14,22 +15,16 @@ pub struct MockDrive {
     pub name: String,
     pub mount: PathBuf,
     pub connected: bool,
-    /// The id inside this drive's signed `device.kq`, recorded at seed
-    /// time so the UI can show it while the drive is ejected.
-    pub device_id: [u8; 16],
-    pub slots: Vec<String>,
     storage: MemoryStorage,
 }
 
 impl MockDrive {
-    pub fn new(id: &str, name: &str, mount: &str, slots: &[&str]) -> Self {
+    pub fn new(id: &str, name: &str, mount: &str) -> Self {
         Self {
             id: id.to_string(),
             name: name.to_string(),
             mount: PathBuf::from(mount),
             connected: true,
-            device_id: [0; 16],
-            slots: slots.iter().map(|slot| slot.to_string()).collect(),
             storage: MemoryStorage::new(),
         }
     }
@@ -45,6 +40,30 @@ impl MockDrive {
                     .map(|rest| rest.display().to_string())
             })
             .collect()
+    }
+
+    /// The drive's signed `device.kq`, read whether or not it is inserted:
+    /// what is on a drive does not change when it is unplugged.
+    fn container(&self) -> Option<device::Container> {
+        device::open_in(&self.storage, &self.mount).ok()
+    }
+
+    /// Slot labels its `device.kq` lists.
+    pub fn slots(&self) -> Vec<String> {
+        self.container()
+            .map(|container| {
+                container
+                    .slots()
+                    .iter()
+                    .map(|slot| slot.label.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The device id inside its `device.kq`, once initialized.
+    pub fn device_id(&self) -> Option<[u8; 16]> {
+        self.container().map(|container| *container.device_id())
     }
 }
 
@@ -66,7 +85,7 @@ impl DriveBay {
     pub fn holding(&self, slot_label: &str) -> Option<&MockDrive> {
         self.drives
             .iter()
-            .find(|drive| drive.slots.iter().any(|slot| slot == slot_label))
+            .find(|drive| drive.slots().iter().any(|slot| slot == slot_label))
     }
 
     fn mounted(&self, path: &Path) -> Result<&MockDrive> {

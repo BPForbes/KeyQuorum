@@ -1,15 +1,12 @@
 //! Axum router for the mailbox relay. Handlers never unseal envelopes.
 
-use super::api_key::{self, ApiKeyInfo, ApiKeyScope, AuthedKey};
 use super::client::{
     DevicePackageList, DevicePackagePush, ErrorBody, InboxAccepted, InboxEnvelope, InboxList,
     InboxPush, KeyCheckRequest, KeyCheckResponse, ProviderIdentityRequest,
     ProviderIdentityResponse,
 };
-use super::device_directory::{self, DeviceDescriptor, DeviceSlotDescriptor};
-use super::device_mail;
-use super::mailbox;
-use super::org_tree;
+use super::device_directory::{DeviceDescriptor, DeviceSlotDescriptor};
+use super::service::{self, ApiKeyView, HttpError, ProviderIdentity, MAX_ENVELOPE_BYTES};
 use crate::error::Error;
 use crate::key_tree::{PublicEdge, PublicNode, PublicTree};
 use axum::body::Bytes;
@@ -20,8 +17,6 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine as _;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -29,15 +24,6 @@ use tower_http::trace::TraceLayer;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
-use zeroize::Zeroizing;
-
-pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
-
-/// Live provider identity presented on `POST /provider-identity`.
-pub struct ProviderIdentity {
-    pub certificate: Vec<u8>,
-    pub relay_private_key: Zeroizing<[u8; 32]>,
-}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -103,67 +89,26 @@ struct ApiError {
 
 impl ApiError {
     fn unauthorized() -> Self {
-        Self {
-            status: StatusCode::UNAUTHORIZED,
-            message: "unauthorized".to_string(),
-        }
+        HttpError::unauthorized().into()
     }
 
     fn internal() -> Self {
+        HttpError::internal().into()
+    }
+}
+
+impl From<HttpError> for ApiError {
+    fn from(err: HttpError) -> Self {
         Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: "internal error".to_string(),
+            status: StatusCode::from_u16(err.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            message: err.message,
         }
     }
 }
 
 impl From<Error> for ApiError {
     fn from(err: Error) -> Self {
-        match err {
-            Error::InvalidApiKey | Error::ApiKeyExpired | Error::ApiKeyRevoked => {
-                Self::unauthorized()
-            }
-            Error::ApiKeyScopeDenied => Self {
-                status: StatusCode::FORBIDDEN,
-                message: "forbidden".to_string(),
-            },
-            Error::InvalidApiKeyRequest
-            | Error::InvalidInboxPage
-            | Error::InvalidBridgePackage
-            | Error::InvalidPublicKey
-            | Error::SignatureVerificationFailed
-            | Error::InvalidTreeSpec
-            | Error::DuplicateNodeLabel
-            | Error::InvalidBridge
-            | Error::InvalidProviderChallenge
-            | Error::InvalidExpiresAt
-            | Error::ExpiresAtInPast
-            | Error::WrongKeyType
-            | Error::InvalidDevice
-            | Error::InvalidSlot => Self {
-                status: StatusCode::BAD_REQUEST,
-                message: err.to_string(),
-            },
-            Error::ApiKeyNotFound
-            | Error::TreeNotFound
-            | Error::NodeNotFound
-            | Error::DeviceNotFound => Self {
-                status: StatusCode::NOT_FOUND,
-                message: err.to_string(),
-            },
-            Error::ProviderIdentityMissing => Self {
-                status: StatusCode::SERVICE_UNAVAILABLE,
-                message: err.to_string(),
-            },
-            Error::BundleFieldTooLarge => Self {
-                status: StatusCode::PAYLOAD_TOO_LARGE,
-                message: err.to_string(),
-            },
-            other => {
-                tracing::error!("relay internal error: {other}");
-                Self::internal()
-            }
-        }
+        HttpError::from(err).into()
     }
 }
 
@@ -204,33 +149,6 @@ struct InboxQuery {
     after: Option<i64>,
     /// Page size, 1–500. Defaults to 100 when omitted.
     limit: Option<i64>,
-}
-
-#[derive(Serialize, ToSchema)]
-struct ApiKeyView {
-    id: i64,
-    scope: String,
-    recipient_fingerprint: Option<String>,
-    label: Option<String>,
-    created_at: String,
-    expires_at: Option<String>,
-    revoked_at: Option<String>,
-    last_used_at: Option<String>,
-}
-
-impl From<ApiKeyInfo> for ApiKeyView {
-    fn from(info: ApiKeyInfo) -> Self {
-        Self {
-            id: info.id,
-            scope: info.scope,
-            recipient_fingerprint: info.recipient_fingerprint,
-            label: info.label,
-            created_at: info.created_at,
-            expires_at: info.expires_at,
-            revoked_at: info.revoked_at,
-            last_used_at: info.last_used_at,
-        }
-    }
 }
 
 struct SecurityAddon;
@@ -326,28 +244,10 @@ async fn post_provider_identity(
     State(state): State<AppState>,
     Json(body): Json<ProviderIdentityRequest>,
 ) -> Result<Json<ProviderIdentityResponse>, ApiError> {
-    let identity = state
-        .identity
-        .clone()
-        .ok_or(Error::ProviderIdentityMissing)?;
-    let challenge = STANDARD
-        .decode(body.challenge.as_bytes())
-        .map_err(|_| Error::InvalidProviderChallenge)?;
-    let signature = crate::provider::sign_challenge(&identity.relay_private_key, &challenge)?;
-    Ok(Json(ProviderIdentityResponse {
-        certificate: STANDARD.encode(&identity.certificate),
-        signature: STANDARD.encode(signature),
-    }))
-}
-
-fn keycheck_response(check: api_key::KeyCheck) -> KeyCheckResponse {
-    KeyCheckResponse {
-        valid: check.valid,
-        id: check.id,
-        scope: check.scope,
-        label: check.label,
-        recipient_fingerprint: check.recipient_fingerprint,
-    }
+    Ok(Json(service::provider_identity(
+        state.identity.as_deref(),
+        &body,
+    )?))
 }
 
 #[utoipa::path(
@@ -364,18 +264,8 @@ async fn post_keycheck(
     State(state): State<AppState>,
     Json(body): Json<KeyCheckRequest>,
 ) -> Result<Json<KeyCheckResponse>, ApiError> {
-    let token = body.token.filter(|s| !s.is_empty());
-    let key_hash = body.key_hash.filter(|s| !s.is_empty());
-    let check = match (token, key_hash) {
-        (Some(token), None) => {
-            with_conn(&state, move |conn| api_key::check_token(conn, &token)).await?
-        }
-        (None, Some(key_hash)) => {
-            with_conn(&state, move |conn| api_key::check_hash(conn, &key_hash)).await?
-        }
-        _ => return Err(Error::InvalidApiKeyRequest.into()),
-    };
-    Ok(Json(keycheck_response(check)))
+    let check = with_conn(&state, move |conn| service::keycheck(conn, &body)).await?;
+    Ok(Json(check))
 }
 
 #[utoipa::path(
@@ -399,45 +289,18 @@ async fn post_inbox(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<(StatusCode, Json<InboxAccepted>), ApiError> {
-    let parsed = parse_inbox_body(&headers, &body)?;
-    if parsed.envelope.len() > MAX_ENVELOPE_BYTES {
-        return Err(Error::BundleFieldTooLarge.into());
-    }
-    let (id, fingerprint, duplicate) = with_conn(&state, move |conn| {
-        api_key::authenticate(conn, &token, ApiKeyScope::InboxPush)?;
-        crate::db::with_immediate_transaction(conn, || {
-            if let Some(expires_at) = parsed.expires_at.as_deref() {
-                crate::locked_files::require_future_expires_utc(conn, expires_at)?;
-            }
-            for tree in &parsed.trees {
-                org_tree::merge_public_tree(conn, tree)?;
-            }
-            mailbox::store_until(conn, &parsed.envelope, parsed.expires_at.as_deref())
-        })
+    let parsed = service::parse_inbox(is_json(&headers), &body)?;
+    let (accepted, duplicate) = with_conn(&state, move |conn| {
+        service::inbox_push(conn, &token, &parsed)
     })
     .await?;
-    let status = if duplicate {
-        StatusCode::OK
-    } else {
-        StatusCode::CREATED
-    };
-    Ok((
-        status,
-        Json(InboxAccepted {
-            id,
-            recipient_fingerprint: fingerprint,
-        }),
-    ))
+    Ok((created_or_ok(duplicate), Json(accepted)))
 }
 
-struct ParsedInbox {
-    envelope: Vec<u8>,
-    trees: Vec<PublicTree>,
-    expires_at: Option<String>,
-}
-
-fn parse_inbox_body(headers: &HeaderMap, body: &[u8]) -> Result<ParsedInbox, ApiError> {
-    let is_json = headers
+/// `Content-Type: application/json` (parameters ignored), the one switch
+/// the upload routes take between raw bytes and a JSON body.
+fn is_json(headers: &HeaderMap) -> bool {
+    headers
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| {
@@ -446,27 +309,15 @@ fn parse_inbox_body(headers: &HeaderMap, body: &[u8]) -> Result<ParsedInbox, Api
                 .next()
                 .map(str::trim)
                 .is_some_and(|mime| mime.eq_ignore_ascii_case("application/json"))
-        });
-    if !is_json {
-        return Ok(ParsedInbox {
-            envelope: body.to_vec(),
-            trees: Vec::new(),
-            expires_at: None,
-        });
+        })
+}
+
+fn created_or_ok(duplicate: bool) -> StatusCode {
+    if duplicate {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
     }
-    let push: InboxPush = serde_json::from_slice(body).map_err(|_| Error::InvalidBridgePackage)?;
-    let expires_at = match push.expires_at {
-        Some(raw) => Some(crate::locked_files::parse_expires_utc(&raw)?),
-        None => None,
-    };
-    let envelope = STANDARD
-        .decode(push.bytes.as_bytes())
-        .map_err(|_| Error::InvalidBridgePackage)?;
-    Ok(ParsedInbox {
-        envelope,
-        trees: push.trees,
-        expires_at,
-    })
 }
 
 #[utoipa::path(
@@ -487,29 +338,12 @@ async fn get_inbox(
     ApiToken(token): ApiToken,
     Query(query): Query<InboxQuery>,
 ) -> Result<Json<InboxList>, ApiError> {
-    let after = query.after;
-    let limit = query.limit;
-    let (page, trees) = with_conn(&state, move |conn| {
-        let auth = api_key::authenticate(conn, &token, ApiKeyScope::InboxPull)?;
-        let fingerprint = auth.recipient_fingerprint.ok_or(Error::ApiKeyScopeDenied)?;
-        let page = mailbox::list_after(conn, &fingerprint, after, limit)?;
-        let trees = org_tree::slices_for_fingerprint(conn, &fingerprint)?;
-        Ok((page, trees))
+    let (after, limit) = (query.after, query.limit);
+    let list = with_conn(&state, move |conn| {
+        service::inbox_pull(conn, &token, after, limit)
     })
     .await?;
-    Ok(Json(InboxList {
-        envelopes: page
-            .envelopes
-            .into_iter()
-            .map(|item| InboxEnvelope {
-                id: item.id,
-                recipient_fingerprint: item.recipient_fingerprint,
-                bytes: STANDARD.encode(&item.bytes),
-            })
-            .collect(),
-        trees,
-        next_after: page.next_after,
-    }))
+    Ok(Json(list))
 }
 
 #[utoipa::path(
@@ -527,12 +361,8 @@ async fn list_keys(
     State(state): State<AppState>,
     ApiToken(token): ApiToken,
 ) -> Result<Json<Vec<ApiKeyView>>, ApiError> {
-    let keys = with_conn(&state, move |conn| {
-        api_key::authenticate(conn, &token, ApiKeyScope::Admin)?;
-        api_key::list(conn)
-    })
-    .await?;
-    Ok(Json(keys.into_iter().map(ApiKeyView::from).collect()))
+    let keys = with_conn(&state, move |conn| service::list_keys(conn, &token)).await?;
+    Ok(Json(keys))
 }
 
 #[utoipa::path(
@@ -553,11 +383,7 @@ async fn revoke_key(
     ApiToken(token): ApiToken,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
-    with_conn(&state, move |conn| {
-        api_key::authenticate(conn, &token, ApiKeyScope::Admin)?;
-        api_key::revoke(conn, id)
-    })
-    .await?;
+    with_conn(&state, move |conn| service::revoke_key(conn, &token, id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -579,11 +405,7 @@ async fn put_tree(
     ApiToken(token): ApiToken,
     Json(tree): Json<PublicTree>,
 ) -> Result<Json<PublicTree>, ApiError> {
-    let stored = with_conn(&state, move |conn| {
-        api_key::authenticate(conn, &token, ApiKeyScope::Admin)?;
-        org_tree::put_public_tree(conn, &tree)
-    })
-    .await?;
+    let stored = with_conn(&state, move |conn| service::put_tree(conn, &token, &tree)).await?;
     Ok(Json(stored))
 }
 
@@ -606,21 +428,10 @@ async fn get_tree_context(
     Path(label): Path<String>,
 ) -> Result<Json<PublicTree>, ApiError> {
     let slice = with_conn(&state, move |conn| {
-        let auth = api_key::authenticate(conn, &token, ApiKeyScope::InboxPull)?;
-        let fingerprint = auth.recipient_fingerprint.ok_or(Error::ApiKeyScopeDenied)?;
-        org_tree::context_for_fingerprint(conn, &label, &fingerprint)
+        service::tree_context(conn, &token, &label)
     })
     .await?;
     Ok(Json(slice))
-}
-
-fn authenticate_device_read(conn: &Connection, token: &str) -> crate::error::Result<AuthedKey> {
-    match api_key::authenticate(conn, token, ApiKeyScope::DevicePull) {
-        Err(crate::error::Error::ApiKeyScopeDenied) => {
-            api_key::authenticate(conn, token, ApiKeyScope::DevicePush)
-        }
-        other => other,
-    }
 }
 
 #[utoipa::path(
@@ -644,49 +455,12 @@ async fn post_device_package(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<(StatusCode, Json<InboxAccepted>), ApiError> {
-    let package = parse_device_package(&headers, &body)?;
-    if package.len() > MAX_ENVELOPE_BYTES {
-        return Err(crate::error::Error::BundleFieldTooLarge.into());
-    }
-    let (id, fingerprint, duplicate) = with_conn(&state, move |conn| {
-        api_key::authenticate(conn, &token, ApiKeyScope::DevicePush)?;
-        device_mail::store(conn, &package)
+    let package = service::parse_device_package(is_json(&headers), &body)?;
+    let (accepted, duplicate) = with_conn(&state, move |conn| {
+        service::device_push(conn, &token, &package)
     })
     .await?;
-    let status = if duplicate {
-        StatusCode::OK
-    } else {
-        StatusCode::CREATED
-    };
-    Ok((
-        status,
-        Json(InboxAccepted {
-            id,
-            recipient_fingerprint: fingerprint,
-        }),
-    ))
-}
-
-fn parse_device_package(headers: &HeaderMap, body: &[u8]) -> Result<Vec<u8>, ApiError> {
-    let is_json = headers
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .split(';')
-                .next()
-                .map(str::trim)
-                .is_some_and(|mime| mime.eq_ignore_ascii_case("application/json"))
-        });
-    if !is_json {
-        return Ok(body.to_vec());
-    }
-    let push: DevicePackagePush =
-        serde_json::from_slice(body).map_err(|_| crate::error::Error::InvalidBridgePackage)?;
-    STANDARD
-        .decode(push.bytes.as_bytes())
-        .map_err(|_| crate::error::Error::InvalidBridgePackage)
-        .map_err(ApiError::from)
+    Ok((created_or_ok(duplicate), Json(accepted)))
 }
 
 #[utoipa::path(
@@ -707,28 +481,12 @@ async fn get_device_packages(
     ApiToken(token): ApiToken,
     Query(query): Query<InboxQuery>,
 ) -> Result<Json<DevicePackageList>, ApiError> {
-    let after = query.after;
-    let limit = query.limit;
-    let page = with_conn(&state, move |conn| {
-        let auth = api_key::authenticate(conn, &token, ApiKeyScope::DevicePull)?;
-        let fingerprint = auth
-            .recipient_fingerprint
-            .ok_or(crate::error::Error::ApiKeyScopeDenied)?;
-        device_mail::list_after(conn, &fingerprint, after, limit)
+    let (after, limit) = (query.after, query.limit);
+    let list = with_conn(&state, move |conn| {
+        service::device_pull(conn, &token, after, limit)
     })
     .await?;
-    Ok(Json(DevicePackageList {
-        packages: page
-            .packages
-            .into_iter()
-            .map(|item| InboxEnvelope {
-                id: item.id,
-                recipient_fingerprint: item.recipient_fingerprint,
-                bytes: STANDARD.encode(&item.bytes),
-            })
-            .collect(),
-        next_after: page.next_after,
-    }))
+    Ok(Json(list))
 }
 
 #[utoipa::path(
@@ -750,8 +508,7 @@ async fn put_device(
     Json(descriptor): Json<DeviceDescriptor>,
 ) -> Result<Json<DeviceDescriptor>, ApiError> {
     let stored = with_conn(&state, move |conn| {
-        api_key::authenticate(conn, &token, ApiKeyScope::DevicePush)?;
-        device_directory::put(conn, &descriptor)
+        service::put_device(conn, &token, &descriptor)
     })
     .await?;
     Ok(Json(stored))
@@ -776,8 +533,7 @@ async fn get_device(
     Path(device_id): Path<String>,
 ) -> Result<Json<DeviceDescriptor>, ApiError> {
     let descriptor = with_conn(&state, move |conn| {
-        authenticate_device_read(conn, &token)?;
-        device_directory::require(conn, &device_id)
+        service::get_device(conn, &token, &device_id)
     })
     .await?;
     Ok(Json(descriptor))

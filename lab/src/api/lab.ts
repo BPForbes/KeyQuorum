@@ -64,11 +64,75 @@ export class LabClient {
     return this.call(this.lab.refresh_inbox());
   }
 
-  answerApproval(id: number, approve: boolean): ActionResult {
-    return this.call(this.lab.answer_approval(id, approve));
-  }
-
   runCommand(line: string): ActionResult {
     return this.call(this.lab.run_command(line));
+  }
+
+  lockPasswordFile(name: string, contents: string, password: string, pin?: string): ActionResult {
+    return this.call(this.lab.lock_password_file(name, contents, password, pin));
+  }
+
+  unlockPasswordFile(id: number, password: string, pin?: string): ActionResult {
+    return this.call(this.lab.unlock_password_file(id, password, pin));
+  }
+
+  provisionSlot(driveId: string, label: string, passphrase: string): ActionResult {
+    return this.call(this.lab.provision_slot(driveId, label, passphrase));
+  }
+
+  deviceLog(driveId: string): ActionResult {
+    return this.call(this.lab.device_log(driveId));
+  }
+
+  revokeKey(nodeLabel: string): ActionResult {
+    return this.call(this.lab.revoke_key(nodeLabel));
+  }
+
+  transferCopy(label: string, toDriveId: string, passphrase: string): ActionResult {
+    return this.call(this.lab.transfer_copy(label, toDriveId, passphrase));
+  }
+
+  exportFile(id: number, recipientLabel: string, password: string): ActionResult {
+    return this.call(this.lab.export_file(id, recipientLabel, password));
+  }
+
+  viewExport(id: number): ActionResult {
+    return this.call(this.lab.view_export(id));
+  }
+
+  createFileShare(fileId: number, ttlSeconds: number, pin?: string): ActionResult {
+    return this.call(this.lab.create_file_share(fileId, ttlSeconds, pin));
+  }
+
+  redeemFileShare(shareId: number, token: string, pin?: string): ActionResult {
+    return this.call(this.lab.redeem_file_share(shareId, token, pin));
+  }
+
+  revokeFileShare(shareId: number): ActionResult {
+    return this.call(this.lab.revoke_file_share(shareId));
+  }
+
+  signFile(fileId: string): ActionResult {
+    return this.call(this.lab.sign_file(fileId));
+  }
+
+  verifySignature(signatureId: number): ActionResult {
+    return this.call(this.lab.verify_signature(signatureId));
+  }
+
+  registerLeaf(driveId: string, slotLabel: string, parentLabel: string): ActionResult {
+    return this.call(this.lab.register_leaf(driveId, slotLabel, parentLabel));
+  }
+
+  reissueKey(nodeLabel: string, toDriveId: string, passphrase: string): ActionResult {
+    return this.call(this.lab.reissue_key(nodeLabel, toDriveId, passphrase));
+  }
+
+  proposeRestructure(): ActionResult {
+    return this.call(this.lab.propose_restructure());
+  }
+
+  countersignRestructure(passphrase: string): ActionResult {
+    return this.call(this.lab.countersign_restructure(passphrase));
   }
 }

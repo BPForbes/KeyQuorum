@@ -32,6 +32,49 @@ function MoveSlot({ label, currentDriveId, snapshot, act }: { label: string; cur
   );
 }
 
+function CopySlot({ label, currentDriveId, snapshot, act }: { label: string; currentDriveId: string; snapshot: Snapshot; act: Act }) {
+  const id = useId();
+  const targets = snapshot.drives.filter((drive) => drive.id !== currentDriveId);
+  const [target, setTarget] = useState(targets[0]?.id ?? "");
+  const [passphrase, setPassphrase] = useState("");
+  if (targets.length === 0) return null;
+  return (
+    <form
+      className="move-slot"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!passphrase) return;
+        act((client) => client.transferCopy(label, target, passphrase));
+        setPassphrase("");
+      }}
+    >
+      <label htmlFor={`${id}-target`} className="visually-hidden">
+        Copy {label} to
+      </label>
+      <select id={`${id}-target`} value={target} onChange={(event) => setTarget(event.target.value)}>
+        {targets.map((drive) => (
+          <option key={drive.id} value={drive.id}>
+            copy {label} to {drive.name}
+          </option>
+        ))}
+      </select>
+      <label htmlFor={`${id}-pass`} className="visually-hidden">
+        {label}&rsquo;s passphrase
+      </label>
+      <input
+        id={`${id}-pass`}
+        type="password"
+        placeholder={`${label}'s passphrase`}
+        value={passphrase}
+        onChange={(event) => setPassphrase(event.target.value)}
+      />
+      <button type="submit" className="btn small-btn">
+        Copy
+      </button>
+    </form>
+  );
+}
+
 export function Drives({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
   return (
     <section className="panel" data-panel="usb" aria-labelledby="usb-heading">
@@ -42,7 +85,9 @@ export function Drives({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
         Each drive is a KeyQuorum device container: a signed <code>device.kq</code> with its own device id, plus one
         Argon2id-sealed token per slot. An inserted drive presents its slots to every unlock. Every person starts with
         their own drive; moving a slot onto another (both drives must be inserted) puts two people&rsquo;s tokens in
-        one real container — the point at which they start counting as one physical device.
+        one real container — the point at which they start counting as one physical device. Copying a slot (
+        <code>keyquorum transfer copy</code>) instead leaves the original active and seals a second copy onto the
+        chosen drive, using the same passphrase that already unlocks it.
       </p>
       <ul className="drives">
         {snapshot.drives.map((drive) => (
@@ -69,6 +114,7 @@ export function Drives({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
                       {slot.label} {slot.holder}
                     </span>
                     <MoveSlot label={slot.label} currentDriveId={drive.id} snapshot={snapshot} act={act} />
+                    <CopySlot label={slot.label} currentDriveId={drive.id} snapshot={snapshot} act={act} />
                   </li>
                 ))}
               </ul>

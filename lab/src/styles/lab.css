@@ -717,6 +717,151 @@ h1 {
   word-break: break-word;
 }
 
+/* ----- Security panel ---------------------------------------------------- */
+
+.security-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
+}
+
+.security-grid h3 {
+  margin: 0 0 0.2rem;
+}
+
+.security-grid h4 {
+  margin: 0.75rem 0 0.3rem;
+  font-size: 0.9rem;
+}
+
+.lock-note-form,
+.provision-form,
+.export-form,
+.share-form {
+  display: grid;
+  gap: 0.3rem;
+  margin-bottom: 0.5rem;
+}
+
+.lock-note-form input,
+.lock-note-form textarea,
+.lock-note-form select,
+.provision-form input,
+.provision-form select,
+.export-form input,
+.export-form select,
+.share-form input,
+.share-form select {
+  min-height: var(--tap);
+  padding: 0.4rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-page);
+  color: var(--text);
+  font: inherit;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 400;
+}
+
+.password-file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.unlock-note-form,
+.redeem-share-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.25rem;
+  align-items: center;
+}
+
+.unlock-note-form input,
+.redeem-share-form input {
+  min-height: var(--tap);
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-page);
+  color: var(--text);
+  font: inherit;
+  width: 6.5rem;
+}
+
+.redeem-share-form input:first-of-type {
+  width: 12rem;
+}
+
+.password-file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.25rem;
+}
+
+@media (max-width: 640px) {
+  .security-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ----- Organization / bridges -------------------------------------------- */
+
+.bridges {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border-strong);
+}
+
+.bridges-title {
+  margin: 0 0 0.3rem;
+  font-size: 1rem;
+}
+
+.bridges h4 {
+  margin: 0.6rem 0 0.25rem;
+}
+
+.bridge-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.bridge-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.bridge-form {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.75rem;
+}
+
+.bridge-form select {
+  min-height: var(--tap);
+  padding: 0.4rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-page);
+  color: var(--text);
+  font: inherit;
+}
+
 /* ----- Drives / move-slot ------------------------------------------------ */
 
 .slot-list {
@@ -740,7 +885,8 @@ h1 {
   align-items: center;
 }
 
-.move-slot select {
+.move-slot select,
+.move-slot input {
   min-height: 2rem;
   padding: 0.2rem 0.4rem;
   border: 1px solid var(--border-strong);
@@ -748,6 +894,10 @@ h1 {
   background: var(--surface-page);
   color: var(--text);
   font-size: 0.8rem;
+}
+
+.move-slot input {
+  width: 8rem;
 }
 
 .segmented {
@@ -943,6 +1093,7 @@ h1 {
   .lab-grid[data-tab="usb"] > [data-panel="usb"],
   .lab-grid[data-tab="files"] > [data-panel="files"],
   .lab-grid[data-tab="mailbox"] > [data-panel="mailbox"],
+  .lab-grid[data-tab="security"] > [data-panel="security"],
   .lab-grid[data-tab="activity"] > [data-panel="activity"],
   .lab-grid[data-tab="terminal"] > [data-panel="terminal"] {
     display: block;

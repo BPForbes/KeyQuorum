@@ -1,28 +1,37 @@
-//! The lab's advanced terminal. Commands call the same [`LabState`]
-//! methods as the GUI buttons, so the two can never disagree; the terminal
-//! only formats the result as text.
+//! The lab's terminal: a small shell on the lab VM. A few shell builtins
+//! (`ls`, `cat`, `cd`, `su`, `usb`) stand in for what a desktop provides;
+//! every `keyquorum` / `keyquorum-device` line runs the real CLI through
+//! [`LabState::command`], and the shortcuts (`unlock`, `send`, …) call the
+//! same [`LabState`] methods as the GUI buttons, which run real command
+//! lines too. The terminal only formats results as text.
 
 use super::state::{LabState, Outcome};
 use super::view::{RequirementNode, StepStatus, TraceStep};
+use super::vm::ORG_DB;
 use crate::error::Result;
 
 pub const HELP: &[&str] = &[
+    "keyquorum ...               the real CLI (try `keyquorum --help`)",
+    "keyquorum-device ...        the real device tool",
+    "bridge ...                  shorthand for keyquorum --db <org store> bridge ...",
+    "",
     "whoami                      active identity",
     "users                       list lab users",
-    "su <name|label>             switch user (e.g. su david, su M.A)",
+    "su <name|label>             sign in as someone else (e.g. su david, su M.A)",
     "usb                         list mock USB drives",
-    "usb insert|eject <drive>    each person's own drive, plus spare",
-    "move <label> <drive>        relocate a slot to another drive",
-    "ls                          files visible to you",
+    "usb insert|eject <drive>    plug a drive in or pull it out",
+    "ls [dir] · cat <file> · cd [dir] · pwd",
+    "",
+    "Shortcuts (each runs real commands and shows them):",
+    "files                       the org's files and how you relate to them",
     "status <file>               key tree, custody policy, and dates",
-    "unlock <file>               attempt a quorum unlock (= view/open)",
-    "send <file> <user>          seal a file-delivery letter to a user",
-    "inbox                       letters sealed to you",
-    "receive <id> | reject <id>  answer a delivery letter",
-    "refresh                     verify acknowledgements sealed to you",
-    "sent                        your sent transfers",
-    "approvals                   unlock approvals you asked for or owe",
-    "approve <id> | decline <id> answer an approval request",
+    "unlock <file>               open a file (access quorum --state 1)",
+    "send <file> <user>          deliver a file (deliver send --push)",
+    "inbox                       letters in ~/mail",
+    "refresh                     relay pull, then deliver ack",
+    "receive <id> | reject <id>  deliver open --push-ack",
+    "sent                        your sent deliveries",
+    "move <label> <drive>        keyquorum-device relocate + device bind",
     "tree                        org tree from your view",
     "reset                       restore the seeded lab",
 ];
@@ -55,6 +64,11 @@ pub fn run(state: &mut LabState, line: &str) -> Result<(Outcome, Vec<String>)> {
     Ok(match words.as_slice() {
         [] => quiet(true, vec![]),
         ["help"] => quiet(true, HELP.iter().map(|line| line.to_string()).collect()),
+        ["keyquorum", ..] | ["keyquorum-device", ..] => command(state, line.trim())?,
+        ["bridge", ..] => {
+            let rest = line.trim().strip_prefix("bridge").unwrap_or_default();
+            command(state, &format!("keyquorum --db {ORG_DB} bridge{rest}"))?
+        }
         ["whoami"] => quiet(true, vec![state.active_summary()]),
         ["users"] => quiet(
             true,
@@ -100,8 +114,18 @@ pub fn run(state: &mut LabState, line: &str) -> Result<(Outcome, Vec<String>)> {
         }
         ["usb", "insert", drive] => with_trace(state.set_drive(drive, true)?),
         ["usb", "eject", drive] => with_trace(state.set_drive(drive, false)?),
+        ["pwd"] => quiet(true, vec![state.cwd()]),
+        ["cd"] => quiet(true, vec![state.cd("~")]),
+        ["cd", dir] => quiet(true, vec![state.cd(dir)]),
+        ["ls"] => shell(state.ls(".")),
+        ["ls", dir] => shell(state.ls(dir)),
+        ["cat", path] => shell(
+            state
+                .read_text(path)
+                .map(|text| text.lines().map(str::to_string).collect::<Vec<_>>()),
+        ),
         ["move", label, drive] => with_trace(state.move_slot(label, drive)?),
-        ["ls"] => {
+        ["files"] => {
             let snapshot = state.snapshot()?;
             quiet(
                 true,
@@ -121,7 +145,9 @@ pub fn run(state: &mut LabState, line: &str) -> Result<(Outcome, Vec<String>)> {
             Some(view) => {
                 let mut output = vec![format!("{} — {}", view.name, view.lesson)];
                 if let Some(id) = view.quorum_file_id {
-                    output.push(format!("$ keyquorum access quorum --status --id {id}"));
+                    output.push(format!(
+                        "$ keyquorum --db {ORG_DB} access quorum --status --id {id}"
+                    ));
                 }
                 if let Some(requirement) = &view.requirement {
                     requirement_lines(requirement, 0, &mut output);
@@ -146,7 +172,7 @@ pub fn run(state: &mut LabState, line: &str) -> Result<(Outcome, Vec<String>)> {
             }
             None => quiet(false, vec![format!("No file named {file}")]),
         },
-        ["unlock", file] | ["cat", file] | ["open", file] => with_trace(state.unlock(file)?),
+        ["unlock", file] | ["open", file] => with_trace(state.unlock(file)?),
         ["send", file, to] => with_trace(state.send(file, to)?),
         ["inbox"] => {
             let snapshot = state.snapshot()?;
@@ -170,7 +196,7 @@ pub fn run(state: &mut LabState, line: &str) -> Result<(Outcome, Vec<String>)> {
             }
             if snapshot.pending_acks > 0 {
                 output.push(format!(
-                    "{} acknowledgement(s) waiting — run `refresh`",
+                    "{} acknowledgement(s) waiting — insert your drive and run `refresh`",
                     snapshot.pending_acks
                 ));
             }
@@ -198,32 +224,6 @@ pub fn run(state: &mut LabState, line: &str) -> Result<(Outcome, Vec<String>)> {
             }
             quiet(true, output)
         }
-        ["approvals"] => {
-            let snapshot = state.snapshot()?;
-            let mut output: Vec<String> = snapshot
-                .approvals
-                .iter()
-                .map(|item| {
-                    format!(
-                        "#{} {} leaf {} · approver {} · requested by {} — {}",
-                        item.id,
-                        item.file_name,
-                        item.leaf,
-                        item.approver,
-                        item.requested_by,
-                        item.status
-                    )
-                })
-                .collect();
-            if output.is_empty() {
-                output.push("No approval requests".into());
-            }
-            quiet(true, output)
-        }
-        ["approve", id] | ["decline", id] => match id.trim_start_matches('#').parse::<u64>() {
-            Ok(id) => with_trace(state.answer_approval(id, words[0] == "approve")?),
-            Err(_) => quiet(false, vec![format!("Not an approval id: {id}")]),
-        },
         ["tree"] => {
             let snapshot = state.snapshot()?;
             let mut output = Vec::new();
@@ -245,13 +245,46 @@ pub fn run(state: &mut LabState, line: &str) -> Result<(Outcome, Vec<String>)> {
             for (a, b) in &snapshot.tree.bridges {
                 output.push(format!("bridge {a} <-> {b}"));
             }
+            output.push(format!(
+                "org tree key id {} (e.g. bridge list {})",
+                snapshot.tree.key_id, snapshot.tree.key_id
+            ));
             quiet(true, output)
         }
-        _ => quiet(
+        [first, ..] => quiet(
             false,
-            vec![format!("Unknown command: {line}. Type `help`.")],
+            vec![format!("{first}: command not found. Type `help`.")],
         ),
     })
+}
+
+/// A CLI line: what it printed, verbatim, then the lab's note of whose
+/// visible slice changed.
+fn command(state: &mut LabState, line: &str) -> Result<(Outcome, Vec<String>)> {
+    let (outcome, run) = state.command(line)?;
+    let mut output: Vec<String> = run.stderr.lines().map(str::to_string).collect();
+    output.extend(run.stdout_text().lines().map(str::to_string));
+    // The first transcript steps repeat the line and its output; the rest
+    // are the visibility notes.
+    let echoed = 1 + run.stderr.lines().count() + run.stdout_text().lines().count();
+    output.extend(outcome.trace.iter().skip(echoed).map(trace_line));
+    Ok((outcome, output))
+}
+
+fn shell(result: Result<Vec<String>>) -> (Outcome, Vec<String>) {
+    let (ok, output) = match result {
+        Ok(lines) => (true, lines),
+        Err(err) => (false, vec![format!("error: {err}")]),
+    };
+    (
+        Outcome {
+            ok,
+            message: String::new(),
+            trace: vec![],
+            opened: None,
+        },
+        output,
+    )
 }
 
 fn trace_line(step: &TraceStep) -> String {

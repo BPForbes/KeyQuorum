@@ -15,7 +15,8 @@ fn signed_device() -> (Container, tempfile::TempDir, DeviceDescriptor) {
             signing_public: hex::encode(slot.signing_public),
         })
         .collect::<Vec<_>>();
-    let secret = device::device_signing_secret(&container).unwrap();
+    let secret =
+        device::device_signing_secret_in(&crate::storage::NativeStorage, &container).unwrap();
     let descriptor = sign_descriptor(
         container.device_id(),
         container.verify_key(),
@@ -40,7 +41,7 @@ fn put_keeps_a_signed_public_descriptor_and_refuses_a_verify_key_change() {
     let other_dir = tempfile::tempdir().unwrap();
     let other = device::init(other_dir.path()).unwrap();
     replaced.verify_key = hex::encode(other.verify_key());
-    let secret = device::device_signing_secret(&other).unwrap();
+    let secret = device::device_signing_secret_in(&crate::storage::NativeStorage, &other).unwrap();
     let resigned = sign_descriptor(
         container.device_id(),
         other.verify_key(),

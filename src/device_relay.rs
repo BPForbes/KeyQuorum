@@ -9,6 +9,7 @@ use crate::envelope::{self, take_array, take_len_prefixed, PACKAGE};
 use crate::error::{Error, Result};
 use crate::relay::{DeviceDescriptor, DeviceSlotDescriptor};
 use crate::signing;
+use crate::storage::{NativeStorage, Storage};
 use crate::transfer::{self, AuthenticatedPackage};
 use rand::rngs::OsRng;
 use rand::RngCore;
@@ -57,6 +58,14 @@ pub struct RelocateAck {
 
 /// Sign the public descriptor with this container's device key.
 pub fn public_descriptor(container: &Container) -> Result<DeviceDescriptor> {
+    public_descriptor_in(&NativeStorage, container)
+}
+
+/// [`public_descriptor`], reading the device key through `storage`.
+pub fn public_descriptor_in(
+    storage: &dyn Storage,
+    container: &Container,
+) -> Result<DeviceDescriptor> {
     let slots = container
         .slots()
         .iter()
@@ -66,7 +75,7 @@ pub fn public_descriptor(container: &Container) -> Result<DeviceDescriptor> {
             signing_public: hex::encode(slot.signing_public),
         })
         .collect::<Vec<_>>();
-    let secret = device::device_signing_secret(container)?;
+    let secret = device::device_signing_secret_in(storage, container)?;
     crate::relay::sign_device_descriptor(
         container.device_id(),
         container.verify_key(),
@@ -113,10 +122,28 @@ pub fn seal_transfer_ack(
     header: &AuthenticatedPackage,
     package_hash: &[u8; 32],
 ) -> Result<Vec<u8>> {
+    seal_transfer_ack_in(
+        &NativeStorage,
+        destination,
+        return_public,
+        header,
+        package_hash,
+    )
+}
+
+/// [`seal_transfer_ack`], reading the device key through `storage`.
+pub fn seal_transfer_ack_in(
+    storage: &dyn Storage,
+
+    destination: &Container,
+    return_public: &[u8; 32],
+    header: &AuthenticatedPackage,
+    package_hash: &[u8; 32],
+) -> Result<Vec<u8>> {
     if destination.device_id() != &header.destination_device_id {
         return Err(Error::InvalidDevice);
     }
-    let destination_secret = device::device_signing_secret(destination)?;
+    let destination_secret = device::device_signing_secret_in(storage, destination)?;
     let signature = signing::sign(
         &destination_secret,
         &ack_message(&header.id, package_hash, &header.destination_device_id),
@@ -174,10 +201,30 @@ pub fn seal_relocate(
     destination_device_id: &[u8; 16],
     passphrase: &str,
 ) -> Result<SealedRelocate> {
+    seal_relocate_in(
+        &NativeStorage,
+        recipient_public,
+        source,
+        label,
+        destination_device_id,
+        passphrase,
+    )
+}
+
+/// [`seal_relocate`], opening the slot and device key through `storage`.
+pub fn seal_relocate_in(
+    storage: &dyn Storage,
+
+    recipient_public: &[u8; 32],
+    source: &Container,
+    label: &str,
+    destination_device_id: &[u8; 16],
+    passphrase: &str,
+) -> Result<SealedRelocate> {
     if source.device_id() == destination_device_id {
         return Err(Error::InvalidDevice);
     }
-    let secrets = device::open_slot(source, label, passphrase)?;
+    let secrets = device::open_slot_in(storage, source, label, passphrase)?;
     let return_public = secrets.encryption_public;
     let mut relocate_id = [0u8; 16];
     OsRng.fill_bytes(&mut relocate_id);
@@ -193,7 +240,7 @@ pub fn seal_relocate(
     let mut message = Vec::with_capacity(RELOCATE_DOMAIN.len() + body.len());
     message.extend_from_slice(RELOCATE_DOMAIN);
     message.extend_from_slice(&body);
-    let device_secret = device::device_signing_secret(source)?;
+    let device_secret = device::device_signing_secret_in(storage, source)?;
     let signature = signing::sign(&device_secret, &message);
     body.extend_from_slice(&signature);
     let bytes = envelope::seal(
@@ -246,6 +293,15 @@ pub fn open_relocate(recipient_secret: &[u8; 32], bytes: &[u8]) -> Result<Reloca
 }
 
 pub fn seal_relocate_ack(letter: &RelocateLetter, destination: &Container) -> Result<Vec<u8>> {
+    seal_relocate_ack_in(&NativeStorage, letter, destination)
+}
+
+/// [`seal_relocate_ack`], reading the device key through `storage`.
+pub fn seal_relocate_ack_in(
+    storage: &dyn Storage,
+    letter: &RelocateLetter,
+    destination: &Container,
+) -> Result<Vec<u8>> {
     if destination.device_id() != &letter.destination_device_id {
         return Err(Error::InvalidDevice);
     }
@@ -257,7 +313,7 @@ pub fn seal_relocate_ack(letter: &RelocateLetter, destination: &Container) -> Re
     let mut message = Vec::with_capacity(RELOCATE_ACK_DOMAIN.len() + body.len());
     message.extend_from_slice(RELOCATE_ACK_DOMAIN);
     message.extend_from_slice(&body);
-    let secret = device::device_signing_secret(destination)?;
+    let secret = device::device_signing_secret_in(storage, destination)?;
     let signature = signing::sign(&secret, &message);
     body.extend_from_slice(&signature);
     envelope::seal(

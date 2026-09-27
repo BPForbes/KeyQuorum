@@ -485,10 +485,6 @@ pub fn remove_slot_in(
     Ok(())
 }
 
-pub(crate) fn device_signing_secret(container: &Container) -> Result<Zeroizing<[u8; 32]>> {
-    device_signing_secret_in(&NativeStorage, container)
-}
-
 pub(crate) fn device_signing_secret_in(
     storage: &dyn Storage,
     container: &Container,
@@ -499,17 +495,6 @@ pub(crate) fn device_signing_secret_in(
         .try_into()
         .map_err(|_| Error::InvalidDevice)?;
     Ok(Zeroizing::new(secret))
-}
-
-/// Prompt twice and refuse an empty or mismatched passphrase.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn confirm_passphrase(first_prompt: &str, second_prompt: &str) -> Result<String> {
-    let passphrase = prompt_passphrase(first_prompt)?;
-    let again = prompt_passphrase(second_prompt)?;
-    if passphrase != again {
-        return Err(Error::InvalidPassword);
-    }
-    Ok(passphrase)
 }
 
 pub fn set_custody_policy(conn: &Connection, key_id: i64, policy: &CustodyPolicy) -> Result<()> {
@@ -669,15 +654,6 @@ pub fn unwrap_share(secrets: &SlotSecrets, wrapped: &[u8]) -> Result<Vec<u8>> {
 
 pub fn sign_message(secrets: &SlotSecrets, message: &[u8]) -> [u8; 64] {
     signing::sign(&secrets.signing_secret, message)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub fn prompt_passphrase(prompt: &str) -> Result<String> {
-    let passphrase = rpassword::prompt_password(prompt)?;
-    if passphrase.is_empty() {
-        return Err(Error::InvalidPassword);
-    }
-    Ok(passphrase)
 }
 
 impl CustodyMode {
