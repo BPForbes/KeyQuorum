@@ -213,6 +213,33 @@ pub struct PasswordFileView {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ExportedBundleView {
+    pub id: i64,
+    pub file_name: String,
+    /// The lab-user label whose own store the source file's row lives in.
+    pub owner: String,
+    pub recipient: String,
+    pub recipient_name: String,
+    pub size: usize,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileShareView {
+    pub id: i64,
+    pub file_name: String,
+    /// The lab-user label whose own store created this share; only they
+    /// may revoke it. Redemption itself is not identity-scoped — the
+    /// bearer token is what authorizes it, same as a real share link.
+    pub owner: String,
+    pub pin_protected: bool,
+    pub expires_at: String,
+    pub revoked: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RelayStatusView {
     pub url: String,
     pub package_letters: i64,
@@ -244,6 +271,13 @@ pub struct Snapshot {
     /// lab user (each is only unlockable by its own owner).
     pub password_files: Vec<PasswordFileView>,
     pub relay_status: RelayStatusView,
+    /// Portable `KQXB` bundles created from the Security panel, across
+    /// every lab user (each only viewable by its own exporter).
+    pub exports: Vec<ExportedBundleView>,
+    /// Share links created from the Security panel, across every lab
+    /// user. Listed for everyone since redemption is bearer-token
+    /// authorized, not identity-scoped.
+    pub file_shares: Vec<FileShareView>,
 }
 
 #[derive(Clone, Debug, Serialize)]

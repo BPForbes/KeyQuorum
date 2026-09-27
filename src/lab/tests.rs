@@ -914,3 +914,165 @@ fn transfer_copy_to_the_same_drive_is_a_no_op_refusal() {
     assert!(!outcome.ok);
     assert!(outcome.message.contains("already on that drive"));
 }
+
+// ----- export and share links ---------------------------------------------
+
+#[test]
+fn export_file_seals_a_bundle_that_only_its_exporter_can_view() {
+    let mut state = lab();
+    state
+        .lock_password_file("plan.txt", "confidential plan", "lock-pass", None)
+        .unwrap();
+    let id = snap(&state).password_files[0].id;
+
+    let outcome = state.export_file(id, "M.S.2", "lock-pass").unwrap();
+    assert!(outcome.ok, "{}", said(&outcome));
+    let exports = snap(&state).exports;
+    assert_eq!(exports.len(), 1);
+    assert_eq!(exports[0].owner, "M.S.1");
+    assert_eq!(exports[0].recipient, "M.S.2");
+    assert!(exports[0].size > 0);
+    let export_id = exports[0].id;
+
+    let view = state.view_export(export_id).unwrap();
+    assert!(view.ok, "{}", said(&view));
+    assert!(view
+        .opened
+        .map(|opened| !opened.text.is_empty())
+        .unwrap_or(false));
+
+    // Bob was the recipient, but the bundle lives in Alice's home
+    // directory: only Alice, its exporter, can view it here.
+    state.switch_user("bob").unwrap();
+    let denied = state.view_export(export_id).unwrap();
+    assert!(!denied.ok);
+}
+
+#[test]
+fn export_file_requires_owning_the_password_locked_file() {
+    let mut state = lab();
+    state
+        .lock_password_file("plan.txt", "confidential plan", "lock-pass", None)
+        .unwrap();
+    let id = snap(&state).password_files[0].id;
+    state.switch_user("bob").unwrap();
+    let outcome = state.export_file(id, "M.S.2", "lock-pass").unwrap();
+    assert!(!outcome.ok);
+}
+
+#[test]
+fn export_file_rejects_the_wrong_password() {
+    let mut state = lab();
+    state
+        .lock_password_file("plan.txt", "confidential plan", "lock-pass", None)
+        .unwrap();
+    let id = snap(&state).password_files[0].id;
+    let outcome = state.export_file(id, "M.S.2", "not-the-password").unwrap();
+    assert!(!outcome.ok);
+    assert!(snap(&state).exports.is_empty());
+}
+
+#[test]
+fn create_file_share_returns_a_token_once_and_only_the_owner_may_create_it() {
+    let mut state = lab();
+    state
+        .lock_password_file("plan.txt", "confidential plan", "lock-pass", None)
+        .unwrap();
+    let id = snap(&state).password_files[0].id;
+
+    state.switch_user("bob").unwrap();
+    let denied = state.create_file_share(id, 3600, None).unwrap();
+    assert!(!denied.ok);
+
+    state.switch_user("alice").unwrap();
+    let outcome = state.create_file_share(id, 3600, None).unwrap();
+    assert!(outcome.ok, "{}", said(&outcome));
+    let token_text = outcome.opened.map(|opened| opened.text).unwrap_or_default();
+    assert!(token_text.contains("Token:"), "{token_text}");
+    let shares = snap(&state).file_shares;
+    assert_eq!(shares.len(), 1);
+    assert_eq!(shares[0].owner, "M.S.1");
+    assert!(!shares[0].pin_protected);
+    assert!(!shares[0].revoked);
+}
+
+#[test]
+fn redeem_file_share_consumes_a_use_and_is_not_identity_scoped() {
+    let mut state = lab();
+    state
+        .lock_password_file("plan.txt", "confidential plan", "lock-pass", None)
+        .unwrap();
+    let id = snap(&state).password_files[0].id;
+    let created = state.create_file_share(id, 3600, None).unwrap();
+    let token = created
+        .opened
+        .unwrap()
+        .text
+        .lines()
+        .find_map(|line| line.strip_prefix("Token: "))
+        .unwrap()
+        .to_string();
+    let share_id = snap(&state).file_shares[0].id;
+
+    // Bob never held Alice's share, but the bearer token alone authorizes
+    // redeeming it — the CLI does not check who is asking.
+    state.switch_user("bob").unwrap();
+    let outcome = state.redeem_file_share(share_id, &token, None).unwrap();
+    assert!(outcome.ok, "{}", said(&outcome));
+}
+
+#[test]
+fn redeeming_with_the_wrong_token_is_refused() {
+    let mut state = lab();
+    state
+        .lock_password_file("plan.txt", "confidential plan", "lock-pass", None)
+        .unwrap();
+    let id = snap(&state).password_files[0].id;
+    state.create_file_share(id, 3600, None).unwrap();
+    let share_id = snap(&state).file_shares[0].id;
+    let outcome = state
+        .redeem_file_share(share_id, "not-the-real-token", None)
+        .unwrap();
+    assert!(!outcome.ok);
+}
+
+#[test]
+fn revoke_file_share_prevents_further_redemption() {
+    let mut state = lab();
+    state
+        .lock_password_file("plan.txt", "confidential plan", "lock-pass", None)
+        .unwrap();
+    let id = snap(&state).password_files[0].id;
+    let created = state.create_file_share(id, 3600, None).unwrap();
+    let token = created
+        .opened
+        .unwrap()
+        .text
+        .lines()
+        .find_map(|line| line.strip_prefix("Token: "))
+        .unwrap()
+        .to_string();
+    let share_id = snap(&state).file_shares[0].id;
+
+    let revoke = state.revoke_file_share(share_id).unwrap();
+    assert!(revoke.ok, "{}", said(&revoke));
+    assert!(snap(&state).file_shares[0].revoked);
+
+    let outcome = state.redeem_file_share(share_id, &token, None).unwrap();
+    assert!(!outcome.ok);
+}
+
+#[test]
+fn only_the_owner_can_revoke_their_share() {
+    let mut state = lab();
+    state
+        .lock_password_file("plan.txt", "confidential plan", "lock-pass", None)
+        .unwrap();
+    let id = snap(&state).password_files[0].id;
+    state.create_file_share(id, 3600, None).unwrap();
+    let share_id = snap(&state).file_shares[0].id;
+
+    state.switch_user("bob").unwrap();
+    let outcome = state.revoke_file_share(share_id).unwrap();
+    assert!(!outcome.ok);
+}

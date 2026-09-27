@@ -126,6 +126,33 @@ struct PasswordFile {
     pin: bool,
 }
 
+/// A portable `KQXB` bundle a lab user exported from one of their own
+/// password-locked files (`keyquorum export file`), tracked so the
+/// Security panel can list it and let its exporter view the sealed bytes
+/// later. The bundle itself lives in the exporter's home directory.
+struct ExportedBundle {
+    id: i64,
+    file_name: String,
+    owner: String,
+    recipient: String,
+    path: PathBuf,
+    size: usize,
+    created_at: String,
+}
+
+/// A share link a lab user created for one of their own password-locked
+/// files (`keyquorum share create-file`). The bearer token itself is
+/// never kept here — only its metadata — matching the crate's own
+/// show-once, hash-only storage.
+struct FileShare {
+    id: i64,
+    file_name: String,
+    owner: String,
+    pin_protected: bool,
+    expires_at: String,
+    revoked: bool,
+}
+
 /// What one action did, before the snapshot is attached.
 pub struct Outcome {
     pub ok: bool,
@@ -157,6 +184,9 @@ pub struct LabState {
     next_seq: u64,
     last_access: Option<AccessView>,
     password_files: Vec<PasswordFile>,
+    exports: Vec<ExportedBundle>,
+    next_export_id: i64,
+    file_shares: Vec<FileShare>,
 }
 
 impl LabState {
@@ -196,6 +226,9 @@ impl LabState {
             next_seq: 1,
             last_access: None,
             password_files: Vec::new(),
+            exports: Vec::new(),
+            next_export_id: 1,
+            file_shares: Vec::new(),
         };
         let commands = state.provision()?;
         let home = state.actor().home();
@@ -1201,6 +1234,389 @@ impl LabState {
             .collect()
     }
 
+    // ----- export ------------------------------------------------------------
+
+    /// Export a password-locked file as a portable `KQXB` bundle sealed to
+    /// another lab user's public encryption key (`keyquorum export file`).
+    /// Only the owning store holds the file's row, so this only ever reads
+    /// from the active user's own store, same as `unlock_password_file`.
+    /// Opening a bundle back up (`import`) has no implementation yet — see
+    /// `export.rs` — so this only ever produces the sealed bytes; nothing
+    /// in the lab can decrypt them.
+    pub fn export_file(
+        &mut self,
+        id: i64,
+        recipient_label: &str,
+        password: &str,
+    ) -> Result<Outcome> {
+        if password.is_empty() {
+            return Ok(Outcome::done(
+                false,
+                "The file's own lock password is required",
+                vec![],
+            ));
+        }
+        let Some(index) = self.password_file_index(id) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No password-locked file {id}"),
+                vec![],
+            ));
+        };
+        let (owner, name) = {
+            let file = &self.password_files[index];
+            (file.owner.clone(), file.name.clone())
+        };
+        if owner != self.actor().label {
+            return Ok(Outcome::done(
+                false,
+                format!("{name} is protected in {owner}'s own store, not yours"),
+                vec![],
+            ));
+        }
+        let Some(recipient) = self.user_by_label(recipient_label) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No lab user labeled {recipient_label}"),
+                vec![],
+            ));
+        };
+        let recipient_name = recipient.name.clone();
+        let key_file = Path::new(SRV)
+            .join("keys")
+            .join(format!("{recipient_label}.pub"));
+        let store = self.actor().store();
+        let bundle_id = self.next_export_id;
+        let output = self
+            .actor()
+            .home()
+            .join("exports")
+            .join(format!("{bundle_id}-{name}.kqxb"));
+        let line = format!(
+            "keyquorum --db {store} export file {id} --recipient-key-file {} --output {}",
+            quote(&key_file.display().to_string()),
+            quote(&output.display().to_string())
+        );
+        self.vm_mut().stage_secret(password.to_string());
+        let run = self.run(&line);
+        self.vm_mut().clear_pending_secrets();
+        let mut trace = transcript(&run, true);
+        let title = format!("Export {name} for {recipient_name}");
+        if !run.ok {
+            let message = format!("{title}: {}", run.error().unwrap_or("failed"));
+            self.log("export", "denied", &title, trace.clone(), Some(line));
+            return Ok(Outcome::done(false, message, trace));
+        }
+        let size = self
+            .vm()
+            .read(&output)
+            .map(|bytes| bytes.len())
+            .unwrap_or(0);
+        let created_at: String = self.vm().relay_conn().query_row(
+            "SELECT strftime('%Y-%m-%d %H:%M:00', 'now')",
+            [],
+            |row| row.get(0),
+        )?;
+        self.exports.push(ExportedBundle {
+            id: bundle_id,
+            file_name: name.clone(),
+            owner,
+            recipient: recipient_label.to_string(),
+            path: output.clone(),
+            size,
+            created_at,
+        });
+        self.next_export_id += 1;
+        trace.push(TraceStep::pass(format!(
+            "Sealed bundle written to {}",
+            output.display()
+        )));
+        let message = format!(
+            "Exported {name} for {recipient_name}; only their private key could open it, which this build has no import step for yet"
+        );
+        self.log("export", "granted", &title, trace.clone(), Some(line));
+        Ok(Outcome::done(true, message, trace))
+    }
+
+    fn export_index(&self, id: i64) -> Option<usize> {
+        self.exports.iter().position(|bundle| bundle.id == id)
+    }
+
+    /// Show a bundle's sealed bytes as hex — the closest thing to "opening"
+    /// it, since the crate has no import/unseal path yet. Only the
+    /// exporter, whose own home directory holds the bundle, can view it.
+    pub fn view_export(&mut self, id: i64) -> Result<Outcome> {
+        let Some(index) = self.export_index(id) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No exported bundle {id}"),
+                vec![],
+            ));
+        };
+        let (owner, name, path) = {
+            let bundle = &self.exports[index];
+            (
+                bundle.owner.clone(),
+                bundle.file_name.clone(),
+                bundle.path.clone(),
+            )
+        };
+        if owner != self.actor().label {
+            return Ok(Outcome::done(
+                false,
+                format!("That bundle is in {owner}'s own home directory, not yours"),
+                vec![],
+            ));
+        }
+        let bytes = self.vm().read(&path)?;
+        let text = hex::encode(&bytes);
+        let message = format!("Sealed bundle for {name} ({} bytes)", bytes.len());
+        let trace = vec![TraceStep::info(format!(
+            "{} bytes, sealed under a KQXB envelope at {}; no import step exists yet to unseal it",
+            bytes.len(),
+            path.display()
+        ))];
+        Ok(Outcome {
+            ok: true,
+            message,
+            trace,
+            opened: Some(OpenedFile {
+                name: format!("{name}.kqxb"),
+                text,
+            }),
+        })
+    }
+
+    fn export_views(&self) -> Vec<ExportedBundleView> {
+        self.exports
+            .iter()
+            .map(|bundle| ExportedBundleView {
+                id: bundle.id,
+                file_name: bundle.file_name.clone(),
+                owner: bundle.owner.clone(),
+                recipient: bundle.recipient.clone(),
+                recipient_name: self
+                    .user_by_label(&bundle.recipient)
+                    .map(|user| user.name.clone())
+                    .unwrap_or_default(),
+                size: bundle.size,
+                created_at: bundle.created_at.clone(),
+            })
+            .collect()
+    }
+
+    // ----- share links ---------------------------------------------------
+
+    fn file_share_index(&self, id: i64) -> Option<usize> {
+        self.file_shares.iter().position(|share| share.id == id)
+    }
+
+    /// Create a time-limited, revocable share link for one of the active
+    /// user's own password-locked files (`keyquorum share create-file`).
+    /// The bearer token is returned once, as the opened text, matching a
+    /// real deployment: nothing durable keeps the raw token, only its
+    /// hash, so redemption always needs someone to actually have been
+    /// given it.
+    pub fn create_file_share(
+        &mut self,
+        file_id: i64,
+        ttl_seconds: i64,
+        pin: Option<&str>,
+    ) -> Result<Outcome> {
+        let Some(index) = self.password_file_index(file_id) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No password-locked file {file_id}"),
+                vec![],
+            ));
+        };
+        let (owner, name) = {
+            let file = &self.password_files[index];
+            (file.owner.clone(), file.name.clone())
+        };
+        if owner != self.actor().label {
+            return Ok(Outcome::done(
+                false,
+                format!("{name} is protected in {owner}'s own store, not yours"),
+                vec![],
+            ));
+        }
+        let store = self.actor().store();
+        let mut line = format!(
+            "keyquorum --db {store} share create-file {file_id} --ttl-seconds {ttl_seconds}"
+        );
+        if let Some(pin_value) = pin {
+            line.push_str(" --pin");
+            self.vm_mut().stage_secret(pin_value.to_string());
+        }
+        let run = self.run(&line);
+        self.vm_mut().clear_pending_secrets();
+        let mut trace = transcript(&run, true);
+        let title = format!("Create a share link for {name}");
+        if !run.ok {
+            let message = format!("{title}: {}", run.error().unwrap_or("failed"));
+            self.log("share-create", "denied", &title, trace.clone(), Some(line));
+            return Ok(Outcome::done(false, message, trace));
+        }
+        let stdout = run.stdout_text();
+        let share_id: i64 = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("Share id:"))
+            .and_then(|rest| rest.trim().parse().ok())
+            .ok_or(Error::NodeNotFound)?;
+        let token = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("Token:"))
+            .map(|rest| rest.trim().to_string())
+            .ok_or(Error::NodeNotFound)?;
+        let expires_at = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("Expires at:"))
+            .map(|rest| rest.trim().to_string())
+            .ok_or(Error::NodeNotFound)?;
+        self.file_shares.push(FileShare {
+            id: share_id,
+            file_name: name.clone(),
+            owner: owner.clone(),
+            pin_protected: pin.is_some(),
+            expires_at: expires_at.clone(),
+            revoked: false,
+        });
+        trace.push(TraceStep::pass(format!(
+            "Share {share_id} expires at {expires_at}"
+        )));
+        let message = format!(
+            "Share link created for {name}; copy the token now, it will not be shown again"
+        );
+        self.log("share-create", "granted", &title, trace.clone(), Some(line));
+        Ok(Outcome {
+            ok: true,
+            message,
+            trace,
+            opened: Some(OpenedFile {
+                name: format!("Share link for {name}"),
+                text: format!(
+                    "Token: {token}\nExpires at (UTC): {expires_at}\nShare id: {share_id}"
+                ),
+            }),
+        })
+    }
+
+    /// Redeem a file share's bearer token (`keyquorum share redeem-file`),
+    /// consuming one of its uses. The token, not who is asking, is what
+    /// authorizes this — any lab user, including one signed in as someone
+    /// else, can redeem it once they have been given the token, exactly
+    /// like a real share link. This only grants the share's own use
+    /// accounting; the file itself is still password-protected and needs
+    /// its own lock password to open.
+    pub fn redeem_file_share(
+        &mut self,
+        share_id: i64,
+        token: &str,
+        pin: Option<&str>,
+    ) -> Result<Outcome> {
+        if token.is_empty() {
+            return Ok(Outcome::done(false, "A share token is required", vec![]));
+        }
+        let Some(index) = self.file_share_index(share_id) else {
+            return Ok(Outcome::done(false, format!("No share {share_id}"), vec![]));
+        };
+        let (owner, name, revoked) = {
+            let share = &self.file_shares[index];
+            (share.owner.clone(), share.file_name.clone(), share.revoked)
+        };
+        if revoked {
+            return Ok(Outcome::done(
+                false,
+                format!("Share {share_id} for {name} was revoked"),
+                vec![],
+            ));
+        }
+        let Some(owner_user) = self.user_by_label(&owner) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No lab user labeled {owner}"),
+                vec![],
+            ));
+        };
+        let store = owner_user.store();
+        let line = format!("keyquorum --db {store} share redeem-file");
+        let mut secrets = vec![token.to_string()];
+        if let Some(pin_value) = pin {
+            secrets.push(pin_value.to_string());
+        }
+        self.vm_mut().stage_secrets(secrets);
+        let run = self.run(&line);
+        self.vm_mut().clear_pending_secrets();
+        let trace = transcript(&run, true);
+        let title = format!("Redeem the share link for {name}");
+        let message = if run.ok {
+            format!("Redeemed access to {name} (owned by {owner}); its own lock password still opens it")
+        } else {
+            format!("{title}: {}", run.error().unwrap_or("failed"))
+        };
+        self.log(
+            "share-redeem",
+            if run.ok { "granted" } else { "denied" },
+            &title,
+            trace.clone(),
+            Some(line),
+        );
+        Ok(Outcome::done(run.ok, message, trace))
+    }
+
+    /// Revoke a share link the active user created (`keyquorum share
+    /// revoke-file`); its remaining uses can never be redeemed again.
+    pub fn revoke_file_share(&mut self, share_id: i64) -> Result<Outcome> {
+        let Some(index) = self.file_share_index(share_id) else {
+            return Ok(Outcome::done(false, format!("No share {share_id}"), vec![]));
+        };
+        let (owner, name) = {
+            let share = &self.file_shares[index];
+            (share.owner.clone(), share.file_name.clone())
+        };
+        if owner != self.actor().label {
+            return Ok(Outcome::done(
+                false,
+                format!("Share {share_id} belongs to {owner}, not you"),
+                vec![],
+            ));
+        }
+        let store = self.actor().store();
+        let line = format!("keyquorum --db {store} share revoke-file {share_id}");
+        let run = self.run(&line);
+        let trace = transcript(&run, true);
+        let title = format!("Revoke the share link for {name}");
+        let message = if run.ok {
+            self.file_shares[index].revoked = true;
+            format!("Revoked the share link for {name}")
+        } else {
+            format!("{title}: {}", run.error().unwrap_or("failed"))
+        };
+        self.log(
+            "share-revoke",
+            if run.ok { "granted" } else { "denied" },
+            &title,
+            trace.clone(),
+            Some(line),
+        );
+        Ok(Outcome::done(run.ok, message, trace))
+    }
+
+    fn file_share_views(&self) -> Vec<FileShareView> {
+        self.file_shares
+            .iter()
+            .map(|share| FileShareView {
+                id: share.id,
+                file_name: share.file_name.clone(),
+                owner: share.owner.clone(),
+                pin_protected: share.pin_protected,
+                expires_at: share.expires_at.clone(),
+                revoked: share.revoked,
+            })
+            .collect()
+    }
+
     // ----- device slots and the relay ---------------------------------------
 
     /// Provision a new slot on an inserted drive with `keyquorum-device
@@ -2077,6 +2493,8 @@ impl LabState {
             org_db: ORG_DB.to_string(),
             password_files: self.password_file_views(),
             relay_status: self.relay_status()?,
+            exports: self.export_views(),
+            file_shares: self.file_share_views(),
         })
     }
 

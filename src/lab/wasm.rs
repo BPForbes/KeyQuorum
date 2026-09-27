@@ -183,6 +183,62 @@ impl KeyQuorumLab {
         to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
     }
 
+    /// Export a password-locked file as a portable `KQXB` bundle sealed to
+    /// another lab user's public key, using the file's own lock password.
+    pub fn export_file(
+        &mut self,
+        id: i32,
+        recipient_label: &str,
+        password: &str,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self
+            .state
+            .export_file(i64::from(id), recipient_label, password);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// View a bundle's sealed bytes as hex; only its own exporter can.
+    pub fn view_export(&mut self, id: i32) -> std::result::Result<String, JsError> {
+        let outcome = self.state.view_export(i64::from(id));
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// Create a time-limited share link for one of the active user's own
+    /// password-locked files; the bearer token is returned once.
+    pub fn create_file_share(
+        &mut self,
+        file_id: i32,
+        ttl_seconds: i32,
+        pin: Option<String>,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self.state.create_file_share(
+            i64::from(file_id),
+            i64::from(ttl_seconds),
+            pin.as_deref(),
+        );
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// Redeem a file share's bearer token. Not identity-scoped: any lab
+    /// user may redeem a token they were given.
+    pub fn redeem_file_share(
+        &mut self,
+        share_id: i32,
+        token: &str,
+        pin: Option<String>,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self
+            .state
+            .redeem_file_share(i64::from(share_id), token, pin.as_deref());
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// Revoke a share link the active user created.
+    pub fn revoke_file_share(&mut self, share_id: i32) -> std::result::Result<String, JsError> {
+        let outcome = self.state.revoke_file_share(i64::from(share_id));
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
     /// One terminal line against the same state the GUI uses.
     pub fn run_command(&mut self, line: &str) -> std::result::Result<String, JsError> {
         if line.trim() == "reset" {
