@@ -825,22 +825,48 @@ fn a_row_id_collision_across_stores_does_not_deny_the_real_owner() {
     let shared = state.create_file_share(bob_id, 3600, None).unwrap();
     assert!(shared.ok, "{}", said(&shared));
 
-    // ...and access to Alice's same-id file 1 is still denied to Bob.
+    // Bob's own file 1 was never Alice's data — his unlock/export/share
+    // above ran entirely against his own store. To prove genuine cross-
+    // owner access is still denied (not just masked by the id collision
+    // above, where "alice_id" only ever resolved to Bob's own matching
+    // row), give Alice a *second* file whose id cannot collide with
+    // anything Bob owns, and confirm Bob can't reach it by id at all.
     state.switch_user("alice").unwrap();
+    state
+        .lock_password_file(
+            "alice-second.txt",
+            "alice's other secret",
+            "alice-second-password",
+            None,
+        )
+        .unwrap();
+    let alice_second_id = snap(&state)
+        .password_files
+        .iter()
+        .find(|file| file.owner == "M.S.1" && file.name == "alice-second.txt")
+        .expect("alice's second file should be tracked")
+        .id;
+    assert_ne!(
+        alice_second_id, bob_id,
+        "a non-colliding id is the whole point of this half of the test"
+    );
     let alice_unlock = state
-        .unlock_password_file(alice_id, "alice-password", None)
+        .unlock_password_file(alice_second_id, "alice-second-password", None)
         .unwrap();
     assert!(alice_unlock.ok, "{}", said(&alice_unlock));
+
     state.switch_user("bob").unwrap();
     let cross_owner_unlock = state
-        .unlock_password_file(alice_id, "alice-password", None)
+        .unlock_password_file(alice_second_id, "alice-second-password", None)
         .unwrap();
     assert!(!cross_owner_unlock.ok);
     let cross_owner_export = state
-        .export_file(alice_id, "M.S.1", "alice-password")
+        .export_file(alice_second_id, "M.S.1", "alice-second-password")
         .unwrap();
     assert!(!cross_owner_export.ok);
-    let cross_owner_share = state.create_file_share(alice_id, 3600, None).unwrap();
+    let cross_owner_share = state
+        .create_file_share(alice_second_id, 3600, None)
+        .unwrap();
     assert!(!cross_owner_share.ok);
 }
 
