@@ -97,9 +97,11 @@ member then runs:
 
 \begin{lstlisting}
 keyquorum bridge private remove-member <uid> --member M.S.3 \
-  --node M.S.2 --share-file Software2.key --output-dir ./bridge-packages
+  --node M.S.2 --share-file Software2.key --output-dir ./bridge-packages-rotate
 # Copy the new packages to M.S.2, M.A.2, M.S, M.A, and M.S.3
-# (or `keyquorum relay push --dir ./bridge-packages`).
+# (or `keyquorum relay push --dir ./bridge-packages-rotate`). Package
+# writers name files by recipient and never overwrite, so reuse the
+# original ./bridge-packages here only after clearing it out.
 \end{lstlisting}
 
 A two-person bridge is destroyed when one member is removed.

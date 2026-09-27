@@ -75,6 +75,14 @@ package, or a slot relocate, into a \file{.kqpb} letter, and the mailbox
 stores only that letter.
 
 \begin{lstlisting}
+# Bob prepares the receiving side first: a slot to collect into, and a
+# published descriptor so relay-finalize can later fetch his verify key.
+# `provision` prints the new slot's encryption and signing public keys;
+# save the printed encryption hex to bob-slot.pub and send it to Alice
+# out of band (relay-send needs it before either device is online together).
+keyquorum-device provision ./usb2 --label recv
+keyquorum device publish ./usb2 --url https://relay.example.com
+
 keyquorum device publish ./usb --url https://relay.example.com
 keyquorum transfer relay-send \
   --operation move \

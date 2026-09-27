@@ -56,7 +56,9 @@ If a key is lost or rotated, load the replacement your provider issues.
 Envelopes already delivered are unchanged.
 
 \begin{lstlisting}
-keyquorum relay pull --after <id>
+keyquorum relay pull --after <id> --output-dir ./inbox
+# or, to unseal them into --db directly:
+# keyquorum relay pull --after <id> --import --share-file alice.key
 \end{lstlisting}
 
 replays anything not yet downloaded; \code{bridge private import} still

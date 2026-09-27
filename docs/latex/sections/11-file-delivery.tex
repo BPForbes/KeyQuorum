@@ -14,6 +14,11 @@ keyquorum deliver send --file report.pdf --to M.A --as M.S.1 \
 keyquorum --db david.sqlite relay pull --output-dir ./mail
 keyquorum --db david.sqlite deliver open --file ./mail/7.kqpb \
   --slot ./usb=M.A --save-dir ./received --push-ack
+
+# The acknowledgement is sealed back to the sender -- pull it into the
+# sender's own store (a different mailbox than David's ./mail above)
+# before answering it.
+keyquorum relay pull --output-dir ./mail
 keyquorum deliver ack --file ./mail/8.kqpb --slot ./usb=M.S.1
 \end{lstlisting}
 

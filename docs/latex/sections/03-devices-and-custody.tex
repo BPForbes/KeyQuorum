@@ -81,12 +81,18 @@ count: each leaf that contributed a share needs its direct parent's
 signature.
 
 \begin{lstlisting}
+# The leaf's own key, and a registered *signing* key for its direct
+# parent M.S -- the approval check verifies against that registration.
+keyquorum generate --type encryption --label M.S.1 --register \
+  --public-key-out m-s-1.pub > m-s-1.key
+keyquorum generate --type signing --label M.S --register \
+  --public-key-out M.S.sign.pub > M.S.sign.key
+
 keyquorum access quorum --state 0 --source ./secret.txt \
   --encrypted-path ./secret.txt.kqenc \
-  --leaf M.S.1=m-s-1.pub --threshold 1 --unlock-approval parent \
-  --generate-keys --register
-keyquorum access quorum --state 1 --id <file-id> --slot ./usb=M.S.1 \
-  --approve "M.S.1=./usb>M.S"
+  --leaf M.S.1=m-s-1.pub --threshold 1 --unlock-approval parent
+keyquorum access quorum --state 1 --id <file-id> --share-file m-s-1.key \
+  --approve "M.S.1=M.S.sign.key"
 \end{lstlisting}
 
 \code{--approve} takes either \code{leaf=signing-key-file} or

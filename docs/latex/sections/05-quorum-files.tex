@@ -7,13 +7,13 @@ in the same lock command.
 
 \begin{lstlisting}
 keyquorum split --label "escrow demo" --threshold 2 \
-  --leaf alice=alice.pub --leaf bob=bob.pub
+  --leaf alice=alice.pub --leaf bob=bob.pub --generate-keys --register
 keyquorum tree <key-id>
 keyquorum reconstruct <key-id> --share-file alice.key --share-file bob.pub
 
 keyquorum access quorum --state 0 --source ./secret.txt \
   --encrypted-path ./secret.txt.kqenc \
-  --leaf alice=alice.pub --leaf bob=bob.pub --generate-keys --register
+  --leaf alice=alice.pub --leaf bob=bob.pub --register
 keyquorum access quorum --status --id <file-id>
 keyquorum access quorum --state 1 --id <file-id> \
   --share-file alice.key --share-file bob.pub

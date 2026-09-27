@@ -123,10 +123,11 @@ Delegated authority & \code{M.S.2} itself, \code{M.S}, or \code{M} may sign
   a reissue naming \code{M.S.2} (Section~\ref{sec:authenticated-updates}),
   provided this store already holds a registered signing key for whichever
   one signs. \\
-Threshold reconstruction & Reconstructing the secret \code{M.S.2} is a leaf
-  of needs a threshold of \emph{sibling} shares under \code{M.S} --- not a
-  signature from \code{M.S} or \code{M}, and not \code{M.S.2}'s own share
-  alone unless the threshold is 1. \\
+Threshold reconstruction & \code{M.S.2} is a leaf: it contributes its own
+  share toward reconstructing its \emph{parent} \code{M.S}'s secret, an
+  $M$-of-$N$ threshold of \code{M.S}'s children's shares --- not a
+  signature from \code{M.S} or \code{M}, and not \code{M.S.2}'s share alone
+  unless \code{M.S}'s own threshold is 1. \\
 Physical custody & If \code{minimum_physical_devices} is 2, the shares
   actually consumed toward that threshold must sit on at least two distinct
   device ids --- regardless of which labels those devices happen to hold. \\

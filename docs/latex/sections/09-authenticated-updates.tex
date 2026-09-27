@@ -38,24 +38,31 @@ keyquorum generate --type signing --label M --register \
 # Restructure: after `add`, `revoke --evict`, or `bind`, announce the new
 # shape. Each active leaf gets its own visible slice at the next generation.
 # Root (M) is effective immediately. A label with a parent, such as M.S,
-# writes a proposal and waits.
+# writes a proposal and waits. Each write below gets its own --output-dir
+# and its own push: these can overlap in which leaves they address (a
+# proposal for M.S can name the same leaves the root's own restructure
+# just did), and package writers never overwrite an existing file.
 keyquorum tree restructure 1 --as M   --signing-key-file M.sign.key \
-  --output-dir ./updates
+  --output-dir ./updates-root
+keyquorum relay push --dir ./updates-root
+
 keyquorum tree restructure 1 --as M.S --signing-key-file M.S.sign.key \
-  --output-dir ./updates
+  --output-dir ./updates-ms-proposal
+keyquorum relay push --dir ./updates-ms-proposal
+
 keyquorum tree countersign 1 --as M --signing-key-file M.sign.key \
-  --output-dir ./updates
+  --output-dir ./updates-countersign
+keyquorum relay push --dir ./updates-countersign
 # the same countersignature from a slot:
 # keyquorum tree countersign 1 --as M --device ./usb --slot M \
-#   --output-dir ./updates
+#   --output-dir ./updates-countersign
 
 # Reissue: M.S.2 lost their token and generated a replacement.
 keyquorum reissue --node M.S.2 --key-id 1 \
   --encryption-public-key-file M.S.2.new.pub \
   --as M --signing-key-file M.sign.key --revoke-previous \
-  --output-dir ./updates
-
-keyquorum relay push --dir ./updates
+  --output-dir ./updates-reissue
+keyquorum relay push --dir ./updates-reissue
 \end{lstlisting}
 
 Each store applies these the same way it applies a bridge envelope --- the

@@ -10,6 +10,9 @@ import type { ReactNode } from "react";
 import type { Tab } from "../App";
 import type { ActivityView, Snapshot } from "../api/types";
 
+/** Free-form data one step's `remember` captures for a later step's `isDone` to read. */
+export type TutorialMemory = Record<string, unknown>;
+
 export interface TutorialStep {
   title: string;
   body: ReactNode;
@@ -23,8 +26,16 @@ export interface TutorialStep {
    * that appears in its place.
    */
   target: (snapshot: Snapshot) => (string | null)[];
-  /** Undefined means "read this, then click Next." Defined means "do this to advance." */
-  isDone?: (snapshot: Snapshot, latest: ActivityView | undefined) => boolean;
+  /**
+   * Undefined means "read this, then click Next." Defined means "do this to
+   * advance." Tutorial only ever calls this once a *new* activity-log entry
+   * has appeared since the step started, so a condition already true when
+   * the step began (a leftover action from before this run) cannot satisfy
+   * it by itself.
+   */
+  isDone?: (snapshot: Snapshot, latest: ActivityView | undefined, memory: TutorialMemory) => boolean;
+  /** Called once, right when isDone flips true, to capture data a later step in the same module can read via `memory`. */
+  remember?: (snapshot: Snapshot, latest: ActivityView | undefined) => TutorialMemory;
 }
 
 export interface TutorialModule {
@@ -185,6 +196,10 @@ export const TUTORIALS: TutorialModule[] = [
         tab: "files",
         target: () => ['[data-panel="files"]'],
         isDone: (_snapshot, latest) => wasSentTo(latest, "David"),
+        // Remember which delivery this was, so the receive step below can
+        // require that specific letter rather than "any granted receive"
+        // (David's inbox may already hold others from outside this run).
+        remember: (snapshot) => ({ relayId: snapshot.sent[snapshot.sent.length - 1]?.relayId }),
       },
       {
         title: "Try it: become the recipient",
@@ -207,7 +222,12 @@ export const TUTORIALS: TutorialModule[] = [
         ),
         tab: "mailbox",
         target: () => ['[data-testid^="inbox-"]', '[data-panel="mailbox"]'],
-        isDone: (_snapshot, latest) => wasReceived(latest),
+        isDone: (snapshot, latest, memory) => {
+          if (!wasReceived(latest)) return false;
+          const relayId = memory.relayId;
+          if (typeof relayId !== "number") return false;
+          return snapshot.inbox.find((item) => item.relayId === relayId)?.status === "received";
+        },
       },
       {
         title: "Sent and acknowledged",

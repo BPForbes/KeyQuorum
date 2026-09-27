@@ -90,4 +90,39 @@ test.describe("guided tutorials", () => {
     await page.getByRole("button", { name: "Finish" }).click();
     await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible();
   });
+
+  test("a send made before the module starts does not satisfy its send gate", async ({ page }) => {
+    await loadLab(page);
+
+    // A send to David happens first, entirely outside the tutorial.
+    await page.getByRole("button", { name: "public" }).click();
+    await page.getByTestId("file-row-company-handbook").click();
+    await page.getByRole("button", { name: "Send…" }).click();
+    await page.getByLabel("Recipient").selectOption("david");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(page.locator(".lab-status")).toHaveText("Transfer delivered to the relay for David");
+
+    // Only now does the visitor open the mailbox module. Its first step
+    // must still be gated: the send above is stale, from before the step
+    // (and the module) ever started.
+    await page.getByRole("button", { name: "Tutorials" }).click();
+    await page
+      .getByRole("listitem")
+      .filter({ hasText: "Mailbox: sending & receiving" })
+      .getByRole("button", { name: "Start" })
+      .click();
+    await expect(page.getByRole("heading", { name: "Try it: send a file" })).toBeVisible();
+    await expect(page.getByText("Waiting for you to try it…")).toBeVisible();
+    await page.waitForTimeout(1_500);
+    await expect(page.getByRole("heading", { name: "Try it: send a file" })).toBeVisible();
+
+    // A genuinely new send does satisfy it.
+    await page.getByTestId("file-row-project-roadmap").click();
+    await page.getByRole("button", { name: "Send…" }).click();
+    await page.getByLabel("Recipient").selectOption("david");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Try it: become the recipient" })).toBeVisible({
+      timeout: 3_000,
+    });
+  });
 });
