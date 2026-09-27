@@ -83,10 +83,10 @@ signature.
 \begin{lstlisting}
 keyquorum access quorum --state 0 --source ./secret.txt \
   --encrypted-path ./secret.txt.kqenc \
-  --leaf M.S.1=m-s-1.pub --unlock-approval parent \
+  --leaf M.S.1=m-s-1.pub --threshold 1 --unlock-approval parent \
   --generate-keys --register
 keyquorum access quorum --state 1 --id <file-id> --slot ./usb=M.S.1 \
-  --approve M.S.1=./usb>M.S
+  --approve "M.S.1=./usb>M.S"
 \end{lstlisting}
 
 \code{--approve} takes either \code{leaf=signing-key-file} or

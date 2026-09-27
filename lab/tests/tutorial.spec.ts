@@ -51,4 +51,43 @@ test.describe("guided tutorials", () => {
     await page.getByRole("button", { name: "Finish" }).click();
     await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible();
   });
+
+  test("the mailbox module's receive gate ignores a denied attempt and an unrelated refresh", async ({ page }) => {
+    await loadLab(page);
+    await page.getByRole("button", { name: "Tutorials" }).click();
+    await page
+      .getByRole("listitem")
+      .filter({ hasText: "Mailbox: sending & receiving" })
+      .getByRole("button", { name: "Start" })
+      .click();
+
+    // Step 1 is gated on a delivery actually addressed to David.
+    await expect(page.getByRole("heading", { name: "Try it: send a file" })).toBeVisible();
+    await page.getByRole("button", { name: "public" }).click();
+    await page.getByTestId("file-row-company-handbook").click();
+    await page.getByRole("button", { name: "Send…" }).click();
+    await page.getByLabel("Recipient").selectOption("david");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Try it: become the recipient" })).toBeVisible({ timeout: 3_000 });
+
+    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /David/ }).click();
+    await expect(page.getByRole("heading", { name: "Try it: receive the letter" })).toBeVisible({ timeout: 3_000 });
+
+    // David's own drive is not inserted here, so Receive is denied — this
+    // must NOT satisfy the gate (the bug Codex flagged: kind === "receive"
+    // alone also matches a denied attempt and the inbox-refresh button).
+    const letter = page.locator("[data-testid^=inbox-]").first();
+    await letter.getByRole("button", { name: /^Receive/ }).click();
+    await expect(page.locator(".lab-status")).toHaveText("Insert your USB to open the letter");
+    await expect(page.getByRole("heading", { name: "Try it: receive the letter" })).toBeVisible();
+    await expect(page.getByText("Waiting for you to try it…")).toBeVisible();
+
+    // A real, successful receive does satisfy it.
+    await page.getByRole("button", { name: "Insert David's USB" }).click();
+    await letter.getByRole("button", { name: /^Receive/ }).click();
+    await expect(page.getByRole("heading", { name: "Sent and acknowledged" })).toBeVisible({ timeout: 3_000 });
+
+    await page.getByRole("button", { name: "Finish" }).click();
+    await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible();
+  });
 });

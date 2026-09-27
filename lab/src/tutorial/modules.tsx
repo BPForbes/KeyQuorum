@@ -42,6 +42,17 @@ const fileRow = (snapshot: Snapshot, name: string): string | null => {
 const wasOpened = (latest: ActivityView | undefined, name: string) =>
   latest?.kind === "access" && latest.title.includes(name);
 
+// LabState::send logs its activity title as "Send <file> to <name>" only
+// when the delivery actually succeeds (a denied send logs the same kind
+// with outcome "denied"); LabState::receive logs "receive"/"granted" only
+// for an actually-opened letter — a disconnected drive logs "denied" and
+// the inbox-refresh button logs "receive"/"info". Checking kind alone
+// would let a failed attempt, or an unrelated refresh, complete the step.
+const wasSentTo = (latest: ActivityView | undefined, recipientName: string) =>
+  latest?.kind === "send" && latest.outcome === "granted" && latest.title.includes(`to ${recipientName}`);
+
+const wasReceived = (latest: ActivityView | undefined) => latest?.kind === "receive" && latest.outcome === "granted";
+
 export const TUTORIALS: TutorialModule[] = [
   {
     id: "identities-and-drives",
@@ -173,7 +184,7 @@ export const TUTORIALS: TutorialModule[] = [
         ),
         tab: "files",
         target: () => ['[data-panel="files"]'],
-        isDone: (_snapshot, latest) => latest?.kind === "send" && latest.outcome === "granted",
+        isDone: (_snapshot, latest) => wasSentTo(latest, "David"),
       },
       {
         title: "Try it: become the recipient",
@@ -196,7 +207,7 @@ export const TUTORIALS: TutorialModule[] = [
         ),
         tab: "mailbox",
         target: () => ['[data-testid^="inbox-"]', '[data-panel="mailbox"]'],
-        isDone: (_snapshot, latest) => latest?.kind === "receive",
+        isDone: (_snapshot, latest) => wasReceived(latest),
       },
       {
         title: "Sent and acknowledged",
