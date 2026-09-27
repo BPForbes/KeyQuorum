@@ -200,6 +200,30 @@ pub struct AccessView {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PasswordFileView {
+    pub id: i64,
+    pub name: String,
+    /// The lab-user label whose own store holds this file's row; only that
+    /// person can unlock it.
+    pub owner: String,
+    pub created_at: String,
+    pub expires_at: Option<String>,
+    pub pin_protected: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayStatusView {
+    pub url: String,
+    pub package_letters: i64,
+    pub device_letters: i64,
+    pub published_trees: i64,
+    pub registered_devices: i64,
+    pub api_keys: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub active_user: UserView,
     pub users: Vec<UserView>,
@@ -216,6 +240,10 @@ pub struct Snapshot {
     pub cwd: String,
     /// The shared org store's path, for `keyquorum --db` lines the panels build.
     pub org_db: String,
+    /// Password-locked files created from the Security panel, across every
+    /// lab user (each is only unlockable by its own owner).
+    pub password_files: Vec<PasswordFileView>,
+    pub relay_status: RelayStatusView,
 }
 
 #[derive(Clone, Debug, Serialize)]

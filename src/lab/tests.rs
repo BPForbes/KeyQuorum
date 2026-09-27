@@ -718,3 +718,118 @@ fn an_unknown_recipient_is_a_usage_error_from_the_cli() {
         "{output:?}"
     );
 }
+
+// ----- custom secrets (password-locked files, device provisioning) --------
+
+#[test]
+fn a_password_locked_file_is_protected_by_the_typed_password_not_a_demo_value() {
+    let mut state = lab();
+    let outcome = state
+        .lock_password_file("my-note.txt", "top secret plan", "hunter2", None)
+        .unwrap();
+    assert!(outcome.ok, "{}", said(&outcome));
+    let files = snap(&state).password_files;
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].name, "my-note.txt");
+    assert_eq!(files[0].owner, "M.S.1");
+    assert!(!files[0].pin_protected);
+    let id = files[0].id;
+
+    // The seeded demo password does not open it: the typed password is the
+    // only one that unwraps this file, not `DEMO_PASSWORD`.
+    let denied = state
+        .unlock_password_file(id, "lab-demo-password", None)
+        .unwrap();
+    assert!(!denied.ok);
+    assert!(denied.opened.is_none());
+
+    let granted = state.unlock_password_file(id, "hunter2", None).unwrap();
+    assert!(granted.ok, "{}", said(&granted));
+    assert_eq!(
+        granted.opened.map(|opened| opened.text),
+        Some("top secret plan".to_string())
+    );
+}
+
+#[test]
+fn a_password_locked_file_with_a_custom_pin_needs_both_the_pin_and_the_password() {
+    let mut state = lab();
+    let outcome = state
+        .lock_password_file("pinned.txt", "guarded", "correct-password", Some("7392"))
+        .unwrap();
+    assert!(outcome.ok, "{}", said(&outcome));
+    let id = snap(&state).password_files[0].id;
+
+    let wrong_pin = state
+        .unlock_password_file(id, "correct-password", Some("0000"))
+        .unwrap();
+    assert!(!wrong_pin.ok);
+
+    let right = state
+        .unlock_password_file(id, "correct-password", Some("7392"))
+        .unwrap();
+    assert!(right.ok, "{}", said(&right));
+}
+
+#[test]
+fn only_the_owner_can_unlock_their_own_password_file() {
+    let mut state = lab();
+    state
+        .lock_password_file("mine.txt", "alice's secret", "alice-password", None)
+        .unwrap();
+    let id = snap(&state).password_files[0].id;
+    state.switch_user("bob").unwrap();
+    let outcome = state
+        .unlock_password_file(id, "alice-password", None)
+        .unwrap();
+    assert!(!outcome.ok);
+}
+
+#[test]
+fn provisioning_a_new_slot_uses_the_typed_passphrase_not_the_seeded_demo_one() {
+    let mut state = lab();
+    let outcome = state
+        .provision_slot("alice", "M.S.1.spare", "my-own-passphrase")
+        .unwrap();
+    assert!(outcome.ok, "{}", said(&outcome));
+    // The new slot's public keys show up in a device log for that drive.
+    let log = state.device_log("alice").unwrap();
+    assert!(log.ok);
+    let text = log.opened.map(|opened| opened.text).unwrap_or_default();
+    assert!(text.contains("M.S.1.spare"), "{text}");
+}
+
+#[test]
+fn provisioning_on_an_ejected_drive_is_refused() {
+    let mut state = lab();
+    state.set_drive("alice", false).unwrap();
+    let outcome = state
+        .provision_slot("alice", "M.S.1.spare", "my-own-passphrase")
+        .unwrap();
+    assert!(!outcome.ok);
+}
+
+#[test]
+fn device_log_reports_every_seeded_slot_on_that_drive() {
+    let state = lab();
+    let mut state = state;
+    let outcome = state.device_log("alice").unwrap();
+    assert!(outcome.ok, "{}", said(&outcome));
+    let text = outcome.opened.map(|opened| opened.text).unwrap_or_default();
+    assert!(text.contains("slot M.S.1"), "{text}");
+}
+
+#[test]
+fn relay_status_counts_reflect_what_the_seeded_lab_has_stored() {
+    let state = lab();
+    let snapshot = snap(&state);
+    // Nothing has pushed a letter, published a tree, or registered a
+    // device descriptor yet; the admin and per-user API keys the seed
+    // issues out of band (`issue_api_key`) do show up.
+    assert_eq!(snapshot.relay_status.package_letters, 0);
+    assert_eq!(snapshot.relay_status.device_letters, 0);
+    assert_eq!(snapshot.relay_status.published_trees, 0);
+    assert_eq!(snapshot.relay_status.registered_devices, 0);
+    assert!(snapshot.relay_status.api_keys > 0);
+    assert_eq!(snapshot.relay_status.url, super::vm::RELAY_URL);
+}

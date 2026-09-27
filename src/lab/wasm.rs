@@ -117,6 +117,53 @@ impl KeyQuorumLab {
         to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
     }
 
+    /// Lock a note as a password-protected file using the password (and
+    /// optional PIN) the person typed, instead of a seeded demo secret.
+    pub fn lock_password_file(
+        &mut self,
+        name: &str,
+        contents: &str,
+        password: &str,
+        pin: Option<String>,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self
+            .state
+            .lock_password_file(name, contents, password, pin.as_deref());
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// Open a password-locked file with the password (and PIN, if it was
+    /// set with one) the person typed.
+    pub fn unlock_password_file(
+        &mut self,
+        id: i32,
+        password: &str,
+        pin: Option<String>,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self
+            .state
+            .unlock_password_file(i64::from(id), password, pin.as_deref());
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// Provision a new device slot on an inserted drive with a passphrase
+    /// the person chose.
+    pub fn provision_slot(
+        &mut self,
+        drive_id: &str,
+        label: &str,
+        passphrase: &str,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self.state.provision_slot(drive_id, label, passphrase);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum-device list` for an inserted drive, shown like an opened file.
+    pub fn device_log(&mut self, drive_id: &str) -> std::result::Result<String, JsError> {
+        let outcome = self.state.device_log(drive_id);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
     /// One terminal line against the same state the GUI uses.
     pub fn run_command(&mut self, line: &str) -> std::result::Result<String, JsError> {
         if line.trim() == "reset" {

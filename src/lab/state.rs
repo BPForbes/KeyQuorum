@@ -114,6 +114,18 @@ struct Mailbox {
     sent: Vec<SentItem>,
 }
 
+/// A password-locked file a lab user created from the GUI (`access
+/// password --state 0`), tracked so the Security panel can list and unlock
+/// it later. Lives in that user's own personal store, never the org DB.
+struct PasswordFile {
+    id: i64,
+    name: String,
+    owner: String,
+    created_at: String,
+    expires_at: Option<String>,
+    pin: bool,
+}
+
 /// What one action did, before the snapshot is attached.
 pub struct Outcome {
     pub ok: bool,
@@ -144,6 +156,7 @@ pub struct LabState {
     activity: Vec<ActivityView>,
     next_seq: u64,
     last_access: Option<AccessView>,
+    password_files: Vec<PasswordFile>,
 }
 
 impl LabState {
@@ -182,6 +195,7 @@ impl LabState {
             activity: Vec::new(),
             next_seq: 1,
             last_access: None,
+            password_files: Vec::new(),
         };
         let commands = state.provision()?;
         let home = state.actor().home();
@@ -1027,6 +1041,276 @@ impl LabState {
         })
     }
 
+    // ----- password-locked files -------------------------------------------
+
+    /// Lock a note as a password-protected file in the active user's own
+    /// store (`access password --state 0`), using the password (and,
+    /// optionally, PIN) the person typed rather than a seeded demo value.
+    /// The plaintext is written to a temporary path only long enough for
+    /// the command to read it, then removed either way.
+    pub fn lock_password_file(
+        &mut self,
+        name: &str,
+        contents: &str,
+        password: &str,
+        pin: Option<&str>,
+    ) -> Result<Outcome> {
+        if password.is_empty() {
+            return Ok(Outcome::done(false, "A lock password is required", vec![]));
+        }
+        let (owner, store) = (self.actor().label.clone(), self.actor().store());
+        let home = self.actor().home();
+        let source = home.join(format!(".tmp-lock-{name}"));
+        let encrypted = home.join("locked").join(format!("{name}.kqenc"));
+        self.write_file(&source, contents.as_bytes())?;
+        let mut line = format!(
+            "keyquorum --db {store} access password --state 0 --source {} --encrypted-path {}",
+            quote(&source.display().to_string()),
+            quote(&encrypted.display().to_string())
+        );
+        let mut secrets = vec![password.to_string()];
+        if let Some(pin_value) = pin {
+            line.push_str(" --pin");
+            secrets.push(pin_value.to_string());
+        }
+        self.vm_mut().stage_secrets(secrets);
+        let run = self.run(&line);
+        self.vm_mut().clear_pending_secrets();
+        let _ = self.remove_file(&source);
+        let mut trace = transcript(&run, true);
+        let title = format!("Lock {name} with a password");
+        if !run.ok {
+            let message = format!("{title}: {}", run.error().unwrap_or("failed"));
+            self.log("password-lock", "denied", &title, trace.clone(), Some(line));
+            return Ok(Outcome::done(false, message, trace));
+        }
+        let id: i64 = run
+            .stdout_text()
+            .lines()
+            .find_map(|line| line.strip_prefix("Locked file "))
+            .and_then(|rest| rest.trim().parse().ok())
+            .ok_or(Error::NodeNotFound)?;
+        let created_at: String = self.vm().relay_conn().query_row(
+            "SELECT strftime('%Y-%m-%d %H:%M:00', 'now')",
+            [],
+            |row| row.get(0),
+        )?;
+        self.password_files.push(PasswordFile {
+            id,
+            name: name.to_string(),
+            owner: owner.clone(),
+            created_at,
+            expires_at: None,
+            pin: pin.is_some(),
+        });
+        trace.push(TraceStep::pass(format!(
+            "Locked as password-protected file {id} in {owner}'s store"
+        )));
+        let message = format!("{name} is now password-protected");
+        self.log(
+            "password-lock",
+            "granted",
+            &title,
+            trace.clone(),
+            Some(line),
+        );
+        Ok(Outcome::done(true, message, trace))
+    }
+
+    fn password_file_index(&self, id: i64) -> Option<usize> {
+        self.password_files.iter().position(|file| file.id == id)
+    }
+
+    /// Open a password-locked file with the password (and PIN, when it was
+    /// set with one) the person typed. Only the owner's own store has the
+    /// row, so this only ever runs against that store.
+    pub fn unlock_password_file(
+        &mut self,
+        id: i64,
+        password: &str,
+        pin: Option<&str>,
+    ) -> Result<Outcome> {
+        let Some(index) = self.password_file_index(id) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No password-locked file {id}"),
+                vec![],
+            ));
+        };
+        let (owner, name, wants_pin) = {
+            let file = &self.password_files[index];
+            (file.owner.clone(), file.name.clone(), file.pin)
+        };
+        if owner != self.actor().label {
+            return Ok(Outcome::done(
+                false,
+                format!("{name} is protected in {owner}'s own store, not yours"),
+                vec![],
+            ));
+        }
+        let store = self.actor().store();
+        let line = format!("keyquorum --db {store} access password --state 1 --id {id}");
+        let mut secrets = Vec::new();
+        if wants_pin {
+            secrets.push(pin.unwrap_or_default().to_string());
+        }
+        secrets.push(password.to_string());
+        self.vm_mut().stage_secrets(secrets);
+        let run = self.run(&line);
+        self.vm_mut().clear_pending_secrets();
+        let trace = transcript(&run, false);
+        let opened = if run.ok {
+            Some(OpenedFile {
+                name: name.clone(),
+                text: run.stdout_text(),
+            })
+        } else {
+            None
+        };
+        let message = if run.ok {
+            format!("Access granted: {name}")
+        } else {
+            format!("Access denied: {name}: {}", run.error().unwrap_or("failed"))
+        };
+        self.log(
+            "password-access",
+            if run.ok { "granted" } else { "denied" },
+            &message,
+            trace.clone(),
+            Some(line),
+        );
+        Ok(Outcome {
+            ok: run.ok,
+            message,
+            trace,
+            opened,
+        })
+    }
+
+    fn password_file_views(&self) -> Vec<PasswordFileView> {
+        self.password_files
+            .iter()
+            .map(|file| PasswordFileView {
+                id: file.id,
+                name: file.name.clone(),
+                owner: file.owner.clone(),
+                created_at: file.created_at.clone(),
+                expires_at: file.expires_at.clone(),
+                pin_protected: file.pin,
+            })
+            .collect()
+    }
+
+    // ----- device slots and the relay ---------------------------------------
+
+    /// Provision a new slot on an inserted drive with `keyquorum-device
+    /// provision`, using the passphrase the person chose instead of the
+    /// seeded demo passphrase. This is the lab's "create a new key" action:
+    /// it mints a fresh encryption/signing keypair pair sealed under that
+    /// passphrase, but does not register or bind it into the org tree —
+    /// that stays a deliberate follow-up step (`keyquorum register` /
+    /// `device bind`), same as on a real machine.
+    pub fn provision_slot(
+        &mut self,
+        drive_id: &str,
+        label: &str,
+        passphrase: &str,
+    ) -> Result<Outcome> {
+        if passphrase.is_empty() {
+            return Ok(Outcome::done(false, "A passphrase is required", vec![]));
+        }
+        let Some(drive) = self.vm().bay.get(drive_id) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No mock drive named {drive_id}"),
+                vec![],
+            ));
+        };
+        if !drive.connected {
+            return Ok(Outcome::done(
+                false,
+                format!("{} is not inserted", drive.name),
+                vec![],
+            ));
+        }
+        let (mount, drive_name) = (drive.mount.clone(), drive.name.clone());
+        let line = format!(
+            "keyquorum-device provision {} --label {label}",
+            mount.display()
+        );
+        self.vm_mut()
+            .stage_secrets([passphrase.to_string(), passphrase.to_string()]);
+        let run = self.run(&line);
+        self.vm_mut().clear_pending_secrets();
+        let trace = transcript(&run, true);
+        let title = format!("Provision slot {label} on {drive_name}");
+        let message = if run.ok {
+            format!("Provisioned {label} on {drive_name}")
+        } else {
+            format!("{title}: {}", run.error().unwrap_or("failed"))
+        };
+        self.log(
+            "provision",
+            if run.ok { "granted" } else { "denied" },
+            &title,
+            trace.clone(),
+            Some(line),
+        );
+        Ok(Outcome::done(run.ok, message, trace))
+    }
+
+    /// Read-only: `keyquorum-device list` for an inserted drive's
+    /// container, shown as an opened "file" so the existing viewer can
+    /// display it. Nothing is decided here; this is what a real desktop's
+    /// device manager would show.
+    pub fn device_log(&mut self, drive_id: &str) -> Result<Outcome> {
+        let Some(drive) = self.vm().bay.get(drive_id) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No mock drive named {drive_id}"),
+                vec![],
+            ));
+        };
+        if !drive.connected {
+            return Ok(Outcome::done(
+                false,
+                format!("{} is not inserted", drive.name),
+                vec![],
+            ));
+        }
+        let (mount, drive_name) = (drive.mount.clone(), drive.name.clone());
+        let line = format!("keyquorum-device list {}", mount.display());
+        let run = self.run(&line);
+        let trace = transcript(&run, true);
+        let message = format!("Device log for {drive_name}");
+        self.log("device-log", "info", &message, trace.clone(), Some(line));
+        Ok(Outcome {
+            ok: run.ok,
+            message,
+            trace,
+            opened: run.ok.then(|| OpenedFile {
+                name: format!("{drive_name} device log"),
+                text: run.stdout_text(),
+            }),
+        })
+    }
+
+    /// Read-only counts of what this session's in-process relay holds,
+    /// queried directly from its store rather than shelling a command,
+    /// since the CLI has no "relay status" subcommand.
+    fn relay_status(&self) -> Result<RelayStatusView> {
+        let conn = self.vm().relay_conn();
+        let count = |sql: &str| -> Result<i64> { Ok(conn.query_row(sql, [], |row| row.get(0))?) };
+        Ok(RelayStatusView {
+            url: super::vm::RELAY_URL.to_string(),
+            package_letters: count("SELECT COUNT(*) FROM mailbox")?,
+            device_letters: count("SELECT COUNT(*) FROM device_mailbox")?,
+            published_trees: count("SELECT COUNT(*) FROM org_tree_docs")?,
+            registered_devices: count("SELECT COUNT(*) FROM device_directory")?,
+            api_keys: count("SELECT COUNT(*) FROM api_keys")?,
+        })
+    }
+
     // ----- delivery -------------------------------------------------------
 
     /// Send a file with `keyquorum deliver send --push`. A quorum-locked
@@ -1637,6 +1921,8 @@ impl LabState {
             last_access: self.last_access.clone(),
             cwd: self.vm().cwd().display().to_string(),
             org_db: ORG_DB.to_string(),
+            password_files: self.password_file_views(),
+            relay_status: self.relay_status()?,
         })
     }
 
