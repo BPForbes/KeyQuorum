@@ -864,7 +864,8 @@ h1 {
   align-items: center;
 }
 
-.move-slot select {
+.move-slot select,
+.move-slot input {
   min-height: 2rem;
   padding: 0.2rem 0.4rem;
   border: 1px solid var(--border-strong);
@@ -872,6 +873,10 @@ h1 {
   background: var(--surface-page);
   color: var(--text);
   font-size: 0.8rem;
+}
+
+.move-slot input {
+  width: 8rem;
 }
 
 .segmented {

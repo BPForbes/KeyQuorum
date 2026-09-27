@@ -83,4 +83,12 @@ export class LabClient {
   deviceLog(driveId: string): ActionResult {
     return this.call(this.lab.device_log(driveId));
   }
+
+  revokeKey(nodeLabel: string): ActionResult {
+    return this.call(this.lab.revoke_key(nodeLabel));
+  }
+
+  transferCopy(label: string, toDriveId: string, passphrase: string): ActionResult {
+    return this.call(this.lab.transfer_copy(label, toDriveId, passphrase));
+  }
 }

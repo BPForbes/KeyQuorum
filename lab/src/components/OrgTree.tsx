@@ -2,7 +2,7 @@ import { useId, useState } from "react";
 import type { Act } from "../App";
 import type { Snapshot, TreeNodeView } from "../api/types";
 
-function Node({ node, nodes }: { node: TreeNodeView; nodes: TreeNodeView[] }) {
+function Node({ node, nodes, act }: { node: TreeNodeView; nodes: TreeNodeView[]; act: Act }) {
   const children = nodes.filter((candidate) => candidate.parent === node.label);
   const tags: string[] = [];
   if (node.activeUser) tags.push("you");
@@ -45,11 +45,21 @@ function Node({ node, nodes }: { node: TreeNodeView; nodes: TreeNodeView[] }) {
             </span>
           ))}
         </span>
+        {node.kind === "leaf" ? (
+          <button
+            type="button"
+            className="btn small-btn"
+            onClick={() => act((client) => client.revokeKey(node.label))}
+            aria-label={`Revoke ${node.label}'s hardware key`}
+          >
+            Revoke key
+          </button>
+        ) : null}
       </div>
       {children.length > 0 ? (
         <ul>
           {children.map((child) => (
-            <Node key={child.label} node={child} nodes={nodes} />
+            <Node key={child.label} node={child} nodes={nodes} act={act} />
           ))}
         </ul>
       ) : null}
@@ -171,9 +181,15 @@ export function OrgTree({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
           ? ` Required and satisfied marks come from the last unlock of ${snapshot.lastAccess.fileName}.`
           : ""}
       </p>
+      <p className="muted small">
+        Each leaf&rsquo;s <strong>Revoke key</strong> button runs the real <code>keyquorum revoke</code>: it bans that
+        hardware key from future trees and drops its existing bindings and pairings. It does not evict the leaf or
+        refresh survivor shares — that still takes collecting the survivors&rsquo; keys, which stays a Terminal-tab
+        job.
+      </p>
       <ul className="tree">
         {roots.map((node) => (
-          <Node key={node.label} node={node} nodes={nodes} />
+          <Node key={node.label} node={node} nodes={nodes} act={act} />
         ))}
       </ul>
       <Connections snapshot={snapshot} act={act} />
