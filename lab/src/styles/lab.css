@@ -1089,6 +1089,7 @@ h1 {
     display: none;
   }
 
+  .lab-grid[data-tab="help"] > [data-panel="help"],
   .lab-grid[data-tab="organization"] > [data-panel="organization"],
   .lab-grid[data-tab="usb"] > [data-panel="usb"],
   .lab-grid[data-tab="files"] > [data-panel="files"],

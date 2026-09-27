@@ -6,6 +6,7 @@ import { ActiveUser } from "./components/ActiveUser";
 import { ActivityPanel } from "./components/ActivityPanel";
 import { Drives } from "./components/Drives";
 import { FileExplorer } from "./components/FileExplorer";
+import { Help } from "./components/Help";
 import { Mailbox } from "./components/Mailbox";
 import { OrgTree } from "./components/OrgTree";
 import { SecurityPanel } from "./components/SecurityPanel";
@@ -16,6 +17,7 @@ type Boot = { state: "loading" } | { state: "ready" } | { state: "error"; messag
 export type Act = (run: (client: LabClient) => ActionResult) => ActionResult | null;
 
 const TABS = [
+  ["help", "Help"],
   ["organization", "Organization"],
   ["usb", "USB devices"],
   ["files", "Files"],
@@ -181,6 +183,7 @@ export function App() {
       </nav>
 
       <main className="lab-grid" data-tab={tab}>
+        <Help />
         <OrgTree snapshot={snapshot} act={act} />
         <Drives snapshot={snapshot} act={act} />
         <FileExplorer snapshot={snapshot} act={act} />
