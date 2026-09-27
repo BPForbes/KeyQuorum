@@ -1,0 +1,30 @@
+\newcommand{\KqDocTitle}{KeyQuorum Lab}
+\newcommand{\KqDocSubtitle}{Browser GUI Manual}
+\newcommand{\KqHeaderTitle}{KeyQuorum Lab Manual}
+\newcommand{\KqDocDescription}{%
+A guide to KeyQuorum Lab's own browser interface: its header and tabs, and
+the guided, gated tutorials built into the page. For the
+\code{keyquorum} / \code{keyquorum-device} command-line tool the lab runs
+underneath, see the separate KeyQuorum manual.
+}
+\input{docs/latex/keyquorum-common.tex}
+
+\begin{document}
+\KqTitlePage
+\KqContents
+
+\input{docs/latex/lab-sections/00-overview.tex}
+\input{docs/latex/lab-sections/01-tabs.tex}
+\input{docs/latex/lab-sections/02-tutorials.tex}
+
+\section{Where the lab lives}
+
+KeyQuorum Lab is published from \file{lab/} to GitHub Pages and embedded by
+bailey-forbes.com. A GitHub Actions workflow tests, builds, and publishes
+it from \code{main} on every change. The lab is a sandboxed machine, not a
+second implementation of KeyQuorum: it must never reimplement quorum,
+custody, approval, visibility, bridge, or delivery rules, or add a gate of
+its own in front of them --- if the CLI would allow something on a real
+machine, the lab allows it too.
+
+\end{document}

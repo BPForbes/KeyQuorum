@@ -1,0 +1,39 @@
+\section{Overview}
+
+KeyQuorum Lab runs the KeyQuorum crate in a browser as a small sandboxed
+machine, compiled to WebAssembly. It has its own files, a SQLite store per
+person, mock USB drives, and a mailbox relay answering in the page. Every
+button and every terminal line runs the real \code{keyquorum} and
+\code{keyquorum-device} commands --- there is no separate ``demo mode''
+standing in for them.
+
+\begin{noteBox}
+This manual documents the lab's own GUI: its header, tabs, and guided
+tutorials. It does not re-document \code{keyquorum} / \code{keyquorum-device}
+themselves --- that is the separate \emph{KeyQuorum} manual, which the lab
+runs underneath its interface unchanged. Where a control here is a thin
+wrapper over a CLI concept (custody, quorum, private bridges, authenticated
+updates, the mailbox relay), this manual names that concept without
+re-explaining it.
+\end{noteBox}
+
+\Screenshot{docs/latex/images/lab/header.png}{The lab header: build commit,
+the Tutorials and Reset Lab buttons, the disclaimer, and the Active user
+bar.}
+
+The mock USB drives are simulated entirely in the browser, and every slot
+passphrase is a published demo value, so they give none of the physical
+protection real hardware keys do. What is real is the software underneath:
+every action, in every tab, is one of the same commands documented in the
+KeyQuorum manual.
+
+\subsection{Identity and drives}
+
+The \textbf{Active user} bar shows who you are acting as right now, and
+which mock USB drive their personal key slot lives on. Clicking another
+name's chip switches to them, the way sitting down at a different desk
+would. Most actions need that person's drive \emph{inserted} first --- a
+mock drive behaves like a real one: its slots are only usable while it is
+connected, and moving a slot onto someone else's drive needs both drives
+inserted at once, matching the physical requirement of moving a token
+between two real USB drives.

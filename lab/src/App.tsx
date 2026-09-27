@@ -6,18 +6,17 @@ import { ActiveUser } from "./components/ActiveUser";
 import { ActivityPanel } from "./components/ActivityPanel";
 import { Drives } from "./components/Drives";
 import { FileExplorer } from "./components/FileExplorer";
-import { Help } from "./components/Help";
 import { Mailbox } from "./components/Mailbox";
 import { OrgTree } from "./components/OrgTree";
 import { SecurityPanel } from "./components/SecurityPanel";
 import { Terminal } from "./components/Terminal";
+import { Tutorial } from "./components/Tutorial";
 
 type Boot = { state: "loading" } | { state: "ready" } | { state: "error"; message: string };
 
 export type Act = (run: (client: LabClient) => ActionResult) => ActionResult | null;
 
 const TABS = [
-  ["help", "Help"],
   ["organization", "Organization"],
   ["usb", "USB devices"],
   ["files", "Files"],
@@ -26,7 +25,7 @@ const TABS = [
   ["activity", "Activity"],
   ["terminal", "Terminal"],
 ] as const;
-type Tab = (typeof TABS)[number][0];
+export type Tab = (typeof TABS)[number][0];
 
 export function App() {
   const clientRef = useRef<LabClient | null>(null);
@@ -36,6 +35,7 @@ export function App() {
   snapshotRef.current = snapshot;
   const [last, setLast] = useState<ActionResult | null>(null);
   const [tab, setTab] = useState<Tab>("files");
+  const [tutorialPickerOpen, setTutorialPickerOpen] = useState(false);
   const [terminal, setTerminal] = useState<string[]>([
     "KeyQuorum Lab terminal — a shell on the lab machine, with the real keyquorum and keyquorum-device CLIs. Type `help`.",
   ]);
@@ -147,6 +147,9 @@ export function App() {
           <span className="lab-build" title="Source commit of this build">
             build <code>{__BUILD_COMMIT__}</code>
           </span>
+          <button type="button" className="btn" onClick={() => setTutorialPickerOpen(true)}>
+            Tutorials
+          </button>
           <button type="button" className="btn btn-danger" onClick={reset}>
             Reset Lab
           </button>
@@ -183,7 +186,6 @@ export function App() {
       </nav>
 
       <main className="lab-grid" data-tab={tab}>
-        <Help />
         <OrgTree snapshot={snapshot} act={act} />
         <Drives snapshot={snapshot} act={act} />
         <FileExplorer snapshot={snapshot} act={act} />
@@ -210,6 +212,14 @@ export function App() {
           </a>
         </p>
       </footer>
+
+      <Tutorial
+        pickerOpen={tutorialPickerOpen}
+        onPickerClose={() => setTutorialPickerOpen(false)}
+        snapshot={snapshot}
+        tab={tab}
+        setTab={setTab}
+      />
     </div>
   );
 }

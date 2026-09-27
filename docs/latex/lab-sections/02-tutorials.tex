@@ -1,0 +1,52 @@
+\section{Guided tutorials}
+
+The \textbf{Tutorials} button in the header opens a picker of short,
+self-contained modules. Each covers one part of the lab; picking one is not
+a commitment to the others, and they can be taken in any order.
+
+\Screenshot{docs/latex/images/lab/tutorial.png}{A tutorial step in
+progress: the Active user bar is spotlit, and the tooltip names the step
+and what to do.}
+
+\subsection{How a step works}
+
+Each step spotlights the part of the page it is about and shows a tooltip
+with an explanation. A step comes in one of two kinds:
+
+\begin{itemize}
+  \item An \textbf{informational} step just explains something; a
+  \textbf{Next} button advances it.
+  \item A \textbf{gated} step (marked ``Waiting for you to try it\ldots'')
+  names a real action to perform --- insert a drive, open a file, switch
+  identity, send a letter --- and does not advance until that action
+  actually happens in the lab. Completion is checked against the lab's own
+  state (the current snapshot, or the most recent entry in the Activity
+  log), not against a click on the tooltip itself, so there is no way to
+  fake having done it. Once satisfied, the step marks itself done and
+  advances on its own a moment later. \textbf{Skip this step} is always
+  available if you would rather move on without doing it.
+\end{itemize}
+
+A step can also relocate its target as the page changes under it --- for
+example, tracking a folder tile in the File Explorer until it is opened,
+then tracking the file row that takes its place --- so one step can walk
+you through a short sequence rather than only ever pointing at one fixed
+element.
+
+\subsection{The modules}
+
+\begin{itemize}
+  \item \textbf{Identities \& drives} --- who you're acting as, bringing a
+  mock USB drive online, reading the organization key tree's own slice, and
+  switching identity.
+  \item \textbf{Files \& unlocking} --- opening a public file, then trying
+  a quorum-protected one to see what the access trace looks like when a
+  single identity does not meet its threshold.
+  \item \textbf{Mailbox: sending \& receiving} --- sealing a file to
+  another label, switching to that identity, and receiving it from the
+  inbox.
+\end{itemize}
+
+Finishing a module's last step opens a short completion notice; from
+there, or from \textbf{Exit tutorial} at any point, the \textbf{Tutorials}
+button reopens the picker for another module.

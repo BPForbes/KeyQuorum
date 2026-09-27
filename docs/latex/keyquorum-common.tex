@@ -12,6 +12,7 @@
 \usepackage{amsmath,amssymb}
 \usepackage{booktabs,longtable,tabularx,array}
 \usepackage[dvipsnames,table]{xcolor}
+\usepackage{graphicx}
 \usepackage{listings}
 \usepackage{enumitem}
 \usepackage{fancyhdr}
@@ -93,6 +94,15 @@
 \newcommand{\code}[1]{\texttt{\detokenize{#1}}}
 \newcommand{\flag}[1]{\texttt{\detokenize{#1}}}
 \newcommand{\file}[1]{\texttt{\detokenize{#1}}}
+
+% A screenshot with a thin border and a caption line, without pulling in
+% the float package's placement machinery -- these are meant to sit right
+% where they're written, next to the paragraph describing that screen.
+\newcommand{\Screenshot}[2]{%
+  \par\smallskip\noindent
+  \fbox{\includegraphics[width=\dimexpr0.94\linewidth-2\fboxsep-2\fboxrule\relax,height=0.4\textheight,keepaspectratio]{#1}}\par
+  {\small\color{KqSlate} #2}\par\smallskip
+}
 
 % Short framed callouts for notes, warnings, and security-critical points.
 \newsavebox{\KqCalloutBox}
