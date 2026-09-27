@@ -117,15 +117,6 @@ impl KeyQuorumLab {
         to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
     }
 
-    pub fn answer_approval(
-        &mut self,
-        id: u32,
-        approve: bool,
-    ) -> std::result::Result<String, JsError> {
-        let outcome = self.state.answer_approval(u64::from(id), approve);
-        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
-    }
-
     /// One terminal line against the same state the GUI uses.
     pub fn run_command(&mut self, line: &str) -> std::result::Result<String, JsError> {
         if line.trim() == "reset" {

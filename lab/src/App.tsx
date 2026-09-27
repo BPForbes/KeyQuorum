@@ -33,7 +33,7 @@ export function App() {
   const [last, setLast] = useState<ActionResult | null>(null);
   const [tab, setTab] = useState<Tab>("files");
   const [terminal, setTerminal] = useState<string[]>([
-    "KeyQuorum Lab terminal — same state as the buttons above. Type `help`.",
+    "KeyQuorum Lab terminal — a shell on the lab machine, with the real keyquorum and keyquorum-device CLIs. Type `help`.",
   ]);
 
   useEffect(() => {
@@ -151,9 +151,10 @@ export function App() {
 
       <p className="lab-disclaimer">
         The USB drives here are simulated in your browser, and every slot passphrase is a published demo value, so they
-        give none of the physical protection real hardware keys do. What is real is the logic: quorum reconstruction,
-        custody and device counting, parent approval, visibility, and sealed delivery all run KeyQuorum&rsquo;s own Rust
-        code, compiled to WebAssembly. Nothing leaves this page.
+        give none of the physical protection real hardware keys do. What is real is the software: every button and
+        terminal line runs the actual <code>keyquorum</code> and <code>keyquorum-device</code> commands, compiled to
+        WebAssembly, against a small in-browser machine with its own files, stores, and relay. Nothing leaves this
+        page.
       </p>
 
       <ActiveUser snapshot={snapshot} onSwitch={switchUser} />
@@ -184,11 +185,12 @@ export function App() {
         <Mailbox snapshot={snapshot} act={act} />
         <ActivityPanel snapshot={snapshot} last={last} />
         <Terminal
+          cwd={snapshot.cwd}
           lines={terminal}
           onRun={(line) => {
             const result = act((client) => client.runCommand(line));
             setTerminal((previous) =>
-              [...previous, `$ ${line}`, ...(result ? result.output : ["(lab error)"])].slice(-400),
+              [...previous, `${snapshot.cwd}$ ${line}`, ...(result ? result.output : ["(lab error)"])].slice(-400),
             );
           }}
         />

@@ -68,7 +68,7 @@ function nodeName(nodes: TreeNodeView[], label: string) {
 function Connections({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
   const id = useId();
   const { keyId, nodes, bridges, allowed } = snapshot.tree;
-  const run = (args: string) => act((client) => client.runCommand(`keyquorum bridge ${args}`));
+  const run = (args: string) => act((client) => client.runCommand(`keyquorum --db ${snapshot.orgDb} bridge ${args}`));
   const [from, setFrom] = useState(snapshot.activeUser.label);
   const [to, setTo] = useState(nodes.find((node) => node.label !== snapshot.activeUser.label)?.label ?? "");
   const options = nodes.map((node) => (

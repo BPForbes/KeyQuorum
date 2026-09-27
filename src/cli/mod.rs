@@ -700,6 +700,14 @@ pub struct AccessQuorumArgs {
     /// state 0: none, or parent
     #[arg(long, conflicts_with_all = ["id", "share_files", "output"])]
     unlock_approval: Option<String>,
+    /// state 0 only: UTC expiry as `yyyy-mm-dd hh:mm`. After this instant,
+    /// an unlock attempt deletes the ciphertext and the file's row.
+    #[arg(long, conflicts_with_all = ["id", "share_files", "output"], value_parser = parse_expires_arg)]
+    expires: Option<String>,
+    /// state 1: report the shares presented, the devices counted, and the
+    /// approvals checked, on stderr
+    #[arg(long, conflicts_with_all = ["source", "encrypted_path", "tree_spec", "leaves", "name"])]
+    verbose: bool,
 }
 
 #[derive(Subcommand)]
@@ -1911,13 +1919,17 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
                     )?
                 }
             };
-            let id = quorum::lock_file_in(
+            if let Some(expires_at) = args.expires.as_deref() {
+                locked_files::require_future_expires_utc(conn, expires_at)?;
+            }
+            let id = quorum::lock_file_until_in(
                 &mut env::EnvStorage,
                 conn,
                 &source,
                 &encrypted_path,
                 args.name.as_deref(),
                 &spec,
+                args.expires.as_deref(),
             )?;
             if from_leaves {
                 let file_status = quorum::status(conn, id)?;
@@ -1927,6 +1939,9 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
                 }
             }
             outln!("Locked file {id}");
+            if let Some(expires_at) = &args.expires {
+                outln!("Expires at: {expires_at} UTC");
+            }
             let file_status = quorum::status(conn, id)?;
             device_cmd::apply_policy(
                 conn,
@@ -1945,6 +1960,23 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
             let file_status = quorum::status(conn, id)?;
             let shares =
                 collect_shares(conn, &file_status.tree.root, &args.share_files, &args.slots)?;
+            if args.verbose {
+                let mut leaves = Vec::new();
+                collect_leaves(&file_status.tree.root, &mut leaves);
+                let unwrapped: Vec<&str> = leaves
+                    .iter()
+                    .filter(|(node_id, _, _)| shares.contains_key(node_id))
+                    .map(|(_, _, label)| label.as_str())
+                    .collect();
+                errln!(
+                    "Shares unwrapped: {}",
+                    if unwrapped.is_empty() {
+                        "none".to_string()
+                    } else {
+                        unwrapped.join(", ")
+                    }
+                );
+            }
             let presented =
                 match key_tree::reconstruct_presented(conn, file_status.tree.key_id, &shares) {
                     Ok(presented) => presented,
@@ -1953,6 +1985,21 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
                         return Err(err);
                     }
                 };
+            if args.verbose {
+                let policy = device::custody_policy(conn, file_status.tree.key_id)?;
+                let used: Vec<&str> = presented
+                    .leaves
+                    .iter()
+                    .map(|leaf| leaf.leaf_label.as_str())
+                    .collect();
+                errln!("Threshold met using: {}", used.join(", "));
+                errln!(
+                    "Physical devices: {} (minimum {}) — {}",
+                    presented.devices.len(),
+                    policy.minimum_physical_devices,
+                    device::format_presentation(&presented.devices)
+                );
+            }
             let grants = match approval_grants(
                 id,
                 file_status.tree.key_id,
@@ -1967,6 +2014,15 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
                     return Err(err);
                 }
             };
+            if args.verbose {
+                for grant in &grants {
+                    errln!(
+                        "Parent approval: {} signed for {}",
+                        grant.countersigner_label,
+                        grant.leaf_label
+                    );
+                }
+            }
             let plaintext =
                 quorum::complete_unlock_in(&mut env::EnvStorage, conn, id, presented, &grants)?;
             match args.output {

@@ -16,18 +16,27 @@ and Moving a key between devices.
 ## Browser lab
 
 [KeyQuorum Lab](https://bpforbes.github.io/KeyQuorum/) runs this crate in a
-browser: the `lab` feature compiles the real quorum, custody, parent-approval,
-visibility, sealed-delivery, and eviction code to WebAssembly, over seeded
-synthetic people and mock USB drives — each person starts with their own
-drive, and a Windows-Explorer-style file browser (folders, a sortable list
-view, Properties, a viewer) is how you open, send, and inspect the seeded
-files. Switch identities, insert/eject/move drives, unlock or watch a file
-expire, send files between people, and whitelist, establish, or tear down
-bridges between any two nodes (the lab runs the real `keyquorum bridge
-allow|deny|add|remove|list` command, starting from the seeded `M.S ↔ M.A`
-link) —
-every action shows the checks KeyQuorum made. The mock drives' passphrases are published demo values, so
-the lab demonstrates behavior; it is not hardware-backed security.
+browser as a small sandboxed machine. It has its own files, a SQLite store per
+person, mock USB drives mounted under `/media`, and a relay answering in the
+page. Every button and every terminal line runs the real `keyquorum` and
+`keyquorum-device` commands, compiled to WebAssembly. That covers seeding the
+org, unlocking, sending, receiving, moving slots, and bridges alike. You get
+the same behavior as the CLI, with API access built in and no account.
+
+Each person starts with their own drive, and a Windows-Explorer-style file
+browser (folders, a sortable list view, Properties, a viewer) is how you open,
+send, and inspect the seeded files. You can:
+
+- switch identities;
+- insert, eject, or move drives;
+- unlock a file, or watch one expire;
+- send files between people;
+- whitelist, establish, or tear down bridges between any two nodes.
+
+Every action shows the command lines it ran and what they printed. The
+terminal also takes any `keyquorum ...` or `keyquorum-device ...` line. The
+mock drives' passphrases are published demo values, so the lab demonstrates
+behavior; it is not hardware-backed security.
 
 ```bash
 cargo install wasm-bindgen-cli --version <wasm-bindgen version in Cargo.lock> --locked
@@ -388,6 +397,10 @@ same key files `generate` wrote (`alice.pub` / `alice.key`) or another
 standard public-key file (PEM, OpenSSH `.pub`). The private key unwraps
 every leaf sealed to that hardware key. `tree` still prints leaf node
 ids for inspection.
+`access quorum --state 0 --expires "yyyy-mm-dd hh:mm"` gives the locked
+file a UTC cutoff: the first unlock after it deletes the ciphertext and the
+row. `--state 1 --verbose` prints which shares unwrapped, which met the
+threshold, the physical devices counted, and any parent approval.
 
 ### Password-protected files and credentials
 
@@ -615,6 +628,28 @@ Load a `device.push` key for sends and publishes, and a `device.pull` key
 bound to the recipient fingerprint for collects, finalizes, and drops.
 `relay-collect` and `relay-accept` also need `device.push` to post the
 acknowledgement (`--push-key`, or a stored key of that scope).
+
+### Sending a file
+
+`deliver` seals one file to another label. You sign it with your signing key
+and seal it to the encryption key your store has registered for the recipient.
+The recipient opens it: that step verifies your signature against the signing
+key their store holds for you. They then answer with a signed accept or
+reject, sealed back to you. Letters and answers are ordinary `.kqpb` envelopes
+that `relay push` / `relay pull` carry.
+
+```sh
+keyquorum deliver send --file report.pdf --to M.A --as M.S.1 \
+  --slot ./usb=M.S.1 --push
+keyquorum --db david.sqlite relay pull --output-dir ./mail
+keyquorum --db david.sqlite deliver open --file ./mail/7.kqpb \
+  --slot ./usb=M.A --save-dir ./received --push-ack
+keyquorum deliver ack --file ./mail/8.kqpb --slot ./usb=M.S.1
+```
+
+`--output-dir` / `--ack-dir` write the envelope to disk instead of (or as
+well as) `--push` / `--push-ack`. `--reject` refuses the file and says so in
+the answer.
 
 ### Mailbox
 

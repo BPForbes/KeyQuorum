@@ -15,11 +15,10 @@ const SENT_STATUS: Record<SentItemView["status"], string> = {
   rejected: "Rejected by recipient",
 };
 
-type View = "inbox" | "sent" | "approvals";
+type View = "inbox" | "sent";
 
 export function Mailbox({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
   const [view, setView] = useState<View>("inbox");
-  const pendingApprovals = snapshot.approvals.filter((item) => item.actionable).length;
   return (
     <section className="panel panel-wide" data-panel="mailbox" aria-labelledby="mailbox-heading">
       <h2 id="mailbox-heading" className="panel-title">
@@ -32,16 +31,14 @@ export function Mailbox({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
         <button type="button" aria-pressed={view === "sent"} onClick={() => setView("sent")}>
           Sent ({snapshot.sent.length})
         </button>
-        <button type="button" aria-pressed={view === "approvals"} onClick={() => setView("approvals")}>
-          Approvals ({pendingApprovals} to answer)
-        </button>
       </div>
 
       {view === "inbox" ? (
         <>
           <p className="small muted">
-            Letters the lab relay holds for your key. The relay only knows the recipient key, so sender and file stay
-            hidden until you open a letter with your slot.
+            Letters <code>keyquorum relay pull</code> fetched into <code>~/mail</code>. The relay only knows the recipient
+            key, so sender and file stay hidden until <code>keyquorum deliver open</code> unseals a letter with your
+            slot.
           </p>
           {snapshot.inbox.length === 0 ? <p className="empty">No letters sealed to you.</p> : null}
           <ul className="mail-list">
@@ -75,7 +72,7 @@ export function Mailbox({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
           {snapshot.pendingAcks > 0 ? (
             <p className="notice">
               {snapshot.pendingAcks} acknowledgement{snapshot.pendingAcks > 1 ? "s are" : " is"} waiting at the relay,
-              sealed to your key.
+              sealed to your key. Insert your USB so <code>keyquorum deliver ack</code> can open them.
             </p>
           ) : null}
           <button type="button" className="btn" onClick={() => act((client) => client.refreshInbox())}>
@@ -98,39 +95,6 @@ export function Mailbox({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
         </>
       ) : null}
 
-      {view === "approvals" ? (
-        <>
-          <p className="small muted">
-            Files with <code>unlock_approval = parent</code> need the leaf&rsquo;s parent to sign each unlock, bound to
-            the exact devices presented.
-          </p>
-          {snapshot.approvals.length === 0 ? <p className="empty">No approval requests.</p> : null}
-          <ul className="mail-list">
-            {snapshot.approvals.map((item) => (
-              <li key={item.id} className="mail-item">
-                <div>
-                  <strong>{item.fileName}</strong>{" "}
-                  <span className="muted small">
-                    leaf {item.leaf} · requested by {item.requestedBy} · approver {item.approver} · devices{" "}
-                    {item.devices.join(", ")}
-                  </span>
-                </div>
-                <span className="mail-status">{item.status}</span>
-                {item.actionable ? (
-                  <div className="button-row">
-                    <button type="button" className="btn btn-primary" onClick={() => act((client) => client.answerApproval(item.id, true))}>
-                      Approve and sign
-                    </button>
-                    <button type="button" className="btn" onClick={() => act((client) => client.answerApproval(item.id, false))}>
-                      Decline
-                    </button>
-                  </div>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : null}
     </section>
   );
 }

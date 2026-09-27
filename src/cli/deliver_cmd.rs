@@ -76,8 +76,11 @@ pub enum DeliverCommand {
         #[arg(long, requires = "share_file")]
         signing_key_file: Option<PathBuf>,
         /// Write the file here instead of stdout
-        #[arg(long, conflicts_with = "reject")]
+        #[arg(long, conflicts_with_all = ["reject", "save_dir"])]
         save: Option<PathBuf>,
+        /// Write the file into this directory under the name the sender gave it
+        #[arg(long, conflicts_with = "reject")]
+        save_dir: Option<PathBuf>,
         /// Refuse the file and say so in the acknowledgement
         #[arg(long)]
         reject: bool,
@@ -169,6 +172,7 @@ pub fn run(conn: &Connection, command: DeliverCommand) -> Result<()> {
             share_file,
             signing_key_file,
             save,
+            save_dir,
             reject,
             ack_dir,
             push_ack,
@@ -187,9 +191,17 @@ pub fn run(conn: &Connection, command: DeliverCommand) -> Result<()> {
             );
             let accepted = !reject;
             if accepted {
-                match &save {
+                let target = match (save, save_dir) {
+                    (Some(path), _) => Some(path),
+                    (None, Some(dir)) => {
+                        env::create_dir_all(&dir)?;
+                        Some(dir.join(super::sanitize_label(&letter.file_name)?))
+                    }
+                    (None, None) => None,
+                };
+                match target {
                     Some(path) => {
-                        env::write_new(path, &letter.contents)?;
+                        env::write_new(&path, &letter.contents)?;
                         outln!("Saved {} to {}", letter.file_name, path.display());
                     }
                     None => env::stdout_bytes(&letter.contents)?,
@@ -270,7 +282,11 @@ fn registered_encryption_key(conn: &Connection, label: &str) -> Result<[u8; 32]>
     let key = keys::active_keys_for(conn, label, KeyType::Encryption)?
         .into_iter()
         .next()
-        .ok_or(Error::NodeNotFound)?;
+        .ok_or_else(|| {
+            usage(&format!(
+                "no encryption key is registered for {label} in this store; register one first"
+            ))
+        })?;
     key.public_key
         .as_slice()
         .try_into()

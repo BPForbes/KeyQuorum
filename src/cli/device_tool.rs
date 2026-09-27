@@ -77,7 +77,10 @@ pub fn run(cli: DeviceToolCli) -> Result<()> {
         }
         DeviceToolCommand::Provision { path, label } => {
             let mut container = device::open_in(&EnvStorage, &path)?;
-            let passphrase = env::confirm_passphrase("Slot passphrase: ", "Repeat passphrase: ")?;
+            let passphrase = env::confirm_passphrase(
+                &format!("Passphrase for {label}: "),
+                &format!("Repeat passphrase for {label}: "),
+            )?;
             let slot = device::provision_in(&mut EnvStorage, &mut container, &label, &passphrase)?;
             print_slot(&slot.label, &slot.encryption_public, &slot.signing_public);
         }

@@ -41,25 +41,27 @@ pub fn lock_file(
     name: Option<&str>,
     tree_spec: &NodeSpec,
 ) -> Result<i64> {
-    lock_file_in(
+    lock_file_until_in(
         &mut NativeStorage,
         conn,
         source_path,
         encrypted_path,
         name,
         tree_spec,
+        None,
     )
 }
 
 /// [`lock_file`], reading the source and writing the ciphertext through
-/// `storage`.
-pub fn lock_file_in(
+/// `storage`, with an optional UTC expiry (see [`lock_bytes_until_in`]).
+pub fn lock_file_until_in(
     storage: &mut dyn Storage,
     conn: &mut Connection,
     source_path: &Path,
     encrypted_path: &Path,
     name: Option<&str>,
     tree_spec: &NodeSpec,
+    expires_at: Option<&str>,
 ) -> Result<i64> {
     key_tree::validate(conn, tree_spec)?;
     let plaintext = storage.read(source_path)?;
@@ -69,7 +71,15 @@ pub fn lock_file_in(
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default()
     });
-    lock_bytes_in(storage, conn, &plaintext, encrypted_path, &name, tree_spec)
+    lock_bytes_until_in(
+        storage,
+        conn,
+        &plaintext,
+        encrypted_path,
+        &name,
+        tree_spec,
+        expires_at,
+    )
 }
 
 /// [`lock_file`] for plaintext already in memory, writing the ciphertext

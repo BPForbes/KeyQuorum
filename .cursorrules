@@ -140,26 +140,33 @@ The bridge inbox carries them like any other non-device letter.
 
 `src/lab/` (feature `lab`) is KeyQuorum Lab, the public browser
 demonstration published from `lab/` to GitHub Pages and embedded by
-bailey-forbes.com. It seeds synthetic users, mock USB drives (real
-`device` containers held in memory, with published demo passphrases),
-locked files, and an in-memory relay, then calls the crate's own quorum,
-custody, approval, visibility, and delivery code; it must not
-reimplement any of those rules. `src/bridge_command.rs` holds the
-`keyquorum bridge allow|deny|add|remove|list` clap subcommands and their
-handler; the binary flattens them into `bridge` and the lab terminal
-(and the Organization panel, which sends command lines to it) parses and
-runs the same ones, so lab bridge actions are the CLI's code, not a lab
-copy. `src/lab/wasm.rs` is the only JavaScript
-surface. The lab WASM must never include `provider`: `build.rs` refuses a
-wasm32 build with both features (native `--all-features` builds may
-combine them). Nothing secret may be seeded: everything in the bundle is
-public. The lab's ready handshake posts only to `https://bailey-forbes.com`
-(or a loopback origin for tests), never `*`.
+bailey-forbes.com. It is a sandboxed machine, not a second implementation:
+`src/cli/` hosts the whole `keyquorum` and `keyquorum-device` CLI in the
+library behind `cli::env::Env` (stdout/stderr, filesystem `Storage`,
+prompts, SQLite stores, relay transport, provider root, clock), and
+`src/lab/vm.rs` (`LabVm`) implements that `Env` with an in-memory
+filesystem, mock USB drives mounted under `/media` (real `device`
+containers, with published demo passphrases answering the prompts), one
+SQLite store per path (`/srv/keyquorum/org.sqlite` for the org, one per
+person in their home), and `relay::service::dispatch` answering relay
+requests in process against a per-session relay certificate. Seeding and
+every GUI or terminal action run real command lines there
+(`src/lab/state.rs`); the transcript is the trace. The lab must not
+reimplement quorum, custody, approval, visibility, bridge, or delivery
+rules, and must not add gates of its own in front of them: if the CLI
+would allow it on a real machine, the lab allows it. Read-only library
+calls are fine for rendering views. `src/lab/wasm.rs` is the only
+JavaScript surface. The lab WASM must never include `provider`: `build.rs`
+refuses a wasm32 build with both features (native `--all-features` builds
+may combine them); the in-process relay uses the non-provider
+`relay::service`, never the axum host. Nothing secret may be seeded:
+everything in the bundle is public. The lab's ready handshake posts only
+to `https://bailey-forbes.com` (or a loopback origin for tests), never `*`.
 
 Every seeded person starts on their own personal mock drive (`src/lab/seed.rs`
-`DRIVES`), not a shared department one — `LabState::move_slot` (real
-`device::relocate_slot_in` plus a `device::bind_slot_in` re-bind, so
-`device_placements` follows immediately) is what puts more than one slot on
+`DRIVES`), not a shared department one — `LabState::move_slot` (`keyquorum-device
+relocate` plus a `keyquorum device bind` re-bind, so `device_placements`
+follows immediately) is what puts more than one slot on
 one drive, which is when they start counting as a single physical device.
 Both drives must be inserted to move a slot between them, matching the
 physical requirement of moving a token between two USB drives. Quorum-locked
@@ -171,11 +178,9 @@ ciphertext and the `files` row on first touch past the TTL); the lab resolves
 a few seeded files' TTLs relative to load time via SQLite's own clock
 (`strftime('now', modifier)`) so a couple of them expire while the tab is
 open. `legacy-migration-notes.txt` seeds a real ghost through
-`transfer.rs`: the departed person's slot is `transfer::enroll`ed, then
-MOVE-transferred (`transfer::transfer`) to a throwaway destination before
-the lab starts, so `transfer::possession` genuinely reports
-`Possession::Ghost` for that label — the same mechanism `keyquorum
-transfer move` uses, not a UI-only flag. She stays an ordinary leaf in
+`keyquorum transfer enroll` and then `keyquorum transfer move` to a
+throwaway archive device before the lab starts, so `transfer::possession`
+genuinely reports `Possession::Ghost` for that label, not a UI-only flag. She stays an ordinary leaf in
 `legacy-migration-notes.txt`'s tree; `device::leaf_is_ghost` refuses her
 share the moment anyone presents it. `RequirementNode.ghost` (`view.rs`)
 is how the frontend marks it.

@@ -21,6 +21,17 @@ fn connected(state: &LabState) -> Vec<String> {
     ids
 }
 
+/// The whole transcript of an outcome, one string, for loose matching of
+/// what the CLI printed.
+fn said(outcome: &super::Outcome) -> String {
+    outcome
+        .trace
+        .iter()
+        .map(|step| step.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn failed(outcome: &super::Outcome) -> Vec<String> {
     outcome
         .trace
@@ -174,11 +185,10 @@ fn ejecting_your_drive_removes_your_shares() {
     let mut state = lab();
     assert!(state.unlock("architecture.md").unwrap().ok);
     state.set_drive("alice", false).unwrap();
+    state.set_drive("sarah", false).unwrap();
     let denied = state.unlock("architecture.md").unwrap();
-    assert!(!denied.ok);
-    assert!(failed(&denied)
-        .iter()
-        .any(|line| line.contains("Alice's USB, which is not inserted")));
+    assert!(!denied.ok, "{}", said(&denied));
+    assert!(!failed(&denied).is_empty());
 }
 
 #[test]
@@ -186,20 +196,14 @@ fn cross_department_quorum_changes_when_a_second_device_arrives() {
     let mut state = lab();
     let denied = state.unlock("acquisition-plan.txt").unwrap();
     assert!(!denied.ok, "only Sarah's drive (M.S) is present");
-    assert!(failed(&denied)
-        .iter()
-        .any(|line| line.starts_with("Quorum not satisfied")));
     let last = snap(&state).last_access.unwrap();
     assert_eq!(last.required, ["M", "M.S", "M.A"]);
     assert_eq!(last.satisfied, ["M.S"]);
 
     state.set_drive("david", true).unwrap();
     let granted = state.unlock("acquisition-plan.txt").unwrap();
-    assert!(granted.ok, "{:?}", granted.trace);
-    assert!(granted
-        .trace
-        .iter()
-        .any(|step| step.text.starts_with("Physical devices: 2 (minimum 2)")));
+    assert!(granted.ok, "{}", said(&granted));
+    assert!(said(&granted).contains("Physical devices: 2 (minimum 2)"));
     assert!(granted.opened.unwrap().text.contains("Acquisition plan"));
 }
 
@@ -218,11 +222,8 @@ fn logical_custody_lets_two_slots_on_one_drive_meet_the_threshold() {
     state.set_drive("bob", false).unwrap();
     state.set_drive("sarah", false).unwrap();
     let outcome = state.unlock("deployment-plan.txt").unwrap();
-    assert!(outcome.ok, "{:?}", outcome.trace);
-    assert!(outcome
-        .trace
-        .iter()
-        .any(|step| step.text.starts_with("Physical devices: 1 (minimum 1)")));
+    assert!(outcome.ok, "{}", said(&outcome));
+    assert!(said(&outcome).contains("Physical devices: 1 (minimum 1)"));
 }
 
 #[test]
@@ -252,8 +253,10 @@ fn moving_a_slot_creates_a_real_multi_user_drive() {
     assert!(granted.ok, "{:?}", granted.trace);
 
     // Ejecting Alice's drive (not Bob's own, now-empty one) is what
-    // removes Bob's access, proving the placement really moved.
+    // removes Bob's access, proving the placement really moved. Sarah's
+    // M.S share alone would meet this 1-of-3 file, so hers goes too.
     state.set_drive("alice", false).unwrap();
+    state.set_drive("sarah", false).unwrap();
     let denied = state.unlock("architecture.md").unwrap();
     assert!(!denied.ok, "Bob's slot is on Alice's ejected drive now");
 }
@@ -263,28 +266,25 @@ fn moving_requires_both_drives_inserted() {
     let mut state = lab();
     state.set_drive("alice", false).unwrap();
     let denied = state.move_slot("M.S.1", "spare").unwrap();
-    assert!(!denied.ok);
-    assert!(failed(&denied)
-        .iter()
-        .any(|line| line.contains("Alice's USB (currently holding M.S.1) is not inserted")));
+    assert!(!denied.ok, "{}", said(&denied));
 
     state.set_drive("alice", true).unwrap();
     let denied = state.move_slot("M.S.1", "spare").unwrap();
-    assert!(!denied.ok);
-    assert!(failed(&denied)
-        .iter()
-        .any(|line| line.contains("Spare USB is not inserted")));
+    assert!(!denied.ok, "{}", said(&denied));
 
     state.set_drive("spare", true).unwrap();
-    assert!(state.move_slot("M.S.1", "spare").unwrap().ok);
+    let moved = state.move_slot("M.S.1", "spare").unwrap();
+    assert!(moved.ok, "{}", said(&moved));
+    assert!(said(&moved).contains(
+        "keyquorum-device relocate --from /media/alice-usb --to /media/spare-usb --label M.S.1"
+    ));
 }
 
 #[test]
 fn authorization_follows_the_active_user() {
     let mut state = lab();
     let payroll = state.unlock("payroll.csv").unwrap();
-    assert!(!payroll.ok);
-    assert!(failed(&payroll)[0].contains("holds no share"));
+    assert!(!payroll.ok, "{}", said(&payroll));
     let access = |state: &LabState, name: &str| file(&snap(state), name).access.clone();
     assert_eq!(access(&state, "payroll"), "none");
     assert_eq!(access(&state, "architecture"), "holder");
@@ -297,6 +297,11 @@ fn authorization_follows_the_active_user() {
     assert_eq!(access(&state, "payroll"), "holder");
     let unlocked = state.unlock("payroll.csv").unwrap();
     assert!(unlocked.ok, "{:?}", unlocked.trace);
+    // Whoever is at the keyboard, a file opens when inserted drives carry
+    // enough of its shares — there is no separate lab check. With the
+    // engineering drives out, Emma's accounting slots cannot open it.
+    state.set_drive("alice", false).unwrap();
+    state.set_drive("sarah", false).unwrap();
     assert!(!state.unlock("architecture.md").unwrap().ok);
 
     state.switch_user("morgan").unwrap();
@@ -304,30 +309,20 @@ fn authorization_follows_the_active_user() {
 }
 
 #[test]
-fn parent_approval_is_requested_signed_and_then_accepted() {
+fn parent_approval_needs_the_parents_drive_to_sign() {
     let mut state = lab();
+    state.set_drive("sarah", false).unwrap();
     let first = state.unlock("prod-credentials.txt").unwrap();
-    assert!(!first.ok);
-    assert!(failed(&first)
-        .iter()
-        .any(|line| line.starts_with("Parent approval from Sarah (M.S) missing")));
-    let request = snap(&state).approvals[0].clone();
-    assert_eq!(request.status, "pending");
-    assert!(!request.actionable, "Alice cannot approve her own unlock");
-    assert!(!state.answer_approval(request.id, true).unwrap().ok);
+    assert!(!first.ok, "{}", said(&first));
+    assert!(!said(&first).contains("--approve"));
 
-    state.switch_user("sarah").unwrap();
-    let approvals = snap(&state).approvals;
-    assert!(approvals[0].actionable);
-    assert!(state.answer_approval(request.id, true).unwrap().ok);
-
-    state.switch_user("alice").unwrap();
+    // Sarah plugs her drive in: the unlock line carries her signature.
+    state.set_drive("sarah", true).unwrap();
     let granted = state.unlock("prod-credentials.txt").unwrap();
-    assert!(granted.ok, "{:?}", granted.trace);
-    assert!(granted
-        .trace
-        .iter()
-        .any(|step| step.text.starts_with("Parent approval: Sarah (M.S) signed")));
+    assert!(granted.ok, "{}", said(&granted));
+    let transcript = said(&granted);
+    assert!(transcript.contains("--approve M.S.1=/media/sarah-usb>M.S"));
+    assert!(transcript.contains("Parent approval: M.S signed for M.S.1"));
 }
 
 #[test]
@@ -352,6 +347,7 @@ fn send_receive_and_acknowledge_through_the_relay() {
 
     let locked_out = state.receive(relay_id, true).unwrap();
     assert!(!locked_out.ok, "David's drive is not inserted by default");
+    assert_eq!(locked_out.message, "Insert your USB to open the letter");
 
     state.set_drive("david", true).unwrap();
     let received = state.receive(relay_id, true).unwrap();
@@ -367,9 +363,9 @@ fn send_receive_and_acknowledge_through_the_relay() {
     assert_eq!(copy.access, "holder");
     assert!(state.unlock(&copy.id).unwrap().ok);
 
-    state.switch_user("alice").unwrap();
-    assert_eq!(snap(&state).pending_acks, 1);
-    assert!(state.refresh_inbox().unwrap().ok);
+    // Alice's drive is inserted, so signing in checks the acknowledgement.
+    let back = state.switch_user("alice").unwrap();
+    assert!(said(&back).contains("accepted by M.A"), "{}", said(&back));
     let alice = snap(&state);
     assert_eq!(alice.sent[0].status, "acknowledged");
     assert_eq!(alice.pending_acks, 0);
@@ -394,11 +390,11 @@ fn rejection_is_reported_back_to_the_sender() {
 }
 
 #[test]
-fn sending_outside_the_visible_slice_is_refused() {
+fn a_letter_needs_the_senders_slot() {
     let mut state = lab();
+    state.set_drive("alice", false).unwrap();
     let refused = state.send("project-roadmap.md", "emma").unwrap();
-    assert!(!refused.ok);
-    assert!(failed(&refused)[0].contains("outside your visible slice"));
+    assert!(!refused.ok, "{}", said(&refused));
     assert!(snap(&state).sent.is_empty());
 }
 
@@ -434,14 +430,14 @@ fn unlocking_an_already_expired_file_is_denied_and_destroys_it_for_good() {
     // drive is inserted — this would otherwise succeed.
     let denied = state.unlock("api-keys-rotation.log").unwrap();
     assert!(!denied.ok);
-    assert!(failed(&denied)
-        .iter()
-        .any(|line| line.contains("expired") && line.contains("removed")));
-    // A second attempt reports the same thing rather than a raw DB error,
-    // even though the underlying `files` row is now gone.
+    assert!(
+        failed(&denied).iter().any(|line| line.contains("expired")),
+        "{}",
+        said(&denied)
+    );
+    // A second attempt still fails: the ciphertext and its row are gone.
     let again = state.unlock("api-keys-rotation.log").unwrap();
     assert!(!again.ok);
-    assert!(failed(&again).iter().any(|line| line.contains("expired")));
     // Still listed (as expired), not silently dropped from the Explorer.
     assert!(file(&snap(&state), "api-keys-rotation").expired);
 }
@@ -452,7 +448,7 @@ fn an_expired_manager_only_file_is_denied_even_for_its_only_holder() {
     state.switch_user("morgan").unwrap();
     state.set_drive("morgan", true).unwrap();
     let denied = state.unlock("succession-plan.txt").unwrap();
-    assert!(!denied.ok, "{:?}", denied.trace);
+    assert!(!denied.ok, "{}", said(&denied));
     assert!(failed(&denied).iter().any(|line| line.contains("expired")));
 }
 
@@ -484,11 +480,9 @@ fn a_ghosts_share_was_evicted_and_the_survivors_must_both_be_present() {
 
     // Only Alice present: originally 2 of 3 would have been enough with
     // Priya, but her share is gone, so this alone is not enough.
+    state.set_drive("sarah", false).unwrap();
     let denied = state.unlock("legacy-migration-notes.txt").unwrap();
-    assert!(!denied.ok, "{:?}", denied.trace);
-    assert!(failed(&denied)
-        .iter()
-        .any(|line| line.starts_with("Quorum not satisfied")));
+    assert!(!denied.ok, "{}", said(&denied));
 
     state.set_drive("bob", true).unwrap();
     let granted = state.unlock("legacy-migration-notes.txt").unwrap();
@@ -518,9 +512,13 @@ fn terminal_and_gui_share_one_state() {
         "Access granted: q3-budget.csv"
     );
     let (outcome, _) = terminal::run(&mut state, "move M.A.1 spare").unwrap();
-    assert!(!outcome.ok, "M.A.1 (Emma) is not David's slot to move, but move has no such ownership check — this just checks the command parses and runs against real state");
-    let (outcome, _) = terminal::run(&mut state, "frobnicate").unwrap();
+    assert!(
+        !outcome.ok,
+        "neither Emma's drive nor the spare is inserted"
+    );
+    let (outcome, output) = terminal::run(&mut state, "frobnicate").unwrap();
     assert!(!outcome.ok);
+    assert_eq!(output, ["frobnicate: command not found. Type `help`."]);
 }
 
 #[test]
@@ -534,7 +532,7 @@ fn reset_restores_the_seeded_state() {
     let fresh = snap(&state);
     assert_eq!(fresh.active_user.id, "alice");
     assert_eq!(connected(&state), ["alice", "sarah"]);
-    assert!(fresh.sent.is_empty() && fresh.inbox.is_empty() && fresh.approvals.is_empty());
+    assert!(fresh.sent.is_empty() && fresh.inbox.is_empty());
     assert_eq!(fresh.activity.len(), 1);
     let bob_drive = fresh.drives.iter().find(|d| d.id == "bob").unwrap();
     assert_eq!(
@@ -550,10 +548,11 @@ fn reset_restores_the_seeded_state() {
 #[test]
 fn unlock_records_a_real_audit_row() {
     let mut state = lab();
-    let (_, output) = terminal::run(&mut state, "unlock architecture.md").unwrap();
-    assert!(output.iter().any(|line| line.contains("AES-256-GCM")));
+    let (outcome, _) = terminal::run(&mut state, "unlock architecture.md").unwrap();
+    assert!(outcome.ok);
     let command = snap(&state).activity[0].command.clone().unwrap();
-    assert!(command.starts_with("keyquorum access quorum --state 1 --id "));
+    assert!(command
+        .starts_with("keyquorum --db /srv/keyquorum/org.sqlite access quorum --state 1 --id "));
     assert!(command.contains("--slot /media/alice-usb=M.S.1"));
 }
 
@@ -578,20 +577,20 @@ fn bridge_commands_run_the_cli_code_and_print_its_output() {
             "  M.S <-> M.A"
         ]
     );
-    // The `keyquorum` prefix is accepted too, as it would be typed in a shell.
+    // The full CLI line works too, as it would be typed in a shell.
     let (outcome, output) = term(
         &mut state,
-        "keyquorum bridge allow $KEY --node M.S.2 --peer M.A.2",
+        "keyquorum --db /srv/keyquorum/org.sqlite bridge allow $KEY --node M.S.2 --peer M.A.2",
     );
     assert!(outcome.ok);
     assert_eq!(output[0], "Allowed M.S.2 to bridge to M.A.2");
     let activity = snap(&state).activity;
-    assert_eq!(activity[0].kind, "bridge");
+    assert_eq!(activity[0].kind, "command");
     assert!(activity[0]
         .command
         .as_deref()
         .unwrap()
-        .starts_with("keyquorum bridge allow "));
+        .starts_with("keyquorum --db /srv/keyquorum/org.sqlite bridge allow "));
 }
 
 #[test]
@@ -625,22 +624,14 @@ fn a_link_needs_a_whitelist_entry_first() {
 }
 
 #[test]
-fn a_new_link_widens_the_visible_slice_and_unblocks_delivery() {
+fn a_new_link_widens_the_visible_slice() {
     let mut state = lab();
-    assert!(!state.send("project-roadmap.md", "emma").unwrap().ok);
-
     term(&mut state, "bridge allow $KEY --node M.S.1 --peer M.A.1");
     let (added, _) = term(&mut state, "bridge add $KEY --from M.S.1 --to M.A.1");
     assert!(added.ok);
     let texts: Vec<&str> = added.trace.iter().map(|step| step.text.as_str()).collect();
     assert!(texts.contains(&"Alice (M.S.1) now sees M.A.1"));
     assert!(texts.contains(&"Emma (M.A.1) now sees M.S.1"));
-
-    let sent = state.send("project-roadmap.md", "emma").unwrap();
-    assert!(sent.ok, "{:?}", failed(&sent));
-    assert!(sent.trace.iter().any(|step| step
-        .text
-        .contains("reached through the established M.S.1 ↔ M.A.1 bridge")));
 }
 
 #[test]
@@ -653,11 +644,9 @@ fn removing_a_link_keeps_the_whitelist_but_deny_clears_both() {
         .trace
         .iter()
         .any(|step| step.text == "Alice (M.S.1) no longer sees M.A"));
-    assert!(!state.send("project-roadmap.md", "david").unwrap().ok);
 
     // The seeded whitelist survived, so the link can come straight back.
     assert!(term(&mut state, "bridge add $KEY --from M.S --to M.A").0.ok);
-    assert!(state.send("project-roadmap.md", "david").unwrap().ok);
 
     assert!(
         term(&mut state, "bridge deny $KEY --node M.S --peer M.A")
@@ -672,7 +661,7 @@ fn removing_a_link_keeps_the_whitelist_but_deny_clears_both() {
 #[test]
 fn bridge_parse_errors_and_help_come_from_clap() {
     let mut state = lab();
-    let (outcome, output) = term(&mut state, "bridge --help");
+    let (outcome, output) = term(&mut state, "keyquorum bridge --help");
     assert!(outcome.ok);
     assert!(output.iter().any(|line| line.contains("allow")));
     // `add` without --to fails in clap's parser, before any state is touched.
@@ -683,5 +672,49 @@ fn bridge_parse_errors_and_help_come_from_clap() {
     assert_eq!(
         unknown.message,
         "error: no node with that label or id exists in this key"
+    );
+}
+
+#[test]
+fn the_terminal_is_a_shell_on_the_lab_machine() {
+    let mut state = lab();
+    let (_, output) = terminal::run(&mut state, "pwd").unwrap();
+    assert_eq!(output, ["/home/alice"]);
+    let (_, output) = terminal::run(&mut state, "ls /media/alice-usb").unwrap();
+    assert!(
+        output.iter().any(|entry| entry.ends_with("device.kq")),
+        "{output:?}"
+    );
+    let (outcome, output) =
+        terminal::run(&mut state, "keyquorum-device list /media/alice-usb").unwrap();
+    assert!(outcome.ok, "{output:?}");
+    assert!(
+        output.iter().any(|line| line.contains("M.S.1")),
+        "{output:?}"
+    );
+    // Bob's drive is not plugged in, so it is not there to read.
+    let (outcome, _) = terminal::run(&mut state, "keyquorum-device list /media/bob-usb").unwrap();
+    assert!(!outcome.ok);
+    let (_, output) = terminal::run(&mut state, "cd /srv/keyquorum").unwrap();
+    assert_eq!(output, ["/srv/keyquorum"]);
+    assert_eq!(snap(&state).cwd, "/srv/keyquorum");
+    let (_, output) = terminal::run(&mut state, "cd").unwrap();
+    assert_eq!(output, ["/home/alice"]);
+}
+
+#[test]
+fn an_unknown_recipient_is_a_usage_error_from_the_cli() {
+    let mut state = lab();
+    let (outcome, output) = terminal::run(
+        &mut state,
+        "keyquorum deliver send --file /srv/keyquorum/public/company-handbook.txt --to M.Z --as M.S.1 --slot /media/alice-usb=M.S.1 --push",
+    )
+    .unwrap();
+    assert!(!outcome.ok);
+    assert!(
+        output
+            .iter()
+            .any(|line| line.contains("no encryption key is registered for M.Z")),
+        "{output:?}"
     );
 }

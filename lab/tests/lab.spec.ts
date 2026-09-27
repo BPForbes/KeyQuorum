@@ -29,7 +29,7 @@ test.describe("desktop lab", () => {
     await openFolder(page, "executive");
     await page.locator('[data-testid="file-row-acquisition-plan"]').dblclick();
     await expect(status(page)).toHaveText("Access denied: acquisition-plan.txt");
-    await expect(modalTrace(page)).toContainText("Quorum not satisfied");
+    await expect(modalTrace(page)).toContainText("not enough valid shares to reconstruct this key");
     await page.getByRole("button", { name: "Close" }).click();
 
     await page.getByRole("button", { name: "Insert David's USB" }).click();
@@ -122,30 +122,30 @@ test.describe("desktop lab", () => {
     await expect(letter).toContainText("from Alice (M.S.1)");
     await expect(letter).toContainText("Received · acknowledged");
 
+    // With Alice's drive out, the acknowledgement waits, sealed to her key.
+    await page.getByRole("button", { name: "Eject Alice's USB" }).click();
     await switchUser(page, "Alice");
     await page.getByRole("button", { name: /^Sent \(1\)/ }).click();
     await expect(page.locator("[data-testid^=sent-]")).toContainText("awaiting acknowledgement");
+    await page.getByRole("button", { name: "Insert Alice's USB" }).click();
     await page.getByRole("button", { name: "Check relay for acknowledgements" }).click();
     await expect(page.locator("[data-testid^=sent-]")).toContainText("Acknowledged by recipient");
   });
 
-  test("parent approval is requested, signed by the manager, then honoured", async ({ page }) => {
+  test("parent approval needs the manager's drive to sign the unlock", async ({ page }) => {
     await loadLab(page);
+    await page.getByRole("button", { name: "Eject Sarah's USB" }).click();
     await openFolder(page, "engineering");
     await page.locator('[data-testid="file-row-prod-credentials"]').dblclick();
-    await expect(modalTrace(page)).toContainText("Parent approval from Sarah (M.S) missing");
+    await expect(status(page)).toHaveText("Access denied: prod-credentials.txt");
+    await expect(modalTrace(page)).toContainText("this unlock needs the parent label's signature");
     await page.getByRole("button", { name: "Close" }).click();
 
-    await switchUser(page, "Sarah");
-    await page.getByRole("button", { name: /^Approvals/ }).click();
-    await page.getByRole("button", { name: "Approve and sign" }).click();
-    await expect(status(page)).toContainText("Approved unlock of prod-credentials.txt");
-
-    await switchUser(page, "Alice");
-    // Already inside /engineering/ from earlier in this test; the Explorer
-    // keeps its place across a user switch, same as a real file manager.
+    await page.getByRole("button", { name: "Insert Sarah's USB" }).click();
     await page.locator('[data-testid="file-row-prod-credentials"]').dblclick();
     await expect(status(page)).toHaveText("Access granted: prod-credentials.txt");
+    await page.getByRole("button", { name: "Show the access trace" }).click();
+    await expect(modalTrace(page)).toContainText("Parent approval: M.S signed for M.S.1");
   });
 
   test("right-click opens a context menu with Open, Send, and Properties", async ({ page }) => {
@@ -174,6 +174,9 @@ test.describe("desktop lab", () => {
   test("terminal and buttons share one state, and reset restores the seed", async ({ page }) => {
     await loadLab(page);
     const input = page.getByLabel("Terminal command");
+    await input.fill("keyquorum-device list /media/alice-usb");
+    await input.press("Enter");
+    await expect(page.getByTestId("terminal-output")).toContainText("M.S.1");
     await input.fill("usb insert david");
     await input.press("Enter");
     await expect(page.getByTestId("drive-david")).toContainText("Connected");

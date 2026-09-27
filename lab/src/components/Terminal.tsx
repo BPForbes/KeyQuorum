@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-export function Terminal({ lines, onRun }: { lines: string[]; onRun: (line: string) => void }) {
+export function Terminal({ cwd, lines, onRun }: { cwd: string; lines: string[]; onRun: (line: string) => void }) {
   const [input, setInput] = useState("");
   const outputRef = useRef<HTMLPreElement>(null);
   useEffect(() => {
@@ -13,7 +13,8 @@ export function Terminal({ lines, onRun }: { lines: string[]; onRun: (line: stri
         Advanced: terminal
       </h2>
       <p className="small muted">
-        Runs against the same lab state as the buttons. Try <code>unlock acquisition-plan.txt</code>,{" "}
+        A shell on the same lab machine the buttons use; they run these same commands. Try{" "}
+        <code>keyquorum-device list /media/alice-usb</code>, <code>bridge list 1</code>,{" "}
         <code>usb insert david</code>, or <code>su david</code>.
       </p>
       <pre className="terminal-output" ref={outputRef} aria-live="polite" data-testid="terminal-output">
@@ -32,7 +33,7 @@ export function Terminal({ lines, onRun }: { lines: string[]; onRun: (line: stri
         <label htmlFor="terminal-line" className="visually-hidden">
           Terminal command
         </label>
-        <span aria-hidden="true">$</span>
+        <span aria-hidden="true">{cwd}$</span>
         <input
           id="terminal-line"
           value={input}

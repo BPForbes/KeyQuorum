@@ -64,10 +64,6 @@ export class LabClient {
     return this.call(this.lab.refresh_inbox());
   }
 
-  answerApproval(id: number, approve: boolean): ActionResult {
-    return this.call(this.lab.answer_approval(id, approve));
-  }
-
   runCommand(line: string): ActionResult {
     return this.call(this.lab.run_command(line));
   }

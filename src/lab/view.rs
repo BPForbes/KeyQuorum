@@ -177,21 +177,6 @@ pub struct SentItemView {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ApprovalView {
-    pub id: u64,
-    pub file_name: String,
-    pub leaf: String,
-    pub approver: String,
-    pub requested_by: String,
-    pub devices: Vec<String>,
-    /// `pending`, `approved`, or `declined`.
-    pub status: String,
-    /// The active user is the one who can answer it.
-    pub actionable: bool,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ActivityView {
     pub seq: u64,
     pub actor: String,
@@ -225,9 +210,12 @@ pub struct Snapshot {
     /// Acknowledgements sealed to the active user that are still unopened.
     pub pending_acks: usize,
     pub sent: Vec<SentItemView>,
-    pub approvals: Vec<ApprovalView>,
     pub activity: Vec<ActivityView>,
     pub last_access: Option<AccessView>,
+    /// The terminal's working directory in the lab VM.
+    pub cwd: String,
+    /// The shared org store's path, for `keyquorum --db` lines the panels build.
+    pub org_db: String,
 }
 
 #[derive(Clone, Debug, Serialize)]

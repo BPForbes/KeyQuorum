@@ -116,7 +116,10 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
         }
         DeviceCommand::Provision { path, label } => {
             let mut container = env::fs(|fs| device::open_in(fs, &path))?;
-            let passphrase = env::confirm_passphrase("Slot passphrase: ", "Repeat passphrase: ")?;
+            let passphrase = env::confirm_passphrase(
+                &format!("Passphrase for {label}: "),
+                &format!("Repeat passphrase for {label}: "),
+            )?;
             let slot = env::fs(|fs| device::provision_in(fs, &mut container, &label, &passphrase))?;
             outln!("slot {}", slot.label);
             outln!("  encryption {}", hex::encode(slot.encryption_public));

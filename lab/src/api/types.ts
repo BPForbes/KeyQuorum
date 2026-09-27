@@ -103,17 +103,6 @@ export interface SentItemView {
   status: "delivered" | "acknowledged" | "rejected";
 }
 
-export interface ApprovalView {
-  id: number;
-  fileName: string;
-  leaf: string;
-  approver: string;
-  requestedBy: string;
-  devices: string[];
-  status: "pending" | "approved" | "declined";
-  actionable: boolean;
-}
-
 export interface ActivityView {
   seq: number;
   actor: string;
@@ -144,9 +133,12 @@ export interface Snapshot {
   inbox: InboxItemView[];
   pendingAcks: number;
   sent: SentItemView[];
-  approvals: ApprovalView[];
   activity: ActivityView[];
   lastAccess: AccessView | null;
+  // The terminal's working directory in the lab machine.
+  cwd: string;
+  // The org store's path, for `keyquorum --db` lines panels build.
+  orgDb: string;
 }
 
 export interface OpenedFile {

@@ -7,13 +7,23 @@ use std::path::Path;
 fn two_people() -> MemoryEnv {
     let mut env = MemoryEnv::default();
     for (who, peer) in [("alice", "bob"), ("bob", "alice")] {
-        assert!(env.device(&format!("keyquorum-device init /usb/{who}")).0.is_ok());
-        let (ok, out) = env.device(&format!("keyquorum-device provision /usb/{who} --label {who}"));
+        assert!(env
+            .device(&format!("keyquorum-device init /usb/{who}"))
+            .0
+            .is_ok());
+        let (ok, out) = env.device(&format!(
+            "keyquorum-device provision /usb/{who} --label {who}"
+        ));
         assert!(ok.is_ok(), "{ok:?}");
         assert!(out.starts_with(&format!("slot {who}")));
         let _ = peer;
     }
-    for (store, owner) in [("alice", "alice"), ("alice", "bob"), ("bob", "bob"), ("bob", "alice")] {
+    for (store, owner) in [
+        ("alice", "alice"),
+        ("alice", "bob"),
+        ("bob", "bob"),
+        ("bob", "alice"),
+    ] {
         for kind in ["encryption", "signing"] {
             let (ok, _) = env.keyquorum(&format!(
                 "keyquorum --db /home/{store}/keyquorum.sqlite device register /usb/{owner} --slot {owner} --type {kind}"
@@ -123,5 +133,9 @@ fn a_letter_from_an_unregistered_sender_does_not_open() {
     ));
     assert!(ok.is_err());
     assert!(!env.fs.exists(Path::new("/home/bob/x.txt")));
-    assert!(env.fs.list(Path::new("/acks")).unwrap_or_default().is_empty());
+    assert!(env
+        .fs
+        .list(Path::new("/acks"))
+        .unwrap_or_default()
+        .is_empty());
 }
