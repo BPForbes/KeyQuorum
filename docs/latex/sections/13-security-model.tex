@@ -1,0 +1,65 @@
+\section{Security model}
+
+This project handles cryptographic key material and encrypted user data
+directly. This section summarizes the trust boundaries described throughout
+the manual so they are visible in one place.
+
+\begin{securityBox}
+Never commit private keys, tokens, secrets, API key bearers, provider
+certificates, revocation lists, device descriptors (\file{device.kq},
+\file{device.skey}), slot tokens (\file{*.kqst}), or plaintext copies of
+protected files to a repository. See \file{.gitignore} for the patterns
+already excluded. Compiling with \flag{--features provider} does not make a
+host a trusted KeyQuorum provider.
+\end{securityBox}
+
+\subsection{What the mailbox can and cannot see}
+
+The hosted mailbox cannot decrypt \file{.kqpb} envelopes and must not be
+given wrapped shares or private keys. It stores the canonical \emph{public}
+tree as JSON documents --- labels, fingerprints, public keys, policy.
+Sending envelopes with \code{relay push} updates those documents from the
+sender's \flag{--db}. Pulling returns a sliced copy for the pull-key
+fingerprint, which the CLI translates into local SQLite. Personal devices
+load a bearer with \code{keyquorum loadkey} (or \flag{--api-key} once);
+they keep the hash and a sealed copy of the bearer in the owner-only org
+database.
+
+Recover a lost bearer by loading the replacement your provider issues.
+Recover a missed update by pulling again and importing on the device that
+holds the matching decryption key.
+
+\subsection{Custody, quorum, and delegation, at a glance}
+
+\begin{itemize}
+  \item A key file with no container placement is its own device; distinct
+  \flag{--share-file} keys are distinct physical devices, and presenting
+  the same key twice still counts once (Section~\ref{sec:quorum-files},
+  Section 3).
+  \item Hardware custody requires each consumed Shamir share to sit on its
+  own device id; logical custody lets several slots on one container meet a
+  threshold together, but the container still counts as one device (Section 3).
+  \item \code{unlock_approval = parent} layers a required parent signature
+  on top of Shamir and the device count; it is opt-in, not a replacement for
+  either (Section 3).
+  \item A non-root \code{tree restructure} is a proposal until the parent
+  countersigns; a direct tree update from that authorizer is refused; a
+  routine employee reissue by the direct parent stays a single signature
+  (Section~\ref{sec:private-bridges}, Section 9).
+  \item A ghost identity keeps hierarchy and provenance but holds no usable
+  private key: it cannot sign, satisfy a quorum, authorize an import, or be
+  exported (Section~\ref{sec:device-transfer}).
+\end{itemize}
+
+\subsection{Envelopes and authenticity}
+
+Every sealed letter in this manual --- a private-bridge package, an
+authenticated update, an export bundle, a delivered file, a device transfer
+letter --- shares the same shape: the outside names a recipient public key
+in the clear, the inside is sealed so only that recipient's private key can
+open it, and where the letter carries an authorization decision (an
+authenticated update, a delivery, a device transfer acknowledgement) it is
+additionally \emph{signed} by whoever is authorizing that decision, checked
+against a key the opening store already has on file. A mailbox that carries
+these letters can route them by their outer fingerprint without ever being
+able to read or forge what is inside.

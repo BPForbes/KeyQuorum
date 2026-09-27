@@ -1,0 +1,92 @@
+\section{Devices and custody}
+
+A key file with no container placement is its own device. Distinct
+\flag{--share-file} keys count as distinct physical devices, including when
+\code{minimum_physical_devices} is greater than 1. Presenting the same
+key twice still counts once.
+
+\code{keyquorum-device} manages the container directory. \code{keyquorum
+device} registers a slot's public key in the org store and binds it to the
+opened container. Several identities can live as passphrase-wrapped slots
+in one directory (a mounted USB, or a stand-in). The directory is an index:
+\file{device.kq} (\code{KQDV} v2) is signed by \file{device.skey}, and each
+slot token (\file{*.kqst}, \code{KQST}) seals that same device id. Opening a
+slot checks the token against the descriptor, so a rewritten descriptor id
+cannot make one container count as two devices. Path, mount, and volume
+label are \emph{not} the device identity --- \code{relocate} moves a slot's
+keypair onto another container, and that is the authenticated change of
+\code{device_id}.
+
+\begin{lstlisting}
+keyquorum-device init ./usb
+keyquorum-device provision ./usb --label M.S
+keyquorum-device list ./usb
+keyquorum device register ./usb --slot M.S --type encryption
+keyquorum device bind ./usb --slot M.S
+keyquorum-device relocate --from ./usb --to ./usb2 --label M.S
+\end{lstlisting}
+
+\code{register} records the public key; a lone key file still uses
+\code{register} and \flag{--share-file}. \code{bind} writes the placement
+from the container this process opened, tying that key to the container's
+\code{device_id}.
+
+\subsection{Presenting a slot}
+
+Commands that unwrap a key also take \flag{--slot container=label} beside
+\flag{--share-file}. This includes \code{reconstruct}, \code{add},
+\code{bind}, \code{revoke}, an \code{access quorum} unlock,
+\code{bridge private import}, \code{sign}, \code{remove-member}, and
+\code{relay pull}. \code{tree countersign} takes \flag{--device} and
+\flag{--slot} instead.
+
+\begin{lstlisting}
+keyquorum reconstruct <key-id> --slot ./usb=M.S --slot ./usb2=M.A \
+  --output master.pub
+keyquorum --db alice.sqlite relay pull --import --slot ./usb=M.S
+\end{lstlisting}
+
+\subsection{Custody modes}
+
+\code{split}, \code{tree}, and \code{access quorum --state 0} set
+\flag{--custody} (\code{hardware} or \code{logical}) and
+\flag{--minimum-physical-devices}.
+
+\begin{itemize}
+  \item \textbf{Hardware} custody requires each share Shamir actually
+  consumes to sit on its own device id.
+  \item \textbf{Logical} custody lets several slots on one container meet
+  that Shamir threshold together; the container still counts as one device
+  toward the minimum. Logical mode is for development and constrained
+  hardware --- logical slots are not a hardware quorum.
+\end{itemize}
+
+Reconstruction searches threshold-sized subsets for one that meets
+\code{minimum_physical_devices}. Unused extra shares are not counted.
+
+\begin{lstlisting}
+keyquorum split --label master --threshold 2 --custody logical \
+  --minimum-physical-devices 2 \
+  --leaf M.S=SoftwareDepartment.pub --leaf M.A=AccountingDepartment.pub \
+  --source master.pub --generate-keys --register
+keyquorum tree <key-id> --custody hardware --minimum-physical-devices 2
+\end{lstlisting}
+
+\subsection{Parent approval}
+
+\code{unlock_approval} is \code{none} (the default) or \code{parent}.
+Parent approval is opt-in and sits on top of both Shamir and the device
+count: each leaf that contributed a share needs its direct parent's
+signature.
+
+\begin{lstlisting}
+keyquorum access quorum --state 0 --source ./secret.txt \
+  --encrypted-path ./secret.txt.kqenc \
+  --leaf M.S.1=m-s-1.pub --unlock-approval parent \
+  --generate-keys --register
+keyquorum access quorum --state 1 --id <file-id> --slot ./usb=M.S.1 \
+  --approve M.S.1=./usb>M.S
+\end{lstlisting}
+
+\code{--approve} takes either \code{leaf=signing-key-file} or
+\code{leaf=container>slot}.

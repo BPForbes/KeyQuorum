@@ -1,0 +1,53 @@
+\section{File formats quick reference}
+
+Every on-disk and on-wire artifact this manual mentions has its own magic
+bytes, so a store can tell at a glance what it is holding without trusting
+a file extension.
+
+\begin{center}
+\begin{tabular}{@{}llp{0.56\linewidth}@{}}
+\toprule
+\textbf{Magic} & \textbf{Extension} & \textbf{What it is} \\
+\midrule
+\code{KQPB} & \file{.kqpb} & Sealed \code{PACKAGE} envelope: private-bridge
+  letters, authenticated updates, device transfer/relocate letters, file
+  delivery letters and acks. \\
+\code{KQXB} & \file{.kqxb} & Sealed \code{EXPORT_BUNDLE}: a portable
+  credential or file export. \\
+\code{KQBS} & \file{.kqbs} & Signature artifact from \code{sign} against a
+  private bridge roster. \\
+\code{KQDV} & \file{device.kq} & Signed device descriptor, verified against
+  \file{device.skey}. \\
+\code{KQST} & \file{*.kqst} & A slot token, sealing one logical identity to
+  a device id. \\
+\code{KQTX} & --- & Device transfer package, signed by the source device,
+  bound to a destination device id. Never stored raw on the mailbox. \\
+--- & \file{.kqbn} & Eviction notice --- a public routing slip, not a sealed
+  envelope. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{noteBox}
+\code{KQPB} and \code{KQXB} share one sealed-envelope framing (magic,
+version, kind byte, recipient X25519 public key, sealed length); they are
+two \emph{formats} of the same codec, not two independent designs. Device
+copy, move, and relocate letters are additional \code{PACKAGE} kind bytes
+under \code{KQPB}, not a separate format.
+\end{noteBox}
+
+\subsection{Roadmap}
+
+Private-key custody today is a key file (one key, one device) or a
+\code{keyquorum-device} container (one directory, many passphrase-wrapped
+slots). \code{generate} still prints a private key once and does not write
+it. Real USB token protocols are not implemented; a container is a
+directory, not an OS partition.
+
+\begin{itemize}
+  \item \textbf{Persisted private-key custody} for \code{generate} beyond
+  the key file and the slot token (for example, an OS keychain).
+  \item \textbf{\code{import}} of password-vault / locked-file
+  \code{export} bundles. The bundle format and encoder are already final;
+  private-bridge \file{.kqpb} import is already implemented.
+\end{itemize}

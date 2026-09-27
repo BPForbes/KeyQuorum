@@ -1,0 +1,150 @@
+\documentclass[10pt,letterpaper]{article}
+
+% Stable output so repeated builds diff cleanly.
+\ifdefined\pdftrailerid
+  \pdftrailerid{}
+\fi
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=0.75in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,longtable,tabularx,array}
+\usepackage[dvipsnames,table]{xcolor}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+\usepackage{bookmark}
+\usepackage{titlesec}
+
+\definecolor{KqNavy}{HTML}{111827}
+\definecolor{KqSlate}{HTML}{1F2937}
+\definecolor{KqTeal}{HTML}{0F766E}
+\definecolor{KqGold}{HTML}{92400E}
+\definecolor{KqRed}{HTML}{B91C1C}
+\definecolor{KqGreen}{HTML}{15803D}
+\definecolor{KqPaper}{HTML}{F8FAFC}
+\definecolor{KqLine}{HTML}{CBD5E1}
+\definecolor{CodeBg}{HTML}{F1F5F9}
+\definecolor{CodeComment}{HTML}{64748B}
+
+\providecommand{\KqDocTitle}{KeyQuorum}
+\providecommand{\KqDocSubtitle}{Manual}
+\providecommand{\KqDocDescription}{A manual for the KeyQuorum hardware-key quorum system.}
+\providecommand{\KqHeaderTitle}{KeyQuorum Manual}
+
+\hypersetup{
+  pdftitle={\KqDocTitle: \KqDocSubtitle},
+  pdfauthor={Bailey Forbes},
+  pdfsubject={KeyQuorum hardware-key quorum file-sharing system},
+  pdfkeywords={KeyQuorum, hardware key, Shamir, quorum, encryption, CLI}
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\textcolor{KqNavy}{KeyQuorum}}
+\rhead{\textcolor{KqNavy}{\KqHeaderTitle}}
+\cfoot{\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+
+\titleformat{\section}{\Large\bfseries\color{KqNavy}}{\thesection}{0.55em}{}
+\titleformat{\subsection}{\large\bfseries\color{KqTeal}}{\thesubsection}{0.5em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries\color{KqSlate}}{\thesubsubsection}{0.45em}{}
+\setlist{nosep,leftmargin=1.5em}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{4pt}
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.15}
+
+\lstdefinelanguage{KeyQuorumCli}{
+  morekeywords={
+    keyquorum,keyquorum-device,generate,register,list,split,tree,reconstruct,
+    bind,add,revoke,bridge,access,quorum,password,vault,pin,sign,verify,
+    export,share,reissue,restructure,countersign,transfer,enroll,copy,move,
+    recover,relay,push,pull,fetch,publish,loadkey,deliver,send,open,ack,
+    init,provision,relocate,updates,create,import,remove-member
+  },
+  sensitive=true,
+  morecomment=[l]{\#},
+  morestring=[b]"
+}
+\lstset{
+  language=KeyQuorumCli,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\bfseries\color{KqTeal},
+  commentstyle=\itshape\color{CodeComment},
+  backgroundcolor=\color{CodeBg},
+  frame=single,
+  rulecolor=\color{KqLine},
+  framerule=0.4pt,
+  xleftmargin=0.4em,
+  framexleftmargin=0.35em,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  breaklines=true,
+  aboveskip=5pt,
+  belowskip=5pt
+}
+
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\flag}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\file}[1]{\texttt{\detokenize{#1}}}
+
+% Short framed callouts for notes, warnings, and security-critical points.
+\newsavebox{\KqCalloutBox}
+\newenvironment{KqCallout}[2]{%
+  \def\KqCalloutColor{#1}%
+  \setlength{\fboxrule}{0.6pt}%
+  \par\smallskip\noindent
+  \begin{lrbox}{\KqCalloutBox}%
+  \begin{minipage}{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}%
+  \setlength{\parskip}{3pt}%
+  {\bfseries\color{#1}#2}\par
+}{%
+  \end{minipage}%
+  \end{lrbox}%
+  \fcolorbox{\KqCalloutColor}{\KqCalloutColor!6}{\usebox{\KqCalloutBox}}%
+  \par\smallskip
+}
+\newenvironment{noteBox}[1][Note]{\begin{KqCallout}{KqTeal}{#1}}{\end{KqCallout}}
+\newenvironment{cautionBox}[1][Watch out]{\begin{KqCallout}{KqGold}{#1}}{\end{KqCallout}}
+\newenvironment{securityBox}[1][Security]{\begin{KqCallout}{KqRed}{#1}}{\end{KqCallout}}
+
+\newcommand{\KqTitlePage}{%
+\begin{titlepage}
+\pagecolor{KqPaper}
+\centering
+\vspace*{1.4in}
+{\Huge\bfseries\color{KqNavy} \KqDocTitle\par}
+\vspace{0.2in}
+{\LARGE\color{KqTeal} \KqDocSubtitle\par}
+\vspace{0.6in}
+\rule{0.6\textwidth}{0.8pt}
+\vspace{0.6in}
+{\large Bailey Forbes\par}
+\vspace{0.35in}
+\begin{minipage}{0.78\textwidth}
+\small\color{KqSlate}
+\KqDocDescription
+\end{minipage}
+\vfill
+\end{titlepage}
+\nopagecolor
+}
+
+% Widen the TOC number column so two-digit subsections keep a gap before the title.
+\makeatletter
+\renewcommand*\l@subsection{\@dottedtocline{2}{1.5em}{2.8em}}
+\renewcommand*\l@subsubsection{\@dottedtocline{3}{4.3em}{3.6em}}
+\makeatother
+
+\newcommand{\KqContents}{%
+\pagenumbering{roman}
+\tableofcontents
+\clearpage
+\pagenumbering{arabic}
+}

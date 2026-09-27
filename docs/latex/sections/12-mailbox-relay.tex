@@ -1,0 +1,63 @@
+\section{The mailbox relay}
+
+The hosted mailbox carries sealed \file{.kqpb} envelopes and public-tree
+slices. It indexes packages by the recipient fingerprint in the outer
+header and never unseals them; wrapped shares and private keys stay on the
+device. Your provider gives you a URL and an API key --- you do not run the
+mailbox or mint keys yourself. Official \code{loadkey} / \code{relay}
+commands authenticate that host with a KeyQuorum-signed provider
+certificate before sending a bearer.
+
+\begin{lstlisting}
+export KEYQUORUM_RELAY_URL=https://relay.example.com
+# Load once; omit the key so it is prompted (stays out of shell history).
+keyquorum loadkey --url https://relay.example.com
+keyquorum relay push --dir ./bridge-packages
+keyquorum relay pull --output-dir ./inbox
+keyquorum --db alice.sqlite relay pull --import --share-file alice.key
+# --api-key still works for scripts and is stored after a successful check.
+keyquorum relay push --dir ./bridge-packages --api-key "$PUSH_KEY"
+\end{lstlisting}
+
+\code{loadkey} first verifies the relay's KeyQuorum-signed identity, then
+checks the key with the mailbox, then stores the key hash and a sealed copy
+of the bearer in the personal database. Later \code{relay} / \code{tree
+fetch} commands repeat that identity check and re-check the hash before
+using the key. An optional signed revocation list can be pointed at with
+\code{KEYQUORUM_PROVIDER_KRL}.
+
+\code{relay push} also uploads every public tree in \flag{--db} and
+\textbf{merges} it into the mailbox (unrelated nodes stay put). \code{relay
+pull} merges the returned slices into \flag{--db} (then \flag{--import}
+opens envelopes). \code{tree fetch} syncs topology without an envelope.
+Remote mailboxes must be \code{https://}; \code{http://} is accepted only
+for loopback.
+
+\subsection{The device mailbox}
+
+Device copy, move, and relocate (Section~\ref{sec:device-transfer}) use a
+second mailbox on the same host. \code{device.push} stores a sealed letter
+and publishes a device's public descriptor (device id, verify key, and slot
+public keys, signed by the device key). \code{device.pull} is bound to one
+recipient fingerprint, the same way \code{inbox.pull} is, and reads only
+that fingerprint's letters. A missing bearer is rejected, and a key of the
+wrong scope is rejected --- the host does not mint keys over HTTP. Your
+provider issues \code{device.push} and \code{device.pull} the same way it
+issues inbox keys; \code{loadkey} stores them.
+
+The host refuses a raw \code{KQTX} package and never unseals a letter.
+Bridge import does not read this mailbox, and device letters are not
+accepted into the bridge inbox.
+
+\subsection{Recovering from a lost key or a missed pull}
+
+If a key is lost or rotated, load the replacement your provider issues.
+Envelopes already delivered are unchanged.
+
+\begin{lstlisting}
+keyquorum relay pull --after <id>
+\end{lstlisting}
+
+replays anything not yet downloaded; \code{bridge private import} still
+rejects stale generations, so replaying an old envelope by mistake changes
+nothing.

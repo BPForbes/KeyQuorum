@@ -1,0 +1,60 @@
+\section{Getting started}
+
+\subsection{Building the CLI}
+
+Build the customer CLI with a release build; the binary is
+\file{target/release/keyquorum}.
+
+\begin{lstlisting}
+cargo build --release
+\end{lstlisting}
+
+Adding \flag{--features provider} compiles mailbox-host capabilities into
+the same crate. That flag is a build capability, not authorization: official
+clients trust a relay only when it presents a KeyQuorum-signed provider
+certificate and proves possession of the matching private key. This manual
+covers the customer-facing surface --- the URL and API key a provider gives
+you, and the \code{loadkey} / \code{relay push} / \code{relay pull} commands
+built on top of them. Run \code{keyquorum --help} for the full, current
+command list; this manual explains what each area of that list is for and
+how the pieces fit together.
+
+\subsection{The local database}
+
+Most commands read and write a local SQLite database that holds your split
+trees, registered keys, and (for a relay-connected identity) a sealed copy
+of your mailbox bearer. Pass \flag{--db} to point at a specific file; when
+omitted, commands use a default database in the current directory. Running
+the same commands against different \flag{--db} files is how one machine
+can hold several independent identities (for example \file{alice.sqlite}
+and \file{bob.sqlite} in the walkthroughs throughout this manual).
+
+\begin{securityBox}
+Never commit a SQLite database, a private key file, an API bearer, a
+provider certificate, a revocation list, a device descriptor
+(\file{device.kq}, \file{device.skey}), or a slot token (\file{*.kqst}) to
+version control. See \file{.gitignore} for the patterns this repository
+already excludes.
+\end{securityBox}
+
+\subsection{Two kinds of identity}
+
+KeyQuorum draws a line between two things that both use the word ``key'':
+
+\begin{itemize}
+  \item A \textbf{hardware key} is a registered Ed25519/X25519 keypair,
+  generated with \code{keyquorum generate} or brought in with
+  \code{keyquorum register}. It is what a person, device, or slot presents
+  to satisfy a quorum, sign a message, or open a sealed envelope.
+  \item A \textbf{split key} (or ``key'' in \code{split} / \code{tree}
+  output) is the secret being protected --- a standalone escrow, or the
+  data key encrypting a specific file. It lives as a tree of leaves, each
+  leaf sealed to one hardware key.
+\end{itemize}
+
+The rest of this manual moves through the CLI roughly in the order you
+would use it for a new deployment: registering hardware keys and devices,
+building a split tree, protecting files and credentials against it, then
+the supporting machinery --- private sign bridges, authenticated updates,
+device transfer, direct file delivery, and the mailbox relay that connects
+machines that are not open together.

@@ -1,0 +1,22 @@
+\section{Sending a file}
+
+\code{deliver} seals one file to another label. You sign it with your
+signing key and seal it to the encryption key your store has registered for
+the recipient. The recipient opens it: that step verifies your signature
+against the signing key their store holds for you. They then answer with a
+signed accept or reject, sealed back to you. Letters and answers are
+ordinary \file{.kqpb} envelopes that \code{relay push} / \code{relay pull}
+carry.
+
+\begin{lstlisting}
+keyquorum deliver send --file report.pdf --to M.A --as M.S.1 \
+  --slot ./usb=M.S.1 --push
+keyquorum --db david.sqlite relay pull --output-dir ./mail
+keyquorum --db david.sqlite deliver open --file ./mail/7.kqpb \
+  --slot ./usb=M.A --save-dir ./received --push-ack
+keyquorum deliver ack --file ./mail/8.kqpb --slot ./usb=M.S.1
+\end{lstlisting}
+
+\flag{--output-dir} / \flag{--ack-dir} write the envelope to disk instead of
+(or as well as) \flag{--push} / \flag{--push-ack}. \flag{--reject} refuses
+the file and says so in the answer.

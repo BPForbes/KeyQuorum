@@ -1,0 +1,47 @@
+\section{Quorum-protected files}
+\label{sec:quorum-files}
+
+\code{access quorum} protects a file against a split tree the same way
+\code{split} escrows a standalone secret --- \flag{--leaf} builds the tree
+in the same lock command.
+
+\begin{lstlisting}
+keyquorum split --label "escrow demo" --threshold 2 \
+  --leaf alice=alice.pub --leaf bob=bob.pub
+keyquorum tree <key-id>
+keyquorum reconstruct <key-id> --share-file alice.key --share-file bob.pub
+
+keyquorum access quorum --state 0 --source ./secret.txt \
+  --encrypted-path ./secret.txt.kqenc \
+  --leaf alice=alice.pub --leaf bob=bob.pub --generate-keys --register
+keyquorum access quorum --status --id <file-id>
+keyquorum access quorum --state 1 --id <file-id> \
+  --share-file alice.key --share-file bob.pub
+\end{lstlisting}
+
+\code{<key-id>} and \code{<file-id>} are printed by \code{split} / \code{access
+quorum --state 0} (``Split key 1'' / ``Locked file 1''). \flag{--share-file}
+takes the same key files \code{generate} wrote (\file{alice.pub} /
+\file{alice.key}) or another standard public-key file (PEM, OpenSSH
+\file{.pub}). The private key unwraps every leaf sealed to that hardware
+key. \code{tree} still prints leaf node ids for inspection.
+
+\subsection{Expiry}
+
+\flag{--expires "yyyy-mm-dd hh:mm"} (UTC) gives the locked file a cutoff:
+the first unlock attempt after that instant deletes the ciphertext and the
+database row instead of unlocking it.
+
+\begin{lstlisting}
+keyquorum access quorum --state 0 --source ./secret.txt \
+  --encrypted-path ./secret.txt.kqenc --leaf alice=alice.pub \
+  --leaf bob=bob.pub --expires "2026-12-31 23:59"
+\end{lstlisting}
+
+\subsection{Verbose unlock}
+
+\flag{--state 1 --verbose} prints which shares unwrapped, which subset met
+the threshold, the physical devices counted toward
+\code{minimum_physical_devices}, and any parent approval that was checked.
+This is the most direct way to confirm \emph{why} an unlock succeeded or
+failed on a given set of shares.

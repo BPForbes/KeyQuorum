@@ -1,0 +1,40 @@
+\section{Signatures, export, and sharing}
+
+\begin{lstlisting}
+keyquorum verify --public-key-file signer.pub --message-file msg.txt \
+  --signature-file msg.sig
+keyquorum sign --bridge-uid <uid> --node M.A.2 \
+  --signing-key-file ma2.sign.key --share-file ma2.key \
+  --message-file msg.txt --signature-out msg.kqbs
+keyquorum verify --bridge-uid <uid> --as-node M.S.2 \
+  --message-file msg.txt --signature-file msg.kqbs
+
+keyquorum export credential 1 --recipient-key-file bob.pub --output cred.kqxb
+keyquorum export file 1 --recipient-key-file bob.pub --output file.kqxb
+
+keyquorum share create-file 1 --ttl-seconds 3600 --pin
+keyquorum share create-file 1 --expires "2026-12-31 23:59"
+keyquorum share redeem-file
+\end{lstlisting}
+
+\code{verify} works two ways: against a plain public key
+(\flag{--public-key-file}) for an ordinary Ed25519 signature, or against a
+private sign bridge's roster (\flag{--bridge-uid} / \flag{--as-node}) for a
+\file{.kqbs} artifact --- see Section~\ref{sec:private-bridges}.
+
+\code{export} produces a portable \code{KQXB} bundle sealed to a recipient's
+public key, for a credential or a locked file. Bundles use the same sealed
+envelope framing as every other letter in this manual; only the recipient's
+private key can open one.
+
+\flag{--expires} is UTC (\code{yyyy-mm-dd hh:mm}). After that instant,
+redeeming a share link, unlocking, or a routine scan deletes the ciphertext
+from disk and drops the file's database row. \flag{--ttl-seconds} is a
+separate, relative share-link lifetime and does not by itself remove the
+underlying file.
+
+\begin{noteBox}
+\code{relay push --expires "2026-12-31 23:59"} stamps the same UTC cutoff on
+each uploaded envelope. An inbox pull skips expired rows and removes them
+from the mailbox, so the recipient cannot fetch the file after the date.
+\end{noteBox}

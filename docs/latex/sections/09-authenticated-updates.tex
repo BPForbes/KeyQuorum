@@ -1,0 +1,102 @@
+\section{Authenticated updates: reissue and restructure}
+
+Replacing someone's token, or changing the shape of the split tree, has to
+reach every store that held the old picture. Both changes ship as the same
+sealed \file{.kqpb} envelope a private bridge uses, so the mailbox routes
+them without being able to read them --- but the letter inside is
+\emph{signed} by an authorizing label, so each store decides for itself
+whether to apply it.
+
+\subsection{The four-part authorization rule}
+
+A store applies an update only when all four of these hold:
+
+\begin{itemize}
+  \item \textbf{Addressed here} --- the envelope's recipient key is an
+  unrevoked encryption key this store has registered under the label named
+  inside the letter. Re-addressing a letter to another mailbox gets it
+  rejected.
+  \item \textbf{Authorized} --- the signer is the subject itself or one of
+  its ancestors in the dotted hierarchy (\code{M} over \code{M.S} over
+  \code{M.S.2}), and this store already holds a registered signing key for
+  that label. A peer branch cannot restructure your tree or swap your
+  token.
+  \item \textbf{Signed} --- Ed25519 over a domain-separated hash that covers
+  every field, including the recipient label and its public key.
+  \item \textbf{In order} --- a reissue must be exactly one past the last
+  one this store applied for that person; a restructure must carry a public
+  generation strictly greater than the one stored. Replays, stale
+  envelopes, and skipped sequences change nothing.
+\end{itemize}
+
+\begin{lstlisting}
+# The authorizing label needs a registered signing key:
+keyquorum generate --type signing --label M --register \
+  --public-key-out M.sign.pub > M.sign.key
+
+# Restructure: after `add`, `revoke --evict`, or `bind`, announce the new
+# shape. Each active leaf gets its own visible slice at the next generation.
+# Root (M) is effective immediately. A label with a parent, such as M.S,
+# writes a proposal and waits.
+keyquorum tree restructure 1 --as M   --signing-key-file M.sign.key \
+  --output-dir ./updates
+keyquorum tree restructure 1 --as M.S --signing-key-file M.S.sign.key \
+  --output-dir ./updates
+keyquorum tree countersign 1 --as M --signing-key-file M.sign.key \
+  --output-dir ./updates
+# the same countersignature from a slot:
+# keyquorum tree countersign 1 --as M --device ./usb --slot M \
+#   --output-dir ./updates
+
+# Reissue: M.S.2 lost their token and generated a replacement.
+keyquorum reissue --node M.S.2 --key-id 1 \
+  --encryption-public-key-file M.S.2.new.pub \
+  --as M --signing-key-file M.sign.key --revoke-previous \
+  --output-dir ./updates
+
+keyquorum relay push --dir ./updates
+\end{lstlisting}
+
+Each store applies these the same way it applies a bridge envelope --- the
+kind byte in the header decides which it is:
+
+\begin{lstlisting}
+keyquorum --db M.S.1.sqlite relay pull --import --share-file M.S.1.key
+keyquorum --db M.S.1.sqlite bridge private import --file M.S.1.kqpb \
+  --share-file M.S.1.key
+keyquorum --db M.S.1.sqlite updates    # what this store has applied
+\end{lstlisting}
+
+\subsection{What a reissue changes}
+
+A reissue reaches every store whose own slice named that person, plus every
+party of every live private bridge they are on --- nobody else, since
+nobody else held the key. It repoints that person's tree leaves and bridge
+roster entries, and drops the leaf's sealed share, which was wrapped to the
+retired token and cannot be opened by its replacement. Recover it from the
+quorum, or reseal with \code{bind --public-key-file}.
+
+\begin{cautionBox}
+The shared secret of a private bridge is \emph{not} rotated by a reissue.
+Run \code{bridge private remove-member} to roll that generation if the
+retired token could have been compromised.
+\end{cautionBox}
+
+The subject's own copy is addressed to the \textbf{incoming} encryption
+key, so their replacement device must have registered it (\code{generate
+--register}, or \code{register}) before importing --- which is also what
+lets it open the letter.
+
+\subsection{Restructure vs.\ publish}
+
+\code{tree restructure} differs from \code{tree publish} in exactly this
+way: \code{publish} replaces a relay document with a store's own view,
+while a restructure hands each person a slice they can verify the
+authority for.
+
+A restructure whose authorizer is the root is applied as soon as a store
+accepts the envelope. A restructure whose authorizer has a parent
+(\code{M.S} under \code{M}) is a proposal until that parent runs \code{tree
+countersign}; import accepts that change only with the parent's
+countersignature. A routine employee reissue by that employee's own parent
+(\code{M.S} reissuing \code{M.S.1}) stays a single signature.

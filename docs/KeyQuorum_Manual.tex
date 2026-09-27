@@ -1,0 +1,45 @@
+\newcommand{\KqDocTitle}{KeyQuorum}
+\newcommand{\KqDocSubtitle}{Manual}
+\newcommand{\KqHeaderTitle}{KeyQuorum Manual}
+\newcommand{\KqDocDescription}{%
+A manual for the KeyQuorum hardware-key quorum file-sharing system: hardware
+keys and devices, split-tree quorum protection, private sign bridges,
+authenticated updates, moving identities between devices, sending files
+directly, and the mailbox relay that connects machines that are not open
+together.
+}
+\input{docs/latex/keyquorum-common.tex}
+
+\begin{document}
+\KqTitlePage
+\KqContents
+
+\input{docs/latex/sections/00-overview.tex}
+\input{docs/latex/sections/01-getting-started.tex}
+\input{docs/latex/sections/02-hardware-keys.tex}
+\input{docs/latex/sections/03-devices-and-custody.tex}
+\input{docs/latex/sections/04-splitting-secrets.tex}
+\input{docs/latex/sections/05-quorum-files.tex}
+\input{docs/latex/sections/06-password-files-and-vault.tex}
+\input{docs/latex/sections/07-signatures-export-sharing.tex}
+\input{docs/latex/sections/08-private-bridges.tex}
+\input{docs/latex/sections/09-authenticated-updates.tex}
+\input{docs/latex/sections/10-device-transfer.tex}
+\input{docs/latex/sections/11-file-delivery.tex}
+\input{docs/latex/sections/12-mailbox-relay.tex}
+\input{docs/latex/sections/13-security-model.tex}
+\input{docs/latex/sections/14-file-formats.tex}
+
+\section{Contributing}
+
+AI coding agents working in this repository should read the relevant
+instructions file for their tool: \file{CLAUDE.md} for Claude,
+\file{AGENTS.md} for Codex and other agent tooling, and \file{.cursorrules}
+for Cursor.
+
+\section{License}
+
+Licensed under the MIT License. See \file{LICENSE} in the repository root
+for details.
+
+\end{document}
