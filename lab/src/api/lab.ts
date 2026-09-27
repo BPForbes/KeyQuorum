@@ -123,4 +123,16 @@ export class LabClient {
   registerLeaf(driveId: string, slotLabel: string, parentLabel: string): ActionResult {
     return this.call(this.lab.register_leaf(driveId, slotLabel, parentLabel));
   }
+
+  reissueKey(nodeLabel: string, toDriveId: string, passphrase: string): ActionResult {
+    return this.call(this.lab.reissue_key(nodeLabel, toDriveId, passphrase));
+  }
+
+  proposeRestructure(): ActionResult {
+    return this.call(this.lab.propose_restructure());
+  }
+
+  countersignRestructure(passphrase: string): ActionResult {
+    return this.call(this.lab.countersign_restructure(passphrase));
+  }
 }

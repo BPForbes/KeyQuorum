@@ -171,6 +171,15 @@ export interface RelayStatusView {
   apiKeys: number;
 }
 
+export interface RestructureProposalView {
+  treeLabel: string;
+  /** Label that proposed the restructure. */
+  authorizerLabel: string;
+  /** Parent label that must countersign before this takes effect. */
+  countersignerLabel: string;
+  generation: number;
+}
+
 export interface Snapshot {
   activeUser: UserView;
   users: UserView[];
@@ -194,6 +203,7 @@ export interface Snapshot {
   exports: ExportedBundleView[];
   fileShares: FileShareView[];
   signatures: SignatureView[];
+  pendingRestructures: RestructureProposalView[];
 }
 
 export interface OpenedFile {

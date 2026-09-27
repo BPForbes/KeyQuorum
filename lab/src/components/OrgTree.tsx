@@ -1,8 +1,82 @@
 import { useId, useState } from "react";
 import type { Act } from "../App";
-import type { Snapshot, TreeNodeView } from "../api/types";
+import type { ActionResult, Snapshot, TreeNodeView } from "../api/types";
 
-function Node({ node, nodes, act }: { node: TreeNodeView; nodes: TreeNodeView[]; act: Act }) {
+// The only tree label in this lab holding a plaintext authority signing
+// key (see `seed::RESTRUCTURE_AUTHORITY`), so it's the only one whose
+// subtree `keyquorum reissue --as` can ever authorize. The real CLI still
+// makes the actual call — this only decides whether to show the button.
+const RESTRUCTURE_AUTHORITY = "M.A";
+
+function inAuthoritySubtree(label: string) {
+  return label === RESTRUCTURE_AUTHORITY || label.startsWith(`${RESTRUCTURE_AUTHORITY}.`);
+}
+
+/** Reissue a leaf's hardware key onto an already-provisioned replacement token. */
+function ReissueForm({ label, snapshot, act }: { label: string; snapshot: Snapshot; act: Act }) {
+  const id = useId();
+  const connected = snapshot.drives.filter((drive) => drive.connected);
+  const [driveId, setDriveId] = useState(connected[0]?.id ?? "");
+  const [passphrase, setPassphrase] = useState("");
+  const [open, setOpen] = useState(false);
+  const [result, setResult] = useState<ActionResult | null>(null);
+
+  if (connected.length === 0) return null;
+
+  return (
+    <>
+      <button type="button" className="btn small-btn" onClick={() => setOpen((value) => !value)}>
+        {open ? "Cancel reissue" : "Reissue…"}
+      </button>
+      {open ? (
+        <form
+          className="provision-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!passphrase) return;
+            const outcome = act((client) => client.reissueKey(label, driveId, passphrase));
+            if (outcome) setResult(outcome);
+            if (outcome?.ok) {
+              setPassphrase("");
+              setOpen(false);
+            }
+          }}
+        >
+          <label htmlFor={`${id}-drive`}>Replacement drive</label>
+          <select id={`${id}-drive`} value={driveId} onChange={(event) => setDriveId(event.target.value)}>
+            {connected.map((drive) => (
+              <option key={drive.id} value={drive.id}>
+                {drive.name}
+              </option>
+            ))}
+          </select>
+          <label htmlFor={`${id}-pass`} className="visually-hidden">
+            New passphrase for {label}
+          </label>
+          <input
+            id={`${id}-pass`}
+            type="password"
+            value={passphrase}
+            onChange={(event) => setPassphrase(event.target.value)}
+            placeholder="New passphrase for the replacement token"
+            autoComplete="new-password"
+            required
+          />
+          <button type="submit" className="btn small-btn">
+            Reissue
+          </button>
+          <p className="small muted">
+            Needs a slot named <code>{label}</code> already provisioned on the chosen drive (Security &amp; devices
+            tab), authorized as {RESTRUCTURE_AUTHORITY} (<code>keyquorum reissue</code>).
+          </p>
+        </form>
+      ) : null}
+      {result ? <p className={`small ${result.ok ? "muted" : "viewer-denied-title"}`}>{result.message}</p> : null}
+    </>
+  );
+}
+
+function Node({ node, nodes, act, snapshot }: { node: TreeNodeView; nodes: TreeNodeView[]; act: Act; snapshot: Snapshot }) {
   const children = nodes.filter((candidate) => candidate.parent === node.label);
   const tags: string[] = [];
   if (node.activeUser) tags.push("you");
@@ -46,20 +120,23 @@ function Node({ node, nodes, act }: { node: TreeNodeView; nodes: TreeNodeView[];
           ))}
         </span>
         {node.kind === "leaf" ? (
-          <button
-            type="button"
-            className="btn small-btn"
-            onClick={() => act((client) => client.revokeKey(node.label))}
-            aria-label={`Revoke ${node.label}'s hardware key`}
-          >
-            Revoke key
-          </button>
+          <>
+            <button
+              type="button"
+              className="btn small-btn"
+              onClick={() => act((client) => client.revokeKey(node.label))}
+              aria-label={`Revoke ${node.label}'s hardware key`}
+            >
+              Revoke key
+            </button>
+            {inAuthoritySubtree(node.label) ? <ReissueForm label={node.label} snapshot={snapshot} act={act} /> : null}
+          </>
         ) : null}
       </div>
       {children.length > 0 ? (
         <ul>
           {children.map((child) => (
-            <Node key={child.label} node={child} nodes={nodes} act={act} />
+            <Node key={child.label} node={child} nodes={nodes} act={act} snapshot={snapshot} />
           ))}
         </ul>
       ) : null}
@@ -166,6 +243,80 @@ function Connections({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
   );
 }
 
+/** Propose a tree restructure (as the lab's one authority label) and countersign proposals addressed to you. */
+function RestructureAdmin({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
+  const [passphrase, setPassphrase] = useState("");
+  const [result, setResult] = useState<ActionResult | null>(null);
+  const activeLabel = snapshot.activeUser.label;
+  const isAuthority = activeLabel === RESTRUCTURE_AUTHORITY;
+  const mine = snapshot.pendingRestructures.filter((proposal) => proposal.countersignerLabel === activeLabel);
+
+  if (!isAuthority && mine.length === 0 && snapshot.pendingRestructures.length === 0) return null;
+
+  return (
+    <div className="bridges" data-testid="restructure-admin">
+      <h3 className="bridges-title">Tree restructure</h3>
+      <p className="muted small">
+        Republishing the org tree at its next public generation (<code>keyquorum tree restructure</code>) needs a
+        parent&rsquo;s countersignature (<code>keyquorum tree countersign</code>) before it takes effect — only{" "}
+        {RESTRUCTURE_AUTHORITY} can propose one in this lab.
+      </p>
+      {isAuthority ? (
+        <button
+          type="button"
+          className="btn"
+          onClick={() => {
+            const outcome = act((client) => client.proposeRestructure());
+            if (outcome) setResult(outcome);
+          }}
+        >
+          Propose restructure as {RESTRUCTURE_AUTHORITY}
+        </button>
+      ) : null}
+      {snapshot.pendingRestructures.length > 0 ? (
+        <ul className="bridge-list">
+          {snapshot.pendingRestructures.map((proposal) => (
+            <li key={`${proposal.treeLabel}-${proposal.generation}`}>
+              <code>
+                {proposal.authorizerLabel} → {proposal.countersignerLabel}
+              </code>{" "}
+              <span className="muted small">generation {proposal.generation}, waiting to be countersigned</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {mine.length > 0 ? (
+        <form
+          className="unlock-note-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!passphrase) return;
+            const outcome = act((client) => client.countersignRestructure(passphrase));
+            if (outcome) setResult(outcome);
+            setPassphrase("");
+          }}
+        >
+          <label htmlFor="restructure-countersign-pass" className="visually-hidden">
+            Your device passphrase
+          </label>
+          <input
+            id="restructure-countersign-pass"
+            type="password"
+            value={passphrase}
+            onChange={(event) => setPassphrase(event.target.value)}
+            placeholder="Your device passphrase"
+            required
+          />
+          <button type="submit" className="btn btn-primary">
+            Countersign
+          </button>
+        </form>
+      ) : null}
+      {result ? <p className={`small ${result.ok ? "muted" : "viewer-denied-title"}`}>{result.message}</p> : null}
+    </div>
+  );
+}
+
 export function OrgTree({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
   const { nodes } = snapshot.tree;
   const roots = nodes.filter((node) => node.parent === null);
@@ -185,14 +336,16 @@ export function OrgTree({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
         Each leaf&rsquo;s <strong>Revoke key</strong> button runs the real <code>keyquorum revoke</code>: it bans that
         hardware key from future trees and drops its existing bindings and pairings. It does not evict the leaf or
         refresh survivor shares — that still takes collecting the survivors&rsquo; keys, which stays a Terminal-tab
-        job.
+        job. Leaves under {RESTRUCTURE_AUTHORITY} also offer <strong>Reissue</strong>, which replaces the hardware key
+        outright onto an already-provisioned token (<code>keyquorum reissue</code>).
       </p>
       <ul className="tree">
         {roots.map((node) => (
-          <Node key={node.label} node={node} nodes={nodes} act={act} />
+          <Node key={node.label} node={node} nodes={nodes} act={act} snapshot={snapshot} />
         ))}
       </ul>
       <Connections snapshot={snapshot} act={act} />
+      <RestructureAdmin snapshot={snapshot} act={act} />
     </section>
   );
 }
