@@ -399,7 +399,13 @@ fn route(
         }
     };
     let token = || request.bearer.clone().ok_or(Error::InvalidApiKey);
-    let is_json = request.content_type == Some("application/json");
+    let is_json = request.content_type.is_some_and(|value| {
+        value
+            .split(';')
+            .next()
+            .map(str::trim)
+            .is_some_and(|mime| mime.eq_ignore_ascii_case("application/json"))
+    });
     match (request.method, segments.as_slice()) {
         ("POST", ["provider-identity"]) => {
             let body: ProviderIdentityRequest = parse_json(&request.body)?;

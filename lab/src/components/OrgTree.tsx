@@ -3,14 +3,10 @@ import type { Act } from "../App";
 import type { ActionResult, Snapshot, TreeNodeView } from "../api/types";
 
 // The only tree label in this lab holding a plaintext authority signing
-// key (see `seed::RESTRUCTURE_AUTHORITY`), so it's the only one whose
-// subtree `keyquorum reissue --as` can ever authorize. The real CLI still
-// makes the actual call — this only decides whether to show the button.
+// key (see `seed::RESTRUCTURE_AUTHORITY`), so reissue and restructure run
+// `--as` this label. Reissue is offered on every leaf: the CLI itself
+// refuses a node outside this label's subtree.
 const RESTRUCTURE_AUTHORITY = "M.A";
-
-function inAuthoritySubtree(label: string) {
-  return label === RESTRUCTURE_AUTHORITY || label.startsWith(`${RESTRUCTURE_AUTHORITY}.`);
-}
 
 /** Reissue a leaf's hardware key onto an already-provisioned replacement token. */
 function ReissueForm({ label, snapshot, act }: { label: string; snapshot: Snapshot; act: Act }) {
@@ -129,7 +125,7 @@ function Node({ node, nodes, act, snapshot }: { node: TreeNodeView; nodes: TreeN
             >
               Revoke key
             </button>
-            {inAuthoritySubtree(node.label) ? <ReissueForm label={node.label} snapshot={snapshot} act={act} /> : null}
+            <ReissueForm label={node.label} snapshot={snapshot} act={act} />
           </>
         ) : null}
       </div>
@@ -336,8 +332,9 @@ export function OrgTree({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
         Each leaf&rsquo;s <strong>Revoke key</strong> button runs the real <code>keyquorum revoke</code>: it bans that
         hardware key from future trees and drops its existing bindings and pairings. It does not evict the leaf or
         refresh survivor shares — that still takes collecting the survivors&rsquo; keys, which stays a Terminal-tab
-        job. Leaves under {RESTRUCTURE_AUTHORITY} also offer <strong>Reissue</strong>, which replaces the hardware key
-        outright onto an already-provisioned token (<code>keyquorum reissue</code>).
+        job. <strong>Reissue</strong> replaces a leaf&rsquo;s hardware key outright onto an already-provisioned token
+        (<code>keyquorum reissue --as {RESTRUCTURE_AUTHORITY}</code>); the CLI refuses leaves outside{" "}
+        {RESTRUCTURE_AUTHORITY}&rsquo;s subtree.
       </p>
       <ul className="tree">
         {roots.map((node) => (
