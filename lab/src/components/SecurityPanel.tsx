@@ -604,7 +604,7 @@ export function SecurityPanel({ snapshot, act }: { snapshot: Snapshot; act: Act 
           )}
         </div>
 
-        <div data-testid="export-bundles">
+        <div data-testid="exported-bundles">
           <h3>Exported bundles</h3>
           <p className="small muted">
             Portable <code>KQXB</code> bundles you sealed to another lab user&rsquo;s public key (

@@ -87,6 +87,12 @@ const wasReceived = (latest: ActivityView | undefined) => latest?.kind === "rece
 const wasMoved = (latest: ActivityView | undefined, label: string) =>
   latest?.kind === "move" && latest.outcome !== "denied" && latest.title.startsWith(`Moved ${label} `);
 
+// LabState::transfer_copy logs "Copied <label> to <drive>; ..." only on
+// success, so this ties the gate to the one slot the step's target names
+// (the copy form next to it) rather than any successful copy.
+const wasCopied = (latest: ActivityView | undefined, label: string) =>
+  latest?.kind === "transfer-copy" && latest.outcome === "granted" && latest.title.startsWith(`Copied ${label} `);
+
 // The Bridges panel's buttons and the Terminal tab both end up calling
 // `client.runCommand`, which always logs the same generic "terminal" kind
 // (see KeyQuorumLab::run_command) -- the only thing that tells one command
@@ -403,9 +409,9 @@ export const TUTORIALS: TutorialModule[] = [
         title: "Try it: copy a slot",
         body: <p>The adjacent <strong>Copy</strong> form runs <code>transfer copy</code>. It needs the slot&rsquo;s published demo passphrase and leaves the source usable, unlike a transfer move.</p>,
         tab: "usb",
-        target: () => ['[data-testid^="copy-slot-"]'],
+        target: () => ['[data-testid="copy-slot-M.S.1"]'],
         requiredKind: "transfer-copy",
-        isDone: (_snapshot, latest) => latest?.kind === "transfer-copy" && latest.outcome === "granted",
+        isDone: (_snapshot, latest) => wasCopied(latest, "M.S.1"),
       },
       {
         title: "Try it: inspect custody in Properties",
@@ -692,6 +698,11 @@ export const TUTORIALS: TutorialModule[] = [
             latest.title === `Create a share link for ${fileName}`
           );
         },
+        // Remember the specific share this module made, so revoke below
+        // can check that exact id rather than accepting a revoke of any
+        // other share of the same file (e.g. a leftover from an earlier
+        // attempt at this same step).
+        remember: (snapshot) => ({ shareId: snapshot.fileShares[snapshot.fileShares.length - 1]?.id }),
       },
       {
         title: "Try it: redeem the share link",
@@ -699,6 +710,10 @@ export const TUTORIALS: TutorialModule[] = [
         tab: "security",
         target: () => ['[data-testid="share-links"]'],
         requiredKind: "share-redeem",
+        // LabState::redeem_file_share authorizes purely on the bearer
+        // token, so its activity carries no share id to check -- the file
+        // name (tied to the file created earlier in this module) is the
+        // strongest link available here.
         isDone: (_snapshot, latest, memory) => {
           const fileName = memory.fileName;
           return (
@@ -717,11 +732,14 @@ export const TUTORIALS: TutorialModule[] = [
         requiredKind: "share-revoke",
         isDone: (_snapshot, latest, memory) => {
           const fileName = memory.fileName;
+          const shareId = memory.shareId;
           return (
             typeof fileName === "string" &&
+            typeof shareId === "number" &&
             latest?.kind === "share-revoke" &&
             latest.outcome === "granted" &&
-            latest.title === `Revoke the share link for ${fileName}`
+            latest.title === `Revoke the share link for ${fileName}` &&
+            latest.command?.endsWith(` revoke-file ${shareId}`) === true
           );
         },
       },
@@ -783,8 +801,16 @@ export const TUTORIALS: TutorialModule[] = [
         tab: "files",
         target: () => ['[data-panel="files"]'],
         requiredKind: "access",
+        // Error::ExpiredFile's Display is the one, exact "file has expired
+        // and has been removed from disk" -- the CLI only ever says this
+        // when quorum::purge_if_expired_in has just deleted the row and
+        // ciphertext. Matching that phrase (not a loose expir/purge/delet
+        // scan) is what proves the destructive purge itself ran, not just
+        // that some denied attempt's trace happens to mention expiry.
         isDone: (_snapshot, latest) =>
-          latest?.kind === "access" && latest.trace.some((step) => /expir|purge|delet/i.test(step.text)),
+          latest?.kind === "access" &&
+          latest.outcome === "denied" &&
+          latest.trace.some((step) => /expired and has been removed from disk/i.test(step.text)),
       },
     ],
   },

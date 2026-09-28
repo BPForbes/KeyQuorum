@@ -322,4 +322,111 @@ test.describe("guided tutorials", () => {
     await page.getByTestId("mailbox-refresh").click();
     await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible({ timeout: 3_000 });
   });
+
+  test("the move & copy slots module's copy gate ties to the M.S.1 slot", async ({ page }) => {
+    await loadLab(page);
+    await page.getByRole("button", { name: "Tutorials & Documentation" }).click();
+    await page
+      .getByRole("listitem")
+      .filter({ hasText: "Move & copy slots" })
+      .getByRole("button", { name: "Start" })
+      .click();
+
+    await expect(page.getByRole("heading", { name: "Two similar-looking operations" })).toBeVisible();
+    await page.getByRole("button", { name: "Next" }).click();
+
+    await expect(page.getByRole("heading", { name: "Try it: move a slot" })).toBeVisible({ timeout: 3_000 });
+    await page.getByTestId("move-slot-M.S.1").getByRole("button", { name: "Move" }).click();
+
+    // Step 3 is gated on copying this same slot (M.S.1), by its testid.
+    await expect(page.getByRole("heading", { name: "Try it: copy a slot" })).toBeVisible({ timeout: 3_000 });
+    const copyForm = page.getByTestId("copy-slot-M.S.1");
+    await copyForm.getByPlaceholder("M.S.1's passphrase").fill("lab-demo-M.S.1");
+    await copyForm.getByRole("button", { name: "Copy" }).click();
+    await expect(page.getByRole("heading", { name: "Try it: inspect custody in Properties" })).toBeVisible({
+      timeout: 3_000,
+    });
+  });
+
+  test("the share-link steps link redeem and revoke to the file and share created in this module", async ({
+    page,
+  }) => {
+    await loadLab(page);
+    await page.getByRole("button", { name: "Tutorials & Documentation" }).click();
+    await page
+      .getByRole("listitem")
+      .filter({ hasText: "Export bundles & share links" })
+      .getByRole("button", { name: "Start" })
+      .click();
+
+    await expect(page.getByRole("heading", { name: "Try it: create the file you will share" })).toBeVisible();
+    await page.getByLabel("File name").fill("shared-note.txt");
+    await page.getByLabel("Contents").fill("Shared via a bearer link.");
+    await page.getByLabel("Your own lock password").fill("s3cret-pass");
+    await page.getByRole("button", { name: "Lock with my password" }).click();
+
+    await expect(page.getByRole("heading", { name: "Try it: create a recipient-bound export" })).toBeVisible({
+      timeout: 3_000,
+    });
+    const passwordFiles = page.getByTestId("password-files");
+    await passwordFiles.getByRole("button", { name: "Export…" }).click();
+    await passwordFiles.getByPlaceholder("This file's lock password").fill("s3cret-pass");
+    await passwordFiles.getByRole("button", { name: "Seal bundle" }).click();
+
+    await expect(page.getByRole("heading", { name: "Try it: view the export bundle" })).toBeVisible({
+      timeout: 3_000,
+    });
+    await page.getByRole("button", { name: "View sealed bytes" }).click();
+    await page.getByLabel("Close").click();
+
+    await expect(page.getByRole("heading", { name: "Try it: create a bearer share link" })).toBeVisible({
+      timeout: 3_000,
+    });
+    await passwordFiles.getByRole("button", { name: "Share…" }).click();
+    await passwordFiles.getByRole("button", { name: "Create link" }).click();
+    const token = (await page.getByTestId("opened-file").innerText()).match(/Token: (\S+)/)?.[1];
+    expect(token).toBeTruthy();
+    await page.getByLabel("Close").click();
+
+    // Redeeming ties to the file created earlier in this module.
+    await expect(page.getByRole("heading", { name: "Try it: redeem the share link" })).toBeVisible({
+      timeout: 3_000,
+    });
+    const shareLinks = page.getByTestId("share-links");
+    await shareLinks.getByPlaceholder("Paste the token you were given").fill(token!);
+    await shareLinks.getByRole("button", { name: "Redeem" }).click();
+
+    // Revoking ties to the exact share id this module created, not just
+    // any share of the same file.
+    await expect(page.getByRole("heading", { name: "Try it: revoke the share" })).toBeVisible({ timeout: 3_000 });
+    await shareLinks.getByRole("button", { name: "Revoke" }).click();
+    await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible({ timeout: 3_000 });
+  });
+
+  test("the expiry step requires the exact destructive-purge error, not any expiry mention", async ({ page }) => {
+    await loadLab(page);
+    await page.getByRole("button", { name: "Tutorials & Documentation" }).click();
+    await page
+      .getByRole("listitem")
+      .filter({ hasText: "Signatures, properties & expiry" })
+      .getByRole("button", { name: "Start" })
+      .click();
+
+    // Skip the earlier gated steps -- this step's gate is independent of them.
+    for (const heading of ["Try it: become the signer", "Try it: sign a file", "Try it: verify the signature"]) {
+      await expect(page.getByRole("heading", { name: heading })).toBeVisible({ timeout: 3_000 });
+      await page.getByRole("button", { name: "Skip this step" }).click();
+    }
+    await expect(page.getByRole("heading", { name: "Try it: inspect Properties" })).toBeVisible({ timeout: 3_000 });
+    await page.getByRole("button", { name: "Skip this step" }).click();
+
+    // vendor-contract-acme.txt is already expired when the lab seeds; the
+    // first unlock attempt runs the real destructive purge.
+    await expect(page.getByRole("heading", { name: "Try it: observe expiry and purge" })).toBeVisible({
+      timeout: 3_000,
+    });
+    await page.getByRole("button", { name: "accounting" }).click();
+    await page.getByTestId("file-row-vendor-contract-acme").dblclick();
+    await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible({ timeout: 3_000 });
+  });
 });
