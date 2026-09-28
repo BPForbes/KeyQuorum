@@ -3,6 +3,7 @@ use crate::error::Error;
 use sha2::Digest;
 
 mod chain;
+mod merge;
 mod policy;
 
 const FILE: [u8; 16] = [7; 16];

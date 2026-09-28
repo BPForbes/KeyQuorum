@@ -31,6 +31,12 @@ pub enum HistoryEventType {
     FileExpired = 8,
     ContentDestroyed = 9,
     TamperDetected = 10,
+    AutoMergeAttempted = 11,
+    AutoMergeFastForward = 12,
+    AutoMergeEquivalent = 13,
+    AutoMergeClean = 14,
+    AutoMergeBlocked = 15,
+    AutoMergeRequiresHuman = 16,
 }
 
 impl HistoryEventType {
@@ -46,6 +52,12 @@ impl HistoryEventType {
             8 => Self::FileExpired,
             9 => Self::ContentDestroyed,
             10 => Self::TamperDetected,
+            11 => Self::AutoMergeAttempted,
+            12 => Self::AutoMergeFastForward,
+            13 => Self::AutoMergeEquivalent,
+            14 => Self::AutoMergeClean,
+            15 => Self::AutoMergeBlocked,
+            16 => Self::AutoMergeRequiresHuman,
             _ => return Err(Error::InvalidTrackedFile),
         })
     }

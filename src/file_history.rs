@@ -15,6 +15,7 @@
 mod codec;
 mod container;
 mod event;
+mod merge;
 mod policy;
 mod proof;
 mod revision;
@@ -25,14 +26,15 @@ pub use event::{
     genesis_hash, verify_chain, EventDetails, HistoryEvent, HistoryEventType, HistoryOutcome,
     NewEvent,
 };
+pub use merge::{AutoMerge, AutoMergeOutcome};
 pub use policy::{
     evaluate_revision_trust, select_shareable_revision, BridgeEvidence, DeliveryDecision,
     DeliveryDecisionKind, FilePolicy, Requirement, TrustContext, TrustReason, TrustState,
 };
 pub use proof::{ProofKind, RevisionProof};
 pub use revision::{
-    content_commitment, generated_label, FileRevision, HeadRelation, NewRevision, RevisionGraph,
-    StoredRevision,
+    content_commitment, generated_label, FileRevision, HeadRelation, MergeBase, NewRevision,
+    RevisionGraph, StoredRevision,
 };
 pub use verify::verify_tracked_file;
 

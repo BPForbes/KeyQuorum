@@ -146,6 +146,12 @@ and reuses `envelope`'s length-prefixed codec. It must not re-decide anything
 another module owns: signatures go through `signing`, ancestry through
 `authority`, quorum through `quorum`. Event type and outcome codes are wire
 format: append, never renumber. History never records secrets.
+`file_history/merge.rs` owns the automatic three-way text merge of divergent
+heads: UTF-8 text only, by line, against the nearest common ancestor. A merge
+is a new two-parent revision with no proofs, so it starts untrusted and goes
+through `policy`; overlapping edits, other content, a criss-cross history or
+a policy that disables it stop for a human. HCP seniority never chooses a
+winning line.
 
 `src/lab/` (feature `lab`) is KeyQuorum Lab, the public browser
 demonstration published from `lab/` to GitHub Pages and embedded by

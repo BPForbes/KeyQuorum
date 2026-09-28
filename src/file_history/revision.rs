@@ -283,6 +283,16 @@ pub enum HeadRelation {
     Diverged,
 }
 
+/// Nearest common ancestor of two revisions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MergeBase {
+    Unique([u8; 32]),
+    /// Several equally near common ancestors (a criss-cross history); no
+    /// single base exists, so callers must not guess one.
+    Ambiguous,
+    None,
+}
+
 /// Read-only view of the revision DAG of one tracked file. Revisions are
 /// stored parents-first, which `TrackedFile` enforces.
 pub struct RevisionGraph<'a> {
@@ -337,6 +347,47 @@ impl<'a> RevisionGraph<'a> {
             }
         }
         false
+    }
+
+    fn ancestors_or_self(&self, id: &[u8; 32]) -> Vec<[u8; 32]> {
+        let mut seen: Vec<[u8; 32]> = Vec::new();
+        let mut stack = vec![*id];
+        while let Some(next) = stack.pop() {
+            if seen.contains(&next) {
+                continue;
+            }
+            if let Some(stored) = self.get(&next) {
+                seen.push(next);
+                stack.extend(stored.revision.parent_revision_ids.iter().copied());
+            }
+        }
+        seen
+    }
+
+    /// The nearest common ancestor of `a` and `b`: a common ancestor that is
+    /// not itself an ancestor of another common ancestor. Two or more of
+    /// those make the base [`MergeBase::Ambiguous`].
+    pub fn merge_base(&self, a: &[u8; 32], b: &[u8; 32]) -> MergeBase {
+        let from_b = self.ancestors_or_self(b);
+        let common: Vec<[u8; 32]> = self
+            .ancestors_or_self(a)
+            .into_iter()
+            .filter(|id| from_b.contains(id))
+            .collect();
+        let nearest: Vec<[u8; 32]> = common
+            .iter()
+            .copied()
+            .filter(|c| {
+                !common
+                    .iter()
+                    .any(|d| d != c && self.is_ancestor_or_self(c, d))
+            })
+            .collect();
+        match nearest.as_slice() {
+            [] => MergeBase::None,
+            [only] => MergeBase::Unique(*only),
+            _ => MergeBase::Ambiguous,
+        }
     }
 
     /// Structural comparison only; never timestamp-based. Both ids must be
