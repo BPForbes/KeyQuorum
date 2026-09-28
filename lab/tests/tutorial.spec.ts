@@ -203,4 +203,71 @@ test.describe("guided tutorials", () => {
       timeout: 3_000,
     });
   });
+
+  test("the bridges module's whitelist gate needs a bridge allow command, not any terminal action", async ({
+    page,
+  }) => {
+    await loadLab(page);
+    await page.getByRole("button", { name: "Tutorials" }).click();
+    await page
+      .getByRole("listitem")
+      .filter({ hasText: "Bridges & remote devices" })
+      .getByRole("button", { name: "Start" })
+      .click();
+
+    await expect(page.getByRole("heading", { name: "Whitelist before linking" })).toBeVisible();
+    await expect(page.getByText("Waiting for you to try it…")).toBeVisible();
+
+    // A different, successful bridge command (a read-only list, not an
+    // "allow") still logs the same generic "terminal" activity kind, but
+    // must not satisfy a gate that specifically asks for a whitelist entry.
+    const input = page.getByLabel("Terminal command");
+    await input.fill("bridge list 1");
+    await input.press("Enter");
+    await page.waitForTimeout(800);
+    await expect(page.getByRole("heading", { name: "Whitelist before linking" })).toBeVisible();
+    await expect(page.getByText("Waiting for you to try it…")).toBeVisible();
+
+    // The real action -- Allow node -> peer -- does satisfy it.
+    const bridges = page.getByTestId("bridges");
+    await bridges.getByLabel("Node").selectOption("M.S.1");
+    await bridges.getByLabel("Peer").selectOption("M.A.1");
+    await bridges.getByRole("button", { name: "Allow node → peer" }).click();
+    await expect(page.getByRole("heading", { name: "Establish, remove, or deny" })).toBeVisible({ timeout: 3_000 });
+  });
+
+  test("restructure is a propose step and a separate countersign step", async ({ page }) => {
+    await loadLab(page);
+    await page.getByRole("button", { name: "Tutorials" }).click();
+    await page
+      .getByRole("listitem")
+      .filter({ hasText: "Key administration" })
+      .getByRole("button", { name: "Start" })
+      .click();
+
+    // Step 1 either action completes; skip it without touching the tree.
+    await expect(page.getByRole("heading", { name: "Revoke versus reissue" })).toBeVisible();
+    await page.getByRole("button", { name: "Skip this step" }).click();
+
+    // Step 2 is gated on the authority (David, M.A) actually proposing.
+    await expect(page.getByRole("heading", { name: "Try it: propose a restructure" })).toBeVisible({
+      timeout: 3_000,
+    });
+    await expect(page.getByTestId("active-user-name")).toHaveText("David");
+    await page.getByRole("button", { name: "Propose restructure as M.A" }).click();
+
+    // Step 3 is a distinct gate: only the parent (Morgan, M) countersigns.
+    // Entering it switches to her and connects her drive automatically.
+    await expect(page.getByRole("heading", { name: "Try it: countersign as the parent" })).toBeVisible({
+      timeout: 3_000,
+    });
+    await expect(page.getByTestId("active-user-name")).toHaveText("Morgan");
+    await expect(page.getByTestId("drive-morgan")).toContainText("Connected");
+    await page.getByPlaceholder("Your device passphrase").fill("lab-demo-M");
+    await page.getByRole("button", { name: "Countersign" }).click();
+
+    await expect(page.getByRole("heading", { name: "Parent approval is enforced at unlock" })).toBeVisible({
+      timeout: 3_000,
+    });
+  });
 });

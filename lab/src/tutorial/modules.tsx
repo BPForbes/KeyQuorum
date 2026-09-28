@@ -8,7 +8,7 @@
 // "Next" click standing in for the real thing.
 import type { ReactNode } from "react";
 import type { Act, Tab } from "../App";
-import type { ActivityView, Snapshot } from "../api/types";
+import type { ActivityView, RequirementNode, Snapshot } from "../api/types";
 
 /** Free-form data one step's `remember` captures for a later step's `isDone` to read. */
 export type TutorialMemory = Record<string, unknown>;
@@ -81,6 +81,57 @@ const wasSentTo = (latest: ActivityView | undefined, recipientName: string) =>
 
 const wasReceived = (latest: ActivityView | undefined) => latest?.kind === "receive" && latest.outcome === "granted";
 
+// LabState::move_slot logs "Moved <label> to <drive>" only on success (a
+// denied move logs "Could not move <label>: ..."), so checking the title's
+// prefix ties the gate to the one slot the step names rather than any move.
+const wasMoved = (latest: ActivityView | undefined, label: string) =>
+  latest?.kind === "move" && latest.outcome !== "denied" && latest.title.startsWith(`Moved ${label} `);
+
+// The Bridges panel's buttons and the Terminal tab both end up calling
+// `client.runCommand`, which always logs the same generic "terminal" kind
+// (see KeyQuorumLab::run_command) -- the only thing that tells one command
+// apart from another is the real line carried in `command`. Matching a
+// substring of it (rather than the whole line) is what lets a step accept
+// either of two equivalent phrasings (the canned button's exact args, or
+// something a visitor typed by hand) while still refusing an unrelated
+// command, e.g. `ls` or `su david`, that happens to also log "terminal".
+const ranCommand = (latest: ActivityView | undefined, ...substrings: string[]) => {
+  const command = latest?.kind === "terminal" && latest.outcome === "granted" ? latest.command : undefined;
+  return typeof command === "string" && substrings.some((substring) => command.includes(substring));
+};
+
+// FileExplorer's Properties button logs "Viewed properties for <name>", the
+// only place a file's name is attached to that activity -- reading it back
+// is how a later gated step (e.g. "bring the right drives online") learns
+// which file the visitor is working through, rather than guessing at one.
+const propertiesFileName = (latest: ActivityView | undefined): string | undefined =>
+  latest?.kind === "properties" ? latest.title.match(/^Viewed properties for (.+)$/)?.[1] : undefined;
+
+// LabState::lock_password_file logs "Lock <name> with a password", the only
+// place that name is attached to the activity -- reading it back is how a
+// later step in the same module ties its own gate to this same file
+// instead of accepting a password unlock, export, or share of any file.
+const passwordLockFileName = (latest: ActivityView | undefined): string | undefined =>
+  latest?.kind === "password-lock" ? latest.title.match(/^Lock (.+) with a password$/)?.[1] : undefined;
+
+const requirementLeaves = (node: RequirementNode | undefined | null): RequirementNode[] =>
+  !node ? [] : node.children.length === 0 ? [node] : node.children.flatMap(requirementLeaves);
+
+// How many distinct physical devices, among the ones this file's own
+// requirement tree actually names, are connected right now. Two leaves
+// sharing one relocated container still count once -- matching the same
+// "logical shares, one physical device" rule the lab's own copy explains.
+const connectedRequiredDevices = (snapshot: Snapshot, fileName: string): number => {
+  const file = snapshot.files.find((candidate) => candidate.name === fileName);
+  const leafLabels = new Set(requirementLeaves(file?.requirement).map((leaf) => leaf.label));
+  const drives = new Set(
+    snapshot.tree.nodes
+      .filter((node) => leafLabels.has(node.label) && node.slotConnected && node.slotDrive)
+      .map((node) => node.slotDrive),
+  );
+  return drives.size;
+};
+
 // Precondition helpers for `TutorialStep.ensure`. Each takes a real action
 // through `act` -- never fakes the resulting snapshot -- so a step that
 // asks the visitor to switch to, or connect, something specific can't
@@ -122,6 +173,11 @@ const ensureDrivesConnected =
     }
     return current;
   };
+
+const composeEnsures =
+  (...ensures: NonNullable<TutorialStep["ensure"]>[]) =>
+  (snapshot: Snapshot, act: Act): Snapshot =>
+    ensures.reduce((current, ensure) => ensure(current, act), snapshot);
 
 export const TUTORIALS: TutorialModule[] = [
   {
@@ -341,7 +397,7 @@ export const TUTORIALS: TutorialModule[] = [
         target: () => ['[data-testid="move-slot-M.S.1"]'],
         ensure: ensureDrivesConnected("alice", "morgan"),
         requiredKind: "move",
-        isDone: (_snapshot, latest) => latest?.kind === "move" && latest.outcome !== "denied",
+        isDone: (_snapshot, latest) => wasMoved(latest, "M.S.1"),
       },
       {
         title: "Try it: copy a slot",
@@ -405,20 +461,46 @@ export const TUTORIALS: TutorialModule[] = [
     steps: [
       {
         title: "Revoke versus reissue",
-        body: <p><strong>Revoke key</strong> bans a leaf&rsquo;s current hardware key. <strong>Reissue</strong> adopts an already-provisioned replacement token and authenticates an update to affected stores. These are related, but distinct, operations.</p>,
+        body: (
+          <p>
+            Try either one on this leaf: <strong>Revoke key</strong> bans its current hardware key, while{" "}
+            <strong>Reissue&hellip;</strong> adopts an already-provisioned replacement token and authenticates an
+            update to affected stores. They&rsquo;re related, but distinct — either action here completes this step.
+          </p>
+        ),
         tab: "organization",
         target: () => ['[data-testid="tree-node-M.A.1"]', '[data-panel="organization"]'],
         isDone: (_snapshot, latest) =>
           (latest?.kind === "revoke" || latest?.kind === "reissue") && latest.outcome === "granted",
       },
       {
-        title: "Restructure is a two-person workflow",
-        body: <p>The authority proposes the next public generation here. A non-root proposal remains pending until its parent switches in and countersigns with that parent&rsquo;s device passphrase.</p>,
+        title: "Try it: propose a restructure",
+        body: (
+          <p>
+            Only the organization&rsquo;s authority (<code>M.A</code>, played by David here) may propose the next
+            public generation. Press <strong>Propose restructure</strong>.
+          </p>
+        ),
         tab: "organization",
         target: () => ['[data-testid="restructure-admin"]'],
         ensure: ensureActiveUser("david"),
-        isDone: (_snapshot, latest) =>
-          (latest?.kind === "restructure-propose" || latest?.kind === "restructure-countersign") && latest.outcome === "granted",
+        requiredKind: "restructure-propose",
+        isDone: (_snapshot, latest) => latest?.kind === "restructure-propose" && latest.outcome === "granted",
+      },
+      {
+        title: "Try it: countersign as the parent",
+        body: (
+          <p>
+            A non-root proposal stays pending until its parent countersigns with that parent&rsquo;s own device
+            passphrase. Switch to <strong>Morgan</strong>, the proposal&rsquo;s parent, then press{" "}
+            <strong>Countersign</strong>.
+          </p>
+        ),
+        tab: "organization",
+        target: () => ['[data-testid="restructure-admin"]'],
+        ensure: composeEnsures(ensureActiveUser("morgan"), ensureDrivesConnected("morgan")),
+        requiredKind: "restructure-countersign",
+        isDone: (_snapshot, latest) => latest?.kind === "restructure-countersign" && latest.outcome === "granted",
       },
       {
         title: "Parent approval is enforced at unlock",
@@ -442,7 +524,7 @@ export const TUTORIALS: TutorialModule[] = [
         tab: "organization",
         target: () => ['[data-testid="bridges"]'],
         requiredKind: "terminal",
-        isDone: (_snapshot, latest) => latest?.kind === "terminal" && latest.outcome === "granted",
+        isDone: (_snapshot, latest) => ranCommand(latest, "bridge allow"),
       },
       {
         title: "Establish, remove, or deny",
@@ -450,7 +532,7 @@ export const TUTORIALS: TutorialModule[] = [
         tab: "organization",
         target: () => ['[data-testid="bridges"]'],
         requiredKind: "terminal",
-        isDone: (_snapshot, latest) => latest?.kind === "terminal" && latest.outcome === "granted",
+        isDone: (_snapshot, latest) => ranCommand(latest, "bridge add", "bridge remove", "bridge deny"),
       },
       {
         title: "Remote device transfer is not a GUI action",
@@ -458,7 +540,8 @@ export const TUTORIALS: TutorialModule[] = [
         tab: "terminal",
         target: () => ['[data-panel="terminal"]'],
         requiredKind: "terminal",
-        isDone: (_snapshot, latest) => latest?.kind === "terminal" && latest.outcome === "granted",
+        isDone: (_snapshot, latest) =>
+          ranCommand(latest, "device publish", "relay-send", "relay-collect", "relay-finalize"),
       },
     ],
   },
@@ -475,12 +558,24 @@ export const TUTORIALS: TutorialModule[] = [
         target: () => ['[data-testid="file-actions"]', '[data-panel="files"]'],
         requiredKind: "properties",
         isDone: (_snapshot, latest) => latest?.kind === "properties",
+        // Remember which file this run is about, so the next two steps can
+        // check the drives and the unlock against this same file rather
+        // than any drive or any granted access.
+        remember: (_snapshot, latest) => ({ fileName: propertiesFileName(latest) }),
       },
       {
         title: "Bring the required devices online",
         body: <p>Insert enough separate drives in <strong>USB devices</strong>. Slots moved onto the same container may satisfy logical shares, but still contribute only one physical device.</p>,
         tab: "usb",
         target: () => ['[data-panel="usb"]'],
+        requiredKind: "usb",
+        isDone: (snapshot, _latest, memory) => {
+          const fileName = memory.fileName;
+          if (typeof fileName !== "string") return false;
+          const file = snapshot.files.find((candidate) => candidate.name === fileName);
+          const needed = file?.policy?.minimumDevices ?? 1;
+          return connectedRequiredDevices(snapshot, fileName) >= needed;
+        },
       },
       {
         title: "Try it: unlock successfully",
@@ -488,7 +583,10 @@ export const TUTORIALS: TutorialModule[] = [
         tab: "files",
         target: () => ['[data-testid="file-actions"]', '[data-panel="files"]'],
         requiredKind: "access",
-        isDone: (_snapshot, latest) => latest?.kind === "access" && latest.outcome === "granted",
+        isDone: (_snapshot, latest, memory) => {
+          const fileName = memory.fileName;
+          return typeof fileName === "string" && latest?.outcome === "granted" && wasOpened(latest, fileName);
+        },
       },
       {
         title: "Audit the decision",
@@ -513,6 +611,7 @@ export const TUTORIALS: TutorialModule[] = [
         target: () => ['[data-testid="password-lock"]'],
         requiredKind: "password-lock",
         isDone: (_snapshot, latest) => latest?.kind === "password-lock" && latest.outcome === "granted",
+        remember: (_snapshot, latest) => ({ fileName: passwordLockFileName(latest) }),
       },
       {
         title: "Try the unlock path",
@@ -520,7 +619,15 @@ export const TUTORIALS: TutorialModule[] = [
         tab: "security",
         target: () => ['[data-testid="password-files"]'],
         requiredKind: "password-access",
-        isDone: (_snapshot, latest) => latest?.kind === "password-access" && latest.outcome === "granted",
+        isDone: (_snapshot, latest, memory) => {
+          const fileName = memory.fileName;
+          return (
+            typeof fileName === "string" &&
+            latest?.kind === "password-access" &&
+            latest.outcome === "granted" &&
+            latest.title === `Access granted: ${fileName}`
+          );
+        },
       },
     ],
   },
@@ -537,6 +644,7 @@ export const TUTORIALS: TutorialModule[] = [
         target: () => ['[data-testid="password-lock"]'],
         requiredKind: "password-lock",
         isDone: (_snapshot, latest) => latest?.kind === "password-lock" && latest.outcome === "granted",
+        remember: (_snapshot, latest) => ({ fileName: passwordLockFileName(latest) }),
       },
       {
         title: "Try it: create a recipient-bound export",
@@ -544,7 +652,15 @@ export const TUTORIALS: TutorialModule[] = [
         tab: "security",
         target: () => ['[data-testid="password-files"]'],
         requiredKind: "export",
-        isDone: (_snapshot, latest) => latest?.kind === "export" && latest.outcome === "granted",
+        isDone: (_snapshot, latest, memory) => {
+          const fileName = memory.fileName;
+          return (
+            typeof fileName === "string" &&
+            latest?.kind === "export" &&
+            latest.outcome === "granted" &&
+            latest.title.startsWith(`Export ${fileName} for `)
+          );
+        },
       },
       {
         title: "Try it: view the export bundle",
@@ -552,7 +668,14 @@ export const TUTORIALS: TutorialModule[] = [
         tab: "security",
         target: () => ['[data-testid="exported-bundles"]', '[data-panel="security"]'],
         requiredKind: "export-view",
-        isDone: (_snapshot, latest) => latest?.kind === "export-view",
+        isDone: (_snapshot, latest, memory) => {
+          const fileName = memory.fileName;
+          return (
+            typeof fileName === "string" &&
+            latest?.kind === "export-view" &&
+            latest.title.startsWith(`Sealed bundle for ${fileName} `)
+          );
+        },
       },
       {
         title: "Try it: create a bearer share link",
@@ -560,7 +683,15 @@ export const TUTORIALS: TutorialModule[] = [
         tab: "security",
         target: () => ['[data-testid="password-files"]'],
         requiredKind: "share-create",
-        isDone: (_snapshot, latest) => latest?.kind === "share-create" && latest.outcome === "granted",
+        isDone: (_snapshot, latest, memory) => {
+          const fileName = memory.fileName;
+          return (
+            typeof fileName === "string" &&
+            latest?.kind === "share-create" &&
+            latest.outcome === "granted" &&
+            latest.title === `Create a share link for ${fileName}`
+          );
+        },
       },
       {
         title: "Try it: redeem the share link",
@@ -568,7 +699,15 @@ export const TUTORIALS: TutorialModule[] = [
         tab: "security",
         target: () => ['[data-testid="share-links"]'],
         requiredKind: "share-redeem",
-        isDone: (_snapshot, latest) => latest?.kind === "share-redeem" && latest.outcome === "granted",
+        isDone: (_snapshot, latest, memory) => {
+          const fileName = memory.fileName;
+          return (
+            typeof fileName === "string" &&
+            latest?.kind === "share-redeem" &&
+            latest.outcome === "granted" &&
+            latest.title === `Redeem the share link for ${fileName}`
+          );
+        },
       },
       {
         title: "Try it: revoke the share",
@@ -576,7 +715,15 @@ export const TUTORIALS: TutorialModule[] = [
         tab: "security",
         target: () => ['[data-testid="share-links"]'],
         requiredKind: "share-revoke",
-        isDone: (_snapshot, latest) => latest?.kind === "share-revoke" && latest.outcome === "granted",
+        isDone: (_snapshot, latest, memory) => {
+          const fileName = memory.fileName;
+          return (
+            typeof fileName === "string" &&
+            latest?.kind === "share-revoke" &&
+            latest.outcome === "granted" &&
+            latest.title === `Revoke the share link for ${fileName}`
+          );
+        },
       },
     ],
   },
@@ -601,6 +748,10 @@ export const TUTORIALS: TutorialModule[] = [
         target: (snapshot) => ['[data-testid="folder-public"]', fileRow(snapshot, "company-handbook.txt"), '[data-testid="file-actions"]'],
         requiredKind: "sign",
         isDone: (_snapshot, latest) => latest?.kind === "sign" && latest.outcome === "granted",
+        // LabState::sign_file logs "Sign <name>" -- remember it so the
+        // verify step below checks the signature it just made, not any
+        // signature that happens to already be granted.
+        remember: (_snapshot, latest) => ({ signedFileName: latest?.title.match(/^Sign (.+)$/)?.[1] }),
       },
       {
         title: "Try it: verify the signature",
@@ -608,7 +759,15 @@ export const TUTORIALS: TutorialModule[] = [
         tab: "security",
         target: () => ['[data-testid="signatures"]'],
         requiredKind: "verify",
-        isDone: (_snapshot, latest) => latest?.kind === "verify" && latest.outcome === "granted",
+        isDone: (_snapshot, latest, memory) => {
+          const fileName = memory.signedFileName;
+          return (
+            typeof fileName === "string" &&
+            latest?.kind === "verify" &&
+            latest.outcome === "granted" &&
+            latest.title === `Verify ${fileName}'s signature`
+          );
+        },
       },
       {
         title: "Try it: inspect Properties",
@@ -677,10 +836,16 @@ export const TUTORIALS: TutorialModule[] = [
         tab: "mailbox",
         target: () => ['[data-testid="mailbox-refresh"]', '[data-panel="mailbox"]'],
         requiredKind: "receive",
-        isDone: (_snapshot, latest) =>
-          latest?.kind === "receive" &&
-          latest.outcome === "info" &&
-          (latest.title === "Inbox up to date" || latest.title.includes("new envelope")),
+        isDone: (snapshot, latest, memory) => {
+          if (latest?.kind !== "receive" || latest.outcome !== "info") return false;
+          const relayId = memory.relayId;
+          if (typeof relayId !== "number") return false;
+          // The refresh itself only logs "Inbox up to date" / "N new
+          // envelope(s)" either way; what actually confirms the sender saw
+          // David's rejection is this module's own letter turning up
+          // "rejected" on the Sent side, not just that some refresh ran.
+          return snapshot.sent.find((item) => item.relayId === relayId)?.status === "rejected";
+        },
       },
     ],
   },

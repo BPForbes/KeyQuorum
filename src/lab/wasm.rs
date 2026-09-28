@@ -301,8 +301,12 @@ impl KeyQuorumLab {
         }
         let ran = terminal::run(&mut self.state, line);
         to_js(ran.and_then(|(outcome, output)| {
-            self.state
-                .note_action("terminal", "Ran a Terminal command", outcome.ok);
+            self.state.note_action(
+                "terminal",
+                "Ran a Terminal command",
+                outcome.ok,
+                Some(line.to_string()),
+            );
             self.state.result(outcome, output)
         }))
     }
