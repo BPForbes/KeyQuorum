@@ -1,6 +1,8 @@
 use super::*;
 use crate::error::Error;
 
+mod chain;
+
 const FILE: [u8; 16] = [7; 16];
 
 fn new_event(kind: HistoryEventType, revision: Option<[u8; 32]>) -> NewEvent {
@@ -27,6 +29,10 @@ fn sparse_event() -> NewEvent {
         outcome: HistoryOutcome::Denied,
         details: EventDetails::new(),
     }
+}
+
+fn tracked_file() -> TrackedFile {
+    TrackedFile::new(FILE, "sales-report.xlsx", b"native bytes".to_vec())
 }
 
 fn sample() -> TrackedFile {
