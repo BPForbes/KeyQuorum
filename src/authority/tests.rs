@@ -88,3 +88,56 @@ fn relationship_classifies_against_scope() {
     assert_eq!(relationship("M.A", "X.1"), RevisionAuthority::Unrelated);
     assert_eq!(relationship("M.A", ""), RevisionAuthority::Unrelated);
 }
+
+#[test]
+fn empty_leading_segment_is_not_a_common_ancestor() {
+    assert_eq!(lowest_common_ancestor(".A", ".B"), None);
+    assert_eq!(relationship(".A", ".B"), RevisionAuthority::Unrelated);
+}
+
+#[test]
+fn common_prefix_stops_at_an_empty_segment() {
+    assert_eq!(
+        lowest_common_ancestor("M..A", "M..B"),
+        Some("M".to_string())
+    );
+    assert_eq!(lowest_common_ancestor("M.", "M."), Some("M".to_string()));
+    assert_eq!(lowest_common_ancestor("M.", "M.A"), Some("M".to_string()));
+    assert_eq!(lowest_common_ancestor(".", "."), None);
+}
+
+#[test]
+fn malformed_labels_are_unrelated_and_have_no_distance() {
+    for (a, b) in [
+        ("M..A", "M..B"),
+        ("M.", "M.A"),
+        ("M", "M."),
+        ("M", "M..A"),
+        ("M.A", "M..A"),
+        (".A", ".A.B"),
+        (".A", ".A"),
+    ] {
+        assert_eq!(relationship(a, b), RevisionAuthority::Unrelated, "{a} {b}");
+        assert_eq!(relationship(b, a), RevisionAuthority::Unrelated, "{b} {a}");
+        assert_eq!(ancestry_distance(a, b), None, "{a} {b}");
+    }
+}
+
+#[test]
+fn well_formed_relationships_are_unchanged() {
+    assert_eq!(relationship("M.A", "M.A"), RevisionAuthority::ScopeOwner);
+    assert_eq!(
+        relationship("M", "M.A.1"),
+        RevisionAuthority::Descendant {
+            ancestor: "M".to_string(),
+            depth: 2
+        }
+    );
+    assert_eq!(
+        relationship("M.A", "M.B"),
+        RevisionAuthority::CrossBranch {
+            common_ancestor: "M".to_string()
+        }
+    );
+    assert_eq!(ancestry_distance("M", "M.A.1"), Some(2));
+}

@@ -65,12 +65,15 @@ pub fn direct_parent(parent: &str, child: &str) -> bool {
 /// Number of steps from `ancestor` down to `descendant`; `Some(0)` for the
 /// same label, `None` when `ancestor` does not cover `descendant`.
 pub fn ancestry_distance(ancestor: &str, descendant: &str) -> Option<usize> {
-    is_ancestor_or_self(ancestor, descendant)
-        .then(|| segment_count(descendant) - segment_count(ancestor))
+    (is_well_formed(ancestor)
+        && is_well_formed(descendant)
+        && is_ancestor_or_self(ancestor, descendant))
+    .then(|| segment_count(descendant) - segment_count(ancestor))
 }
 
 /// Deepest label that is ancestor-or-self of both, or `None` when they
-/// share no root (or either is empty).
+/// share no root (or either is empty). The common prefix stops at the first
+/// empty segment (`.A`, `M..A`, `M.`), so the result never contains one.
 pub fn lowest_common_ancestor(left: &str, right: &str) -> Option<String> {
     if left.is_empty() || right.is_empty() {
         return None;
@@ -78,7 +81,7 @@ pub fn lowest_common_ancestor(left: &str, right: &str) -> Option<String> {
     let common: Vec<&str> = left
         .split('.')
         .zip(right.split('.'))
-        .take_while(|(l, r)| l == r)
+        .take_while(|(l, r)| l == r && !l.is_empty())
         .map(|(l, _)| l)
         .collect();
     (!common.is_empty()).then(|| common.join("."))
@@ -106,7 +109,7 @@ pub enum RevisionAuthority {
 
 /// Classify `actor` against `scope_root`.
 pub fn relationship(scope_root: &str, actor: &str) -> RevisionAuthority {
-    if scope_root.is_empty() || actor.is_empty() {
+    if !is_well_formed(scope_root) || !is_well_formed(actor) {
         return RevisionAuthority::Unrelated;
     }
     if scope_root == actor {
@@ -191,6 +194,11 @@ pub fn unlock_approval_preimage(
         hasher.update(device_id);
     }
     Ok(hasher.finalize().into())
+}
+
+/// Non-empty with no empty segment (rejects `.A`, `M..A`, `M.`).
+fn is_well_formed(label: &str) -> bool {
+    !label.is_empty() && label.split('.').all(|segment| !segment.is_empty())
 }
 
 fn segment_count(label: &str) -> usize {
