@@ -47,8 +47,9 @@ send, and inspect the seeded files. You can:
 
 Every action shows the command lines it ran and what they printed. The
 terminal also takes any `keyquorum ...` or `keyquorum-device ...` line. The
-mock drives' passphrases are published default values, so the lab demonstrates
-behavior; it is not hardware-backed security.
+mock drives' passphrases are published default values, and the lab itself is
+a browser-based virtual machine emulating USB-token custody entirely in
+memory — so it demonstrates behavior, not hardware-backed security.
 
 ```bash
 cargo install wasm-bindgen-cli --version <wasm-bindgen version in Cargo.lock> --locked
