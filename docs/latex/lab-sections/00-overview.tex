@@ -1,4 +1,5 @@
 \section{Overview}
+\label{sec:overview}
 
 KeyQuorum Lab runs the KeyQuorum crate in a browser as a small sandboxed
 machine, compiled to WebAssembly. It has its own files, a SQLite store per
@@ -34,6 +35,53 @@ passphrase is a published demo value, so they give none of the physical
 protection real hardware keys do. What is real is the software underneath:
 every action, in every tab, is one of the same commands documented in the
 KeyQuorum manual.
+
+\subsection{Demo credentials}
+\label{sec:lab-demo-credentials}
+
+Every credential the lab uses is a published placeholder, not a secret.
+The lab ships as a public WebAssembly bundle that runs entirely in your
+browser, so anything baked into it --- the seeded people, their USB
+passphrases, and the seeded files --- is visible to anyone who inspects the
+bundle. That is by design: none of it guards real data, so nothing here
+needs to stay confidential, and no real file or hardware key is ever at
+risk of passing through the lab.
+
+\textbf{USB slot passphrases.} Every seeded USB slot unlocks with
+\code{lab-demo-<label>}, where \code{<label>} is that slot's dotted tree
+label:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Person} & \textbf{Label} & \textbf{Passphrase} \\
+\midrule
+Morgan & \code{M}     & \code{lab-demo-M} \\
+Sarah  & \code{M.S}   & \code{lab-demo-M.S} \\
+Alice  & \code{M.S.1} & \code{lab-demo-M.S.1} \\
+Bob    & \code{M.S.2} & \code{lab-demo-M.S.2} \\
+David  & \code{M.A}   & \code{lab-demo-M.A} \\
+Emma   & \code{M.A.1} & \code{lab-demo-M.A.1} \\
+Chris  & \code{M.A.2} & \code{lab-demo-M.A.2} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Terminal demo values.} Typing a command yourself at the Terminal
+tab --- rather than clicking a GUI action that stages your own value first
+--- is answered with the same published stand-ins a real prompt would use,
+whenever it asks for a password or PIN:
+
+\begin{itemize}
+  \item Password: \code{lab-demo-password}
+  \item PIN: \code{0000}
+\end{itemize}
+
+\begin{noteBox}
+Seeded quorum-protected files never use a password. They are protected by
+KeyQuorum's quorum and device-custody policies instead, and are unlocked
+with the USB identities above.
+\end{noteBox}
 
 \subsection{Identity and drives}
 
