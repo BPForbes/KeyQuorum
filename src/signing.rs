@@ -6,7 +6,9 @@
 //! salt, and both a shared bridge key and the signer's personal key.
 
 use crate::crypto::{random_salt, SALT_LEN};
-use crate::envelope::{push_len_prefixed, take_array, take_len_prefixed, take_n, take_u8, utf8};
+use crate::envelope::{
+    hash_len_prefixed, push_len_prefixed, take_array, take_len_prefixed, take_n, take_u8, utf8,
+};
 use crate::error::{Error, Result};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
@@ -97,16 +99,21 @@ pub fn file_revision_preimage(
 }
 
 /// Supervisor countersignature over a revision the author already signed.
-/// `author_signature_hash` ties it to that exact author signature.
+/// `author_signature_hash` ties it to that exact author signature. The
+/// supervisor's label is bound as well as the identity, because what makes a
+/// countersignature acceptable is the label the supervisor holds; a proof
+/// cannot be relabelled onto a different position without re-signing.
+#[allow(clippy::too_many_arguments)] // every argument is a distinct signed field
 pub fn file_countersign_preimage(
     file_id: &[u8; 16],
     revision_id: &[u8; 32],
     author: &[u8; 16],
     author_signature_hash: &[u8; 32],
     supervisor: &[u8; 16],
+    supervisor_label: &str,
     topology_generation: u64,
     policy_hash: &[u8; 32],
-) -> [u8; 32] {
+) -> Result<[u8; 32]> {
     let mut hasher = Sha256::new();
     hasher.update(FILE_COUNTERSIGN_DOMAIN);
     hasher.update(file_id);
@@ -114,9 +121,10 @@ pub fn file_countersign_preimage(
     hasher.update(author);
     hasher.update(author_signature_hash);
     hasher.update(supervisor);
+    hash_len_prefixed(&mut hasher, supervisor_label.as_bytes())?;
     hasher.update(topology_generation.to_be_bytes());
     hasher.update(policy_hash);
-    hasher.finalize().into()
+    Ok(hasher.finalize().into())
 }
 
 /// Optional signature on a security-relevant history event. A missing
