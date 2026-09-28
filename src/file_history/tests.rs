@@ -2,6 +2,8 @@ use super::*;
 use crate::error::Error;
 use sha2::Digest;
 
+mod chain;
+
 const FILE: [u8; 16] = [7; 16];
 
 fn new_event(kind: HistoryEventType, revision: Option<[u8; 32]>) -> NewEvent {
@@ -44,6 +46,10 @@ fn new_revision(parents: Vec<[u8; 32]>, at: &str) -> NewRevision {
 
 const T1: &str = "2026-10-01T09:00:00.000Z";
 const T2: &str = "2026-10-02T14:32:05.482Z";
+
+fn tracked_file() -> TrackedFile {
+    TrackedFile::new(FILE, "sales-report.xlsx")
+}
 
 fn sample() -> TrackedFile {
     let mut file = TrackedFile::new(FILE, "sales-report.xlsx");
@@ -572,4 +578,38 @@ fn a_damaged_history_is_neither_extended_nor_encoded() {
     gapped.events.remove(1);
     assert!(gapped.encode().is_err());
     assert_eq!(sample().events().len(), 3);
+}
+
+#[test]
+fn a_forged_generated_label_is_rejected_even_with_a_recomputed_id() {
+    let (file, _, _, _) = forked();
+    let forge = |f: &dyn Fn(&mut FileRevision)| {
+        let mut forged = file.clone();
+        f(&mut forged.revisions[1].revision);
+        // An attacker fixes the id up so only the label rule can catch it.
+        let revision = &mut forged.revisions[1].revision;
+        revision.revision_id = revision.compute_id().unwrap();
+        TrackedFile::decode(&forged.encode_unchecked().unwrap())
+    };
+    assert!(forge(&|_| {}).is_ok());
+    assert!(forge(&|r| r.generated_label = "Rforged".into()).is_err());
+    assert!(forge(&|r| r.generated_label = "not-a-label".into()).is_err());
+    // Timestamp or HCP label swapped without regenerating the label.
+    assert!(forge(&|r| r.created_at_utc = "2026-10-05T00:00:00Z".into()).is_err());
+    assert!(forge(&|r| r.author_hcp_label = "M.B".into()).is_err());
+    // An empty or unnormalized name part.
+    assert!(forge(&|r| r.generated_label = "R-20261002T143205.482Z-M.A".into()).is_err());
+    assert!(forge(&|r| r.generated_label = "Rmy report-20261002T143205.482Z-M.A".into()).is_err());
+}
+
+#[test]
+fn renaming_a_file_does_not_invalidate_older_revisions() {
+    let (mut file, _, _, _) = forked();
+    file.logical_name = "renamed.txt".into();
+    let decoded = TrackedFile::decode(&file.encode().unwrap()).unwrap();
+    assert_eq!(
+        decoded.revisions()[0].revision.generated_label.as_str(),
+        "Rdecision-20261001T090000.000Z-M.A"
+    );
+    assert_eq!(decoded.logical_name, "renamed.txt");
 }

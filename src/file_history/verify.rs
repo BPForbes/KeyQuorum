@@ -9,7 +9,8 @@ use crate::error::{Error, Result};
 
 /// Verify the history chain and the revision DAG; returns the history root.
 ///
-/// - every revision id recomputes from its body and belongs to this file;
+/// - every revision id recomputes from its body and belongs to this file,
+///   and its generated label matches its own timestamp and HCP label;
 /// - ids are unique and stored parents-first, so parents always exist and
 ///   the graph cannot contain a cycle;
 /// - only the first revision is a root;
@@ -22,6 +23,7 @@ pub(super) fn verify_structure(file: &TrackedFile) -> Result<[u8; 32]> {
         let parents = &revision.parent_revision_ids;
         let ok = revision.file_id == file.file_id
             && revision.compute_id()? == revision.revision_id
+            && revision.generated_label_is_consistent()
             && !seen.contains(&revision.revision_id)
             && parents.iter().all(|parent| seen.contains(parent))
             && parents
