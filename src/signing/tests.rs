@@ -120,7 +120,7 @@ fn revision() -> [u8; 32] {
 }
 
 fn countersign() -> [u8; 32] {
-    file_countersign_preimage(&FILE, &REV, &WHO, &COMMIT, &[6; 16], 7, &POLICY)
+    file_countersign_preimage(&FILE, &REV, &WHO, &COMMIT, &[6; 16], "M.A", 7, &POLICY).unwrap()
 }
 
 fn event(revision_id: Option<&[u8; 32]>) -> [u8; 32] {
@@ -175,25 +175,69 @@ fn revision_preimage_binds_every_field() {
 #[test]
 fn countersign_preimage_binds_every_field() {
     let base = countersign();
+    #[allow(clippy::too_many_arguments)]
     let other =
-        |f: [u8; 16], r: [u8; 32], a: [u8; 16], h: [u8; 32], s: [u8; 16], g: u64, p: [u8; 32]| {
-            file_countersign_preimage(&f, &r, &a, &h, &s, g, &p)
-        };
-    assert_ne!(base, other([9; 16], REV, WHO, COMMIT, [6; 16], 7, POLICY));
-    assert_ne!(base, other(FILE, [9; 32], WHO, COMMIT, [6; 16], 7, POLICY));
-    assert_ne!(base, other(FILE, REV, [9; 16], COMMIT, [6; 16], 7, POLICY));
-    assert_ne!(base, other(FILE, REV, WHO, [9; 32], [6; 16], 7, POLICY));
-    assert_ne!(base, other(FILE, REV, WHO, COMMIT, [9; 16], 7, POLICY));
-    assert_ne!(base, other(FILE, REV, WHO, COMMIT, [6; 16], 8, POLICY));
-    assert_ne!(base, other(FILE, REV, WHO, COMMIT, [6; 16], 7, [9; 32]));
+        |f: [u8; 16],
+         r: [u8; 32],
+         a: [u8; 16],
+         h: [u8; 32],
+         s: [u8; 16],
+         l: &str,
+         g: u64,
+         p: [u8; 32]| { file_countersign_preimage(&f, &r, &a, &h, &s, l, g, &p).unwrap() };
+    assert_ne!(
+        base,
+        other([9; 16], REV, WHO, COMMIT, [6; 16], "M.A", 7, POLICY)
+    );
+    assert_ne!(
+        base,
+        other(FILE, [9; 32], WHO, COMMIT, [6; 16], "M.A", 7, POLICY)
+    );
+    assert_ne!(
+        base,
+        other(FILE, REV, [9; 16], COMMIT, [6; 16], "M.A", 7, POLICY)
+    );
+    assert_ne!(
+        base,
+        other(FILE, REV, WHO, [9; 32], [6; 16], "M.A", 7, POLICY)
+    );
+    assert_ne!(
+        base,
+        other(FILE, REV, WHO, COMMIT, [9; 16], "M.A", 7, POLICY)
+    );
+    assert_ne!(
+        base,
+        other(FILE, REV, WHO, COMMIT, [6; 16], "M.B", 7, POLICY)
+    );
+    assert_ne!(
+        base,
+        other(FILE, REV, WHO, COMMIT, [6; 16], "M.A", 8, POLICY)
+    );
+    assert_ne!(
+        base,
+        other(FILE, REV, WHO, COMMIT, [6; 16], "M.A", 7, [9; 32])
+    );
+}
+
+#[test]
+fn countersign_label_is_length_prefixed_and_size_checked() {
+    // A shifted label boundary cannot alias another field layout.
+    let a = file_countersign_preimage(&FILE, &REV, &WHO, &COMMIT, &[6; 16], "M.A", 7, &POLICY);
+    let b = file_countersign_preimage(&FILE, &REV, &WHO, &COMMIT, &[6; 16], "M.", 7, &POLICY);
+    assert_ne!(a.unwrap(), b.unwrap());
+    let huge = "x".repeat(70_000);
+    assert!(
+        file_countersign_preimage(&FILE, &REV, &WHO, &COMMIT, &[6; 16], &huge, 7, &POLICY).is_err()
+    );
 }
 
 #[test]
 fn countersign_distinguishes_author_from_supervisor() {
     // Swapping the two identities must change the digest.
-    let a = file_countersign_preimage(&FILE, &REV, &[1; 16], &COMMIT, &[2; 16], 7, &POLICY);
-    let b = file_countersign_preimage(&FILE, &REV, &[2; 16], &COMMIT, &[1; 16], 7, &POLICY);
-    assert_ne!(a, b);
+    let mk = |a: [u8; 16], s: [u8; 16]| {
+        file_countersign_preimage(&FILE, &REV, &a, &COMMIT, &s, "M.A", 7, &POLICY).unwrap()
+    };
+    assert_ne!(mk([1; 16], [2; 16]), mk([2; 16], [1; 16]));
 }
 
 #[test]
