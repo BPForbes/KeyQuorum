@@ -248,9 +248,13 @@ fn a_proof_from_someone_else_or_another_generation_is_denied() {
         .unwrap();
     let ctx = Ctx::new();
 
+    // A proof that does not come from the author is ignored, not trusted.
     let mut other = file.clone();
     other.proofs[0].signer_label = "M.B".into();
-    assert_eq!(state(&other, &id, &ctx), Denied(R::AuthorMismatch));
+    assert_eq!(
+        state(&other, &id, &ctx),
+        Pending(R::MissingContentSignature)
+    );
 
     let mut moved = file.clone();
     moved.proofs[0].topology_generation += 1;
@@ -457,4 +461,34 @@ fn fallback_only_considers_ancestors_of_the_candidate() {
     let d = shared(&file, &left, None);
     assert_eq!(d.delivered_revision, Some(base));
     assert_eq!(d.decision, DeliveryDecisionKind::LastTrustedRevision);
+}
+
+#[test]
+fn a_countersignature_cannot_be_relabelled_onto_another_position() {
+    // The same key is registered for identity 1 under two labels. A
+    // countersignature made as "M" must not pass as one made by "M.A".
+    let mut ctx = Ctx::new();
+    ctx.keys.push((1, "M.A"));
+    let (mut file, id) = one("M.A.1", 3);
+    file.sign_revision(&id, ident(3), "M.A.1", &secret(3))
+        .unwrap();
+    file.countersign_revision(&id, ident(1), "M", &secret(1))
+        .unwrap();
+    assert_eq!(state(&file, &id, &ctx), Pending(R::MissingCountersignature));
+    file.proofs[1].signer_label = "M.A".into();
+    assert_eq!(state(&file, &id, &ctx), Denied(R::InvalidCountersignature));
+}
+
+#[test]
+fn a_bogus_content_proof_cannot_shadow_the_authors() {
+    let (mut file, id) = one("M.A", 2);
+    file.sign_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    let mut bogus = file.proofs[0].clone();
+    bogus.signer_label = "M.B".into();
+    bogus.signer_identity = ident(5);
+    file.proofs.insert(0, bogus);
+    assert_eq!(state(&file, &id, &Ctx::new()), Trusted);
+    // A container carrying a non-author content proof does not decode.
+    assert!(TrackedFile::decode(&file.encode_unchecked().unwrap()).is_err());
 }

@@ -109,7 +109,6 @@ pub enum TrustReason {
     UnrelatedActor,
     RoleForbidden,
     MissingContentSignature,
-    AuthorMismatch,
     GenerationMismatch,
     UnknownSigner,
     InvalidContentSignature,
@@ -170,14 +169,17 @@ pub fn evaluate_revision_trust(
         return Ok(Denied(R::RoleForbidden));
     }
 
-    let Some(content) = file.proofs_for(revision_id, ProofKind::Content).next() else {
+    // Only the author's own content proof counts; a proof from anyone else
+    // is ignored rather than allowed to shadow it.
+    let Some(content) = file
+        .proofs_for(revision_id, ProofKind::Content)
+        .find(|proof| {
+            proof.signer_label == revision.author_hcp_label
+                && Some(proof.signer_identity) == revision.author_identity
+        })
+    else {
         return Ok(Pending(R::MissingContentSignature));
     };
-    if content.signer_label != revision.author_hcp_label
-        || Some(content.signer_identity) != revision.author_identity
-    {
-        return Ok(Denied(R::AuthorMismatch));
-    }
     if !bound_to(revision, content) {
         return Ok(Denied(R::GenerationMismatch));
     }

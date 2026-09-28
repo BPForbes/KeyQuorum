@@ -64,15 +64,16 @@ impl RevisionProof {
                 &self.policy_hash,
             )),
             (ProofKind::Countersignature, Some(author_hash), Some(author)) => {
-                Ok(signing::file_countersign_preimage(
+                signing::file_countersign_preimage(
                     &revision.file_id,
                     &revision.revision_id,
                     &author,
                     &author_hash,
                     &self.signer_identity,
+                    &self.signer_label,
                     self.topology_generation,
                     &self.policy_hash,
-                ))
+                )
             }
             _ => Err(Error::InvalidTrackedFile),
         }

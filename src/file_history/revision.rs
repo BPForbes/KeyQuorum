@@ -178,6 +178,23 @@ impl FileRevision {
         Ok(revision)
     }
 
+    /// True when the generated label is `R<name>-<UTC>-<HCP>` for this
+    /// revision's own timestamp and HCP label, with a normalized, non-empty
+    /// name in front. The name is not compared with the file's current
+    /// logical name: renaming a file must not invalidate older revisions.
+    pub(super) fn generated_label_is_consistent(&self) -> bool {
+        let Ok(stamp) = compact_utc(&self.created_at_utc) else {
+            return false;
+        };
+        let suffix = format!("-{}-{}", stamp, self.author_hcp_label);
+        !self.author_hcp_label.is_empty()
+            && self
+                .generated_label
+                .strip_prefix('R')
+                .and_then(|rest| rest.strip_suffix(suffix.as_str()))
+                .is_some_and(|name| !name.is_empty() && normalize_name(name) == name)
+    }
+
     /// Canonical encoding of every field except `revision_id`. Parent ids
     /// are written in the recorded order.
     fn body(&self) -> Result<Vec<u8>> {
