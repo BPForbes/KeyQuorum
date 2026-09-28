@@ -250,7 +250,14 @@ impl TrackedFile {
                     right_bytes.to_vec(),
                 ));
             }
-            HeadRelation::Diverged => {}
+            HeadRelation::Diverged => {
+                // A merge only settles a divergence between current heads;
+                // merging older revisions would leave the real heads apart.
+                let heads = graph.heads();
+                if !heads.contains(left) || !heads.contains(right) {
+                    return Err(Error::InvalidTrackedFile);
+                }
+            }
         }
         if left_bytes == right_bytes {
             return Ok(AutoMerge::with_content(
@@ -308,8 +315,35 @@ impl TrackedFile {
     /// `right` as its parents (in that order) and no proofs, so it is
     /// pending until the normal trust policy approves it. `new` supplies
     /// the author, time, generation and policy; its parents are replaced.
-    /// A fast-forward adds no revision.
+    /// A fast-forward adds no revision. Either everything is recorded or,
+    /// on error, nothing is. A divergent pair must be current heads.
     pub fn auto_merge(
+        &mut self,
+        left: &[u8; 32],
+        right: &[u8; 32],
+        allowed: bool,
+        new: NewRevision,
+    ) -> Result<AutoMerge> {
+        self.atomically(|file| file.auto_merge_steps(left, right, allowed, new))
+    }
+
+    /// Run a multi-step change and put back the revisions and events as they
+    /// were if any step fails, so a half-recorded merge is never left behind.
+    /// Proofs are not touched by the steps that use this.
+    pub(super) fn atomically<T>(
+        &mut self,
+        steps: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        let (revisions, events) = (self.revisions.len(), self.events.len());
+        let result = steps(self);
+        if result.is_err() {
+            self.revisions.truncate(revisions);
+            self.events.truncate(events);
+        }
+        result
+    }
+
+    fn auto_merge_steps(
         &mut self,
         left: &[u8; 32],
         right: &[u8; 32],

@@ -1,5 +1,6 @@
 use super::super::merge::{merge_text, TextMerge};
 use super::*;
+use crate::error::Error;
 
 fn merged(base: &str, left: &str, right: &str) -> Option<String> {
     match merge_text(base, left, right) {
@@ -353,4 +354,54 @@ fn unknown_heads_are_an_error() {
         .auto_merge(&[9; 32], &l, true, rev(vec![], MERGE_AT))
         .is_err());
     assert!(file.events().is_empty());
+}
+
+#[test]
+fn stale_revisions_are_not_merged_while_newer_heads_exist() {
+    let (mut file, _, l, r) = fork(b"a\nb\nc\n", b"A\nb\nc\n", b"a\nb\nC\n");
+    // Both branches move on, so `l` and `r` are no longer heads.
+    let l2 = file
+        .check_in(rev(vec![l], "2026-10-04T00:00:00Z"), b"A\nb2\nc\n".to_vec())
+        .unwrap();
+    let r2 = file
+        .check_in(rev(vec![r], "2026-10-04T01:00:00Z"), b"a\nb\nC2\n".to_vec())
+        .unwrap();
+    let (revisions, events) = (file.revisions().len(), file.events().len());
+    assert!(file.plan_auto_merge(&l, &r, true).is_err());
+    assert!(file
+        .auto_merge(&l, &r, true, rev(vec![], MERGE_AT))
+        .is_err());
+    assert_eq!(
+        (file.revisions().len(), file.events().len()),
+        (revisions, events)
+    );
+    assert_eq!(file.graph().heads(), vec![l2, r2]);
+    // The current heads still merge.
+    let result = file
+        .auto_merge(&l2, &r2, true, rev(vec![], MERGE_AT))
+        .unwrap();
+    assert_eq!(result.outcome, AutoMergeOutcome::CleanMerge);
+    assert_eq!(file.graph().heads().len(), 1);
+}
+
+#[test]
+fn a_failed_multi_step_change_leaves_nothing_behind() {
+    let (mut file, _, l, r) = fork(b"a\n", b"b\n", b"c\n");
+    let (revisions, events) = (file.revisions().len(), file.events().len());
+    let outcome: Result<(), _> = file.atomically(|f| {
+        f.check_in(rev(vec![l, r], MERGE_AT), b"merged".to_vec())?;
+        f.append(new_event(HistoryEventType::AutoMergeClean, None))?;
+        Err(Error::InvalidTrackedFile)
+    });
+    assert!(outcome.is_err());
+    assert_eq!(
+        (file.revisions().len(), file.events().len()),
+        (revisions, events)
+    );
+    assert_eq!(file.graph().heads().len(), 2);
+    // A successful run keeps its work.
+    let kept = file
+        .atomically(|f| f.check_in(rev(vec![l, r], MERGE_AT), b"merged".to_vec()))
+        .unwrap();
+    assert_eq!(file.graph().heads(), vec![kept]);
 }
