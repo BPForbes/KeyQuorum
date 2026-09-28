@@ -191,7 +191,7 @@ export function App() {
         <FileExplorer snapshot={snapshot} act={act} />
         <Mailbox snapshot={snapshot} act={act} />
         <SecurityPanel snapshot={snapshot} act={act} />
-        <ActivityPanel snapshot={snapshot} last={last} />
+        <ActivityPanel snapshot={snapshot} last={last} act={act} />
         <Terminal
           cwd={snapshot.cwd}
           lines={terminal}

@@ -61,9 +61,9 @@ test.describe("guided tutorials", () => {
     await expect(page.getByRole("heading", { name: "Try it: switch to David" })).toBeVisible();
     await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /David/ }).click();
     await expect(page.getByTestId("active-user-name")).toHaveText("David");
-    await expect(page.getByRole("heading", { name: "That's the basics" })).toBeVisible({ timeout: 3_000 });
+    await expect(page.getByRole("heading", { name: "Try it: eject David's USB" })).toBeVisible({ timeout: 3_000 });
+    await page.getByRole("button", { name: "Eject David's USB" }).click();
 
-    await page.getByRole("button", { name: "Finish" }).click();
     await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible();
   });
 

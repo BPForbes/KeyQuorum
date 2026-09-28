@@ -95,6 +95,14 @@ const ensureActiveUserIsNot =
     return result?.snapshot ?? snapshot;
   };
 
+const ensureActiveUser =
+  (userId: string) =>
+  (snapshot: Snapshot, act: Act): Snapshot => {
+    if (snapshot.activeUser.id === userId) return snapshot;
+    const result = act((client) => client.switchUser(userId));
+    return result?.snapshot ?? snapshot;
+  };
+
 const ensureDriveDisconnected =
   (driveId: string) =>
   (snapshot: Snapshot, act: Act): Snapshot => {
@@ -172,14 +180,18 @@ export const TUTORIALS: TutorialModule[] = [
         isDone: (snapshot) => snapshot.activeUser.id === "david",
       },
       {
-        title: "That's the basics",
+        title: "Try it: eject David's USB",
         body: (
           <p>
-            You now know how to bring a drive online and how to tell who you're acting as. The other modules build on
-            this one.
+            Return to <strong>USB devices</strong> and eject David&rsquo;s USB. Its slots immediately stop participating
+            in unlocks and signatures.
           </p>
         ),
-        target: () => [".active-user"],
+        tab: "usb",
+        target: () => ['[data-testid="drive-david"]'],
+        ensure: ensureDrivesConnected("david"),
+        requiredKind: "usb",
+        isDone: (snapshot) => snapshot.drives.find((drive) => drive.id === "david")?.connected === false,
       },
     ],
   },
@@ -190,7 +202,7 @@ export const TUTORIALS: TutorialModule[] = [
     summary: "Open a public file, then see what a quorum-protected one asks for.",
     steps: [
       {
-        title: "The File Explorer",
+        title: "Try it: navigate or sort files",
         body: (
           <p>
             A Windows-Explorer-style view onto your files, grouped into folders. Double-clicking a file unlocks and
@@ -199,6 +211,7 @@ export const TUTORIALS: TutorialModule[] = [
         ),
         tab: "files",
         target: () => ['[data-panel="files"]'],
+        isDone: (_snapshot, latest) => latest?.kind === "file-navigate" || latest?.kind === "file-sort",
       },
       {
         title: "Try it: open a public file",
@@ -225,7 +238,7 @@ export const TUTORIALS: TutorialModule[] = [
         isDone: (_snapshot, latest) => wasOpened(latest, "architecture.md"),
       },
       {
-        title: "Read the trace",
+        title: "Try it: read the trace",
         body: (
           <p>
             Switch to the <strong>Activity</strong> tab. Every attempt leaves a trace of exactly which checks ran and
@@ -234,6 +247,8 @@ export const TUTORIALS: TutorialModule[] = [
         ),
         tab: "activity",
         target: () => ['[data-panel="activity"]'],
+        requiredKind: "activity-expand",
+        isDone: (_snapshot, latest) => latest?.kind === "activity-expand",
       },
     ],
   },
@@ -329,16 +344,20 @@ export const TUTORIALS: TutorialModule[] = [
         isDone: (_snapshot, latest) => latest?.kind === "move" && latest.outcome !== "denied",
       },
       {
-        title: "Copy keeps the source active",
+        title: "Try it: copy a slot",
         body: <p>The adjacent <strong>Copy</strong> form runs <code>transfer copy</code>. It needs the slot&rsquo;s published demo passphrase and leaves the source usable, unlike a transfer move.</p>,
         tab: "usb",
         target: () => ['[data-testid^="copy-slot-"]'],
+        requiredKind: "transfer-copy",
+        isDone: (_snapshot, latest) => latest?.kind === "transfer-copy" && latest.outcome === "granted",
       },
       {
-        title: "Custody is about containers",
+        title: "Try it: inspect custody in Properties",
         body: <p>Open a protected file&rsquo;s <strong>Properties</strong> to see hardware/logical custody, minimum physical devices, and parent approval. Multiple logical slots on one drive still count as one physical device.</p>,
         tab: "files",
         target: () => ['[data-testid="file-actions"]', '[data-panel="files"]'],
+        requiredKind: "properties",
+        isDone: (_snapshot, latest) => latest?.kind === "properties",
       },
       {
         title: "Ghosts are deliberately read-only here",
@@ -359,12 +378,16 @@ export const TUTORIALS: TutorialModule[] = [
         body: <p>In <strong>Create a new key</strong>, choose an inserted drive, a new dotted label, and a passphrase. Provisioning mints keys on the device but does not yet grant an organization role.</p>,
         tab: "security",
         target: () => ['[data-testid="provision-slot"]'],
+        requiredKind: "provision",
+        isDone: (_snapshot, latest) => latest?.kind === "provision" && latest.outcome === "granted",
       },
       {
         title: "Register the leaf separately",
         body: <p>Use <strong>Register a new leaf</strong> after provisioning. Registration binds the container and adds that exact slot below a selected split node, resharing with the active siblings the CLI can collect.</p>,
         tab: "security",
         target: () => ['[data-testid="register-leaf"]'],
+        requiredKind: "register-leaf",
+        isDone: (_snapshot, latest) => latest?.kind === "register-leaf" && latest.outcome === "granted",
       },
       {
         title: "Confirm it in the tree",
@@ -385,18 +408,25 @@ export const TUTORIALS: TutorialModule[] = [
         body: <p><strong>Revoke key</strong> bans a leaf&rsquo;s current hardware key. <strong>Reissue</strong> adopts an already-provisioned replacement token and authenticates an update to affected stores. These are related, but distinct, operations.</p>,
         tab: "organization",
         target: () => ['[data-testid="tree-node-M.A.1"]', '[data-panel="organization"]'],
+        isDone: (_snapshot, latest) =>
+          (latest?.kind === "revoke" || latest?.kind === "reissue") && latest.outcome === "granted",
       },
       {
         title: "Restructure is a two-person workflow",
         body: <p>The authority proposes the next public generation here. A non-root proposal remains pending until its parent switches in and countersigns with that parent&rsquo;s device passphrase.</p>,
         tab: "organization",
         target: () => ['[data-testid="restructure-admin"]'],
+        ensure: ensureActiveUser("david"),
+        isDone: (_snapshot, latest) =>
+          (latest?.kind === "restructure-propose" || latest?.kind === "restructure-countersign") && latest.outcome === "granted",
       },
       {
         title: "Parent approval is enforced at unlock",
         body: <p>A file&rsquo;s Properties dialog reports whether <code>unlock_approval = parent</code>. It is policy, not a toggle in this lab; when required, the approving parent&rsquo;s participation is part of the real unlock path.</p>,
         tab: "files",
         target: () => ['[data-testid="file-actions"]', '[data-panel="files"]'],
+        requiredKind: "properties",
+        isDone: (_snapshot, latest) => latest?.kind === "properties",
       },
     ],
   },
@@ -411,18 +441,24 @@ export const TUTORIALS: TutorialModule[] = [
         body: <p>Select a node and peer, then <strong>Allow node → peer</strong>. Establishing a bridge is refused until one endpoint has whitelisted the other.</p>,
         tab: "organization",
         target: () => ['[data-testid="bridges"]'],
+        requiredKind: "terminal",
+        isDone: (_snapshot, latest) => latest?.kind === "terminal" && latest.outcome === "granted",
       },
       {
         title: "Establish, remove, or deny",
         body: <p><strong>Establish bridge</strong> changes each endpoint&rsquo;s visible slice. The Established and Whitelist lists then expose <strong>Remove</strong> and <strong>Deny</strong>. This same private bridge supports file signing and verification.</p>,
         tab: "organization",
         target: () => ['[data-testid="bridges"]'],
+        requiredKind: "terminal",
+        isDone: (_snapshot, latest) => latest?.kind === "terminal" && latest.outcome === "granted",
       },
       {
         title: "Remote device transfer is not a GUI action",
         body: <p>Device publish, relay-send, collect, and finalize are intentionally not buttons in this lab. They use opaque device letters in the same in-process relay; use the Terminal to explore the CLI. The read-only relay counters show those letters without opening them.</p>,
-        tab: "security",
-        target: () => ['[data-testid="relay-status"]'],
+        tab: "terminal",
+        target: () => ['[data-panel="terminal"]'],
+        requiredKind: "terminal",
+        isDone: (_snapshot, latest) => latest?.kind === "terminal" && latest.outcome === "granted",
       },
     ],
   },
@@ -437,6 +473,8 @@ export const TUTORIALS: TutorialModule[] = [
         body: <p>Select a protected file and open <strong>Properties</strong>. The requirement tree tells you which leaves can satisfy each threshold; policy below it tells you how many distinct physical devices are required.</p>,
         tab: "files",
         target: () => ['[data-testid="file-actions"]', '[data-panel="files"]'],
+        requiredKind: "properties",
+        isDone: (_snapshot, latest) => latest?.kind === "properties",
       },
       {
         title: "Bring the required devices online",
@@ -457,6 +495,8 @@ export const TUTORIALS: TutorialModule[] = [
         body: <p>The Activity panel records the command and every custody, quorum, ghost, expiry, and approval check that led to the result.</p>,
         tab: "activity",
         target: () => ['[data-panel="activity"]'],
+        requiredKind: "activity-expand",
+        isDone: (_snapshot, latest) => latest?.kind === "activity-expand",
       },
     ],
   },
@@ -507,12 +547,28 @@ export const TUTORIALS: TutorialModule[] = [
         isDone: (_snapshot, latest) => latest?.kind === "export" && latest.outcome === "granted",
       },
       {
+        title: "Try it: view the export bundle",
+        body: <p>Under <strong>Exported bundles</strong>, press <strong>View sealed bytes</strong>. The viewer shows the portable <code>KQXB</code> ciphertext, not its protected plaintext.</p>,
+        tab: "security",
+        target: () => ['[data-testid="exported-bundles"]', '[data-panel="security"]'],
+        requiredKind: "export-view",
+        isDone: (_snapshot, latest) => latest?.kind === "export-view",
+      },
+      {
         title: "Try it: create a bearer share link",
         body: <p>Open <strong>Share…</strong> on that file, choose its lifetime and optional PIN, and create it. The displayed token is the capability: possession of it, not lab identity, authorizes access.</p>,
         tab: "security",
         target: () => ['[data-testid="password-files"]'],
         requiredKind: "share-create",
         isDone: (_snapshot, latest) => latest?.kind === "share-create" && latest.outcome === "granted",
+      },
+      {
+        title: "Try it: redeem the share link",
+        body: <p>Copy the newly displayed bearer token, close its viewer, paste it into the share&rsquo;s redemption form, and press <strong>Redeem</strong>. Add the PIN too if you chose one.</p>,
+        tab: "security",
+        target: () => ['[data-testid="share-links"]'],
+        requiredKind: "share-redeem",
+        isDone: (_snapshot, latest) => latest?.kind === "share-redeem" && latest.outcome === "granted",
       },
       {
         title: "Try it: revoke the share",
@@ -555,16 +611,21 @@ export const TUTORIALS: TutorialModule[] = [
         isDone: (_snapshot, latest) => latest?.kind === "verify" && latest.outcome === "granted",
       },
       {
-        title: "Properties explains before you act",
+        title: "Try it: inspect Properties",
         body: <p>Properties shows type, size, source, expiry, requirement tree, ghosts, custody mode, minimum devices, and parent approval without attempting an unlock.</p>,
         tab: "files",
         target: () => ['[data-testid="file-actions"]', '[data-panel="files"]'],
+        requiredKind: "properties",
+        isDone: (_snapshot, latest) => latest?.kind === "properties",
       },
       {
-        title: "Expiry purges on first touch",
+        title: "Try it: observe expiry and purge",
         body: <p>Some seeded files expire while the tab is open. Their timestamp updates passively; the first unlock attempt after expiry runs the real destructive purge, deleting ciphertext and its database row.</p>,
         tab: "files",
         target: () => ['[data-panel="files"]'],
+        requiredKind: "access",
+        isDone: (_snapshot, latest) =>
+          latest?.kind === "access" && latest.trace.some((step) => /expir|purge|delet/i.test(step.text)),
       },
     ],
   },
@@ -646,6 +707,8 @@ export const TUTORIALS: TutorialModule[] = [
         body: <p>Remote copy/move/relocate handshakes use the relay&rsquo;s device mailbox. This lab has no GUI buttons for publish, relay-send, collect, or finalize; the Relay status panel exposes only counts, while Device logs report inserted containers.</p>,
         tab: "security",
         target: () => ['[data-testid="device-logs"]', '[data-testid="relay-status"]'],
+        requiredKind: "device-log",
+        isDone: (_snapshot, latest) => latest?.kind === "device-log",
       },
     ],
   },

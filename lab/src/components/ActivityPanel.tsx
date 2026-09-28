@@ -1,3 +1,4 @@
+import type { Act } from "../App";
 import type { ActionResult, Snapshot, TraceStep } from "../api/types";
 
 const MARK: Record<TraceStep["status"], [string, string]> = {
@@ -22,7 +23,7 @@ export function Trace({ steps }: { steps: TraceStep[] }) {
   );
 }
 
-export function ActivityPanel({ snapshot, last }: { snapshot: Snapshot; last: ActionResult | null }) {
+export function ActivityPanel({ snapshot, last, act }: { snapshot: Snapshot; last: ActionResult | null; act: Act }) {
   const latest = snapshot.activity[0];
   const showing = last && last.trace.length > 0 ? last : null;
   return (
@@ -43,7 +44,9 @@ export function ActivityPanel({ snapshot, last }: { snapshot: Snapshot; last: Ac
       ) : (
         <p className="empty">Actions and the checks behind them appear here.</p>
       )}
-      <details className="log">
+      <details className="log" onToggle={(event) => {
+        if (event.currentTarget.open) act((client) => client.noteUi("activity-expand", "Expanded the full activity log"));
+      }}>
         <summary>Full activity log ({snapshot.activity.length})</summary>
         <ol>
           {snapshot.activity.map((entry) => (
