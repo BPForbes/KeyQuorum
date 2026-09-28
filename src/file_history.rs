@@ -15,12 +15,19 @@
 mod codec;
 mod container;
 mod event;
+mod revision;
+mod verify;
 
 pub use container::{TrackedFile, CONTAINER_MAGIC, CONTAINER_VERSION};
 pub use event::{
     genesis_hash, verify_chain, EventDetails, HistoryEvent, HistoryEventType, HistoryOutcome,
     NewEvent,
 };
+pub use revision::{
+    content_commitment, generated_label, FileRevision, HeadRelation, NewRevision, RevisionGraph,
+    StoredRevision,
+};
+pub use verify::verify_tracked_file;
 
 #[cfg(test)]
 mod tests;

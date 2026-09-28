@@ -1,43 +1,70 @@
 //! `KQTF`: the tracked-file container. Layout (all integers big-endian):
 //!
 //! `magic(4) | version(1) | file_id(16) | lp(logical_name) | history_root(32)
-//!  | lp32(payload) | event_count(u32) | events…`
+//!  | revision_count(u32) | revisions… | event_count(u32) | events…`
 //!
-//! Decoding rebuilds the chain from the events and refuses a container
-//! whose stored `history_root` disagrees. Revision checkpoints and content
-//! signatures arrive with the revision DAG and will bump the version.
+//! Each revision is its canonical body, its id, and the payload it commits
+//! to. Decoding rebuilds the chain and the DAG and refuses a container
+//! whose stored `history_root` disagrees, whose revision ids or content
+//! commitments do not recompute, or whose events name unknown revisions.
+//! Version 2 replaced the single payload of version 1 with revisions.
 
 use super::codec::{bad, take_fixed};
-use super::event::{genesis_hash, verify_chain, HistoryEvent, NewEvent};
-use crate::envelope::{
-    push_len_prefixed, push_len_prefixed_u32, take_len_prefixed, take_len_prefixed_u32, take_u32,
-    utf8,
-};
+use super::event::{genesis_hash, HistoryEvent, NewEvent};
+use super::revision::{FileRevision, NewRevision, RevisionGraph, StoredRevision};
+use super::verify::verify_structure;
+use crate::envelope::{push_len_prefixed, take_len_prefixed, take_u32, utf8};
 use crate::error::{Error, Result};
 use rand::rngs::OsRng;
 use rand::RngCore;
 
 pub const CONTAINER_MAGIC: &[u8; 4] = b"KQTF";
-pub const CONTAINER_VERSION: u8 = 1;
+pub const CONTAINER_VERSION: u8 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackedFile {
     /// Stable identity, independent of name, path or revision.
     pub file_id: [u8; 16],
     pub logical_name: String,
-    /// The native file bytes, wrapped rather than modified.
-    pub payload: Vec<u8>,
+    /// Revisions with their native bytes, parents before children.
+    pub revisions: Vec<StoredRevision>,
     pub events: Vec<HistoryEvent>,
 }
 
 impl TrackedFile {
-    pub fn new(file_id: [u8; 16], logical_name: &str, payload: Vec<u8>) -> Self {
+    pub fn new(file_id: [u8; 16], logical_name: &str) -> Self {
         Self {
             file_id,
             logical_name: logical_name.to_string(),
-            payload,
+            revisions: Vec::new(),
             events: Vec::new(),
         }
+    }
+
+    pub fn graph(&self) -> RevisionGraph<'_> {
+        RevisionGraph::new(&self.revisions)
+    }
+
+    /// Record a new revision of `payload` and return its id. The first
+    /// revision has no parents; every later one must name existing
+    /// revisions (no duplicates), so a second root can never appear. This
+    /// records content lineage only; trust is decided elsewhere and no
+    /// event is appended here.
+    pub fn check_in(&mut self, new: NewRevision, payload: Vec<u8>) -> Result<[u8; 32]> {
+        let parents = &new.parent_revision_ids;
+        let graph = self.graph();
+        let known = parents.iter().all(|parent| graph.get(parent).is_some());
+        let distinct = parents
+            .iter()
+            .enumerate()
+            .all(|(i, parent)| !parents[..i].contains(parent));
+        if parents.is_empty() != self.revisions.is_empty() || !known || !distinct {
+            return Err(Error::InvalidTrackedFile);
+        }
+        let revision = FileRevision::create(self.file_id, &self.logical_name, &payload, new)?;
+        let id = revision.revision_id;
+        self.revisions.push(StoredRevision { revision, payload });
+        Ok(id)
     }
 
     /// Last event hash, or the file's genesis hash before any event.
@@ -71,7 +98,12 @@ impl TrackedFile {
         out.extend_from_slice(&self.file_id);
         push_len_prefixed(&mut out, self.logical_name.as_bytes())?;
         out.extend_from_slice(&self.history_root());
-        push_len_prefixed_u32(&mut out, &self.payload)?;
+        let revision_count =
+            u32::try_from(self.revisions.len()).map_err(|_| Error::BundleFieldTooLarge)?;
+        out.extend_from_slice(&revision_count.to_be_bytes());
+        for stored in &self.revisions {
+            stored.encode(&mut out)?;
+        }
         out.extend_from_slice(&count.to_be_bytes());
         for event in &self.events {
             event.encode(&mut out)?;
@@ -91,20 +123,25 @@ impl TrackedFile {
         let file_id = take_fixed::<16>(&mut data)?;
         let logical_name = bad(take_len_prefixed(&mut data).and_then(utf8))?;
         let stored_root = take_fixed::<32>(&mut data)?;
-        let payload = bad(take_len_prefixed_u32(&mut data))?.to_vec();
+        let revision_count = bad(take_u32(&mut data))?;
+        let mut revisions = Vec::new();
+        for _ in 0..revision_count {
+            revisions.push(StoredRevision::decode(&mut data)?);
+        }
         let count = bad(take_u32(&mut data))?;
         let mut events = Vec::new();
         for _ in 0..count {
             events.push(HistoryEvent::decode(&mut data)?);
         }
-        if !data.is_empty() || verify_chain(&file_id, &events)? != stored_root {
-            return Err(Error::InvalidTrackedFile);
-        }
-        Ok(Self {
+        let file = Self {
             file_id,
             logical_name,
-            payload,
+            revisions,
             events,
-        })
+        };
+        if !data.is_empty() || verify_structure(&file)? != stored_root {
+            return Err(Error::InvalidTrackedFile);
+        }
+        Ok(file)
     }
 }
