@@ -106,7 +106,8 @@ fn normalize_name(name: &str) -> String {
 }
 
 /// `2026-10-02T14:32:05.482Z` → `20261002T143205.482Z`. Only UTC (`Z`)
-/// timestamps with optional fractional seconds are accepted.
+/// timestamps with optional fractional seconds and a real calendar date and
+/// clock time are accepted.
 fn compact_utc(value: &str) -> Result<String> {
     let digits = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
     let (date, time) = value.split_once('T').ok_or(Error::InvalidTrackedFile)?;
@@ -117,7 +118,7 @@ fn compact_utc(value: &str) -> Result<String> {
     };
     let d: Vec<&str> = date.split('-').collect();
     let t: Vec<&str> = clock.split(':').collect();
-    let ok = d.len() == 3
+    let shaped = d.len() == 3
         && digits(d[0], 4)
         && digits(d[1], 2)
         && digits(d[2], 2)
@@ -125,7 +126,22 @@ fn compact_utc(value: &str) -> Result<String> {
         && t.iter().all(|part| digits(part, 2))
         && fraction
             .is_none_or(|f| !f.is_empty() && f.len() <= 9 && f.bytes().all(|b| b.is_ascii_digit()));
-    if !ok {
+    if !shaped {
+        return Err(Error::InvalidTrackedFile);
+    }
+    // Real calendar and clock ranges; leap seconds are not accepted.
+    let number = |s: &str| s.parse::<u32>().unwrap_or(u32::MAX);
+    let (year, month, day) = (number(d[0]), number(d[1]), number(d[2]));
+    let (hour, minute, second) = (number(t[0]), number(t[1]), number(t[2]));
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => 0,
+    };
+    if year == 0 || day == 0 || day > days || hour > 23 || minute > 59 || second > 59 {
         return Err(Error::InvalidTrackedFile);
     }
     let mut out = format!("{}{}{}T{}{}{}", d[0], d[1], d[2], t[0], t[1], t[2]);
