@@ -5,8 +5,10 @@ async function loadLab(page: Page) {
   await expect(page.locator("[data-lab-state=ready]")).toBeVisible({ timeout: 30_000 });
 }
 
-test("both PDF manuals are linked from the footer and actually served", async ({ page }) => {
+test("both PDF manuals are linked from Tutorials & Documentation and actually served", async ({ page }) => {
   await loadLab(page);
+  await page.getByRole("button", { name: "Tutorials & Documentation" }).click();
+  await expect(page.getByRole("heading", { name: "Tutorials & Documentation" })).toBeVisible();
   const cli = page.getByRole("link", { name: "KeyQuorum (CLI)" });
   const labManual = page.getByRole("link", { name: "KeyQuorum Lab (this GUI)" });
   await expect(cli).toBeVisible();
