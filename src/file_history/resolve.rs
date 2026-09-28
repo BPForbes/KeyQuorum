@@ -199,8 +199,23 @@ impl TrackedFile {
     /// Try the automatic merge; if it stops, record the fork and conflict
     /// and choose the reviewer. The revision graph is never changed by a
     /// conflict, so both heads stay. `new` supplies the actor, time,
-    /// generation and (for a clean merge) the new revision's metadata.
+    /// generation and (for a clean merge) the new revision's metadata. Either
+    /// everything is recorded or, on error, nothing is.
     pub fn resolve_divergence(
+        &mut self,
+        left: &[u8; 32],
+        right: &[u8; 32],
+        allowed: bool,
+        new: NewRevision,
+        policy: &FilePolicy,
+        ctx: &dyn TrustContext,
+    ) -> Result<Divergence> {
+        self.atomically(|file| {
+            file.resolve_divergence_steps(left, right, allowed, new, policy, ctx)
+        })
+    }
+
+    fn resolve_divergence_steps(
         &mut self,
         left: &[u8; 32],
         right: &[u8; 32],

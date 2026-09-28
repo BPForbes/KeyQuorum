@@ -409,3 +409,27 @@ fn a_bridge_never_decides_the_reviewer() {
         with(BridgeEvidence::None)
     );
 }
+
+#[test]
+fn stale_heads_change_nothing_and_record_nothing() {
+    let mut s = Story::new();
+    let base = s.rev(&[], "M.A", "line: base\n", true);
+    let (l, r) = s.conflict(base, "M.A.2", "M.S.1");
+    // Both branches move on, so `l` and `r` are stale.
+    s.rev(&[l], "M.A.2", "line: L2\n", false);
+    s.rev(&[r], "M.S.1", "line: R2\n", false);
+    let (revisions, events) = (s.file.revisions().len(), s.file.events().len());
+    let outcome = s.file.resolve_divergence(
+        &l,
+        &r,
+        true,
+        merge_meta("2026-10-05T00:00:00Z"),
+        &policy(),
+        &Ctx(BridgeEvidence::None),
+    );
+    assert!(outcome.is_err());
+    assert_eq!(
+        (s.file.revisions().len(), s.file.events().len()),
+        (revisions, events)
+    );
+}
