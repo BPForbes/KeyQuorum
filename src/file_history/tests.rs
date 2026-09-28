@@ -230,7 +230,7 @@ fn hostile_event_count_does_not_preallocate() {
     events[at..].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(TrackedFile::decode(&events).is_err());
     let mut revisions = empty;
-    let at = revisions.len() - 8;
+    let at = revisions.len() - 12;
     revisions[at..at + 4].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(TrackedFile::decode(&revisions).is_err());
 }
@@ -501,3 +501,5 @@ fn decode_rejects_events_naming_unknown_revisions() {
     assert!(TrackedFile::decode(&file.encode().unwrap()).is_err());
     assert!(verify_tracked_file(&file).is_err());
 }
+
+mod policy;

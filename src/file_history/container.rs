@@ -1,16 +1,19 @@
 //! `KQTF`: the tracked-file container. Layout (all integers big-endian):
 //!
 //! `magic(4) | version(1) | file_id(16) | lp(logical_name) | history_root(32)
-//!  | revision_count(u32) | revisions… | event_count(u32) | events…`
+//!  | revision_count(u32) | revisions… | proof_count(u32) | proofs…
+//!  | event_count(u32) | events…`
 //!
 //! Each revision is its canonical body, its id, and the payload it commits
 //! to. Decoding rebuilds the chain and the DAG and refuses a container
 //! whose stored `history_root` disagrees, whose revision ids or content
 //! commitments do not recompute, or whose events name unknown revisions.
-//! Version 2 replaced the single payload of version 1 with revisions.
+//! Version 2 replaced the single payload of version 1 with revisions;
+//! version 3 added revision proofs (signatures) between revisions and events.
 
 use super::codec::{bad, take_fixed};
 use super::event::{genesis_hash, HistoryEvent, NewEvent};
+use super::proof::RevisionProof;
 use super::revision::{FileRevision, NewRevision, RevisionGraph, StoredRevision};
 use super::verify::verify_structure;
 use crate::envelope::{push_len_prefixed, take_len_prefixed, take_u32, utf8};
@@ -19,7 +22,7 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 
 pub const CONTAINER_MAGIC: &[u8; 4] = b"KQTF";
-pub const CONTAINER_VERSION: u8 = 2;
+pub const CONTAINER_VERSION: u8 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackedFile {
@@ -28,6 +31,8 @@ pub struct TrackedFile {
     pub logical_name: String,
     /// Revisions with their native bytes, parents before children.
     pub revisions: Vec<StoredRevision>,
+    /// Signatures over revisions; checked against keys by `policy`.
+    pub proofs: Vec<RevisionProof>,
     pub events: Vec<HistoryEvent>,
 }
 
@@ -37,6 +42,7 @@ impl TrackedFile {
             file_id,
             logical_name: logical_name.to_string(),
             revisions: Vec::new(),
+            proofs: Vec::new(),
             events: Vec::new(),
         }
     }
@@ -104,6 +110,12 @@ impl TrackedFile {
         for stored in &self.revisions {
             stored.encode(&mut out)?;
         }
+        let proof_count =
+            u32::try_from(self.proofs.len()).map_err(|_| Error::BundleFieldTooLarge)?;
+        out.extend_from_slice(&proof_count.to_be_bytes());
+        for proof in &self.proofs {
+            proof.encode(&mut out)?;
+        }
         out.extend_from_slice(&count.to_be_bytes());
         for event in &self.events {
             event.encode(&mut out)?;
@@ -128,6 +140,11 @@ impl TrackedFile {
         for _ in 0..revision_count {
             revisions.push(StoredRevision::decode(&mut data)?);
         }
+        let proof_count = bad(take_u32(&mut data))?;
+        let mut proofs = Vec::new();
+        for _ in 0..proof_count {
+            proofs.push(RevisionProof::decode(&mut data)?);
+        }
         let count = bad(take_u32(&mut data))?;
         let mut events = Vec::new();
         for _ in 0..count {
@@ -137,6 +154,7 @@ impl TrackedFile {
             file_id,
             logical_name,
             revisions,
+            proofs,
             events,
         };
         if !data.is_empty() || verify_structure(&file)? != stored_root {

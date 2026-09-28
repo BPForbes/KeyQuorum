@@ -1,9 +1,10 @@
-//! Structural verification of a tracked file. Cryptographic proofs
-//! (content signatures, countersignatures) are checked by the policy layer
-//! through `signing::verify_signature`; nothing here verifies signatures.
+//! Structural verification of a tracked file. Signatures are checked by the
+//! policy layer through `signing::verify_signature`, which needs signer
+//! keys; nothing here verifies them.
 
 use super::container::TrackedFile;
 use super::event::verify_chain;
+use super::proof::ProofKind;
 use super::revision::content_commitment;
 use crate::error::{Error, Result};
 
@@ -14,6 +15,8 @@ use crate::error::{Error, Result};
 ///   the graph cannot contain a cycle;
 /// - only the first revision is a root;
 /// - each revision's content commitment matches the payload stored with it;
+/// - each proof names a known revision, is well formed for its kind, and
+///   no signer proves the same revision twice in the same role;
 /// - each event's revision (when present) exists.
 pub(super) fn verify_structure(file: &TrackedFile) -> Result<[u8; 32]> {
     let mut seen: Vec<[u8; 32]> = Vec::new();
@@ -34,6 +37,20 @@ pub(super) fn verify_structure(file: &TrackedFile) -> Result<[u8; 32]> {
             return Err(Error::InvalidTrackedFile);
         }
         seen.push(revision.revision_id);
+    }
+    for (index, proof) in file.proofs.iter().enumerate() {
+        let well_formed = match proof.kind {
+            ProofKind::Content => proof.author_signature_hash.is_none(),
+            ProofKind::Countersignature => proof.author_signature_hash.is_some(),
+        };
+        let duplicate = file.proofs[..index].iter().any(|earlier| {
+            earlier.revision_id == proof.revision_id
+                && earlier.kind == proof.kind
+                && earlier.signer_label == proof.signer_label
+        });
+        if !well_formed || duplicate || !seen.contains(&proof.revision_id) {
+            return Err(Error::InvalidTrackedFile);
+        }
     }
     if file
         .events

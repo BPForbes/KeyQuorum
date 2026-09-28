@@ -15,6 +15,8 @@
 mod codec;
 mod container;
 mod event;
+mod policy;
+mod proof;
 mod revision;
 mod verify;
 
@@ -23,6 +25,11 @@ pub use event::{
     genesis_hash, verify_chain, EventDetails, HistoryEvent, HistoryEventType, HistoryOutcome,
     NewEvent,
 };
+pub use policy::{
+    evaluate_revision_trust, select_shareable_revision, BridgeEvidence, DeliveryDecision,
+    DeliveryDecisionKind, FilePolicy, Requirement, TrustContext, TrustReason, TrustState,
+};
+pub use proof::{ProofKind, RevisionProof};
 pub use revision::{
     content_commitment, generated_label, FileRevision, HeadRelation, NewRevision, RevisionGraph,
     StoredRevision,
