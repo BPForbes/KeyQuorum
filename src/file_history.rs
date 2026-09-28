@@ -18,6 +18,7 @@ mod event;
 mod merge;
 mod policy;
 mod proof;
+mod resolve;
 mod revision;
 mod verify;
 
@@ -32,6 +33,7 @@ pub use policy::{
     DeliveryDecisionKind, FilePolicy, Requirement, TrustContext, TrustReason, TrustState,
 };
 pub use proof::{ProofKind, RevisionProof};
+pub use resolve::{Divergence, ResolverSelection, SelectionRule};
 pub use revision::{
     content_commitment, generated_label, FileRevision, HeadRelation, MergeBase, NewRevision,
     RevisionGraph, StoredRevision,

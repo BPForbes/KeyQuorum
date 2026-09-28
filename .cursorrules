@@ -152,6 +152,11 @@ is a new two-parent revision with no proofs, so it starts untrusted and goes
 through `policy`; overlapping edits, other content, a criss-cross history or
 a policy that disables it stop for a human. HCP seniority never chooses a
 winning line.
+`file_history/resolve.rs` picks the human reviewer for a conflict the merge
+could not settle (prior neutral owner, then seniority, sector size, common
+ancestor), from owners whose revisions are trusted under policy; conflicting
+authors never review their own collision, a private bridge is never named
+in history, and nothing is guessed when no one qualifies.
 
 `src/lab/` (feature `lab`) is KeyQuorum Lab, the public browser
 demonstration published from `lab/` to GitHub Pages and embedded by

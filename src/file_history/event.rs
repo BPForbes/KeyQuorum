@@ -37,6 +37,12 @@ pub enum HistoryEventType {
     AutoMergeClean = 14,
     AutoMergeBlocked = 15,
     AutoMergeRequiresHuman = 16,
+    HistoryForkDetected = 17,
+    ContentConflictDetected = 18,
+    ConflictReviewAssigned = 19,
+    ConflictReviewEscalated = 20,
+    BridgeUsed = 21,
+    ConflictUnresolved = 22,
 }
 
 impl HistoryEventType {
@@ -58,6 +64,12 @@ impl HistoryEventType {
             14 => Self::AutoMergeClean,
             15 => Self::AutoMergeBlocked,
             16 => Self::AutoMergeRequiresHuman,
+            17 => Self::HistoryForkDetected,
+            18 => Self::ContentConflictDetected,
+            19 => Self::ConflictReviewAssigned,
+            20 => Self::ConflictReviewEscalated,
+            21 => Self::BridgeUsed,
+            22 => Self::ConflictUnresolved,
             _ => return Err(Error::InvalidTrackedFile),
         })
     }

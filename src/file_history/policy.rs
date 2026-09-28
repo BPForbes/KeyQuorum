@@ -76,6 +76,13 @@ impl FilePolicy {
         Ok(hasher.finalize().into())
     }
 
+    /// Whether `label` may create or review revisions of this file at all:
+    /// related to the scope and not in a forbidden role.
+    pub(super) fn may_author(&self, label: &str) -> bool {
+        self.requirement_for(label)
+            .is_some_and(|requirement| requirement != Requirement::Forbidden)
+    }
+
     fn requirement_for(&self, author_label: &str) -> Option<Requirement> {
         match authority::relationship(&self.scope_root, author_label) {
             RevisionAuthority::ScopeOwner => Some(self.scope_owner),
