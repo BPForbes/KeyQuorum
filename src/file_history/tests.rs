@@ -205,3 +205,21 @@ fn hostile_event_count_does_not_preallocate() {
     bytes[count_at..].copy_from_slice(&u32::MAX.to_be_bytes());
     assert!(TrackedFile::decode(&bytes).is_err());
 }
+
+#[test]
+fn a_damaged_history_is_neither_extended_nor_encoded() {
+    let mut file = sample();
+    file.events[0].outcome = HistoryOutcome::Failure;
+    assert!(matches!(file.encode(), Err(Error::InvalidTrackedFile)));
+    let before = file.events.len();
+    assert!(matches!(
+        file.append(sparse_event()),
+        Err(Error::InvalidTrackedFile)
+    ));
+    assert_eq!(file.events.len(), before);
+    // Dropping an event in the middle is caught the same way.
+    let mut gapped = sample();
+    gapped.events.remove(1);
+    assert!(gapped.encode().is_err());
+    assert_eq!(sample().events().len(), 3);
+}

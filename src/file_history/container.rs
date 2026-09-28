@@ -27,7 +27,9 @@ pub struct TrackedFile {
     pub logical_name: String,
     /// The native file bytes, wrapped rather than modified.
     pub payload: Vec<u8>,
-    pub events: Vec<HistoryEvent>,
+    /// Read through [`TrackedFile::events`]; only this module appends, so
+    /// callers cannot rewrite or drop events behind the chain's back.
+    pub(super) events: Vec<HistoryEvent>,
 }
 
 impl TrackedFile {
@@ -40,6 +42,10 @@ impl TrackedFile {
         }
     }
 
+    pub fn events(&self) -> &[HistoryEvent] {
+        &self.events
+    }
+
     /// Last event hash, or the file's genesis hash before any event.
     pub fn history_root(&self) -> [u8; 32] {
         self.events
@@ -48,8 +54,10 @@ impl TrackedFile {
     }
 
     /// Append an event: assigns a random event id, the next sequence and
-    /// the link to the current root. Existing events are never touched.
+    /// the link to the current root. Existing events are never touched, and
+    /// the chain is verified first so a damaged history is not extended.
     pub fn append(&mut self, new: NewEvent) -> Result<&HistoryEvent> {
+        verify_chain(&self.file_id, &self.events)?;
         let mut event_id = [0u8; 16];
         OsRng.fill_bytes(&mut event_id);
         let event = HistoryEvent::seal(
@@ -63,7 +71,9 @@ impl TrackedFile {
         Ok(&self.events[self.events.len() - 1])
     }
 
+    /// Serialize, refusing a history that would not decode again.
     pub fn encode(&self) -> Result<Vec<u8>> {
+        verify_chain(&self.file_id, &self.events)?;
         let count = u32::try_from(self.events.len()).map_err(|_| Error::BundleFieldTooLarge)?;
         let mut out = Vec::new();
         out.extend_from_slice(CONTAINER_MAGIC);
