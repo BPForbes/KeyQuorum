@@ -401,9 +401,16 @@ export const TUTORIALS: TutorialModule[] = [
       },
       {
         title: "Try it: copy a slot",
-        body: <p>The adjacent <strong>Copy</strong> form runs <code>transfer copy</code>. It needs the slot&rsquo;s published demo passphrase and leaves the source usable, unlike a transfer move.</p>,
+        body: (
+          <p>
+            The adjacent <strong>Copy</strong> form runs <code>transfer copy</code> and asks for the
+            slot&rsquo;s own passphrase before it will seal a second copy. Every seeded USB slot uses{" "}
+            <code>lab-demo-&lt;label&gt;</code> — for <code>M.S.1</code>, Alice&rsquo;s own slot, that&rsquo;s{" "}
+            <code>lab-demo-M.S.1</code>. Copy leaves the source usable, unlike a transfer move.
+          </p>
+        ),
         tab: "usb",
-        target: () => ['[data-testid^="copy-slot-"]'],
+        target: () => ['[data-testid="copy-slot-M.S.1"]'],
         requiredKind: "transfer-copy",
         isDone: (_snapshot, latest) => latest?.kind === "transfer-copy" && latest.outcome === "granted",
       },
@@ -628,6 +635,34 @@ export const TUTORIALS: TutorialModule[] = [
             latest.title === `Access granted: ${fileName}`
           );
         },
+      },
+      {
+        title: "Try it: lock one from the Terminal",
+        body: (
+          <p>
+            Switch to the <strong>Terminal</strong> tab and run{" "}
+            <code>
+              keyquorum --db /home/alice/keyquorum.sqlite access password --state 0 --source
+              /srv/keyquorum/public/company-handbook.txt --encrypted-path /home/alice/&lt;name&gt;.kqenc --pin
+            </code>
+            , replacing <code>&lt;name&gt;</code> with anything you like (locking over an existing name is
+            refused). Typing a command yourself, instead of filling in the GUI form, still has to answer its
+            password and PIN prompts — the terminal answers both with the lab&rsquo;s own published defaults,{" "}
+            <code>lab-demo-password</code> and <code>0000</code>, the same way a slot passphrase prompt falls
+            back to <code>lab-demo-&lt;label&gt;</code> when you don&rsquo;t type your own.
+          </p>
+        ),
+        tab: "terminal",
+        target: () => ['[data-panel="terminal"]'],
+        ensure: ensureActiveUser("alice"),
+        requiredKind: "terminal",
+        isDone: (_snapshot, latest) =>
+          latest?.kind === "terminal" &&
+          latest.outcome === "granted" &&
+          typeof latest.command === "string" &&
+          latest.command.includes("access password") &&
+          latest.command.includes("--state 0") &&
+          latest.command.includes("--pin"),
       },
     ],
   },

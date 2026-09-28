@@ -2,6 +2,18 @@
 
 KeyQuorum is a secure file-sharing system centered on hardware key sharing. Files are encrypted and bound to registered physical tokens, such as USB devices. Access requires the necessary hardware keys to be presented before a protected file can be unlocked, providing layered, hardware-backed access control.
 
+## Documentation
+
+Two full manuals, as PDFs:
+
+- [KeyQuorum (CLI manual)](lab/public/docs/KeyQuorum_Manual.pdf) — the `keyquorum` / `keyquorum-device`
+  command-line tool this README summarizes below.
+- [KeyQuorum Lab (GUI manual)](lab/public/docs/KeyQuorum_Lab_Manual.pdf) — the browser lab's own interface
+  (header, tabs, guided tutorials), including the default credentials its seeded USB slots and
+  terminal use.
+
+Both PDFs are also linked from the lab itself, under **Tutorials & Documentation**.
+
 ## Status
 
 Early scaffolding, though the CLI now covers most of what the concept below describes.
@@ -35,8 +47,9 @@ send, and inspect the seeded files. You can:
 
 Every action shows the command lines it ran and what they printed. The
 terminal also takes any `keyquorum ...` or `keyquorum-device ...` line. The
-mock drives' passphrases are published demo values, so the lab demonstrates
-behavior; it is not hardware-backed security.
+mock drives' passphrases are published default values, and the lab itself is
+a browser-based virtual machine emulating USB-token custody entirely in
+memory — so it demonstrates behavior, not physical hardware-backed security.
 
 ```bash
 cargo install wasm-bindgen-cli --version <wasm-bindgen version in Cargo.lock> --locked

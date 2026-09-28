@@ -29,11 +29,59 @@ outside the browser tab, so this is the only way back to a known starting
 point; it is also what \textbf{Exit tutorial} and the tutorial picker
 leave alone; a gated tutorial in progress does not survive a reset.
 
-The mock USB drives are simulated entirely in the browser, and every slot
-passphrase is a published demo value, so they give none of the physical
-protection real hardware keys do. What is real is the software underneath:
-every action, in every tab, is one of the same commands documented in the
-KeyQuorum manual.
+The lab itself is a browser-based virtual machine: its mock USB drives
+emulate USB-token custody entirely in memory, and every slot passphrase is
+a published default value (Section~\ref{sec:lab-default-credentials}), so
+they give none of the physical protection real hardware keys do. What is
+real is the software underneath: every action, in every tab, is one of the
+same commands documented in the KeyQuorum manual.
+
+\subsection{Default credentials}
+\label{sec:lab-default-credentials}
+
+Every credential the lab uses is a published placeholder, not a secret.
+The lab ships as a public WebAssembly bundle that runs entirely in your
+browser, so anything baked into it --- the seeded people, their USB
+passphrases, and the seeded files --- is visible to anyone who inspects the
+bundle. That is by design: none of it guards real data, so nothing here
+needs to stay confidential, and no real file or hardware key is ever at
+risk of passing through the lab.
+
+\textbf{USB slot passphrases.} Every seeded USB slot unlocks with
+\code{lab-demo-<label>}, where \code{<label>} is that slot's dotted tree
+label:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Person} & \textbf{Label} & \textbf{Passphrase} \\
+\midrule
+Morgan & \code{M}     & \code{lab-demo-M} \\
+Sarah  & \code{M.S}   & \code{lab-demo-M.S} \\
+Alice  & \code{M.S.1} & \code{lab-demo-M.S.1} \\
+Bob    & \code{M.S.2} & \code{lab-demo-M.S.2} \\
+David  & \code{M.A}   & \code{lab-demo-M.A} \\
+Emma   & \code{M.A.1} & \code{lab-demo-M.A.1} \\
+Chris  & \code{M.A.2} & \code{lab-demo-M.A.2} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Terminal default values.} Typing a command yourself at the Terminal
+tab --- rather than clicking a GUI action that stages your own value first
+--- is answered with the same published defaults a real prompt would use,
+whenever it asks for a password or PIN:
+
+\begin{itemize}
+  \item Password: \code{lab-demo-password}
+  \item PIN: \code{0000}
+\end{itemize}
+
+\begin{noteBox}
+Seeded quorum-protected files never use a password. They are protected by
+KeyQuorum's quorum and device-custody policies instead, and are unlocked
+with the USB identities above.
+\end{noteBox}
 
 \subsection{Identity and drives}
 

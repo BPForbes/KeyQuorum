@@ -39,7 +39,8 @@ be inserted) and relocates a slot's keypair onto it --- the point where two
 people's tokens land in one physical container and start counting as a
 single device toward any multi-device quorum. \textbf{Copy} instead leaves
 the original slot active and seals a second copy elsewhere, using the same
-passphrase that already unlocks it.
+passphrase that already unlocks it --- a seeded slot's own published default
+passphrase (Section~\ref{sec:lab-default-credentials}).
 
 \Screenshot{docs/latex/images/lab/usb.png}{Mock USB devices: connected
 state, the slots each drive carries, and the Move / Copy controls.}
@@ -109,4 +110,8 @@ su david
 
 \code{usb insert} / \code{usb eject} and \code{su} are lab-only shell verbs
 for drive and identity control; every other line is an ordinary
-\code{keyquorum} / \code{keyquorum-device} command.
+\code{keyquorum} / \code{keyquorum-device} command. Any passphrase,
+password, or PIN prompt a typed command raises is answered with its
+published default value (Section~\ref{sec:lab-default-credentials}), the
+same way a GUI action's prompt is when you have not staged your own
+answer first.
