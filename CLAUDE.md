@@ -145,6 +145,13 @@ path-based functions are thin wrappers over `NativeStorage`; keep them.
 the sender and answered with a signed accept/reject, both checked against
 the signing key the opening store has registered for the claimed label.
 The bridge inbox carries them like any other non-device letter.
+`src/file_history.rs` owns the tracked-file container (`KQTF`, its own
+magic and version, not a sealed envelope) and the hash-chained event history
+that travels with it; SQLite may only index it. It frames and chains events
+and reuses `envelope`'s length-prefixed codec. It must not re-decide anything
+another module owns: signatures go through `signing`, ancestry through
+`authority`, quorum through `quorum`. Event type and outcome codes are wire
+format: append, never renumber. History never records secrets.
 
 `src/lab/` (feature `lab`) is KeyQuorum Lab, the public browser
 demonstration published from `lab/` to GitHub Pages and embedded by

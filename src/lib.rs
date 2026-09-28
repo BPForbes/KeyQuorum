@@ -16,6 +16,7 @@ pub mod envelope;
 pub mod error;
 pub mod export;
 pub mod file_delivery;
+pub mod file_history;
 pub mod key_tree;
 pub mod keys;
 #[cfg(feature = "lab")]
