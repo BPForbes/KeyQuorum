@@ -10,7 +10,7 @@ test.describe("guided tutorials", () => {
 
   test("the picker groups multiple workflows under each major category", async ({ page }) => {
     await loadLab(page);
-    await page.getByRole("button", { name: "Tutorials" }).click();
+    await page.getByRole("button", { name: "Tutorials & Documentation" }).click();
 
     for (const [heading, workflowCount] of [
       ["Identities & drives", 5],
@@ -26,8 +26,8 @@ test.describe("guided tutorials", () => {
   test("a gated step only advances once the real action happens", async ({ page }) => {
     await loadLab(page);
 
-    await page.getByRole("button", { name: "Tutorials" }).click();
-    await expect(page.getByRole("heading", { name: "Guided tutorials" })).toBeVisible();
+    await page.getByRole("button", { name: "Tutorials & Documentation" }).click();
+    await expect(page.getByRole("heading", { name: "Tutorials & Documentation" })).toBeVisible();
     await page.getByRole("listitem").filter({ hasText: "Identities & drives" }).getByRole("button", { name: "Start" }).click();
 
     // Step 1 is informational; advance with Next.
@@ -52,7 +52,7 @@ test.describe("guided tutorials", () => {
 
   test("switching users satisfies a gate driven by the active user chip", async ({ page }) => {
     await loadLab(page);
-    await page.getByRole("button", { name: "Tutorials" }).click();
+    await page.getByRole("button", { name: "Tutorials & Documentation" }).click();
     await page.getByRole("listitem").filter({ hasText: "Identities & drives" }).getByRole("button", { name: "Start" }).click();
     await page.getByRole("button", { name: "Next" }).click(); // step 1 -> 2
     await page.getByRole("button", { name: "Skip this step" }).click(); // step 2 -> 3 (insert)
@@ -69,7 +69,7 @@ test.describe("guided tutorials", () => {
 
   test("the mailbox module's receive gate ignores a denied attempt and an unrelated refresh", async ({ page }) => {
     await loadLab(page);
-    await page.getByRole("button", { name: "Tutorials" }).click();
+    await page.getByRole("button", { name: "Tutorials & Documentation" }).click();
     await page
       .getByRole("listitem")
       .filter({ hasText: "Mailbox: sending & receiving" })
@@ -120,7 +120,7 @@ test.describe("guided tutorials", () => {
     // Only now does the visitor open the mailbox module. Its first step
     // must still be gated: the send above is stale, from before the step
     // (and the module) ever started.
-    await page.getByRole("button", { name: "Tutorials" }).click();
+    await page.getByRole("button", { name: "Tutorials & Documentation" }).click();
     await page
       .getByRole("listitem")
       .filter({ hasText: "Mailbox: sending & receiving" })
@@ -149,7 +149,7 @@ test.describe("guided tutorials", () => {
     await page.getByRole("button", { name: "Insert David's USB" }).click();
     await expect(page.getByTestId("drive-david")).toContainText("Connected");
 
-    await page.getByRole("button", { name: "Tutorials" }).click();
+    await page.getByRole("button", { name: "Tutorials & Documentation" }).click();
     await page
       .getByRole("listitem")
       .filter({ hasText: "Identities & drives" })
@@ -181,7 +181,7 @@ test.describe("guided tutorials", () => {
     await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /David/ }).click();
     await expect(page.getByTestId("active-user-name")).toHaveText("David");
 
-    await page.getByRole("button", { name: "Tutorials" }).click();
+    await page.getByRole("button", { name: "Tutorials & Documentation" }).click();
     await page
       .getByRole("listitem")
       .filter({ hasText: "Mailbox: sending & receiving" })
@@ -208,7 +208,7 @@ test.describe("guided tutorials", () => {
     page,
   }) => {
     await loadLab(page);
-    await page.getByRole("button", { name: "Tutorials" }).click();
+    await page.getByRole("button", { name: "Tutorials & Documentation" }).click();
     await page
       .getByRole("listitem")
       .filter({ hasText: "Bridges & remote devices" })
@@ -238,7 +238,7 @@ test.describe("guided tutorials", () => {
 
   test("restructure is a propose step and a separate countersign step", async ({ page }) => {
     await loadLab(page);
-    await page.getByRole("button", { name: "Tutorials" }).click();
+    await page.getByRole("button", { name: "Tutorials & Documentation" }).click();
     await page
       .getByRole("listitem")
       .filter({ hasText: "Key administration" })
@@ -269,5 +269,57 @@ test.describe("guided tutorials", () => {
     await expect(page.getByRole("heading", { name: "Parent approval is enforced at unlock" })).toBeVisible({
       timeout: 3_000,
     });
+  });
+
+  test("the reject-and-acknowledge module forces Alice as sender even when another user is already active", async ({
+    page,
+  }) => {
+    await loadLab(page);
+
+    // Simulate arriving here right after a tutorial that leaves someone
+    // else active -- each lab user's Sent list is their own mailbox, so a
+    // send recorded under the wrong one would leave the final step unable
+    // to find it.
+    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /Morgan/ }).click();
+    await expect(page.getByTestId("active-user-name")).toHaveText("Morgan");
+
+    await page.getByRole("button", { name: "Tutorials & Documentation" }).click();
+    await page
+      .getByRole("listitem")
+      .filter({ hasText: "Reject & acknowledge" })
+      .getByRole("button", { name: "Start" })
+      .click();
+
+    // Entering the step switches to Alice specifically, not just away
+    // from David.
+    await expect(page.getByTestId("active-user-name")).toHaveText("Alice", { timeout: 3_000 });
+
+    await page.getByRole("button", { name: "public" }).click();
+    await page.getByTestId("file-row-company-handbook").click();
+    await page.getByRole("button", { name: "Send…" }).click();
+    await page.getByLabel("Recipient").selectOption("david");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Try it: become the recipient" })).toBeVisible({
+      timeout: 3_000,
+    });
+
+    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /David/ }).click();
+    await expect(page.getByRole("heading", { name: "Try it: reject the letter" })).toBeVisible({ timeout: 3_000 });
+    await page
+      .locator("[data-testid^=inbox-]")
+      .first()
+      .getByRole("button", { name: /^Reject/ })
+      .click();
+    await expect(page.getByRole("heading", { name: "Try it: return to the sender" })).toBeVisible({
+      timeout: 3_000,
+    });
+
+    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /Alice/ }).click();
+    await expect(page.getByRole("heading", { name: "Try it: collect the acknowledgement" })).toBeVisible({
+      timeout: 3_000,
+    });
+    await page.getByRole("button", { name: /^Sent/ }).click();
+    await page.getByTestId("mailbox-refresh").click();
+    await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible({ timeout: 3_000 });
   });
 });

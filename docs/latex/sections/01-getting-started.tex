@@ -15,9 +15,12 @@ clients trust a relay only when it presents a KeyQuorum-signed provider
 certificate and proves possession of the matching private key. This manual
 covers the customer-facing surface --- the URL and API key a provider gives
 you, and the \code{loadkey} / \code{relay push} / \code{relay pull} commands
-built on top of them. Run \code{keyquorum --help} for the full, current
-command list; this manual explains what each area of that list is for and
-how the pieces fit together.
+built on top of them. The rest of this manual explains what each area of
+the CLI is for and how the pieces fit together; the
+\hyperref[sec:command-reference]{Command reference} at the end is the
+complete index of every \code{keyquorum} and \code{keyquorum-device}
+command and subcommand. \code{keyquorum <command> --help} still has the
+full, current flag list for any one command.
 
 \subsection{The local database}
 
