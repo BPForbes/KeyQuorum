@@ -92,27 +92,9 @@ impl PartyRole {
     }
 }
 
-/// Direct parent in the dotted tree: `M.S.2` → `M.S`, `M.S` → `M`.
-pub fn parent_node_label(label: &str) -> Option<&str> {
-    label.rsplit_once('.').map(|(parent, _)| parent)
-}
-
-/// `M` and `M.S` both have standing over `M.S.2` — ancestor-or-self in
-/// the same dotted hierarchy [`parent_node_label`] walks one step at a
-/// time; `M.A` and `M.S.3` do not. Segment-wise, so `M.S` never covers
-/// `M.SALES.1`. `org_update` uses this to decide who may authorize a
-/// hardware-key reissue or key-tree restructure for a label.
-pub fn is_ancestor_or_self(authorizer: &str, subject: &str) -> bool {
-    if authorizer.is_empty() || subject.is_empty() {
-        return false;
-    }
-    if authorizer == subject {
-        return true;
-    }
-    subject
-        .strip_prefix(authorizer)
-        .is_some_and(|rest| rest.starts_with('.'))
-}
+// The dotted-label topology algorithms live in `authority`; re-exported so
+// bridge callers keep their paths and there is one implementation.
+pub use crate::authority::{is_ancestor_or_self, parent_node_label};
 
 /// Members plus each distinct direct parent. For `M.S.2`, `M.S.3`, `M.A.2`
 /// this is five labels: those three and `M.S`, `M.A` — not `M`.

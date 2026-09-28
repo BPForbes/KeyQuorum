@@ -9,13 +9,18 @@
 //! means a leaf share is not enough; the leaf's direct parent must sign
 //! the unlock. The default is Shamir plus the physical-device count.
 //!
+//! This module also owns the one dotted-label topology algorithm
+//! ([`parent_node_label`], [`is_ancestor_or_self`], [`ancestry_distance`],
+//! [`relationship`], [`lowest_common_ancestor`], [`direct_parent`]).
+//! `private_bridge` re-exports the first two for its callers.
+//!
 //! This is not the private-bridge supervisor role. That role is notified
 //! and holds no signing key.
 
 use crate::device::{PresentedDevice, UsedLeaf};
 use crate::envelope::hash_len_prefixed;
 use crate::error::{Error, Result};
-use crate::private_bridge::{self, parent_node_label};
+use crate::private_bridge;
 use crate::signing;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
@@ -30,6 +35,98 @@ pub struct UnlockGrant {
     pub signature: [u8; 64],
 }
 
+/// Direct parent in the dotted tree: `M.S.2` → `M.S`, `M.S` → `M`.
+pub fn parent_node_label(label: &str) -> Option<&str> {
+    label.rsplit_once('.').map(|(parent, _)| parent)
+}
+
+/// `M` and `M.S` both have standing over `M.S.2` — ancestor-or-self in
+/// the same dotted hierarchy [`parent_node_label`] walks one step at a
+/// time; `M.A` and `M.S.3` do not. Segment-wise, so `M.S` never covers
+/// `M.SALES.1`. `org_update` uses this to decide who may authorize a
+/// hardware-key reissue or key-tree restructure for a label.
+pub fn is_ancestor_or_self(authorizer: &str, subject: &str) -> bool {
+    if authorizer.is_empty() || subject.is_empty() {
+        return false;
+    }
+    if authorizer == subject {
+        return true;
+    }
+    subject
+        .strip_prefix(authorizer)
+        .is_some_and(|rest| rest.starts_with('.'))
+}
+
+/// True when `parent` is the direct (one-step) parent of `child`.
+pub fn direct_parent(parent: &str, child: &str) -> bool {
+    parent_node_label(child) == Some(parent)
+}
+
+/// Number of steps from `ancestor` down to `descendant`; `Some(0)` for the
+/// same label, `None` when `ancestor` does not cover `descendant`.
+pub fn ancestry_distance(ancestor: &str, descendant: &str) -> Option<usize> {
+    is_ancestor_or_self(ancestor, descendant)
+        .then(|| segment_count(descendant) - segment_count(ancestor))
+}
+
+/// Deepest label that is ancestor-or-self of both, or `None` when they
+/// share no root (or either is empty).
+pub fn lowest_common_ancestor(left: &str, right: &str) -> Option<String> {
+    if left.is_empty() || right.is_empty() {
+        return None;
+    }
+    let common: Vec<&str> = left
+        .split('.')
+        .zip(right.split('.'))
+        .take_while(|(l, r)| l == r)
+        .map(|(l, _)| l)
+        .collect();
+    (!common.is_empty()).then(|| common.join("."))
+}
+
+/// How an actor relates to a scope root. An input to revision policy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RevisionAuthority {
+    ScopeOwner,
+    /// The actor sits below `ancestor` (the scope root), `depth` steps down.
+    Descendant {
+        ancestor: String,
+        depth: usize,
+    },
+    /// The actor sits `depth` steps above the scope root.
+    Ancestor {
+        depth: usize,
+    },
+    CrossBranch {
+        common_ancestor: String,
+    },
+    /// No shared root, or an empty label.
+    Unrelated,
+}
+
+/// Classify `actor` against `scope_root`.
+pub fn relationship(scope_root: &str, actor: &str) -> RevisionAuthority {
+    if scope_root.is_empty() || actor.is_empty() {
+        return RevisionAuthority::Unrelated;
+    }
+    if scope_root == actor {
+        return RevisionAuthority::ScopeOwner;
+    }
+    if let Some(depth) = ancestry_distance(scope_root, actor) {
+        return RevisionAuthority::Descendant {
+            ancestor: scope_root.to_string(),
+            depth,
+        };
+    }
+    if let Some(depth) = ancestry_distance(actor, scope_root) {
+        return RevisionAuthority::Ancestor { depth };
+    }
+    match lowest_common_ancestor(scope_root, actor) {
+        Some(common_ancestor) => RevisionAuthority::CrossBranch { common_ancestor },
+        None => RevisionAuthority::Unrelated,
+    }
+}
+
 /// Parent that must countersign a restructure, if the authorizer is not
 /// the root. `M` returns `None` and the restructure is effective immediately.
 pub fn restructure_countersigner(authorizer_label: &str) -> Option<&str> {
@@ -39,7 +136,7 @@ pub fn restructure_countersigner(authorizer_label: &str) -> Option<&str> {
 /// Employee reissue a delegated supervisor can finish alone: the subject
 /// is a direct descendant and sits below a department label (`M.S.1`).
 pub fn is_routine_employee_reissue(authorizer_label: &str, subject_label: &str) -> bool {
-    parent_node_label(subject_label) == Some(authorizer_label) && segment_count(subject_label) >= 3
+    direct_parent(authorizer_label, subject_label) && segment_count(subject_label) >= 3
 }
 
 /// Check opt-in parent approval. `grants` may be empty when the tree's

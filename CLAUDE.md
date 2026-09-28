@@ -47,9 +47,11 @@ itself stays orchestration: `key_tree.rs` is the only place in the crate
 that ever mutates `key_nodes` (`adopt_reissued_hardware_key` sits next to
 `rebind_leaf`; `active_encryption_leaves` next to `active_leaves_for_hardware`;
 `load_for_visibility` backs `visible_labels` itself now, not just the
-restructure loop), `private_bridge.rs` owns the dotted-label hierarchy
-(`is_ancestor_or_self` next to `parent_node_label`) and bridge-roster
-queries (`bridge_notify_targets`), and `keys.rs` owns the hardware-key
+restructure loop), `authority.rs` owns the dotted-label hierarchy
+(`parent_node_label`, `is_ancestor_or_self`, `ancestry_distance`,
+`relationship`, `lowest_common_ancestor`, `direct_parent`;
+`private_bridge.rs` re-exports the first two), `private_bridge.rs` owns
+bridge-roster queries (`bridge_notify_targets`), and `keys.rs` owns the hardware-key
 registry (`active_keys_for`, `get_or_register`, `revoke_superseded`,
 `unrevoke_key`). A new authenticated-update primitive belongs in the
 module that owns the table it reads or writes, not in `org_update.rs`,
