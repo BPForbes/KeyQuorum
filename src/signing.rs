@@ -14,6 +14,9 @@ use sha2::{Digest, Sha256};
 const ARTIFACT_MAGIC: &[u8; 4] = b"KQBS";
 const ARTIFACT_VERSION: u8 = 1;
 const SIGN_DOMAIN: &[u8] = b"KQBRIDGE-SIGN-v1";
+const FILE_REVISION_DOMAIN: &[u8] = b"KQ-FILE-REVISION-v1";
+const FILE_COUNTERSIGN_DOMAIN: &[u8] = b"KQ-FILE-COUNTERSIGN-v1";
+const FILE_HISTORY_EVENT_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-EVENT-v1";
 
 /// Verifies `signature` over `message` under `public_key`. Uses
 /// `verify_strict` rather than `verify` — it rejects the non-canonical
@@ -67,6 +70,78 @@ pub fn bridge_sign_preimage(
     hasher.update(signer_label.as_bytes());
     hasher.update(signer_public_key);
     hasher.update(message);
+    hasher.finalize().into()
+}
+
+/// Content signature over one tracked-file revision. Every field is fixed
+/// width, so no field boundary can be read two ways. Sign the digest with
+/// [`sign`] and check it with [`verify_signature`]; this only builds the
+/// domain-separated preimage.
+pub fn file_revision_preimage(
+    file_id: &[u8; 16],
+    revision_id: &[u8; 32],
+    content_commitment: &[u8; 32],
+    signer_identity: &[u8; 16],
+    topology_generation: u64,
+    policy_hash: &[u8; 32],
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(FILE_REVISION_DOMAIN);
+    hasher.update(file_id);
+    hasher.update(revision_id);
+    hasher.update(content_commitment);
+    hasher.update(signer_identity);
+    hasher.update(topology_generation.to_be_bytes());
+    hasher.update(policy_hash);
+    hasher.finalize().into()
+}
+
+/// Supervisor countersignature over a revision the author already signed.
+/// `author_signature_hash` ties it to that exact author signature.
+pub fn file_countersign_preimage(
+    file_id: &[u8; 16],
+    revision_id: &[u8; 32],
+    author: &[u8; 16],
+    author_signature_hash: &[u8; 32],
+    supervisor: &[u8; 16],
+    topology_generation: u64,
+    policy_hash: &[u8; 32],
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(FILE_COUNTERSIGN_DOMAIN);
+    hasher.update(file_id);
+    hasher.update(revision_id);
+    hasher.update(author);
+    hasher.update(author_signature_hash);
+    hasher.update(supervisor);
+    hasher.update(topology_generation.to_be_bytes());
+    hasher.update(policy_hash);
+    hasher.finalize().into()
+}
+
+/// Optional signature on a security-relevant history event. A missing
+/// revision id is encoded as a `0` tag and a present one as `1 || id`, so
+/// "no revision" can never collide with any revision id.
+pub fn file_history_event_preimage(
+    file_id: &[u8; 16],
+    revision_id: Option<&[u8; 32]>,
+    sequence: u64,
+    previous_event_hash: &[u8; 32],
+    event_hash: &[u8; 32],
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(FILE_HISTORY_EVENT_DOMAIN);
+    hasher.update(file_id);
+    match revision_id {
+        Some(id) => {
+            hasher.update([1u8]);
+            hasher.update(id);
+        }
+        None => hasher.update([0u8]),
+    }
+    hasher.update(sequence.to_be_bytes());
+    hasher.update(previous_event_hash);
+    hasher.update(event_hash);
     hasher.finalize().into()
 }
 
