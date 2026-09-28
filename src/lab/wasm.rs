@@ -300,6 +300,16 @@ impl KeyQuorumLab {
             return self.reset();
         }
         let ran = terminal::run(&mut self.state, line);
-        to_js(ran.and_then(|(outcome, output)| self.state.result(outcome, output)))
+        to_js(ran.and_then(|(outcome, output)| {
+            self.state
+                .note_action("terminal", "Ran a Terminal command", outcome.ok);
+            self.state.result(outcome, output)
+        }))
+    }
+
+    /// Record a meaningful browser interaction which has no CLI operation.
+    pub fn note_ui(&mut self, kind: &str, title: &str) -> std::result::Result<String, JsError> {
+        let outcome = self.state.note_ui(kind, title);
+        to_js(self.state.result(outcome, vec![]))
     }
 }
