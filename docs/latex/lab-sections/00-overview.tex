@@ -30,13 +30,13 @@ point; it is also what \textbf{Exit tutorial} and the tutorial picker
 leave alone; a gated tutorial in progress does not survive a reset.
 
 The mock USB drives are simulated entirely in the browser, and every slot
-passphrase is a published demo value (Section~\ref{sec:lab-demo-credentials}),
+passphrase is a published default value (Section~\ref{sec:lab-default-credentials}),
 so they give none of the physical protection real hardware keys do. What is
 real is the software underneath: every action, in every tab, is one of the
 same commands documented in the KeyQuorum manual.
 
-\subsection{Demo credentials}
-\label{sec:lab-demo-credentials}
+\subsection{Default credentials}
+\label{sec:lab-default-credentials}
 
 Every credential the lab uses is a published placeholder, not a secret.
 The lab ships as a public WebAssembly bundle that runs entirely in your
@@ -66,9 +66,9 @@ Chris  & \code{M.A.2} & \code{lab-demo-M.A.2} \\
 \end{tabular}
 \end{center}
 
-\textbf{Terminal demo values.} Typing a command yourself at the Terminal
+\textbf{Terminal default values.} Typing a command yourself at the Terminal
 tab --- rather than clicking a GUI action that stages your own value first
---- is answered with the same published stand-ins a real prompt would use,
+--- is answered with the same published defaults a real prompt would use,
 whenever it asks for a password or PIN:
 
 \begin{itemize}

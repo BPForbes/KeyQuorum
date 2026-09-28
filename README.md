@@ -9,7 +9,7 @@ Two full manuals, as PDFs:
 - [KeyQuorum (CLI manual)](lab/public/docs/KeyQuorum_Manual.pdf) — the `keyquorum` / `keyquorum-device`
   command-line tool this README summarizes below.
 - [KeyQuorum Lab (GUI manual)](lab/public/docs/KeyQuorum_Lab_Manual.pdf) — the browser lab's own interface
-  (header, tabs, guided tutorials), including the demo/default credentials its seeded USB slots and
+  (header, tabs, guided tutorials), including the default credentials its seeded USB slots and
   terminal use.
 
 Both PDFs are also linked from the lab itself, under **Tutorials & Documentation**.
@@ -47,7 +47,7 @@ send, and inspect the seeded files. You can:
 
 Every action shows the command lines it ran and what they printed. The
 terminal also takes any `keyquorum ...` or `keyquorum-device ...` line. The
-mock drives' passphrases are published demo values, so the lab demonstrates
+mock drives' passphrases are published default values, so the lab demonstrates
 behavior; it is not hardware-backed security.
 
 ```bash

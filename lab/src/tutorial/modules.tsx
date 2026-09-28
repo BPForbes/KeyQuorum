@@ -410,7 +410,7 @@ export const TUTORIALS: TutorialModule[] = [
           </p>
         ),
         tab: "usb",
-        target: () => ['[data-testid^="copy-slot-"]'],
+        target: () => ['[data-testid="copy-slot-M.S.1"]'],
         requiredKind: "transfer-copy",
         isDone: (_snapshot, latest) => latest?.kind === "transfer-copy" && latest.outcome === "granted",
       },
@@ -643,10 +643,11 @@ export const TUTORIALS: TutorialModule[] = [
             Switch to the <strong>Terminal</strong> tab and run{" "}
             <code>
               keyquorum --db /home/alice/keyquorum.sqlite access password --state 0 --source
-              /srv/keyquorum/public/company-handbook.txt --encrypted-path /home/alice/handbook.kqenc --pin
+              /srv/keyquorum/public/company-handbook.txt --encrypted-path /home/alice/&lt;name&gt;.kqenc --pin
             </code>
-            . Typing a command yourself, instead of filling in the GUI form, still has to answer its password
-            and PIN prompts — the terminal answers both with the lab&rsquo;s own published stand-ins,{" "}
+            , replacing <code>&lt;name&gt;</code> with anything you like (locking over an existing name is
+            refused). Typing a command yourself, instead of filling in the GUI form, still has to answer its
+            password and PIN prompts — the terminal answers both with the lab&rsquo;s own published defaults,{" "}
             <code>lab-demo-password</code> and <code>0000</code>, the same way a slot passphrase prompt falls
             back to <code>lab-demo-&lt;label&gt;</code> when you don&rsquo;t type your own.
           </p>
@@ -660,7 +661,8 @@ export const TUTORIALS: TutorialModule[] = [
           latest.outcome === "granted" &&
           typeof latest.command === "string" &&
           latest.command.includes("access password") &&
-          latest.command.includes("--state 0"),
+          latest.command.includes("--state 0") &&
+          latest.command.includes("--pin"),
       },
     ],
   },
