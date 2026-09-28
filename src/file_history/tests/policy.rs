@@ -343,7 +343,7 @@ fn proofs_round_trip_and_are_structurally_checked() {
     let decodes = |f: &dyn Fn(&mut TrackedFile)| {
         let mut broken = file.clone();
         f(&mut broken);
-        TrackedFile::decode(&broken.encode().unwrap()).is_ok()
+        TrackedFile::decode(&broken.encode_unchecked().unwrap()).is_ok()
     };
     assert!(!decodes(&|f| f.proofs[0].revision_id = [9; 32]));
     assert!(!decodes(&|f| {

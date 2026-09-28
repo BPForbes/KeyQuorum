@@ -461,7 +461,7 @@ fn decode_rejects_broken_revision_graphs() {
     let round = |f: &dyn Fn(&mut TrackedFile)| {
         let mut broken = file.clone();
         f(&mut broken);
-        TrackedFile::decode(&broken.encode().unwrap())
+        TrackedFile::decode(&broken.encode_unchecked().unwrap())
     };
     // Sanity: the untouched file decodes.
     assert!(round(&|_| {}).is_ok());
@@ -489,17 +489,89 @@ fn decode_rejects_broken_revision_graphs() {
 }
 
 #[test]
-fn decode_rejects_events_naming_unknown_revisions() {
+fn events_may_only_name_known_revisions() {
     let mut file = TrackedFile::new(FILE, "a.txt");
-    file.check_in(new_revision(vec![], T1), b"1".to_vec())
+    let r1 = file
+        .check_in(new_revision(vec![], T1), b"1".to_vec())
         .unwrap();
-    file.append(new_event(
-        HistoryEventType::RevisionSigned,
-        Some([0xaa; 32]),
-    ))
-    .unwrap();
-    assert!(TrackedFile::decode(&file.encode().unwrap()).is_err());
+    // A stale or mistyped reference is refused before anything is stored.
+    assert!(matches!(
+        file.append(new_event(
+            HistoryEventType::RevisionSigned,
+            Some([0xaa; 32])
+        )),
+        Err(Error::InvalidTrackedFile)
+    ));
+    assert!(file.events().is_empty());
+    file.append(new_event(HistoryEventType::RevisionSigned, Some(r1)))
+        .unwrap();
+    assert!(TrackedFile::decode(&file.encode().unwrap()).is_ok());
+    // A graph that loses a referenced revision no longer verifies or encodes.
+    file.revisions.clear();
     assert!(verify_tracked_file(&file).is_err());
+    assert!(file.encode().is_err());
+}
+
+#[test]
+fn an_identical_retry_is_refused_not_stored_twice() {
+    let mut file = TrackedFile::new(FILE, "a.txt");
+    let r1 = file
+        .check_in(new_revision(vec![], T1), b"1".to_vec())
+        .unwrap();
+    let again = new_revision(vec![r1], T2);
+    let r2 = file.check_in(again.clone(), b"2".to_vec()).unwrap();
+    assert!(matches!(
+        file.check_in(again, b"2".to_vec()),
+        Err(Error::InvalidTrackedFile)
+    ));
+    assert_eq!(file.revisions().len(), 2);
+    assert_eq!(file.graph().heads(), vec![r2]);
+    assert!(TrackedFile::decode(&file.encode().unwrap()).is_ok());
+}
+
+#[test]
+fn timestamps_must_be_real_utc_instants() {
+    for good in [
+        "2026-02-28T23:59:59Z",
+        "2024-02-29T00:00:00Z",
+        "2000-02-29T12:00:00.5Z",
+        "2026-12-31T23:59:59.999999999Z",
+    ] {
+        assert!(generated_label("a", good, "M").is_ok(), "{good}");
+    }
+    for bad in [
+        "2026-99-99T99:99:99Z",
+        "2026-13-01T00:00:00Z",
+        "2026-00-10T00:00:00Z",
+        "2026-04-31T00:00:00Z",
+        "2026-02-29T00:00:00Z",
+        "1900-02-29T00:00:00Z",
+        "2026-01-00T00:00:00Z",
+        "2026-01-01T24:00:00Z",
+        "2026-01-01T00:60:00Z",
+        "2026-01-01T00:00:60Z",
+        "0000-01-01T00:00:00Z",
+    ] {
+        assert!(generated_label("a", bad, "M").is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn a_damaged_history_is_neither_extended_nor_encoded() {
+    let mut file = sample();
+    file.events[0].outcome = HistoryOutcome::Failure;
+    assert!(matches!(file.encode(), Err(Error::InvalidTrackedFile)));
+    let before = file.events.len();
+    assert!(matches!(
+        file.append(sparse_event()),
+        Err(Error::InvalidTrackedFile)
+    ));
+    assert_eq!(file.events.len(), before);
+    // Dropping an event in the middle is caught the same way.
+    let mut gapped = sample();
+    gapped.events.remove(1);
+    assert!(gapped.encode().is_err());
+    assert_eq!(sample().events().len(), 3);
 }
 
 mod policy;

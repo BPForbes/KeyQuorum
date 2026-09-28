@@ -12,7 +12,7 @@
 //! version 3 added revision proofs (signatures) between revisions and events.
 
 use super::codec::{bad, take_fixed};
-use super::event::{genesis_hash, HistoryEvent, NewEvent};
+use super::event::{genesis_hash, verify_chain, HistoryEvent, NewEvent};
 use super::proof::RevisionProof;
 use super::revision::{FileRevision, NewRevision, RevisionGraph, StoredRevision};
 use super::verify::verify_structure;
@@ -29,11 +29,16 @@ pub struct TrackedFile {
     /// Stable identity, independent of name, path or revision.
     pub file_id: [u8; 16],
     pub logical_name: String,
-    /// Revisions with their native bytes, parents before children.
-    pub revisions: Vec<StoredRevision>,
-    /// Signatures over revisions; checked against keys by `policy`.
-    pub proofs: Vec<RevisionProof>,
-    pub events: Vec<HistoryEvent>,
+    /// Read through [`TrackedFile::revisions`]; only this module adds
+    /// revisions, so callers cannot rewrite or drop them.
+    pub(super) revisions: Vec<StoredRevision>,
+    /// Signatures over revisions, read through [`TrackedFile::proofs`] and
+    /// added by `sign_revision` / `countersign_revision`; checked against
+    /// keys by `policy`.
+    pub(super) proofs: Vec<RevisionProof>,
+    /// Read through [`TrackedFile::events`]; only this module appends, so
+    /// callers cannot rewrite or drop events behind the chain's back.
+    pub(super) events: Vec<HistoryEvent>,
 }
 
 impl TrackedFile {
@@ -51,9 +56,23 @@ impl TrackedFile {
         RevisionGraph::new(&self.revisions)
     }
 
+    pub fn revisions(&self) -> &[StoredRevision] {
+        &self.revisions
+    }
+
+    pub fn proofs(&self) -> &[RevisionProof] {
+        &self.proofs
+    }
+
+    pub fn events(&self) -> &[HistoryEvent] {
+        &self.events
+    }
+
     /// Record a new revision of `payload` and return its id. The first
     /// revision has no parents; every later one must name existing
-    /// revisions (no duplicates), so a second root can never appear. This
+    /// revisions (no duplicates), so a second root can never appear. An
+    /// identical retry (same parents, content and metadata) yields an id
+    /// that already exists and is refused rather than stored twice. This
     /// records content lineage only; trust is decided elsewhere and no
     /// event is appended here.
     pub fn check_in(&mut self, new: NewRevision, payload: Vec<u8>) -> Result<[u8; 32]> {
@@ -69,6 +88,9 @@ impl TrackedFile {
         }
         let revision = FileRevision::create(self.file_id, &self.logical_name, &payload, new)?;
         let id = revision.revision_id;
+        if self.graph().get(&id).is_some() {
+            return Err(Error::InvalidTrackedFile);
+        }
         self.revisions.push(StoredRevision { revision, payload });
         Ok(id)
     }
@@ -81,8 +103,16 @@ impl TrackedFile {
     }
 
     /// Append an event: assigns a random event id, the next sequence and
-    /// the link to the current root. Existing events are never touched.
+    /// the link to the current root. Existing events are never touched, and
+    /// the chain is verified first so a damaged history is not extended.
     pub fn append(&mut self, new: NewEvent) -> Result<&HistoryEvent> {
+        verify_chain(&self.file_id, &self.events)?;
+        if new
+            .revision_id
+            .is_some_and(|id| self.graph().get(&id).is_none())
+        {
+            return Err(Error::InvalidTrackedFile);
+        }
         let mut event_id = [0u8; 16];
         OsRng.fill_bytes(&mut event_id);
         let event = HistoryEvent::seal(
@@ -96,7 +126,15 @@ impl TrackedFile {
         Ok(&self.events[self.events.len() - 1])
     }
 
+    /// Serialize, refusing a history that would not decode again.
     pub fn encode(&self) -> Result<Vec<u8>> {
+        verify_structure(self)?;
+        self.encode_unchecked()
+    }
+
+    /// Serialize without verifying. Kept apart so tests can build the bytes
+    /// of a broken file and prove `decode` rejects them.
+    pub(super) fn encode_unchecked(&self) -> Result<Vec<u8>> {
         let count = u32::try_from(self.events.len()).map_err(|_| Error::BundleFieldTooLarge)?;
         let mut out = Vec::new();
         out.extend_from_slice(CONTAINER_MAGIC);
