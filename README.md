@@ -38,6 +38,48 @@ terminal also takes any `keyquorum ...` or `keyquorum-device ...` line. The
 mock drives' passphrases are published demo values, so the lab demonstrates
 behavior; it is not hardware-backed security.
 
+### Demo credentials
+
+Every credential in the lab is a published placeholder, not a real secret.
+The lab ships as a public WASM bundle that runs entirely in your browser, so
+anything baked into it — the seeded people, their USB passphrases, and the
+seeded files — is visible to anyone who inspects the bundle. That's by
+design: none of it guards real data, so there's nothing here that needs to
+stay confidential, and no real file or hardware key is ever at risk of being
+run through the lab.
+
+**USB slot passphrases**
+
+Every seeded USB slot unlocks with:
+
+`lab-demo-<label>`
+
+where `<label>` is that slot's dotted tree label:
+
+| Person | Label   | Passphrase       |
+| ------ | ------- | ---------------- |
+| Morgan | `M`     | `lab-demo-M`     |
+| Sarah  | `M.S`   | `lab-demo-M.S`   |
+| Alice  | `M.S.1` | `lab-demo-M.S.1` |
+| Bob    | `M.S.2` | `lab-demo-M.S.2` |
+| David  | `M.A`   | `lab-demo-M.A`   |
+| Emma   | `M.A.1` | `lab-demo-M.A.1` |
+| Chris  | `M.A.2` | `lab-demo-M.A.2` |
+
+**Terminal demo values**
+
+Typing a command yourself at the lab terminal — rather than clicking a GUI
+action that stages your own value first — is answered the same way a real
+prompt would be, using published stand-ins whenever it asks for a password
+or PIN (for example, locking a new file with `keyquorum access password`):
+
+- Password: `lab-demo-password`
+- PIN: `0000`
+
+Seeded quorum-protected files never use a password. They're protected by
+KeyQuorum's quorum and device-custody policies instead, and are unlocked
+with the USB identities listed above.
+
 ```bash
 cargo install wasm-bindgen-cli --version <wasm-bindgen version in Cargo.lock> --locked
 rustup target add wasm32-unknown-unknown
