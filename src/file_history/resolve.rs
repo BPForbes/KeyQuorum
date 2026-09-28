@@ -12,8 +12,9 @@
 //! 4. the lowest common ancestor of the owners still tied.
 //!
 //! An "owner" is the author of a revision that is `Trusted` under the file's
-//! policy, so the choice rests on authenticated history rather than on who
-//! holds a copy. Current conflicting authors never review their own
+//! policy judged on signatures alone (bridge evidence is ignored, so a private
+//! bridge can never influence the choice), so it rests on authenticated
+//! history rather than on who holds a copy. Current conflicting authors never review their own
 //! collision. If nothing qualifies the conflict stays unresolved.
 
 use super::container::TrackedFile;
@@ -66,6 +67,21 @@ pub struct Divergence {
     pub selection: Option<ResolverSelection>,
 }
 
+/// A view of a trust context that reports no bridge evidence. Owners are
+/// judged on signatures and countersignatures, which travel with the file;
+/// bridge outcomes (private ones especially) must not decide who reviews.
+struct WithoutBridges<'a>(&'a dyn TrustContext);
+
+impl TrustContext for WithoutBridges<'_> {
+    fn signing_public(&self, identity: &[u8; 16], label: &str) -> Option<[u8; 32]> {
+        self.0.signing_public(identity, label)
+    }
+
+    fn bridge_evidence(&self, _: &[u8; 32]) -> BridgeEvidence {
+        BridgeEvidence::None
+    }
+}
+
 fn depth(label: &str) -> usize {
     label.split('.').count()
 }
@@ -103,6 +119,7 @@ impl TrackedFile {
                 .ok_or(Error::InvalidTrackedFile)
         };
         let conflicting = distinct([label_of(left)?, label_of(right)?]);
+        let ctx = &WithoutBridges(ctx);
         let trusted: Vec<(&[u8; 32], &str)> = self
             .revisions
             .iter()

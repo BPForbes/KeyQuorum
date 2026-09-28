@@ -433,3 +433,58 @@ fn stale_heads_change_nothing_and_record_nothing() {
         (revisions, events)
     );
 }
+
+#[test]
+fn bridge_only_trust_does_not_make_an_owner_or_change_the_reviewer() {
+    // Under a bridge-or-owner policy, M.S's cross-branch revision is trusted
+    // only through a bridge. That must not turn M.S into an owner.
+    let bridged_policy = FilePolicy {
+        cross_branch: Requirement::AuthorSignBridgeOrOwner,
+        scope_root: "M.A".into(),
+        ..policy()
+    };
+    let mut file = TrackedFile::new(FILE, "decision.txt");
+    let stamp = |n: u32| format!("2026-10-02T{n:02}:00:00Z");
+    let mut make =
+        |file: &mut TrackedFile, parents: &[[u8; 32]], label: &str, n: u32, sign: bool| {
+            let mut new = new_revision(parents.to_vec(), &stamp(n));
+            new.author_hcp_label = label.to_string();
+            new.author_identity = Some([label_id(label); 16]);
+            new.policy_hash = bridged_policy.policy_hash().unwrap();
+            let id = file
+                .check_in(new, format!("{label}{n}\n").into_bytes())
+                .unwrap();
+            if sign {
+                file.sign_revision(&id, [label_id(label); 16], label, &[label_id(label); 32])
+                    .unwrap();
+            }
+            id
+        };
+    // The only shared-history author is itself a conflicting author, so
+    // only rule 2 could pick someone; M.S is the sole other candidate.
+    let base = make(&mut file, &[], "M.A.2", 1, true);
+    make(&mut file, &[base], "M.S", 2, true); // trusted only via a bridge
+    let l = make(&mut file, &[base], "M.A.2", 3, false);
+    let r = make(&mut file, &[base], "M.A.1", 4, false);
+    let pick = |evidence| {
+        file.select_resolver(&l, &r, &bridged_policy, &Ctx(evidence))
+            .unwrap()
+    };
+    let none = pick(BridgeEvidence::None);
+    assert_eq!(none, pick(BridgeEvidence::PrivateAuthorized));
+    assert_eq!(none, pick(BridgeEvidence::NonPrivateAuthorized));
+    assert_eq!(none, ResolverSelection::Unresolved);
+    // M.S really is trusted through the bridge, just not counted as an owner.
+    let m_s = file.revisions()[1].revision.revision_id;
+    assert_eq!(file.revisions()[1].revision.author_hcp_label, "M.S");
+    assert_eq!(
+        evaluate_revision_trust(
+            &file,
+            &m_s,
+            &bridged_policy,
+            &Ctx(BridgeEvidence::PrivateAuthorized)
+        )
+        .unwrap(),
+        TrustState::Trusted
+    );
+}
