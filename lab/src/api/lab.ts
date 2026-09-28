@@ -68,6 +68,10 @@ export class LabClient {
     return this.call(this.lab.run_command(line));
   }
 
+  noteUi(kind: string, title: string): ActionResult {
+    return this.call(this.lab.note_ui(kind, title));
+  }
+
   lockPasswordFile(name: string, contents: string, password: string, pin?: string): ActionResult {
     return this.call(this.lab.lock_password_file(name, contents, password, pin));
   }

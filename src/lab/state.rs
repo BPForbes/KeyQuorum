@@ -1496,6 +1496,7 @@ impl LabState {
             bytes.len(),
             path.display()
         ))];
+        self.log("export-view", "info", &message, trace.clone(), None);
         Ok(Outcome {
             ok: true,
             message,
@@ -2973,6 +2974,29 @@ impl LabState {
             let excess = self.activity.len() - ACTIVITY_LIMIT;
             self.activity.drain(..excess);
         }
+    }
+
+    /// Record a browser-only interaction that has no CLI equivalent but is
+    /// still useful tutorial/audit evidence (for example opening Properties
+    /// or sorting the Explorer). The UI supplies only fixed, non-secret
+    /// labels from its own event handlers.
+    pub fn note_ui(&mut self, kind: &str, title: &str) -> Outcome {
+        self.log(kind, "info", title, vec![], None);
+        Outcome::done(true, title, vec![])
+    }
+
+    /// `command` carries the real line that produced this activity (e.g. the
+    /// terminal input), so the UI's "equivalent operation" display -- and a
+    /// gated tutorial step -- can tell one command apart from another; kinds
+    /// with no real command line (`note_ui`) pass `None`.
+    pub fn note_action(&mut self, kind: &str, title: &str, ok: bool, command: Option<String>) {
+        self.log(
+            kind,
+            if ok { "granted" } else { "denied" },
+            title,
+            vec![],
+            command,
+        );
     }
 
     pub fn inspect(&self, key: &str) -> Result<Option<FileView>> {

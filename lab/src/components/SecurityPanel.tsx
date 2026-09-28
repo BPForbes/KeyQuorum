@@ -16,6 +16,7 @@ function LockNoteForm({ act }: { act: Act }) {
   return (
     <form
       className="lock-note-form"
+      data-testid="password-lock"
       onSubmit={(event) => {
         event.preventDefault();
         if (!name.trim() || !contents.trim() || !password) return;
@@ -582,7 +583,7 @@ export function SecurityPanel({ snapshot, act }: { snapshot: Snapshot; act: Act 
           {mine.length === 0 ? (
             <p className="small muted">None yet.</p>
           ) : (
-            <ul className="password-file-list">
+            <ul className="password-file-list" data-testid="password-files">
               {mine.map((file) => (
                 <li key={file.id}>
                   <div>
@@ -603,7 +604,7 @@ export function SecurityPanel({ snapshot, act }: { snapshot: Snapshot; act: Act 
           )}
         </div>
 
-        <div>
+        <div data-testid="export-bundles">
           <h3>Exported bundles</h3>
           <p className="small muted">
             Portable <code>KQXB</code> bundles you sealed to another lab user&rsquo;s public key (
@@ -612,7 +613,7 @@ export function SecurityPanel({ snapshot, act }: { snapshot: Snapshot; act: Act 
           <ExportedBundles snapshot={snapshot} act={act} />
         </div>
 
-        <div>
+        <div data-testid="share-links">
           <h3>Share links</h3>
           <p className="small muted">
             Time-limited, revocable links (<code>keyquorum share create-file</code>). A bearer token authorizes
@@ -621,19 +622,19 @@ export function SecurityPanel({ snapshot, act }: { snapshot: Snapshot; act: Act 
           <ShareLinks snapshot={snapshot} act={act} />
         </div>
 
-        <div>
+        <div data-testid="provision-slot">
           <h3>Create a new key</h3>
           <p className="small muted">Provision a fresh slot on an inserted drive, sealed under a passphrase you choose.</p>
           <ProvisionSlotForm snapshot={snapshot} act={act} />
         </div>
 
-        <div>
+        <div data-testid="register-leaf">
           <h3>Register a new leaf</h3>
           <p className="small muted">Take a provisioned slot from &ldquo;minted, not in any tree&rdquo; to a registered leaf under a chosen org-tree node.</p>
           <RegisterLeafForm snapshot={snapshot} act={act} />
         </div>
 
-        <div>
+        <div data-testid="signatures">
           <h3>Signatures</h3>
           <p className="small muted">
             Signed with the cross-department private bridge (<code>keyquorum sign</code>/<code>verify</code>). Only
@@ -643,13 +644,13 @@ export function SecurityPanel({ snapshot, act }: { snapshot: Snapshot; act: Act 
           <Signatures snapshot={snapshot} act={act} />
         </div>
 
-        <div>
+        <div data-testid="device-logs">
           <h3>Device logs</h3>
           <p className="small muted">The slots and public keys each inserted container reports.</p>
           <DeviceLogs snapshot={snapshot} act={act} />
         </div>
 
-        <div>
+        <div data-testid="relay-status">
           <h3>Relay status</h3>
           <p className="small muted">
             Read-only counts from the lab&rsquo;s in-process mailbox relay at <code>{status.url}</code>.

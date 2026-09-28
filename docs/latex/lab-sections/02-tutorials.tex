@@ -1,8 +1,15 @@
 \section{Guided tutorials}
 
-The \textbf{Tutorials} button in the header opens a picker of short,
-self-contained modules. Each covers one part of the lab; picking one is not
-a commitment to the others, and they can be taken in any order.
+The \textbf{Tutorials \& Documentation} button in the header opens a
+picker of short, self-contained modules, plus a \textbf{Documentation}
+section linking the same two PDF manuals this crate ships everywhere else
+--- the CLI manual and this one. Each module covers one part of the lab;
+picking one is not a commitment to the others, and they can be taken in
+any order.
+
+\Screenshot{docs/latex/images/lab/tutorials-picker.png}{The picker: its
+Documentation section (both PDF manuals) above the Identities \& drives
+category.}
 
 \Screenshot{docs/latex/images/lab/tutorial.png}{A tutorial step in
 progress: the Active user bar is spotlit, and the tooltip names the step
@@ -35,18 +42,54 @@ element.
 
 \subsection{The modules}
 
+The picker groups its thirteen modules into three categories; taking one
+module is never a commitment to the others in its category, or to the
+category itself.
+
+\subsubsection{Identities \& drives}
+
 \begin{itemize}
   \item \textbf{Identities \& drives} --- who you're acting as, bringing a
   mock USB drive online, reading the organization key tree's own slice, and
   switching identity.
+  \item \textbf{Move \& copy slots} --- move and copy slots, then inspect
+  how containers affect physical-device policy.
+  \item \textbf{Provision \& register a leaf} --- provision a fresh device
+  slot, then register it in the organization tree.
+  \item \textbf{Key administration} --- revoke, reissue, restructure,
+  countersign, and understand parent approval.
+  \item \textbf{Bridges \& remote devices} --- manage cross-branch
+  visibility and distinguish local device actions from relay transfer.
+\end{itemize}
+
+\subsubsection{Files \& unlocking}
+
+\begin{itemize}
   \item \textbf{Files \& unlocking} --- opening a public file, then trying
   a quorum-protected one to see what the access trace looks like when a
   single identity does not meet its threshold.
+  \item \textbf{Complete a quorum unlock} --- read a file's requirements,
+  connect cooperating devices, and complete an unlock.
+  \item \textbf{Passwords \& PINs} --- create and unlock the lab's second,
+  independent protection scheme.
+  \item \textbf{Export bundles \& share links} --- contrast
+  recipient-sealed export bundles with bearer share links.
+  \item \textbf{Signatures, properties \& expiry} --- sign and verify
+  through a bridge, inspect properties, and observe destructive expiry.
+\end{itemize}
+
+\subsubsection{Mailbox: sending \& receiving}
+
+\begin{itemize}
   \item \textbf{Mailbox: sending \& receiving} --- sealing a file to
   another label, switching to that identity, and receiving it from the
   inbox.
+  \item \textbf{Reject \& acknowledge} --- exercise the rejection path and
+  explicitly refresh a sender's acknowledgement state.
+  \item \textbf{Updates \& device letters} --- see which higher-level
+  workflows use sealed letters and where their controls actually live.
 \end{itemize}
 
 Finishing a module's last step opens a short completion notice; from
-there, or from \textbf{Exit tutorial} at any point, the \textbf{Tutorials}
-button reopens the picker for another module.
+there, or from \textbf{Exit tutorial} at any point, the \textbf{Tutorials
+\& Documentation} button reopens the picker for another module.

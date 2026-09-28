@@ -590,9 +590,10 @@ h1 {
 }
 
 .modal {
+  display: flex;
+  flex-direction: column;
   width: min(34rem, 100%);
   max-height: 85vh;
-  overflow: auto;
   border: 1px solid var(--border-strong);
   border-radius: 12px;
   background: var(--surface-raised);
@@ -604,6 +605,7 @@ h1 {
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+  flex: 0 0 auto;
   padding: 0.75rem 1rem;
   border-bottom: 1px solid var(--border);
   background: var(--surface-sunken);
@@ -629,7 +631,9 @@ h1 {
 }
 
 .modal-body {
+  flex: 1 1 auto;
   padding: 1rem;
+  overflow-y: auto;
 }
 
 .properties-grid {
@@ -1107,6 +1111,17 @@ h1 {
 }
 
 /* ----- Guided tutorials --------------------------------------------------- */
+
+.tutorial-category + .tutorial-category {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.tutorial-category > h3,
+.tutorial-category > p {
+  margin: 0 0 0.45rem;
+}
 
 .tutorial-picker-list {
   list-style: none;

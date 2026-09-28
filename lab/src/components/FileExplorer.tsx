@@ -92,6 +92,17 @@ export function FileExplorer({ snapshot, act }: { snapshot: Snapshot; act: Act }
 
   function sortBy(key: SortKey) {
     setSort((current) => (current.key === key ? { key, dir: current.dir === 1 ? -1 : 1 } : { key, dir: 1 }));
+    act((client) => client.noteUi("file-sort", `Sorted files by ${key}`));
+  }
+
+  function openFolder(name: string) {
+    setFolder(name);
+    act((client) => client.noteUi("file-navigate", `Opened ${name} folder`));
+  }
+
+  function openProperties(file: FileView) {
+    setPropertiesId(file.id);
+    act((client) => client.noteUi("properties", `Viewed properties for ${file.name}`));
   }
 
   const columns: { key: SortKey; label: string }[] = [
@@ -132,8 +143,8 @@ export function FileExplorer({ snapshot, act }: { snapshot: Snapshot; act: Act }
                   type="button"
                   className="folder-tile"
                   data-testid={`folder-${name}`}
-                  onDoubleClick={() => setFolder(name)}
-                  onClick={() => setFolder(name)}
+                  onDoubleClick={() => openFolder(name)}
+                  onClick={() => openFolder(name)}
                 >
                   <FolderIcon />
                   <span>{name}</span>
@@ -204,7 +215,7 @@ export function FileExplorer({ snapshot, act }: { snapshot: Snapshot; act: Act }
       )}
 
       {selectedFile ? (
-        <div className="explorer-toolbar" role="toolbar" aria-label={`Actions for ${selectedFile.name}`}>
+        <div className="explorer-toolbar" data-testid="file-actions" role="toolbar" aria-label={`Actions for ${selectedFile.name}`}>
           <button type="button" className="btn btn-primary" onClick={() => openFile(selectedFile)}>
             Open
           </button>
@@ -216,7 +227,7 @@ export function FileExplorer({ snapshot, act }: { snapshot: Snapshot; act: Act }
               Sign
             </button>
           ) : null}
-          <button type="button" className="btn" onClick={() => setPropertiesId(selectedFile.id)}>
+          <button type="button" className="btn" onClick={() => openProperties(selectedFile)}>
             Properties
           </button>
         </div>
@@ -242,7 +253,7 @@ export function FileExplorer({ snapshot, act }: { snapshot: Snapshot; act: Act }
             </li>
           ) : null}
           <li role="none">
-            <button type="button" role="menuitem" onClick={() => setPropertiesId(menu.file.id)}>
+            <button type="button" role="menuitem" onClick={() => openProperties(menu.file)}>
               Properties
             </button>
           </li>

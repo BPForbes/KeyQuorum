@@ -1,0 +1,275 @@
+\section{Command reference}
+\label{sec:command-reference}
+
+The rest of this manual explains what each area of the CLI is for and how
+the pieces fit together; this section is the complete index of every
+\code{keyquorum} and \code{keyquorum-device} command and subcommand, so
+this manual alone --- without a separate run of \code{--help} --- says
+what the tool can do. Each row's description is the same one \code{--help}
+prints for that command. Flags are not reproduced here in full; run
+\code{keyquorum <command> --help} (or \code{keyquorum <command>
+<subcommand> --help}) for a command's complete flag list, defaults, and
+which flags conflict with or require others.
+
+\begin{noteBox}
+\code{keyquorum host} is a hidden subcommand, compiled only with
+\flag{--features provider}, and is intentionally omitted here: it is a
+build capability for operating a mailbox relay, not a customer-facing
+command, and is never documented outside the crate's own source.
+\end{noteBox}
+
+\subsection{Identity and hardware keys}
+
+\begin{center}
+\begin{tabular}{@{}p{0.24\linewidth}p{0.70\linewidth}@{}}
+\toprule
+\textbf{Command} & \textbf{Purpose} \\
+\midrule
+\code{generate} & Generate an encryption or signing keypair. The private
+  key prints to stdout once and is never written to disk by this tool;
+  \flag{--register} also registers the new public key. \\
+\code{register} & Register an existing public key under a label. \\
+\code{list} & List registered hardware keys and live split trees. \\
+\code{revoke} & Revoke a registered key: drops its pairings and
+  private-bridge membership everywhere; \flag{--evict} also PSS-refreshes
+  the surviving siblings of its leaf. \\
+\code{remove} & Remove a registered hardware key. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Split-key trees}
+
+\begin{center}
+\begin{tabular}{@{}p{0.24\linewidth}p{0.70\linewidth}@{}}
+\toprule
+\textbf{Command} & \textbf{Purpose} \\
+\midrule
+\code{split} & Split a secret into a live tree. \flag{--leaf} builds the
+  tree directly (siblings are bound automatically); \flag{--tree-spec} is
+  for restoring a nested snapshot. \\
+\code{bind} & Pair two nodes (establish \code{node <-> peer}), or reseal a
+  leaf onto a new public key. \\
+\code{add} & Insert a leaf under a parent split and reshare that parent. \\
+\code{tree} & Print every live tree, one tree by id, the lowest common
+  ancestor of \flag{--node} labels, or write the live spec as JSON. \\
+\code{tree publish} & Upload a tree's public topology (no sealed shares) to
+  the relay. \\
+\code{tree restructure} & Announce a restructured tree: one authenticated
+  envelope per active leaf at the next public generation. Unlike
+  \code{publish}, recipients can verify who authorized the change. \\
+\code{tree countersign} & Countersign a pending restructure proposal (key
+  file, or \flag{--device}/\flag{--slot}). \\
+\code{tree fetch} & Download the slice a pull key is allowed to see and
+  merge it into this store. \\
+\code{reconstruct} & Reconstruct a key's secret from raw shares (key
+  files, container slots, or an interactive prompt). \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Password vault}
+
+\begin{center}
+\begin{tabular}{@{}p{0.24\linewidth}p{0.70\linewidth}@{}}
+\toprule
+\textbf{Command} & \textbf{Purpose} \\
+\midrule
+\code{vault add} & Store a new credential, optionally PIN-protected. \\
+\code{vault get} & Retrieve a stored credential. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Bridges}
+
+\begin{center}
+\begin{tabular}{@{}p{0.24\linewidth}p{0.70\linewidth}@{}}
+\toprule
+\textbf{Command} & \textbf{Purpose} \\
+\midrule
+\code{bridge allow} & Grant \flag{--node} permission to form a cross-branch
+  link with \flag{--peer}. \\
+\code{bridge deny} & Revoke that permission and drop any established link
+  between them. \\
+\code{bridge add} & Establish a pairing, if either node's whitelist allows
+  it. \\
+\code{bridge remove} & Tear down an established pairing; the whitelist
+  entry is left intact. \\
+\code{bridge list} & List whitelist entries and established pairings. \\
+\code{bridge private create} & Create a private sign bridge: writes every
+  recipient's \file{.kqpb} envelope first, then commits this store, so a
+  failure at any point can simply be retried. \\
+\code{bridge private list} & List private bridges, optionally for one
+  split tree. \\
+\code{bridge private show} & Show one private bridge by uid. \\
+\code{bridge private events} & Print bridge-change events. \\
+\code{bridge private import} & Import a per-person bridge package into this
+  store. \\
+\code{bridge private remove-member} & Drop a signing member: writes
+  rotation/destroy packages first, then commits. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Authenticated updates}
+
+\begin{center}
+\begin{tabular}{@{}p{0.24\linewidth}p{0.70\linewidth}@{}}
+\toprule
+\textbf{Command} & \textbf{Purpose} \\
+\midrule
+\code{reissue} & Announce a replaced hardware key: writes one authenticated
+  envelope per store that holds the old key, so every recipient converges
+  on the same token. \\
+\code{updates} & Print the authenticated organization updates this store
+  has applied. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Files and credentials}
+
+\begin{center}
+\begin{tabular}{@{}p{0.24\linewidth}p{0.70\linewidth}@{}}
+\toprule
+\textbf{Command} & \textbf{Purpose} \\
+\midrule
+\code{access password} & Lock (\flag{--state 0}) or unlock (\flag{--state
+  1}) a password-protected file, optionally with a PIN and an expiry. \\
+\code{access quorum} & Lock (\flag{--state 0}) or unlock (\flag{--state
+  1}) a hardware-key-quorum-protected file, or print its status
+  (\flag{--status}) --- custody mode, minimum physical devices, unlock
+  approval, and requirement tree. \\
+\code{export credential} & Export a vault credential, sealed to a
+  recipient's public key. \\
+\code{export file} & Export a password-locked file, sealed to a
+  recipient's public key. \\
+\code{share create-credential} & Create a time-limited, revocable share
+  link for a vault credential. \\
+\code{share create-file} & Create a time-limited, revocable share link for
+  a password-locked file. \\
+\code{share redeem-credential} & Redeem a credential share token (prompted
+  interactively, never as an argument). \\
+\code{share redeem-file} & Redeem a file share token (prompted
+  interactively, never as an argument). \\
+\code{share revoke-credential} & Revoke a credential share. \\
+\code{share revoke-file} & Revoke a file share. \\
+\code{pin relock} & End a cached one-time PIN unlock window immediately. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Signing}
+
+\begin{center}
+\begin{tabular}{@{}p{0.24\linewidth}p{0.70\linewidth}@{}}
+\toprule
+\textbf{Command} & \textbf{Purpose} \\
+\midrule
+\code{sign} & Sign a message with a private bridge plus a personal signing
+  key. \\
+\code{verify} & Verify an Ed25519 signature, standalone or against a
+  private bridge's roster (\flag{--bridge-uid}). \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Delivery and the mailbox relay}
+
+\begin{center}
+\begin{tabular}{@{}p{0.24\linewidth}p{0.70\linewidth}@{}}
+\toprule
+\textbf{Command} & \textbf{Purpose} \\
+\midrule
+\code{deliver send} & Seal a file to a registered label, signed with your
+  signing key. \\
+\code{deliver open} & Open a letter addressed to you: verify the sender,
+  keep (or \flag{--reject}) the file, and seal a signed acknowledgement
+  back. \\
+\code{deliver ack} & Check an acknowledgement sealed back to you. \\
+\code{relay push} & Upload every \file{.kqpb} in a directory to the relay;
+  also replaces public-tree documents from trees stored in \flag{--db}. \\
+\code{relay pull} & Download envelopes and the public-tree slice for a
+  pull key; \flag{--import} installs each envelope into \flag{--db}
+  directly. \\
+\code{loadkey} & Check a relay API key with \code{POST /keycheck} and
+  store it (and its hash) on this instance for later relay commands to
+  reuse. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Device transfer}
+
+\begin{center}
+\begin{tabular}{@{}p{0.24\linewidth}p{0.70\linewidth}@{}}
+\toprule
+\textbf{Command} & \textbf{Purpose} \\
+\midrule
+\code{transfer copy} & Copy an active key identity between two devices
+  that are both open. The source stays active. \\
+\code{transfer move} & Move an active key identity between two open
+  devices. The source becomes a ghost only after the destination
+  commits. \\
+\code{transfer recover} & Finish or roll back a transfer that stopped
+  between the two devices. \\
+\code{transfer enroll} & Record a slot on this device as an active key
+  identity. \\
+\code{transfer list} & List identities on a device (ghosts hidden unless
+  \flag{--all}). \\
+\code{transfer relay-send} & Seal a copy or move to the destination and
+  leave the source prepared; the ghost applies only after the
+  destination's acknowledgement is finalized. \\
+\code{transfer relay-collect} & Pull a sealed copy or move, install it, and
+  post the acknowledgement. \\
+\code{transfer relay-finalize} & Apply a destination acknowledgement and
+  finish the source. \\
+\code{device init} & Create \file{device.kq} and an empty vault directory
+  in this store's registry. \\
+\code{device provision} & Add a passphrase-sealed slot to a container and
+  print its public keys. \\
+\code{device list} & List a container's slot labels and public keys. \\
+\code{device bind} & Record a container's device id for a slot's
+  registered keys. \\
+\code{device register} & Register a slot's public key (a lone key file
+  still uses top-level \code{register}). \\
+\code{device publish} & Publish a container's public descriptor to the
+  relay's device directory. Slot secrets stay local. \\
+\code{device relay-relocate} & Seal one slot onto another device through
+  the relay; prints the relocate id. The source slot stays until
+  \code{relay-drop} sees the matching acknowledgement. \\
+\code{device relay-accept} & Pull sealed relocates, install each slot, and
+  post the acknowledgement. \\
+\code{device relay-drop} & Delete the source slot after a verified
+  relocate acknowledgement, keyed to the specific relocate id. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{\code{keyquorum-device}: the container tool}
+
+A separate binary for one physical container of logical identity slots,
+used without an organization database (see
+\hyperref[sec:devices-and-custody]{Devices and custody}). Private keys
+stay in the slot token; this tool never prints them.
+
+\begin{center}
+\begin{tabular}{@{}p{0.24\linewidth}p{0.70\linewidth}@{}}
+\toprule
+\textbf{Command} & \textbf{Purpose} \\
+\midrule
+\code{init} & Create \file{device.kq} and an empty vault directory. \\
+\code{provision} & Add a slot; prints its public keys and prompts for a
+  passphrase. \\
+\code{list} & List slot labels and public keys from \file{device.kq}. \\
+\code{public} & Print one slot's public keys. \\
+\code{unwrap-share} & Unwrap a sealed share with a slot's encryption key;
+  the raw share prints to stdout. \\
+\code{sign} & Sign stdin with a slot's signing key; the hex signature
+  prints to stdout. \\
+\code{relocate} & Move a slot onto another container. The keypair is
+  unchanged; only the device id it is bound to changes. \\
+\bottomrule
+\end{tabular}
+\end{center}
