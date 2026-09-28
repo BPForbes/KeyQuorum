@@ -270,4 +270,56 @@ test.describe("guided tutorials", () => {
       timeout: 3_000,
     });
   });
+
+  test("the reject-and-acknowledge module forces Alice as sender even when another user is already active", async ({
+    page,
+  }) => {
+    await loadLab(page);
+
+    // Simulate arriving here right after a tutorial that leaves someone
+    // else active -- each lab user's Sent list is their own mailbox, so a
+    // send recorded under the wrong one would leave the final step unable
+    // to find it.
+    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /Morgan/ }).click();
+    await expect(page.getByTestId("active-user-name")).toHaveText("Morgan");
+
+    await page.getByRole("button", { name: "Tutorials" }).click();
+    await page
+      .getByRole("listitem")
+      .filter({ hasText: "Reject & acknowledge" })
+      .getByRole("button", { name: "Start" })
+      .click();
+
+    // Entering the step switches to Alice specifically, not just away
+    // from David.
+    await expect(page.getByTestId("active-user-name")).toHaveText("Alice", { timeout: 3_000 });
+
+    await page.getByRole("button", { name: "public" }).click();
+    await page.getByTestId("file-row-company-handbook").click();
+    await page.getByRole("button", { name: "Send…" }).click();
+    await page.getByLabel("Recipient").selectOption("david");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Try it: become the recipient" })).toBeVisible({
+      timeout: 3_000,
+    });
+
+    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /David/ }).click();
+    await expect(page.getByRole("heading", { name: "Try it: reject the letter" })).toBeVisible({ timeout: 3_000 });
+    await page
+      .locator("[data-testid^=inbox-]")
+      .first()
+      .getByRole("button", { name: /^Reject/ })
+      .click();
+    await expect(page.getByRole("heading", { name: "Try it: return to the sender" })).toBeVisible({
+      timeout: 3_000,
+    });
+
+    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /Alice/ }).click();
+    await expect(page.getByRole("heading", { name: "Try it: collect the acknowledgement" })).toBeVisible({
+      timeout: 3_000,
+    });
+    await page.getByRole("button", { name: /^Sent/ }).click();
+    await page.getByTestId("mailbox-refresh").click();
+    await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible({ timeout: 3_000 });
+  });
 });

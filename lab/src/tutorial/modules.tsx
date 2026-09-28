@@ -799,7 +799,14 @@ export const TUTORIALS: TutorialModule[] = [
         body: <p>Open the <strong>public</strong> folder, select a file, press <strong>Send…</strong>, and choose David. This creates this module&rsquo;s own letter, so it works independently of every other tutorial.</p>,
         tab: "files",
         target: () => ['[data-panel="files"]'],
-        ensure: ensureActiveUserIsNot("david", "alice"),
+        // Later steps hard-code Alice as the sender (the final step reads
+        // her own snapshot.sent for this relayId; each lab user's sent
+        // list is their own mailbox, not a global one), so this must force
+        // Alice specifically -- not just "away from David" -- or a module
+        // entered right after one that left Morgan, Sarah, Bob, Emma, or
+        // Chris active would record the send under the wrong mailbox and
+        // the acknowledgement step could never find it.
+        ensure: ensureActiveUser("alice"),
         isDone: (_snapshot, latest) => wasSentTo(latest, "David"),
         remember: (snapshot) => ({ relayId: snapshot.sent[snapshot.sent.length - 1]?.relayId }),
       },
