@@ -2,6 +2,18 @@
 
 KeyQuorum is a secure file-sharing system centered on hardware key sharing. Files are encrypted and bound to registered physical tokens, such as USB devices. Access requires the necessary hardware keys to be presented before a protected file can be unlocked, providing layered, hardware-backed access control.
 
+## Documentation
+
+Two full manuals, as PDFs:
+
+- [KeyQuorum (CLI manual)](lab/public/docs/KeyQuorum_Manual.pdf) — the `keyquorum` / `keyquorum-device`
+  command-line tool this README summarizes below.
+- [KeyQuorum Lab (GUI manual)](lab/public/docs/KeyQuorum_Lab_Manual.pdf) — the browser lab's own interface
+  (header, tabs, guided tutorials), including the demo/default credentials its seeded USB slots and
+  terminal use.
+
+Both PDFs are also linked from the lab itself, under **Tutorials & Documentation**.
+
 ## Status
 
 Early scaffolding, though the CLI now covers most of what the concept below describes.
