@@ -102,6 +102,7 @@ fn a_files_policy_round_trips_and_is_optional() {
         descendants: Requirement::AuthorSignDirectParent,
         ancestors: Requirement::Forbidden,
         cross_branch: Requirement::AuthorSignBridgeOrOwner,
+        auto_merge: false,
     };
     let bound = TrackedFile::with_policy(FILE, "a.txt", policy.clone());
     let decoded = TrackedFile::decode(&bound.encode().unwrap()).unwrap();
@@ -121,14 +122,14 @@ fn a_bad_policy_block_is_rejected() {
     let bound = TrackedFile::with_policy(FILE, "a.txt", FilePolicy::standard("M"));
     let bytes = bound.encode().unwrap();
     // Layout: magic(4) version(1) id(16) lp(name)=2+5 root(32) flag(1)
-    // lp(scope)=2+1 then four requirement bytes.
+    // lp(scope)=2+1 then four requirement bytes and the auto-merge flag.
     let flag_at = 4 + 1 + 16 + 2 + 5 + 32;
     assert_eq!(bytes[flag_at], 1);
     let mut wrong_flag = bytes.clone();
     wrong_flag[flag_at] = 2;
     assert!(TrackedFile::decode(&wrong_flag).is_err());
     let first_requirement = flag_at + 1 + 2 + 1;
-    for offset in 0..4 {
+    for offset in 0..5 {
         let mut wrong_code = bytes.clone();
         wrong_code[first_requirement + offset] = 9;
         assert!(

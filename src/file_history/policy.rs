@@ -57,6 +57,9 @@ pub struct FilePolicy {
     pub descendants: Requirement,
     pub ancestors: Requirement,
     pub cross_branch: Requirement,
+    /// Whether two divergent heads may be merged automatically. Off means a
+    /// divergence always goes to a person, however clean the merge would be.
+    pub auto_merge: bool,
 }
 
 impl FilePolicy {
@@ -69,48 +72,53 @@ impl FilePolicy {
             descendants: Requirement::AuthorSignDirectParent,
             ancestors: Requirement::AuthorSign,
             cross_branch: Requirement::AuthorSignBridgeOrOwner,
+            auto_merge: true,
         }
     }
 
-    /// `lp(scope_root) | owner | descendants | ancestors | cross_branch`, the
-    /// same bytes `policy_hash` covers.
-    pub(super) fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
-        push_len_prefixed(out, self.scope_root.as_bytes())?;
+    /// `lp(scope_root) | owner | descendants | ancestors | cross_branch |
+    /// auto_merge`: what the container stores and `policy_hash` covers.
+    fn bytes(&self) -> Result<Vec<u8>> {
+        let mut out = Vec::new();
+        push_len_prefixed(&mut out, self.scope_root.as_bytes())?;
         out.extend_from_slice(&[
             self.scope_owner as u8,
             self.descendants as u8,
             self.ancestors as u8,
             self.cross_branch as u8,
+            u8::from(self.auto_merge),
         ]);
+        Ok(out)
+    }
+
+    pub(super) fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        out.extend_from_slice(&self.bytes()?);
         Ok(())
     }
 
     pub(super) fn decode(data: &mut &[u8]) -> Result<Self> {
         let scope_root = take_str(data)?;
-        let [owner, descendants, ancestors, cross_branch] = take_fixed::<4>(data)?;
+        let [owner, descendants, ancestors, cross_branch, auto_merge] = take_fixed::<5>(data)?;
         Ok(Self {
             scope_root,
             scope_owner: Requirement::from_u8(owner)?,
             descendants: Requirement::from_u8(descendants)?,
             ancestors: Requirement::from_u8(ancestors)?,
             cross_branch: Requirement::from_u8(cross_branch)?,
+            auto_merge: match auto_merge {
+                0 => false,
+                1 => true,
+                _ => return Err(Error::InvalidTrackedFile),
+            },
         })
     }
 
     /// Stored in each revision so later verification knows which rules
     /// applied when it was made.
     pub fn policy_hash(&self) -> Result<[u8; 32]> {
-        let mut bytes = Vec::new();
-        push_len_prefixed(&mut bytes, self.scope_root.as_bytes())?;
-        bytes.extend_from_slice(&[
-            self.scope_owner as u8,
-            self.descendants as u8,
-            self.ancestors as u8,
-            self.cross_branch as u8,
-        ]);
         let mut hasher = Sha256::new();
         hasher.update(POLICY_DOMAIN);
-        hasher.update(bytes);
+        hasher.update(self.bytes()?);
         Ok(hasher.finalize().into())
     }
 

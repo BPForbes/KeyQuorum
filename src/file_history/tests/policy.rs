@@ -210,6 +210,10 @@ fn the_policy_hash_pins_the_rules_a_revision_was_made_under() {
             scope_owner: Requirement::Forbidden,
             ..policy()
         },
+        FilePolicy {
+            auto_merge: false,
+            ..policy()
+        },
     ]
     .iter()
     .map(|p| p.policy_hash().unwrap())

@@ -53,6 +53,7 @@ fn policy() -> FilePolicy {
         descendants: Requirement::AuthorSign,
         ancestors: Requirement::AuthorSign,
         cross_branch: Requirement::AuthorSign,
+        auto_merge: true,
     }
 }
 
