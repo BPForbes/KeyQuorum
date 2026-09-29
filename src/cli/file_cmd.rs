@@ -2766,9 +2766,14 @@ fn graph(conn: &Connection, kqtf: &Path) -> Result<()> {
                 .collect::<Vec<_>>()
                 .join(" + ")
         };
-        outln!("{mark} {} {}", short(&id), revision.generated_label);
-        if let Some(user) = &revision.user_label {
-            outln!("    {user}");
+        // The user label first when there is one, then the generated label
+        // and the short hash; the full id stays authoritative.
+        match &revision.user_label {
+            Some(user) => {
+                outln!("{mark} {user}");
+                outln!("    {} {}", revision.generated_label, short(&id));
+            }
+            None => outln!("{mark} {} {}", revision.generated_label, short(&id)),
         }
         outln!(
             "    by {} · parents {parents} · {}",
