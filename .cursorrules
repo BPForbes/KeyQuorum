@@ -154,6 +154,13 @@ The letter's signed header also binds `content_proof`, the
 container holds for it, in order), which `select_shareable_revision` returns
 in `DeliveryDecision` and `file receive` recomputes from the container,
 refusing a mismatch. It names the proofs that travelled; it decides no trust.
+`KIND_FILE_HISTORY_SNAPSHOT` (17) carries a `KQHS` history snapshot (no content)
+to a label, its file id, root and event count signed by the sender (`file send-history`);
+`file open-history` checks the signature, the recipient key and the snapshot, and
+compares it with a local copy (`SAME`, `LOCAL_AHEAD`, `REMOTE_AHEAD`, `DIVERGED`). It is
+not answered. Every letter kind and answer in `file_delivery` opens through the same
+helpers (`open_kind`, `take_head`, `take_signature`, `verify_signed_by`), and
+`file_delivery::recipient_owns_key` is the one recipient-key check both commands use.
 Freshness is never assumed: `file_delivery::freshness` compares a letter's
 revision and signed history root with `tracked_seen_roots` (what this store
 accepted before for that file) and says `FIRST`, `REPLAYED`, `NEWER` (its

@@ -2447,6 +2447,14 @@ fn relay_in_store(conn: &Connection, command: RelayCommand) -> Result<()> {
                     outln!("Wrote {}", path.display());
                 }
                 let kind = crate::envelope::kind(&bytes)?;
+                if kind == crate::envelope::KIND_FILE_HISTORY_SNAPSHOT {
+                    // Opened by `file open-history`; nothing to import.
+                    outln!(
+                        "Envelope {} is a tracked-file history snapshot; open it with `keyquorum file open-history`",
+                        item.id
+                    );
+                    continue;
+                }
                 if kind == crate::envelope::KIND_FILE_HISTORY
                     || kind == crate::envelope::KIND_FILE_HISTORY_ACK
                 {

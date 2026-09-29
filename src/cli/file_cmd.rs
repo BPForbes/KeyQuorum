@@ -373,6 +373,54 @@ pub enum FileCommand {
         #[arg(long, requires = "push")]
         api_key: Option<String>,
     },
+    /// Send another label this file's event history (a `KQHS` snapshot,
+    /// no content), its root signed by you, so they can compare it with
+    /// their own copy.
+    SendHistory {
+        kqtf: PathBuf,
+        /// Recipient label (its encryption key must be registered here)
+        #[arg(long)]
+        to: String,
+        /// Your label
+        #[arg(long = "as")]
+        as_label: String,
+        #[arg(long, conflicts_with = "signing_key_file")]
+        slot: Option<String>,
+        #[arg(long)]
+        signing_key_file: Option<PathBuf>,
+        /// Write the sealed letter to this directory
+        #[arg(long, required_unless_present = "push")]
+        output_dir: Option<PathBuf>,
+        /// Upload the letter to the relay (inbox.push key)
+        #[arg(long)]
+        push: bool,
+        #[arg(long, requires = "push")]
+        url: Option<String>,
+        #[arg(long, requires = "push")]
+        api_key: Option<String>,
+    },
+    /// Open a history snapshot letter addressed to you: check the sender's
+    /// signature and the snapshot, and compare it with your copy
+    OpenHistory {
+        /// The letter (.kqpb)
+        #[arg(long)]
+        letter: PathBuf,
+        #[arg(
+            long = "slot",
+            required_unless_present = "share_file",
+            conflicts_with = "share_file"
+        )]
+        slot: Option<String>,
+        /// Your encryption private key file, instead of --slot
+        #[arg(long)]
+        share_file: Option<String>,
+        /// Your copy of the file, to compare the sender's history with
+        #[arg(long)]
+        against: Option<PathBuf>,
+        /// Also write the snapshot (.kqhs) here
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Open a tracked-file letter addressed to you. The sender is checked
     /// as the transport; the delivered revision is then judged by the
     /// file's own policy and accepted only if it is trusted here.
@@ -638,6 +686,38 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             (slot, signing_key_file),
             revision,
             (output_dir, push, url, api_key),
+        ),
+        FileCommand::SendHistory {
+            kqtf,
+            to,
+            as_label,
+            slot,
+            signing_key_file,
+            output_dir,
+            push,
+            url,
+            api_key,
+        } => send_history(
+            conn,
+            &kqtf,
+            &to,
+            &as_label,
+            (slot, signing_key_file),
+            (output_dir, push, url, api_key),
+        ),
+        FileCommand::OpenHistory {
+            letter,
+            slot,
+            share_file,
+            against,
+            out,
+        } => open_history(
+            conn,
+            &letter,
+            share_file.as_deref(),
+            slot.as_deref(),
+            against,
+            out,
         ),
         FileCommand::Receive {
             letter,
@@ -1797,6 +1877,100 @@ fn share(
         bytes: sealed.bytes,
     };
     carry(conn, &letter, output_dir.as_deref(), push, url, api_key)
+}
+
+fn send_history(
+    conn: &Connection,
+    kqtf: &Path,
+    to: &str,
+    as_label: &str,
+    keys: (Option<String>, Option<PathBuf>),
+    (output_dir, push, url, api_key): Transport,
+) -> Result<()> {
+    require_active(conn, as_label)?;
+    let file = load(kqtf)?;
+    let snapshot = file.history_snapshot();
+    let bytes = snapshot.encode()?;
+    let (signing_secret, encryption_public) = sender_keys(conn, keys.0, keys.1, as_label)?;
+    let recipient = registered_encryption_key(conn, to)?;
+    let (delivery_id, sealed) =
+        file_delivery::seal_history_snapshot(&file_delivery::OutgoingSnapshot {
+            sender_label: as_label,
+            sender_signing_secret: &signing_secret,
+            sender_encryption_public: &encryption_public,
+            recipient_label: to,
+            recipient_encryption_public: &recipient,
+            file_name: &file.logical_name,
+            file_id: file.file_id,
+            history_root: snapshot.history_root,
+            event_count: u32::try_from(snapshot.events.len())
+                .map_err(|_| Error::BundleFieldTooLarge)?,
+            snapshot: &bytes,
+        })?;
+    outln!(
+        "Sealed the history of {} ({} event(s), root {}) to {to}",
+        file.logical_name,
+        snapshot.events.len(),
+        hex::encode(&snapshot.history_root[..6])
+    );
+    let letter = Letter {
+        name: format!("{}-history", hex::encode(delivery_id)),
+        bytes: sealed,
+    };
+    carry(conn, &letter, output_dir.as_deref(), push, url, api_key)
+}
+
+fn open_history(
+    conn: &Connection,
+    letter_path: &Path,
+    share_file: Option<&str>,
+    slot: Option<&str>,
+    against: Option<PathBuf>,
+    out: Option<PathBuf>,
+) -> Result<()> {
+    let secret = super::encryption_secret_from(share_file, slot)?;
+    let letter = file_delivery::open_history_snapshot(conn, &secret, &env::read(letter_path)?)?;
+    require_recipient_key(conn, &letter.recipient_label, &secret)?;
+    // The header is the sender's claim; the snapshot must say the same.
+    let snapshot = HistorySnapshot::decode(&letter.snapshot)
+        .map_err(|_| usage("the snapshot in the letter does not verify"))?;
+    if snapshot.file_id != letter.file_id
+        || snapshot.history_root != letter.history_root
+        || snapshot.events.len() != letter.event_count as usize
+    {
+        return Err(usage("the letter does not match the snapshot it carries"));
+    }
+    outln!(
+        "History of {} from {}: {} event(s), root {}, sender signature verified",
+        letter.file_name,
+        letter.sender_label,
+        letter.event_count,
+        hex::encode(&letter.history_root[..6])
+    );
+    if let Some(path) = against {
+        let local = load(&path)?;
+        if local.file_id != snapshot.file_id {
+            return Err(usage("that is not a copy of the same file"));
+        }
+        let local_is_prefix = local.events().len() <= snapshot.events.len()
+            && local
+                .events()
+                .iter()
+                .zip(&snapshot.events)
+                .all(|(a, b)| a.event_hash == b.event_hash);
+        let relation = match (snapshot.is_prefix_of(&local), local_is_prefix) {
+            (true, true) => "SAME",
+            (true, false) => "LOCAL_AHEAD",
+            (false, true) => "REMOTE_AHEAD",
+            (false, false) => "DIVERGED",
+        };
+        outln!("Compared with {}: {relation}", path.display());
+    }
+    if let Some(path) = out {
+        env::write_new(&path, &letter.snapshot)?;
+        outln!("Wrote {}", path.display());
+    }
+    Ok(())
 }
 
 fn receive(

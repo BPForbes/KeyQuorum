@@ -1469,6 +1469,68 @@ fn a_received_file_answers_its_provenance_without_the_senders_store() {
 }
 
 #[test]
+fn a_signed_history_snapshot_tells_the_receiver_how_their_copy_compares() {
+    let mut env = delivering();
+    share_to_mb(&mut env, "").0.unwrap();
+    let (result, out) = receive_as_mb(&mut env, "--out /work/r.kqtf");
+    assert!(result.is_ok(), "{out}");
+    // The sender's history moves on; they send its snapshot, not content.
+    edit(&mut env, "totals: 300\n");
+    ok(
+        &mut env,
+        &format!(
+            "checkin {KQTF} --from /work/edited.txt --as M.A --slot {}",
+            slot("M.A")
+        ),
+    );
+    let out = ok(
+        &mut env,
+        &format!(
+            "send-history {KQTF} --to M.B --as M.A --slot {} --output-dir /hist",
+            slot("M.A")
+        ),
+    );
+    assert!(out.contains("Sealed the history of report.txt"), "{out}");
+    let letter = dir_file(&env, "/hist");
+    let bytes = env.fs.read(Path::new(&letter)).unwrap();
+    assert!(!bytes.windows(11).any(|w| w == b"totals: 300"));
+    // The receiver's copy has a delivery event the sender's lacks, so the
+    // two histories have diverged; against the sender's own copy it is the
+    // same history.
+    let open = |env: &mut MemoryEnv, against: &str| {
+        ok(
+            env,
+            &format!(
+                "open-history --letter {letter} --slot {} --against {against}",
+                slot("M.B")
+            ),
+        )
+    };
+    let out = open(&mut env, "/work/r.kqtf");
+    assert!(out.contains("sender signature verified"), "{out}");
+    assert!(out.contains("DIVERGED"), "{out}");
+    let out = open(&mut env, KQTF);
+    assert!(out.contains(": SAME"), "{out}");
+    // A snapshot of an older point is behind a copy that moved on.
+    edit(&mut env, "totals: 400\n");
+    ok(
+        &mut env,
+        &format!(
+            "checkin {KQTF} --from /work/edited.txt --as M.A --slot {}",
+            slot("M.A")
+        ),
+    );
+    let out = open(&mut env, KQTF);
+    assert!(out.contains("LOCAL_AHEAD"), "{out}");
+    // Only the addressed label's key opens it.
+    let (result, _) = run(
+        &mut env,
+        &format!("open-history --letter {letter} --slot {}", slot("M.A")),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
 fn an_untrusted_newer_revision_is_never_sent() {
     let mut env = delivering();
     edit(&mut env, "totals: SECRETNEWER\n");

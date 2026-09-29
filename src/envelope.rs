@@ -97,6 +97,10 @@ pub const KIND_FILE_DELIVERY_ACK: u8 = 14;
 pub const KIND_FILE_HISTORY: u8 = 15;
 /// Recipient's signed accept/reject of a [`KIND_FILE_HISTORY`].
 pub const KIND_FILE_HISTORY_ACK: u8 = 16;
+/// A tracked file's event history as a `KQHS` snapshot (no payloads or
+/// revisions), sealed to a recipient label with its root signed by the
+/// sender (`file_delivery`). Carried by the bridge inbox; not answered.
+pub const KIND_FILE_HISTORY_SNAPSHOT: u8 = 17;
 
 /// Kinds the device mailbox accepts. Every other `KQPB` kind belongs to
 /// the bridge inbox. The two stores do not mix.

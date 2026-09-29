@@ -385,3 +385,88 @@ fn freshness_is_judged_against_what_this_store_accepted_before() {
         Freshness::First
     );
 }
+
+// ---- history snapshot letters -------------------------------------------------
+
+const SNAPSHOT: &[u8] = b"pretend this is a KQHS snapshot";
+
+fn snapshot_from(alice: &Party, david: &Party) -> ([u8; 16], Vec<u8>) {
+    seal_history_snapshot(&OutgoingSnapshot {
+        sender_label: alice.label,
+        sender_signing_secret: &alice.signing_secret,
+        sender_encryption_public: &alice.encryption_public,
+        recipient_label: david.label,
+        recipient_encryption_public: &david.encryption_public,
+        file_name: "plan.txt",
+        file_id: [3; 16],
+        history_root: [5; 32],
+        event_count: 4,
+        snapshot: SNAPSHOT,
+    })
+    .unwrap()
+}
+
+#[test]
+fn a_history_snapshot_letter_round_trips_and_binds_its_header_and_bytes() {
+    let conn = db::open_in_memory().unwrap();
+    let alice = register(&conn, "M.S.1");
+    let david = register(&conn, "M.A");
+    let (delivery_id, bytes) = snapshot_from(&alice, &david);
+    assert!(!envelope::is_device_workflow_kind(
+        envelope::KIND_FILE_HISTORY_SNAPSHOT
+    ));
+    let letter = open_history_snapshot(&conn, &david.encryption_secret, &bytes).unwrap();
+    assert_eq!(letter.delivery_id, delivery_id);
+    assert_eq!(letter.sender_label, "M.S.1");
+    assert_eq!(letter.recipient_label, "M.A");
+    assert_eq!(letter.file_id, [3; 16]);
+    assert_eq!(letter.history_root, [5; 32]);
+    assert_eq!(letter.event_count, 4);
+    assert_eq!(letter.snapshot, SNAPSHOT);
+    // Layout: head 0..70 as for other letters, then file id 70..86, root
+    // 86..118, count 118..122, snapshot length and bytes from 122.
+    for (field, offset) in [
+        ("delivery id", 0),
+        ("return key", 30),
+        ("file id", 70),
+        ("history root", 86),
+        ("event count", 121),
+        ("snapshot", 127),
+    ] {
+        let altered = tampered(&bytes, &david, envelope::KIND_FILE_HISTORY_SNAPSHOT, offset);
+        assert!(
+            open_history_snapshot(&conn, &david.encryption_secret, &altered).is_err(),
+            "{field} is not covered by the signature"
+        );
+    }
+    // It is not a tracked-file letter, and a tracked-file letter is not it.
+    assert!(open_history_letter(&conn, &david.encryption_secret, &bytes).is_err());
+    let letter = history_from(&alice, &david);
+    assert!(open_history_snapshot(&conn, &david.encryption_secret, &letter.bytes).is_err());
+}
+
+#[test]
+fn a_snapshot_signed_by_someone_else_is_refused() {
+    let conn = db::open_in_memory().unwrap();
+    let alice = register(&conn, "M.S.1");
+    let david = register(&conn, "M.A");
+    let mallory = register(&conn, "M.B");
+    let (_, forged) = seal_history_snapshot(&OutgoingSnapshot {
+        sender_label: alice.label,
+        sender_signing_secret: &mallory.signing_secret,
+        sender_encryption_public: &mallory.encryption_public,
+        recipient_label: david.label,
+        recipient_encryption_public: &david.encryption_public,
+        file_name: "plan.txt",
+        file_id: [3; 16],
+        history_root: [5; 32],
+        event_count: 4,
+        snapshot: SNAPSHOT,
+    })
+    .unwrap();
+    assert!(open_history_snapshot(&conn, &david.encryption_secret, &forged).is_err());
+    // The same recipient-key rule as every letter: M.A's key opens it, and
+    // only M.A owns that key here.
+    assert!(recipient_owns_key(&conn, "M.A", &david.encryption_secret).unwrap());
+    assert!(!recipient_owns_key(&conn, "M.S.1", &david.encryption_secret).unwrap());
+}

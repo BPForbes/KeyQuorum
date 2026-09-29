@@ -298,11 +298,7 @@ pub(super) fn require_recipient_key(
     recipient_label: &str,
     opened_with: &[u8; 32],
 ) -> Result<()> {
-    let public = keys::encryption_public_from_secret(opened_with);
-    let owns_key = keys::active_keys_for(conn, recipient_label, KeyType::Encryption)?
-        .iter()
-        .any(|key| key.public_key.as_slice() == public.as_slice());
-    if owns_key {
+    if crate::file_delivery::recipient_owns_key(conn, recipient_label, opened_with)? {
         Ok(())
     } else {
         Err(usage(&format!(

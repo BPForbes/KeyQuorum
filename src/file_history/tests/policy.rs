@@ -876,7 +876,10 @@ fn a_finalization_survives_the_container_round_trip_and_older_versions_refuse_it
     file.finalize_revision(&id, ident(2), "M.A", &secret(2))
         .unwrap();
     let bytes = file.encode().unwrap();
-    assert_eq!(bytes[4], 6, "a finalization without event proofs is version 6");
+    assert_eq!(
+        bytes[4], 6,
+        "a finalization without event proofs is version 6"
+    );
     let back = TrackedFile::decode(&bytes).unwrap();
     assert!(finalized(&back, &id, &Ctx::new()));
     // A container claiming to be version 5 cannot carry one.

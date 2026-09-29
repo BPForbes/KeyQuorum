@@ -41,6 +41,7 @@ const LETTER_DOMAIN: &[u8] = b"KQ-FILE-DELIVERY-v1";
 const ACK_DOMAIN: &[u8] = b"KQ-FILE-DELIVERY-ACK-v1";
 const HISTORY_LETTER_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-DELIVERY-v1";
 const HISTORY_ACK_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-DELIVERY-ACK-v1";
+const SNAPSHOT_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-SNAPSHOT-v1";
 
 /// What the sender needs to seal one letter.
 pub struct Outgoing<'a> {
@@ -96,11 +97,14 @@ pub fn seal_letter(outgoing: &Outgoing<'_>) -> Result<SealedLetter> {
     let signature = signing::sign(outgoing.sender_signing_secret, &preimage);
 
     let mut plain = Vec::new();
-    plain.extend_from_slice(&delivery_id);
-    push_len_prefixed(&mut plain, outgoing.sender_label.as_bytes())?;
-    push_len_prefixed(&mut plain, outgoing.recipient_label.as_bytes())?;
-    plain.extend_from_slice(outgoing.sender_encryption_public);
-    push_len_prefixed(&mut plain, outgoing.file_name.as_bytes())?;
+    push_head(
+        &mut plain,
+        &delivery_id,
+        outgoing.sender_label,
+        outgoing.recipient_label,
+        outgoing.sender_encryption_public,
+        outgoing.file_name,
+    )?;
     push_len_prefixed_u32(&mut plain, outgoing.contents)?;
     plain.extend_from_slice(&signature);
     let bytes = envelope::seal(
@@ -123,39 +127,29 @@ pub fn open_letter(
     recipient_secret: &[u8; 32],
     bytes: &[u8],
 ) -> Result<FileLetter> {
-    let (kind, recipient_public, payload) = envelope::open(bytes, recipient_secret)?;
-    if kind != envelope::KIND_FILE_DELIVERY {
-        return Err(Error::InvalidBridgePackage);
-    }
+    let (recipient_public, payload) =
+        open_kind(bytes, recipient_secret, envelope::KIND_FILE_DELIVERY)?;
     let mut data = payload.as_slice();
-    let delivery_id: [u8; 16] = take_array(&mut data)?;
-    let sender_label = utf8(take_len_prefixed(&mut data)?)?;
-    let recipient_label = utf8(take_len_prefixed(&mut data)?)?;
-    let return_public: [u8; 32] = take_array(&mut data)?;
-    let file_name = utf8(take_len_prefixed(&mut data)?)?;
+    let head = take_head(&mut data)?;
     let contents = take_len_prefixed_u32(&mut data)?.to_vec();
-    let signature: [u8; 64] = take_array(&mut data)?;
-    if !data.is_empty() {
-        return Err(Error::InvalidBridgePackage);
-    }
+    let signature = take_signature(&mut data)?;
     let content_hash: [u8; 32] = Sha256::digest(&contents).into();
     let preimage = letter_preimage(
         &recipient_public,
-        &delivery_id,
-        &sender_label,
-        &recipient_label,
-        &return_public,
-        &file_name,
+        &head.delivery_id,
+        &head.sender_label,
+        &head.recipient_label,
+        &head.return_public,
+        &head.file_name,
         &content_hash,
     )?;
-    let sender_key = private_bridge::signing_public_for_label(conn, &sender_label)?;
-    signing::verify_signature(&sender_key, &preimage, &signature)?;
+    verify_signed_by(conn, &head.sender_label, &preimage, &signature)?;
     Ok(FileLetter {
-        delivery_id,
-        sender_label,
-        recipient_label,
-        return_public,
-        file_name,
+        delivery_id: head.delivery_id,
+        sender_label: head.sender_label,
+        recipient_label: head.recipient_label,
+        return_public: head.return_public,
+        file_name: head.file_name,
         contents,
         content_hash,
     })
@@ -192,23 +186,14 @@ pub fn seal_ack(
 /// Unseal with the sender's encryption secret and check the recipient's
 /// signature against the signing key `conn` has registered for that label.
 pub fn open_ack(conn: &Connection, sender_secret: &[u8; 32], bytes: &[u8]) -> Result<DeliveryAck> {
-    let (kind, return_public, payload) = envelope::open(bytes, sender_secret)?;
-    if kind != envelope::KIND_FILE_DELIVERY_ACK {
-        return Err(Error::InvalidBridgePackage);
-    }
+    let (return_public, payload) =
+        open_kind(bytes, sender_secret, envelope::KIND_FILE_DELIVERY_ACK)?;
     let mut data = payload.as_slice();
     let delivery_id: [u8; 16] = take_array(&mut data)?;
     let recipient_label = utf8(take_len_prefixed(&mut data)?)?;
     let content_hash: [u8; 32] = take_array(&mut data)?;
-    let accepted = match take_u8(&mut data)? {
-        0 => false,
-        1 => true,
-        _ => return Err(Error::InvalidBridgePackage),
-    };
-    let signature: [u8; 64] = take_array(&mut data)?;
-    if !data.is_empty() {
-        return Err(Error::InvalidBridgePackage);
-    }
+    let accepted = take_accepted(&mut data)?;
+    let signature = take_signature(&mut data)?;
     let preimage = ack_preimage(
         &return_public,
         &delivery_id,
@@ -216,8 +201,7 @@ pub fn open_ack(conn: &Connection, sender_secret: &[u8; 32], bytes: &[u8]) -> Re
         &content_hash,
         accepted,
     )?;
-    let recipient_key = private_bridge::signing_public_for_label(conn, &recipient_label)?;
-    signing::verify_signature(&recipient_key, &preimage, &signature)?;
+    verify_signed_by(conn, &recipient_label, &preimage, &signature)?;
     Ok(DeliveryAck {
         delivery_id,
         recipient_label,
@@ -342,11 +326,14 @@ pub fn seal_history_letter(outgoing: &OutgoingHistory<'_>) -> Result<SealedHisto
     let signature = signing::sign(outgoing.sender_signing_secret, &preimage);
 
     let mut plain = Vec::new();
-    plain.extend_from_slice(&delivery_id);
-    push_len_prefixed(&mut plain, outgoing.sender_label.as_bytes())?;
-    push_len_prefixed(&mut plain, outgoing.recipient_label.as_bytes())?;
-    plain.extend_from_slice(outgoing.sender_encryption_public);
-    push_len_prefixed(&mut plain, outgoing.file_name.as_bytes())?;
+    push_head(
+        &mut plain,
+        &delivery_id,
+        outgoing.sender_label,
+        outgoing.recipient_label,
+        outgoing.sender_encryption_public,
+        outgoing.file_name,
+    )?;
     plain.extend_from_slice(&outgoing.file_id);
     plain.extend_from_slice(&outgoing.revision_id);
     plain.extend_from_slice(&outgoing.history_root);
@@ -374,26 +361,23 @@ pub fn open_history_letter(
     recipient_secret: &[u8; 32],
     bytes: &[u8],
 ) -> Result<HistoryLetter> {
-    let (kind, recipient_public, payload) = envelope::open(bytes, recipient_secret)?;
-    if kind != envelope::KIND_FILE_HISTORY {
-        return Err(Error::InvalidBridgePackage);
-    }
+    let (recipient_public, payload) =
+        open_kind(bytes, recipient_secret, envelope::KIND_FILE_HISTORY)?;
     let mut data = payload.as_slice();
-    let delivery_id: [u8; 16] = take_array(&mut data)?;
-    let sender_label = utf8(take_len_prefixed(&mut data)?)?;
-    let recipient_label = utf8(take_len_prefixed(&mut data)?)?;
-    let return_public: [u8; 32] = take_array(&mut data)?;
-    let file_name = utf8(take_len_prefixed(&mut data)?)?;
+    let LetterHead {
+        delivery_id,
+        sender_label,
+        recipient_label,
+        return_public,
+        file_name,
+    } = take_head(&mut data)?;
     let file_id: [u8; 16] = take_array(&mut data)?;
     let revision_id: [u8; 32] = take_array(&mut data)?;
     let history_root: [u8; 32] = take_array(&mut data)?;
     let decision = take_u8(&mut data)?;
     let content_proof: [u8; 32] = take_array(&mut data)?;
     let container = take_len_prefixed_u32(&mut data)?.to_vec();
-    let signature: [u8; 64] = take_array(&mut data)?;
-    if !data.is_empty() {
-        return Err(Error::InvalidBridgePackage);
-    }
+    let signature = take_signature(&mut data)?;
     let container_hash: [u8; 32] = Sha256::digest(&container).into();
     let preimage = history_letter_preimage(&HistoryHeader {
         recipient_public: &recipient_public,
@@ -409,8 +393,7 @@ pub fn open_history_letter(
         content_proof: &content_proof,
         container_hash: &container_hash,
     })?;
-    let sender_key = private_bridge::signing_public_for_label(conn, &sender_label)?;
-    signing::verify_signature(&sender_key, &preimage, &signature)?;
+    verify_signed_by(conn, &sender_label, &preimage, &signature)?;
     Ok(HistoryLetter {
         delivery_id,
         sender_label,
@@ -468,25 +451,16 @@ pub fn open_history_ack(
     sender_secret: &[u8; 32],
     bytes: &[u8],
 ) -> Result<HistoryAck> {
-    let (kind, return_public, payload) = envelope::open(bytes, sender_secret)?;
-    if kind != envelope::KIND_FILE_HISTORY_ACK {
-        return Err(Error::InvalidBridgePackage);
-    }
+    let (return_public, payload) =
+        open_kind(bytes, sender_secret, envelope::KIND_FILE_HISTORY_ACK)?;
     let mut data = payload.as_slice();
     let delivery_id: [u8; 16] = take_array(&mut data)?;
     let recipient_label = utf8(take_len_prefixed(&mut data)?)?;
     let file_id: [u8; 16] = take_array(&mut data)?;
     let revision_id: [u8; 32] = take_array(&mut data)?;
     let container_hash: [u8; 32] = take_array(&mut data)?;
-    let accepted = match take_u8(&mut data)? {
-        0 => false,
-        1 => true,
-        _ => return Err(Error::InvalidBridgePackage),
-    };
-    let signature: [u8; 64] = take_array(&mut data)?;
-    if !data.is_empty() {
-        return Err(Error::InvalidBridgePackage);
-    }
+    let accepted = take_accepted(&mut data)?;
+    let signature = take_signature(&mut data)?;
     let ack = HistoryAck {
         delivery_id,
         recipient_label,
@@ -496,9 +470,241 @@ pub fn open_history_ack(
         accepted,
     };
     let preimage = history_ack_preimage(&ack, &return_public)?;
-    let recipient_key = private_bridge::signing_public_for_label(conn, &ack.recipient_label)?;
-    signing::verify_signature(&recipient_key, &preimage, &signature)?;
+    verify_signed_by(conn, &ack.recipient_label, &preimage, &signature)?;
     Ok(ack)
+}
+
+/// The start every letter kind shares, after the delivery id: who sends,
+/// to whom, where the answer is sealed, and the file's name.
+struct LetterHead {
+    delivery_id: [u8; 16],
+    sender_label: String,
+    recipient_label: String,
+    return_public: [u8; 32],
+    file_name: String,
+}
+
+fn push_head(
+    out: &mut Vec<u8>,
+    delivery_id: &[u8; 16],
+    sender_label: &str,
+    recipient_label: &str,
+    return_public: &[u8; 32],
+    file_name: &str,
+) -> Result<()> {
+    out.extend_from_slice(delivery_id);
+    push_len_prefixed(out, sender_label.as_bytes())?;
+    push_len_prefixed(out, recipient_label.as_bytes())?;
+    out.extend_from_slice(return_public);
+    push_len_prefixed(out, file_name.as_bytes())?;
+    Ok(())
+}
+
+fn take_head(data: &mut &[u8]) -> Result<LetterHead> {
+    Ok(LetterHead {
+        delivery_id: take_array(data)?,
+        sender_label: utf8(take_len_prefixed(data)?)?,
+        recipient_label: utf8(take_len_prefixed(data)?)?,
+        return_public: take_array(data)?,
+        file_name: utf8(take_len_prefixed(data)?)?,
+    })
+}
+
+/// Unseal `bytes` as `kind` with `secret`: the key the envelope was sealed
+/// to, and its plaintext. Any other kind is refused, so the kinds never mix.
+fn open_kind(bytes: &[u8], secret: &[u8; 32], kind: u8) -> Result<([u8; 32], Vec<u8>)> {
+    let (found, sealed_to, payload) = envelope::open(bytes, secret)?;
+    if found != kind {
+        return Err(Error::InvalidBridgePackage);
+    }
+    Ok((sealed_to, payload))
+}
+
+/// The trailing signature, and nothing after it.
+fn take_signature(data: &mut &[u8]) -> Result<[u8; 64]> {
+    let signature: [u8; 64] = take_array(data)?;
+    if !data.is_empty() {
+        return Err(Error::InvalidBridgePackage);
+    }
+    Ok(signature)
+}
+
+/// An answer's accept flag: exactly 0 or 1.
+fn take_accepted(data: &mut &[u8]) -> Result<bool> {
+    match take_u8(data)? {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(Error::InvalidBridgePackage),
+    }
+}
+
+/// Every letter and answer is checked against the signing key *this store*
+/// has registered for the label it claims, never a key it carries.
+fn verify_signed_by(
+    conn: &Connection,
+    label: &str,
+    preimage: &[u8; 32],
+    signature: &[u8; 64],
+) -> Result<()> {
+    let key = private_bridge::signing_public_for_label(conn, label)?;
+    signing::verify_signature(&key, preimage, signature)
+}
+
+/// Whether the key that opened a letter is an active encryption key this
+/// store has registered for the letter's claimed recipient label. The
+/// sender chooses and signs that label, so a letter sealed to one key must
+/// not be recorded as received by another label. Both letter kinds use it.
+pub fn recipient_owns_key(
+    conn: &Connection,
+    recipient_label: &str,
+    opened_with: &[u8; 32],
+) -> Result<bool> {
+    let public = crate::keys::encryption_public_from_secret(opened_with);
+    Ok(
+        crate::keys::active_keys_for(conn, recipient_label, crate::keys::KeyType::Encryption)?
+            .iter()
+            .any(|key| key.public_key.as_slice() == public.as_slice()),
+    )
+}
+
+/// What the sender needs to seal one history snapshot (`KQHS`).
+pub struct OutgoingSnapshot<'a> {
+    pub sender_label: &'a str,
+    pub sender_signing_secret: &'a [u8; 32],
+    pub sender_encryption_public: &'a [u8; 32],
+    pub recipient_label: &'a str,
+    pub recipient_encryption_public: &'a [u8; 32],
+    pub file_name: &'a str,
+    pub file_id: [u8; 16],
+    /// The snapshot's own root and event count, signed in the header.
+    pub history_root: [u8; 32],
+    pub event_count: u32,
+    pub snapshot: &'a [u8],
+}
+
+/// An opened, signature-checked snapshot letter: the sender vouches that
+/// `history_root` was their file's history. Nothing in it is trusted
+/// content; the receiver decodes and compares the snapshot itself.
+pub struct SnapshotLetter {
+    pub delivery_id: [u8; 16],
+    pub sender_label: String,
+    pub recipient_label: String,
+    pub file_name: String,
+    pub file_id: [u8; 16],
+    pub history_root: [u8; 32],
+    pub event_count: u32,
+    pub snapshot: Vec<u8>,
+}
+
+pub fn seal_history_snapshot(outgoing: &OutgoingSnapshot<'_>) -> Result<([u8; 16], Vec<u8>)> {
+    let mut delivery_id = [0u8; 16];
+    OsRng.fill_bytes(&mut delivery_id);
+    let preimage = snapshot_preimage(
+        outgoing.recipient_encryption_public,
+        &delivery_id,
+        outgoing.sender_label,
+        outgoing.recipient_label,
+        outgoing.sender_encryption_public,
+        outgoing.file_name,
+        &outgoing.file_id,
+        &outgoing.history_root,
+        outgoing.event_count,
+        outgoing.snapshot,
+    )?;
+    let signature = signing::sign(outgoing.sender_signing_secret, &preimage);
+    let mut plain = Vec::new();
+    push_head(
+        &mut plain,
+        &delivery_id,
+        outgoing.sender_label,
+        outgoing.recipient_label,
+        outgoing.sender_encryption_public,
+        outgoing.file_name,
+    )?;
+    plain.extend_from_slice(&outgoing.file_id);
+    plain.extend_from_slice(&outgoing.history_root);
+    plain.extend_from_slice(&outgoing.event_count.to_be_bytes());
+    push_len_prefixed_u32(&mut plain, outgoing.snapshot)?;
+    plain.extend_from_slice(&signature);
+    let bytes = envelope::seal(
+        PACKAGE,
+        envelope::KIND_FILE_HISTORY_SNAPSHOT,
+        outgoing.recipient_encryption_public,
+        &plain,
+    )?;
+    Ok((delivery_id, bytes))
+}
+
+/// Unseal a snapshot letter and check the sender's signature against the
+/// signing key `conn` has registered for that label.
+pub fn open_history_snapshot(
+    conn: &Connection,
+    recipient_secret: &[u8; 32],
+    bytes: &[u8],
+) -> Result<SnapshotLetter> {
+    let (recipient_public, payload) = open_kind(
+        bytes,
+        recipient_secret,
+        envelope::KIND_FILE_HISTORY_SNAPSHOT,
+    )?;
+    let mut data = payload.as_slice();
+    let head = take_head(&mut data)?;
+    let file_id: [u8; 16] = take_array(&mut data)?;
+    let history_root: [u8; 32] = take_array(&mut data)?;
+    let event_count = u32::from_be_bytes(take_array(&mut data)?);
+    let snapshot = take_len_prefixed_u32(&mut data)?.to_vec();
+    let signature = take_signature(&mut data)?;
+    let preimage = snapshot_preimage(
+        &recipient_public,
+        &head.delivery_id,
+        &head.sender_label,
+        &head.recipient_label,
+        &head.return_public,
+        &head.file_name,
+        &file_id,
+        &history_root,
+        event_count,
+        &snapshot,
+    )?;
+    verify_signed_by(conn, &head.sender_label, &preimage, &signature)?;
+    Ok(SnapshotLetter {
+        delivery_id: head.delivery_id,
+        sender_label: head.sender_label,
+        recipient_label: head.recipient_label,
+        file_name: head.file_name,
+        file_id,
+        history_root,
+        event_count,
+        snapshot,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn snapshot_preimage(
+    recipient_public: &[u8; 32],
+    delivery_id: &[u8; 16],
+    sender_label: &str,
+    recipient_label: &str,
+    return_public: &[u8; 32],
+    file_name: &str,
+    file_id: &[u8; 16],
+    history_root: &[u8; 32],
+    event_count: u32,
+    snapshot: &[u8],
+) -> Result<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    hasher.update(SNAPSHOT_DOMAIN);
+    hasher.update(recipient_public);
+    hasher.update(delivery_id);
+    hash_len_prefixed(&mut hasher, sender_label.as_bytes())?;
+    hash_len_prefixed(&mut hasher, recipient_label.as_bytes())?;
+    hasher.update(return_public);
+    hash_len_prefixed(&mut hasher, file_name.as_bytes())?;
+    hasher.update(file_id);
+    hasher.update(history_root);
+    hasher.update(event_count.to_be_bytes());
+    hasher.update(Sha256::digest(snapshot));
+    Ok(hasher.finalize().into())
 }
 
 /// How a letter's history compares with what this store has already
