@@ -334,3 +334,42 @@ fn linking_a_copy_moves_the_recording_to_it() {
     assert!(ok(&mut env, "history /work/copy.kqtf").contains("QuorumUnlockAttempted"));
     assert!(!history(&mut env).contains("QuorumUnlockAttempted"));
 }
+
+#[test]
+fn a_reused_password_file_id_is_not_mistaken_for_the_file_that_was_linked() {
+    let mut env = password_gated();
+    ok(&mut env, &format!("link {KQTF} --locked-file 1"));
+    env.store("/home/org/keyquorum.sqlite")
+        .execute(
+            "UPDATE password_locked_files SET expires_at = '2000-01-01 00:00:00' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    let (result, _) = unlock_password(&mut env);
+    assert!(matches!(result, Err(crate::error::Error::FileExpired)));
+    let before = history(&mut env);
+
+    env.fs
+        .write(Path::new("/work/second.txt"), b"unrelated")
+        .unwrap();
+    let (result, out) = env.keyquorum(&format!(
+        "keyquorum {DB} access password --state 0 --source /work/second.txt \
+         --encrypted-path /work/second.kqenc"
+    ));
+    assert!(result.is_ok(), "{out}");
+    let id: i64 = env
+        .store("/home/org/keyquorum.sqlite")
+        .query_row("SELECT id FROM password_locked_files", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(id, 1, "the id was reused");
+    let (result, out) = unlock_password(&mut env);
+    assert!(result.is_ok(), "{out}");
+    assert_eq!(
+        history(&mut env),
+        before,
+        "the new file wrote into the old history"
+    );
+    // Linking the tracked file to the new file is a fresh link, not "Already linked".
+    let out = ok(&mut env, &format!("link {KQTF} --locked-file 1"));
+    assert!(out.contains("Linked password file 1"), "{out}");
+}
