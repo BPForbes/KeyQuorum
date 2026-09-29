@@ -826,7 +826,7 @@ fn countersign(
     let secret = signing_secret(slot, key_file)?;
     let (identity, at) = (identity_for(conn, as_label)?, utc_instant()?);
     let generation = generation_for(conn, &policy_of(&file)?.scope_root)?;
-    file.countersign_revision(&target, identity, as_label, &secret)
+    file.countersign_revision_checked(&target, identity, as_label, &secret, &StoreTrust { conn })
         .map_err(|_| usage("the author must sign first, and you can countersign only once"))?;
     let author = file
         .graph()

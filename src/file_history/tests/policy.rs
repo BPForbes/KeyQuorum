@@ -496,3 +496,155 @@ fn a_bogus_content_proof_cannot_shadow_the_authors() {
     // A container carrying a non-author content proof does not decode.
     assert!(TrackedFile::decode(&file.encode_unchecked().unwrap()).is_err());
 }
+
+fn import_context() -> crate::file_history::ImportContext {
+    crate::file_history::ImportContext {
+        actor_identity: Some(ident(9)),
+        actor_label: "M.A".to_string(),
+        occurred_at: "2026-10-06T00:00:00Z".to_string(),
+        topology_generation: GEN,
+    }
+}
+
+/// A copy of `file` where the revision's author slot holds a forgery: a
+/// well-formed proof signed with the wrong secret.
+fn forged_copy(file: &TrackedFile, id: &[u8; 32], label: &str, who: u8) -> TrackedFile {
+    let mut copy = file.clone();
+    copy.sign_revision(id, ident(who), label, &secret(99))
+        .unwrap();
+    copy
+}
+
+#[test]
+fn an_imported_forgery_does_not_keep_the_real_author_out() {
+    let (mut local, id) = one("M.A", 2);
+    let remote = forged_copy(&local, &id, "M.A", 2);
+    let merged = local.merge_history(&remote, &import_context()).unwrap();
+    assert_eq!(merged.proofs_added, 1);
+    assert_eq!(
+        state(&local, &id, &Ctx::new()),
+        Denied(R::InvalidContentSignature)
+    );
+    // The author can still sign, and the revision is trusted.
+    local
+        .sign_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    assert_eq!(local.proofs().len(), 2);
+    assert_eq!(state(&local, &id, &Ctx::new()), Trusted);
+    // Signing the same thing again is still refused.
+    assert!(local
+        .sign_revision(&id, ident(2), "M.A", &secret(2))
+        .is_err());
+    // The result survives an encode round trip.
+    assert_eq!(
+        TrackedFile::decode(&local.encode().unwrap()).unwrap(),
+        local
+    );
+}
+
+#[test]
+fn an_imported_forgery_does_not_displace_a_real_proof() {
+    let (mut local, id) = one("M.A", 2);
+    local
+        .sign_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    let mut remote = one("M.A", 2).0;
+    remote
+        .sign_revision(&id, ident(2), "M.A", &secret(99))
+        .unwrap();
+    local.merge_history(&remote, &import_context()).unwrap();
+    assert_eq!(local.proofs().len(), 2);
+    assert_eq!(state(&local, &id, &Ctx::new()), Trusted);
+}
+
+#[test]
+fn a_real_proof_imported_after_a_forgery_is_trusted() {
+    let (mut local, id) = one("M.A", 2);
+    let forged = forged_copy(&local, &id, "M.A", 2);
+    local.merge_history(&forged, &import_context()).unwrap();
+    let mut real = one("M.A", 2).0;
+    real.sign_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    local.merge_history(&real, &import_context()).unwrap();
+    assert_eq!(state(&local, &id, &Ctx::new()), Trusted);
+}
+
+#[test]
+fn an_unknown_key_forgery_cannot_poison_a_later_registration() {
+    let (mut local, id) = one("M.A", 2);
+    let forged = forged_copy(&local, &id, "M.A", 2);
+    local.merge_history(&forged, &import_context()).unwrap();
+    local
+        .sign_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    let mut no_keys = Ctx::new();
+    no_keys.keys.retain(|(_, l)| *l != "M.A");
+    assert_eq!(state(&local, &id, &no_keys), Denied(R::UnknownSigner));
+    assert_eq!(state(&local, &id, &Ctx::new()), Trusted);
+}
+
+#[test]
+fn an_imported_forged_countersignature_does_not_block_the_real_one() {
+    let (mut local, id) = one("M.A.1", 3);
+    local
+        .sign_revision(&id, ident(3), "M.A.1", &secret(3))
+        .unwrap();
+    let mut remote = local.clone();
+    remote
+        .countersign_revision(&id, ident(2), "M.A", &secret(99))
+        .unwrap();
+    local.merge_history(&remote, &import_context()).unwrap();
+    assert_eq!(
+        state(&local, &id, &Ctx::new()),
+        Denied(R::InvalidCountersignature)
+    );
+    local
+        .countersign_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    assert_eq!(state(&local, &id, &Ctx::new()), Trusted);
+    // A countersigner with keys backs the verifying author proof even when
+    // a forged author proof comes first.
+    let (mut file, id) = one("M.A.1", 3);
+    file.sign_revision(&id, ident(3), "M.A.1", &secret(99))
+        .unwrap();
+    file.sign_revision(&id, ident(3), "M.A.1", &secret(3))
+        .unwrap();
+    file.countersign_revision_checked(&id, ident(2), "M.A", &secret(2), &Ctx::new())
+        .unwrap();
+    assert_eq!(state(&file, &id, &Ctx::new()), Trusted);
+}
+
+#[test]
+fn competing_proofs_per_slot_are_bounded() {
+    use crate::file_history::proof::MAX_PROOFS_PER_SLOT;
+    let (local, id) = one("M.A", 2);
+    let mut crowded = local.clone();
+    for n in 0..(MAX_PROOFS_PER_SLOT as u8 + 5) {
+        crowded
+            .sign_revision(&id, ident(2), "M.A", &secret(50 + n))
+            .unwrap();
+    }
+    // Local signing evicts the oldest instead of growing.
+    assert_eq!(crowded.proofs().len(), MAX_PROOFS_PER_SLOT);
+    // An import into a full slot adds nothing.
+    let mut more = local.clone();
+    more.sign_revision(&id, ident(2), "M.A", &secret(200))
+        .unwrap();
+    let merged = crowded.merge_history(&more, &import_context()).unwrap();
+    assert_eq!(merged.proofs_added, 0);
+    assert_eq!(crowded.proofs().len(), MAX_PROOFS_PER_SLOT);
+    // The real author can still get in.
+    crowded
+        .sign_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    assert_eq!(crowded.proofs().len(), MAX_PROOFS_PER_SLOT);
+    assert_eq!(state(&crowded, &id, &Ctx::new()), Trusted);
+    // A container over the cap is not structurally valid.
+    let mut over = crowded.clone();
+    let extra = over.proofs[0].clone();
+    over.proofs.push(RevisionProof {
+        signature: [7; 64],
+        ..extra
+    });
+    assert!(over.encode().is_err() || TrackedFile::decode(&over.encode().unwrap()).is_err());
+}

@@ -7,10 +7,16 @@ use super::codec::{
     push_opt_array, push_str, push_u64, take_fixed, take_opt_array, take_str, take_u64,
 };
 use super::container::TrackedFile;
+use super::policy::{BridgeEvidence, TrustContext};
 use super::revision::FileRevision;
 use crate::error::{Error, Result};
 use crate::signing;
 use sha2::{Digest, Sha256};
+
+/// Most proofs kept for one (revision, kind, signer label) slot. Proofs are
+/// unauthenticated until policy checks them against a key, so an import may
+/// carry several competing ones for a slot; this bounds that growth.
+pub const MAX_PROOFS_PER_SLOT: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -43,6 +49,13 @@ pub struct RevisionProof {
 }
 
 impl RevisionProof {
+    /// True when both proofs occupy the same (revision, kind, label) slot.
+    pub(super) fn same_slot(&self, other: &RevisionProof) -> bool {
+        self.revision_id == other.revision_id
+            && self.kind == other.kind
+            && self.signer_label == other.signer_label
+    }
+
     pub fn signature_hash(&self) -> [u8; 32] {
         Sha256::digest(self.signature).into()
     }
@@ -116,6 +129,30 @@ impl TrackedFile {
             .filter(move |proof| &proof.revision_id == revision_id && proof.kind == kind)
     }
 
+    /// Add a proof unless the identical one (same slot, same signature)
+    /// is already held. A slot holds competing proofs, because an imported
+    /// proof cannot be told from a forgery without the signer's key; policy
+    /// accepts the slot if any of them verifies. When the slot is full the
+    /// oldest proof in it is dropped, so a local signer can always add
+    /// their own. Returns false when the proof was already present.
+    pub(super) fn add_proof(&mut self, proof: RevisionProof) -> bool {
+        if self
+            .proofs
+            .iter()
+            .any(|mine| mine.same_slot(&proof) && mine.signature == proof.signature)
+        {
+            return false;
+        }
+        let in_slot = |p: &RevisionProof| p.same_slot(&proof);
+        while self.proofs.iter().filter(|p| in_slot(p)).count() >= MAX_PROOFS_PER_SLOT {
+            if let Some(oldest) = self.proofs.iter().position(in_slot) {
+                self.proofs.remove(oldest);
+            }
+        }
+        self.proofs.push(proof);
+        true
+    }
+
     /// Content-sign a revision as its author. The proof binds the
     /// revision's own topology generation and policy hash, so it cannot be
     /// replayed under different ones. The signature is not checked here;
@@ -134,10 +171,6 @@ impl TrackedFile {
         let revision = &revision.revision;
         if revision.author_identity != Some(signer_identity)
             || revision.author_hcp_label != signer_label
-            || self
-                .proofs_for(revision_id, ProofKind::Content)
-                .next()
-                .is_some()
         {
             return Err(Error::InvalidTrackedFile);
         }
@@ -152,19 +185,55 @@ impl TrackedFile {
             signature: [0; 64],
         };
         proof.signature = signing::sign(secret, &proof.preimage(revision)?);
-        self.proofs.push(proof);
-        Ok(())
+        // Only an equivalent proof (same signature) blocks; a competing
+        // one that does not verify must never keep the author out.
+        if self.add_proof(proof) {
+            Ok(())
+        } else {
+            Err(Error::InvalidTrackedFile)
+        }
     }
 
-    /// Countersign a revision the author has already signed. Backs that
-    /// exact author signature. Whether this signer is an acceptable
-    /// supervisor is a policy question, not decided here.
+    /// Countersign a revision the author has already signed, backing the
+    /// first content proof (no keys are consulted; use
+    /// `countersign_revision_checked` to back one that verifies). Whether
+    /// this signer is an acceptable supervisor is a policy question.
     pub fn countersign_revision(
         &mut self,
         revision_id: &[u8; 32],
         supervisor_identity: [u8; 16],
         supervisor_label: &str,
         secret: &[u8; 32],
+    ) -> Result<()> {
+        struct NoKeys;
+        impl TrustContext for NoKeys {
+            fn signing_public(&self, _: &[u8; 16], _: &str) -> Option<[u8; 32]> {
+                None
+            }
+            fn bridge_evidence(&self, _: &[u8; 32]) -> BridgeEvidence {
+                BridgeEvidence::None
+            }
+        }
+        self.countersign_revision_checked(
+            revision_id,
+            supervisor_identity,
+            supervisor_label,
+            secret,
+            &NoKeys,
+        )
+    }
+
+    /// Like `countersign_revision`, but when the author slot holds several
+    /// competing proofs, backs the one that verifies under `ctx` (falling
+    /// back to the first when none does or the key is unknown). Refuses
+    /// only when an identical countersignature is already present.
+    pub fn countersign_revision_checked(
+        &mut self,
+        revision_id: &[u8; 32],
+        supervisor_identity: [u8; 16],
+        supervisor_label: &str,
+        secret: &[u8; 32],
+        ctx: &dyn TrustContext,
     ) -> Result<()> {
         let revision = self
             .graph()
@@ -173,15 +242,10 @@ impl TrackedFile {
         let revision = &revision.revision;
         let author_hash = self
             .proofs_for(revision_id, ProofKind::Content)
-            .next()
+            .find(|proof| super::policy::proof_verifies(revision, proof, ctx))
+            .or_else(|| self.proofs_for(revision_id, ProofKind::Content).next())
             .map(RevisionProof::signature_hash)
             .ok_or(Error::InvalidTrackedFile)?;
-        if self
-            .proofs_for(revision_id, ProofKind::Countersignature)
-            .any(|proof| proof.signer_label == supervisor_label)
-        {
-            return Err(Error::InvalidTrackedFile);
-        }
         let mut proof = RevisionProof {
             revision_id: *revision_id,
             kind: ProofKind::Countersignature,
@@ -193,7 +257,10 @@ impl TrackedFile {
             signature: [0; 64],
         };
         proof.signature = signing::sign(secret, &proof.preimage(revision)?);
-        self.proofs.push(proof);
-        Ok(())
+        if self.add_proof(proof) {
+            Ok(())
+        } else {
+            Err(Error::InvalidTrackedFile)
+        }
     }
 }

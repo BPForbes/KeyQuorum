@@ -1174,3 +1174,28 @@ fn a_recipient_that_cannot_trust_the_revision_refuses_it_and_says_so() {
     );
     assert!(out.contains("rejected by M.B"), "{out}");
 }
+
+#[test]
+fn an_imported_forged_signature_does_not_stop_the_author_signing() {
+    use crate::file_history::TrackedFile;
+    let mut env = org();
+    two_copies(&mut env);
+    checkin_unsigned(&mut env, COPY, "a\nB\nc\n");
+    // Someone signs the shared unsigned revision with an arbitrary secret.
+    let mut copy = TrackedFile::decode(&env.fs.read(Path::new(COPY)).unwrap()).unwrap();
+    let head = copy.graph().heads()[0];
+    let author = copy.graph().get(&head).unwrap().revision.author_identity;
+    copy.sign_revision(&head, author.unwrap(), "M.A", &[99; 32])
+        .unwrap();
+    env.fs
+        .write(Path::new(COPY), &copy.encode().unwrap())
+        .unwrap();
+
+    let out = ok(&mut env, &format!("import {KQTF} --from {COPY} --as M.A"));
+    assert!(out.contains("1 proof(s) added"), "{out}");
+    let out = ok(
+        &mut env,
+        &format!("sign {KQTF} --as M.A --slot {}", slot("M.A")),
+    );
+    assert!(out.contains("trust TRUSTED"), "{out}");
+}

@@ -199,6 +199,16 @@ fn check_signature(
     Some(ok)
 }
 
+/// Whether `proof` is bound to `revision` and its signature verifies under
+/// a key `ctx` knows. Unknown keys and bad signatures both read as false.
+pub(super) fn proof_verifies(
+    revision: &FileRevision,
+    proof: &RevisionProof,
+    ctx: &dyn TrustContext,
+) -> bool {
+    bound_to(revision, proof) && check_signature(revision, proof, ctx) == Some(true)
+}
+
 fn bound_to(revision: &FileRevision, proof: &RevisionProof) -> bool {
     proof.topology_generation == revision.topology_generation
         && proof.policy_hash == revision.policy_hash
@@ -229,25 +239,31 @@ pub fn evaluate_revision_trust(
         return Ok(Denied(R::RoleForbidden));
     }
 
-    // Only the author's own content proof counts; a proof from anyone else
-    // is ignored rather than allowed to shadow it.
-    let Some(content) = file
+    // Only the author's own content proofs count; a proof from anyone else
+    // is ignored rather than allowed to shadow it. A slot may hold several
+    // competing proofs (an import can carry one that does not verify); the
+    // revision stands if any of them does.
+    let mut candidates = file
         .proofs_for(revision_id, ProofKind::Content)
-        .find(|proof| {
+        .filter(|proof| {
             proof.signer_label == revision.author_hcp_label
                 && Some(proof.signer_identity) == revision.author_identity
-        })
-    else {
+        });
+    let Some(first) = candidates.next() else {
         return Ok(Pending(R::MissingContentSignature));
     };
-    if !bound_to(revision, content) {
-        return Ok(Denied(R::GenerationMismatch));
-    }
-    match check_signature(revision, content, ctx) {
-        None => return Ok(Denied(R::UnknownSigner)),
-        Some(false) => return Ok(Denied(R::InvalidContentSignature)),
-        Some(true) => {}
-    }
+    let content = std::iter::once(first)
+        .chain(candidates)
+        .find(|proof| proof_verifies(revision, proof, ctx));
+    let Some(content) = content else {
+        if !bound_to(revision, first) {
+            return Ok(Denied(R::GenerationMismatch));
+        }
+        return Ok(match check_signature(revision, first, ctx) {
+            None => Denied(R::UnknownSigner),
+            _ => Denied(R::InvalidContentSignature),
+        });
+    };
 
     // Which supervisor label may back this revision, if the role needs one.
     let (supervisor, missing) = match requirement {
@@ -266,24 +282,31 @@ pub fn evaluate_revision_trust(
             )
         }
     };
-    let counter = supervisor.and_then(|label| {
-        file.proofs_for(revision_id, ProofKind::Countersignature)
-            .find(|proof| proof.signer_label == label)
-    });
-    let Some(counter) = counter else {
+    let counters: Vec<&RevisionProof> = supervisor
+        .into_iter()
+        .flat_map(|label| {
+            file.proofs_for(revision_id, ProofKind::Countersignature)
+                .filter(move |proof| proof.signer_label == label)
+        })
+        .collect();
+    let Some(&first) = counters.first() else {
         return Ok(Pending(missing));
     };
-    if !bound_to(revision, counter) {
-        return Ok(Denied(R::GenerationMismatch));
+    let author_hash = content.signature_hash();
+    if counters.iter().any(|proof| {
+        proof.author_signature_hash == Some(author_hash) && proof_verifies(revision, proof, ctx)
+    }) {
+        return Ok(Trusted);
     }
-    if counter.author_signature_hash != Some(content.signature_hash()) {
-        return Ok(Denied(R::InvalidCountersignature));
-    }
-    Ok(match check_signature(revision, counter, ctx) {
-        None => Denied(R::UnknownSigner),
-        Some(false) => Denied(R::InvalidCountersignature),
-        Some(true) => Trusted,
-    })
+    Ok(Denied(if !bound_to(revision, first) {
+        R::GenerationMismatch
+    } else if first.author_signature_hash != Some(author_hash) {
+        R::InvalidCountersignature
+    } else if check_signature(revision, first, ctx).is_none() {
+        R::UnknownSigner
+    } else {
+        R::InvalidCountersignature
+    }))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -4,7 +4,7 @@
 
 use super::container::TrackedFile;
 use super::event::verify_chain;
-use super::proof::ProofKind;
+use super::proof::{ProofKind, MAX_PROOFS_PER_SLOT};
 use super::revision::content_commitment;
 use crate::error::{Error, Result};
 
@@ -17,7 +17,7 @@ use crate::error::{Error, Result};
 /// - only the first revision is a root;
 /// - each revision's content commitment matches the payload stored with it;
 /// - each proof names a known revision, is well formed for its kind (a
-///   content proof must come from the revision's author), and no signer proves the same revision twice in the same role;
+///   content proof must come from the revision's author), and a slot (revision, role, signer label) holds no repeated signature and at most `MAX_PROOFS_PER_SLOT` proofs;
 /// - each event's revision (when present) exists.
 pub(super) fn verify_structure(file: &TrackedFile) -> Result<[u8; 32]> {
     let mut seen: Vec<[u8; 32]> = Vec::new();
@@ -58,12 +58,16 @@ pub(super) fn verify_structure(file: &TrackedFile) -> Result<[u8; 32]> {
             }
             ProofKind::Countersignature => proof.author_signature_hash.is_some(),
         };
-        let duplicate = file.proofs[..index].iter().any(|earlier| {
-            earlier.revision_id == proof.revision_id
-                && earlier.kind == proof.kind
-                && earlier.signer_label == proof.signer_label
-        });
-        if !well_formed || duplicate {
+        // A slot may hold competing proofs (an unverified import must not
+        // block the real one), but never the same signature twice and never
+        // more than `MAX_PROOFS_PER_SLOT`.
+        let earlier_in_slot = file.proofs[..index]
+            .iter()
+            .filter(|earlier| earlier.same_slot(proof));
+        let duplicate = earlier_in_slot
+            .clone()
+            .any(|earlier| earlier.signature == proof.signature);
+        if !well_formed || duplicate || earlier_in_slot.count() >= MAX_PROOFS_PER_SLOT {
             return Err(Error::InvalidTrackedFile);
         }
     }
