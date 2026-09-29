@@ -12,7 +12,7 @@ use super::env::{self, errln, outln};
 use super::{open_slot_secrets, read_key_array_32, usage};
 use crate::error::{Error, Result};
 use crate::file_history::{
-    diff_text, evaluate_revision_trust, select_shareable_revision, verify_tracked_file,
+    diff_text, evaluate_revision_trust, index, select_shareable_revision, verify_tracked_file,
     AutoMergeOutcome, BridgeEvidence, ChangeKind, DeliveryDecisionKind, EventDetails, FilePolicy,
     HistoryEvent, HistoryEventType, HistoryOutcome, MergeBase, NewEvent, NewRevision,
     ResolverSelection, TrackedFile, TrustContext, TrustReason, TrustState,
@@ -138,6 +138,17 @@ pub enum FileCommand {
         #[arg(long, conflicts_with = "revision")]
         shareable: bool,
     },
+    /// List the tracked files this store has indexed (a cache; see `reindex`)
+    List,
+    /// Rebuild index rows from tracked files. Every file is verified first;
+    /// if any fails, nothing changes. `--clear` also drops rows for files
+    /// not named here.
+    Reindex {
+        #[arg(required = true)]
+        kqtf: Vec<PathBuf>,
+        #[arg(long)]
+        clear: bool,
+    },
     /// Show the heads, their trust, and what would be shared
     Status { kqtf: PathBuf },
     /// List the recorded events
@@ -214,6 +225,8 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             revision,
             shareable,
         } => checkout(conn, &kqtf, &out, revision, shareable),
+        FileCommand::List => list(conn),
+        FileCommand::Reindex { kqtf, clear } => reindex(conn, &kqtf, clear),
         FileCommand::Status { kqtf } => status(conn, &kqtf),
         FileCommand::History { kqtf } => history(&kqtf),
         FileCommand::Verify { kqtf } => verify(conn, &kqtf),
@@ -506,6 +519,7 @@ fn track(
     )?;
     refuse_if_denied(state, as_label)?;
     env::write_new(&out, &file.encode()?)?;
+    index_after(conn, &file);
     let stored = file.graph().get(&revision).expect("just checked in");
     outln!("Tracking {name} as {}", hex::encode(file_id));
     outln!("  revision {}", stored.revision.generated_label);
@@ -580,6 +594,7 @@ fn checkin(
     )?;
     refuse_if_denied(state, as_label)?;
     save(kqtf, &file)?;
+    index_after(conn, &file);
     let stored = file.graph().get(&revision).expect("just checked in");
     outln!("Checked in {}", stored.revision.generated_label);
     outln!("  id    {}", short(&revision));
@@ -618,6 +633,7 @@ fn sign(
     let state = decide(conn, &mut file, target, &at, identity, as_label, generation)?;
     refuse_if_denied(state, as_label)?;
     save(kqtf, &file)?;
+    index_after(conn, &file);
     outln!("Signed {} as {as_label}", short(&target));
     outln!("  trust {}", trust_text(state));
     Ok(())
@@ -658,6 +674,7 @@ fn countersign(
     // only invalid evidence stops the write.
     refuse_if_denied(state, as_label)?;
     save(kqtf, &file)?;
+    index_after(conn, &file);
     outln!("Countersigned {} as {as_label}", short(&target));
     outln!("  trust {}", trust_text(state));
     Ok(())
@@ -828,6 +845,7 @@ fn merge(conn: &Connection, kqtf: &Path, as_label: &str, user_label: Option<Stri
     let ctx = StoreTrust { conn };
     let result = file.resolve_divergence(&left, &right, true, new, &policy, &ctx)?;
     save(kqtf, &file)?;
+    index_after(conn, &file);
     outln!(
         "Automatic merge: {:?} ({})",
         result.auto.outcome,
@@ -998,5 +1016,48 @@ fn checkout(
         short(&id),
         out.display()
     );
+    Ok(())
+}
+
+/// Refresh this file's index rows. The index is only a cache, so a failure
+/// is reported but never fails the command that already wrote the file.
+fn index_after(conn: &Connection, file: &TrackedFile) {
+    if let Err(error) = index::record(conn, file) {
+        errln!("Warning: could not update the file index: {error}");
+    }
+}
+
+fn list(conn: &Connection) -> Result<()> {
+    let files = index::list(conn)?;
+    if files.is_empty() {
+        outln!("No tracked files are indexed. (`keyquorum file reindex <file>.kqtf` adds them.)");
+    }
+    for file in files {
+        outln!("{} ({})", file.logical_name, hex::encode(file.file_id));
+        outln!(
+            "  scope {} · heads {} · events {} · root {}",
+            file.scope_root.as_deref().unwrap_or("-"),
+            file.head_count,
+            file.event_count,
+            hex::encode(&file.history_root[..6])
+        );
+    }
+    Ok(())
+}
+
+fn reindex(conn: &Connection, paths: &[PathBuf], clear: bool) -> Result<()> {
+    // Decoding verifies each container; nothing is indexed unless all pass.
+    let files = paths
+        .iter()
+        .map(|path| load(path))
+        .collect::<Result<Vec<_>>>()?;
+    if clear {
+        index::rebuild(conn, &files)?;
+    } else {
+        for file in &files {
+            index::record(conn, file)?;
+        }
+    }
+    outln!("Indexed {} file(s)", files.len());
     Ok(())
 }

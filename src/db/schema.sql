@@ -418,3 +418,40 @@ CREATE TABLE IF NOT EXISTS transfer_audit (
     detail                TEXT NOT NULL,
     created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+
+-- A rebuildable cache over `.kqtf` tracked files. The container is the
+-- authority for identity, revisions and history; these rows only make them
+-- listable and can be dropped and rebuilt from the containers at any time.
+-- They hold metadata only: never payload bytes, and no trust state (that
+-- depends on keys and changes).
+CREATE TABLE IF NOT EXISTS tracked_files (
+    file_id      BLOB PRIMARY KEY CHECK (length(file_id) = 16),
+    logical_name TEXT NOT NULL,
+    scope_root   TEXT,
+    history_root BLOB NOT NULL CHECK (length(history_root) = 32),
+    head_count   INTEGER NOT NULL CHECK (head_count >= 0),
+    event_count  INTEGER NOT NULL CHECK (event_count >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS tracked_revisions (
+    revision_id     BLOB PRIMARY KEY CHECK (length(revision_id) = 32),
+    file_id         BLOB NOT NULL REFERENCES tracked_files(file_id) ON DELETE CASCADE,
+    ordinal         INTEGER NOT NULL CHECK (ordinal >= 0),
+    parent_ids      BLOB NOT NULL,
+    generated_label TEXT NOT NULL,
+    user_label      TEXT,
+    author_label    TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    is_head         INTEGER NOT NULL CHECK (is_head IN (0, 1))
+);
+
+CREATE TABLE IF NOT EXISTS tracked_history_index (
+    file_id     BLOB NOT NULL REFERENCES tracked_files(file_id) ON DELETE CASCADE,
+    sequence    INTEGER NOT NULL CHECK (sequence >= 0),
+    event_type  TEXT NOT NULL,
+    outcome     TEXT NOT NULL,
+    revision_id BLOB,
+    actor_label TEXT,
+    occurred_at TEXT NOT NULL,
+    PRIMARY KEY (file_id, sequence)
+);

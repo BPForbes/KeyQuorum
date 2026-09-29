@@ -552,3 +552,88 @@ fn checkout_writes_the_shareable_revision_and_never_overwrites() {
     assert!(result.unwrap_err().to_string().contains("forked"));
     assert!(!env.fs.exists(Path::new("/work/x.txt")));
 }
+
+// ---- the index -------------------------------------------------------------
+
+fn wipe_index(env: &MemoryEnv) {
+    let conn = env.store("/home/org/keyquorum.sqlite");
+    conn.execute("DELETE FROM tracked_files", []).unwrap();
+}
+
+#[test]
+fn commands_keep_the_index_current_and_reindex_restores_it() {
+    let mut env = org();
+    assert!(ok(&mut env, "list").contains("No tracked files are indexed"));
+    track(&mut env, "M.A", "M.A");
+    let listed = ok(&mut env, "list");
+    assert!(listed.contains("report.txt ("), "{listed}");
+    assert!(
+        listed.contains("scope M.A · heads 1 · events 3"),
+        "{listed}"
+    );
+
+    edit(&mut env, "totals: 125\n");
+    ok(
+        &mut env,
+        &format!("checkin {KQTF} --from /work/edited.txt --as M.A --unsigned"),
+    );
+    let after = ok(&mut env, "list");
+    assert!(after.contains("heads 1 · events 5"), "{after}");
+
+    // The index is only a cache: losing it changes nothing about the file.
+    wipe_index(&env);
+    assert!(ok(&mut env, "list").contains("No tracked files are indexed"));
+    let out = ok(&mut env, &format!("reindex {KQTF}"));
+    assert!(out.contains("Indexed 1 file(s)"), "{out}");
+    assert_eq!(ok(&mut env, "list"), after);
+    // Reindexing twice does not duplicate anything.
+    ok(&mut env, &format!("reindex {KQTF}"));
+    assert_eq!(ok(&mut env, "list"), after);
+}
+
+#[test]
+fn reindex_verifies_first_and_changes_nothing_on_failure() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    let before = ok(&mut env, "list");
+    let path = Path::new(KQTF);
+    let mut bytes = env.fs.read(path).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    env.fs.write(Path::new("/work/bad.kqtf"), &bytes).unwrap();
+    let (result, _) = run(&mut env, &format!("reindex {KQTF} /work/bad.kqtf --clear"));
+    assert!(result.is_err());
+    assert_eq!(ok(&mut env, "list"), before, "nothing was touched");
+}
+
+#[test]
+fn reindex_clear_drops_rows_for_files_not_named() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    env.store("/home/org/keyquorum.sqlite")
+        .execute(
+            "INSERT INTO tracked_files
+                 (file_id, logical_name, scope_root, history_root, head_count, event_count)
+             VALUES (?1, 'stale.txt', NULL, ?2, 1, 1)",
+            rusqlite::params![vec![9u8; 16], vec![0u8; 32]],
+        )
+        .unwrap();
+    assert!(ok(&mut env, "list").contains("stale.txt"));
+    ok(&mut env, &format!("reindex {KQTF}"));
+    assert!(
+        ok(&mut env, "list").contains("stale.txt"),
+        "without --clear it stays"
+    );
+    ok(&mut env, &format!("reindex {KQTF} --clear"));
+    let listed = ok(&mut env, "list");
+    assert!(!listed.contains("stale.txt"), "{listed}");
+    assert!(listed.contains("report.txt"));
+}
+
+#[test]
+fn a_forked_file_is_indexed_with_both_heads() {
+    let mut env = org();
+    forked(&mut env, "a\nb\n", "A\nb\n", "a\nB\n");
+    ok(&mut env, &format!("reindex {KQTF}"));
+    assert!(ok(&mut env, "list").contains("heads 2"));
+}

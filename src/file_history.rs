@@ -15,6 +15,7 @@
 mod codec;
 mod container;
 mod event;
+pub mod index;
 mod merge;
 mod policy;
 mod proof;

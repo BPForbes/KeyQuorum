@@ -165,6 +165,10 @@ carries its own policy; the store only supplies signing keys, through
 `StoreTrust`, which accepts a key only for the identity the store knows for
 that label (the enrolled identity from `transfer`, else one derived from the
 label). Containers are replaced by writing a sibling and renaming.
+`file_history/index.rs` keeps `tracked_files`, `tracked_revisions` and
+`tracked_history_index` as a rebuildable cache over `.kqtf` files: metadata
+only, no payload and no trust state, and `file reindex` restores it from the
+containers, which remain the authority.
 
 `src/lab/` (feature `lab`) is KeyQuorum Lab, the public browser
 demonstration published from `lab/` to GitHub Pages and embedded by
