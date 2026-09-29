@@ -342,3 +342,16 @@ fn decision_codes_round_trip_and_reject_unknown() {
     assert_eq!(K::from_code(0), None);
     assert_eq!(K::from_code(5), None);
 }
+
+#[test]
+fn an_extract_stops_at_an_event_that_names_no_revision() {
+    let (mut file, base) = base_copy();
+    // An import (no revision) can describe newer revisions, so nothing at
+    // or after it is sent, even though later events name a kept revision.
+    file.append(new_event(HistoryEventType::HistoryImported, None))
+        .unwrap();
+    file.append(new_event(HistoryEventType::RevisionSigned, Some(base)))
+        .unwrap();
+    let extract = file.extract_revision(&base).unwrap();
+    assert_eq!(extract.events().len(), 1);
+}

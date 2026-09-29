@@ -1087,6 +1087,17 @@ fn receive(
 ) -> Result<()> {
     let bytes = env::read(letter_path)?;
     let letter = file_delivery::open_history_letter(conn, &secrets.encryption, &bytes)?;
+    // The letter's header is only a claim about the container.
+    let mut incoming = TrackedFile::decode(&letter.container)
+        .map_err(|_| usage("the delivered container does not verify"))?;
+    if incoming.file_id != letter.file_id
+        || incoming.history_root() != letter.history_root
+        || incoming.logical_name != letter.file_name
+        || incoming.graph().get(&letter.revision_id).is_none()
+        || DeliveryDecisionKind::from_code(letter.decision).is_none()
+    {
+        return Err(usage("the letter does not match the container it carries"));
+    }
     errln!(
         "From {} to {}: {} revision {}, sender signature verified",
         letter.sender_label,
@@ -1094,16 +1105,6 @@ fn receive(
         letter.file_name,
         short(&letter.revision_id)
     );
-    // The letter's header is only a claim about the container.
-    let mut incoming = TrackedFile::decode(&letter.container)
-        .map_err(|_| usage("the delivered container does not verify"))?;
-    if incoming.file_id != letter.file_id
-        || incoming.history_root() != letter.history_root
-        || incoming.graph().get(&letter.revision_id).is_none()
-        || DeliveryDecisionKind::from_code(letter.decision).is_none()
-    {
-        return Err(usage("the letter does not match the container it carries"));
-    }
     let policy = policy_of(&incoming)?.clone();
     let state = evaluate_revision_trust(
         &incoming,
@@ -1199,24 +1200,21 @@ fn record_ack(
             .iter()
             .any(|(k, v)| k == key && *v == delivery)
     };
+    let answered = file.events().iter().any(|e| has(e, "answers"));
     let sent = file
         .events()
         .iter()
         .find(|e| e.event_type == HistoryEventType::ShareAttempted && has(e, "delivery_id"))
         .cloned()
         .filter(|e| {
+            let entries = e.details.entries();
             file.file_id == ack.file_id
                 && e.revision_id == Some(ack.revision_id)
-                && e.details
-                    .entries()
-                    .contains(&("container_hash".into(), hex::encode(ack.container_hash)))
+                && entries.contains(&("container_hash".into(), hex::encode(ack.container_hash)))
+                && entries.contains(&("to".into(), ack.recipient_label.clone()))
         })
         .ok_or_else(|| usage("that acknowledgement does not answer any delivery from this file"))?;
-    if file
-        .events()
-        .iter()
-        .any(|e| e.event_type != HistoryEventType::ShareAttempted && has(e, "answers"))
-    {
+    if answered {
         outln!("Delivery {delivery} was already recorded.");
         return Ok(());
     }

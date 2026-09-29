@@ -50,8 +50,9 @@ pub struct ImportContext {
 
 impl TrackedFile {
     /// A copy holding only `revision_id`, its ancestors, their proofs, and
-    /// the events recorded before the first one that mentions any other
-    /// revision. This is what a sender delivers when a newer revision is
+    /// the events recorded before the first one that does not name a kept
+    /// revision (an event naming no revision, such as an import, can
+    /// describe newer ones, so it ends the prefix too). This is what a sender delivers when a newer revision is
     /// not trusted: the newer revision's content and proofs never leave.
     /// The events kept are a prefix of the chain, so the copy verifies and
     /// its root is its own.
@@ -75,7 +76,7 @@ impl TrackedFile {
         let events = self
             .events
             .iter()
-            .take_while(|event| event.revision_id.as_ref().is_none_or(keep))
+            .take_while(|event| event.revision_id.as_ref().is_some_and(keep))
             .cloned()
             .collect();
         let pruned = TrackedFile {

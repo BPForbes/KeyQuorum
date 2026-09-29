@@ -1069,6 +1069,14 @@ fn a_recipient_can_reject_and_the_sender_records_it() {
     assert!(out.contains("rejected by M.B"), "{out}");
     let history = ok(&mut env, &format!("history {KQTF}"));
     assert!(history.contains("Denied"), "{history}");
+    // Replaying the same rejection records nothing more.
+    let again = ok(
+        &mut env,
+        &format!("ack {KQTF} --ack {ack} --slot {}", slot("M.A")),
+    );
+    assert!(again.contains("already recorded"), "{again}");
+    let history = ok(&mut env, &format!("history {KQTF}"));
+    assert_eq!(history.matches("result=rejected").count(), 1, "{history}");
     assert_eq!(history.matches("ShareDelivered").count(), 0, "{history}");
 }
 
