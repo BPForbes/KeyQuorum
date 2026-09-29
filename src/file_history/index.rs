@@ -4,6 +4,11 @@
 //! `tracked_revisions`, `tracked_history_index`) only make files and their
 //! events listable. Nothing here decides trust or holds payload bytes, and
 //! every function can be re-run from the containers to restore the rows.
+//!
+//! The rows are metadata, not payload, but metadata is not harmless: file
+//! names, scopes, labels, authors and event times can reveal who did what.
+//! Treat the store that holds them as sensitive (`db::open` keeps it
+//! owner-only).
 
 use super::container::TrackedFile;
 use crate::error::Result;
@@ -41,6 +46,14 @@ fn array<const N: usize>(bytes: Vec<u8>) -> [u8; N] {
 /// does that).
 pub fn record(conn: &Connection, file: &TrackedFile) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
+    record_in(&tx, file)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// The work of [`record`] inside a transaction the caller owns, so several
+/// files can be replaced as one unit.
+fn record_in(tx: &Connection, file: &TrackedFile) -> Result<()> {
     tx.execute(
         "DELETE FROM tracked_files WHERE file_id = ?1",
         params![file.file_id.to_vec()],
@@ -101,7 +114,6 @@ pub fn record(conn: &Connection, file: &TrackedFile) -> Result<()> {
             ],
         )?;
     }
-    tx.commit()?;
     Ok(())
 }
 
@@ -115,14 +127,15 @@ pub fn forget(conn: &Connection, file_id: &[u8; 16]) -> Result<()> {
 }
 
 /// Empty the index, then index `files`: the state after a rebuild from
-/// scratch.
+/// scratch. It is one transaction, so if any file fails the previous index
+/// is left exactly as it was.
 pub fn rebuild(conn: &Connection, files: &[TrackedFile]) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM tracked_files", [])?;
-    tx.commit()?;
     for file in files {
-        record(conn, file)?;
+        record_in(&tx, file)?;
     }
+    tx.commit()?;
     Ok(())
 }
 

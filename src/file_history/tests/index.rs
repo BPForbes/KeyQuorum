@@ -164,3 +164,37 @@ fn the_index_holds_metadata_only() {
         );
     }
 }
+
+#[test]
+fn a_failed_rebuild_leaves_the_previous_index_untouched() {
+    let conn = db();
+    let (a, b) = files();
+    index::record(&conn, &b).unwrap();
+    let before = index::list(&conn).unwrap();
+    // A second "file" that reuses the first one's revision ids makes the
+    // second insert fail after the clear and the first file's rows.
+    let mut clash = a.clone();
+    clash.file_id = [3; 16];
+    assert!(index::rebuild(&conn, &[a, clash]).is_err());
+    assert_eq!(index::list(&conn).unwrap(), before);
+    let revisions: i64 = conn
+        .query_row("SELECT count(*) FROM tracked_revisions", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        revisions, 0,
+        "b has no revisions, and nothing from a leaked in"
+    );
+}
+
+#[test]
+fn revisions_are_indexed_by_file() {
+    let conn = db();
+    let plan: String = conn
+        .query_row(
+            "EXPLAIN QUERY PLAN SELECT * FROM tracked_revisions WHERE file_id = x'00'",
+            [],
+            |r| r.get(3),
+        )
+        .unwrap();
+    assert!(plan.contains("tracked_revisions_by_file"), "{plan}");
+}

@@ -445,6 +445,9 @@ CREATE TABLE IF NOT EXISTS tracked_revisions (
     is_head         INTEGER NOT NULL CHECK (is_head IN (0, 1))
 );
 
+-- The cascade from tracked_files finds a file's revisions through this.
+CREATE INDEX IF NOT EXISTS tracked_revisions_by_file ON tracked_revisions (file_id);
+
 CREATE TABLE IF NOT EXISTS tracked_history_index (
     file_id     BLOB NOT NULL REFERENCES tracked_files(file_id) ON DELETE CASCADE,
     sequence    INTEGER NOT NULL CHECK (sequence >= 0),
