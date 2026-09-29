@@ -1260,7 +1260,7 @@ fn each_changed_line_is_attributed_to_the_revision_that_wrote_it() {
     let mut file = TrackedFile::decode(&env.fs.read(Path::new(KQTF)).unwrap()).unwrap();
     let base = file.graph().heads()[0];
     let policy_hash = file.policy().unwrap().policy_hash().unwrap();
-    let mut revision = |file: &mut TrackedFile, parent, label: &str, minute: u8, text: &str| {
+    let revision = |file: &mut TrackedFile, parent, label: &str, minute: u8, text: &str| {
         file.check_in(
             NewRevision {
                 parent_revision_ids: vec![parent],

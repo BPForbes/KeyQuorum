@@ -1446,14 +1446,13 @@ fn review(conn: &Connection, kqtf: &Path) -> Result<()> {
     let file = load(kqtf)?;
     let policy = policy_of(&file)?.clone();
     let heads = file.graph().heads();
-    let [left, right] = heads.as_slice() else {
+    let Some(view) = ReviewView::of(&file) else {
         outln!(
             "Nothing to review: the history has {} head(s).",
             heads.len()
         );
         return Ok(());
     };
-    let view = ReviewView::of(&file).expect("two heads were just found");
     outln!("{}", view.title);
     for pane in &view.panes {
         outln!("");
