@@ -1778,3 +1778,112 @@ fn a_letter_must_name_the_label_whose_key_opened_it() {
     );
     assert!(!env.fs.exists(Path::new("/work/received.kqtf")));
 }
+
+// ---- labels, policy ----------------------------------------------------------
+
+#[test]
+fn a_precise_clock_puts_milliseconds_in_the_generated_label() {
+    let mut env = org();
+    env.millis = Some("482".into());
+    track(&mut env, "M.A", "M.A");
+    let status = ok(&mut env, &format!("graph {KQTF}"));
+    assert!(status.contains("T000000.482Z-M.A"), "{status}");
+    // Events keep whole seconds, so time comparisons stay simple.
+    let history = ok(&mut env, &format!("history {KQTF}"));
+    assert!(!history.contains(".482"), "{history}");
+}
+
+#[test]
+fn a_tracked_files_rules_are_chosen_when_it_starts_and_shown_with_their_hash() {
+    let mut env = org();
+    let out = track_with(
+        &mut env,
+        "M.A",
+        "M.A",
+        "--descendants-rule forbidden --cross-branch-rule author",
+    );
+    assert!(out.contains("trust    TRUSTED"), "{out}");
+    let policy = ok(&mut env, &format!("policy {KQTF}"));
+    assert!(policy.contains("descendants         forbidden"), "{policy}");
+    assert!(policy.contains("cross-branch        author"), "{policy}");
+    assert!(policy.contains("edits by descendants false"), "{policy}");
+    assert!(policy.contains("policy_hash"), "{policy}");
+    // A descendant may not edit a file whose rules forbid it.
+    edit(&mut env, "totals: NOPE\n");
+    let (result, _) = run(
+        &mut env,
+        &format!(
+            "checkin {KQTF} --from /work/edited.txt --as M.A.1 --slot {}",
+            slot("M.A.1")
+        ),
+    );
+    assert!(result.is_err());
+    // The standard rules are what you get without flags.
+    let mut standard = org();
+    track(&mut standard, "M.A", "M.A");
+    let policy = ok(&mut standard, &format!("policy {KQTF}"));
+    assert!(
+        policy.contains("descendants         author+parent"),
+        "{policy}"
+    );
+    assert!(
+        policy.contains("cross-branch        author+bridge-or-owner"),
+        "{policy}"
+    );
+}
+
+#[test]
+fn rules_that_cannot_be_met_are_refused_before_anything_is_written() {
+    for extra in [
+        "--owner-rule forbidden",
+        "--owner-rule author+bridge-or-owner",
+        "--descendants-rule author+bridge-or-owner",
+        "--cross-branch-rule author+parent",
+    ] {
+        let mut env = org();
+        let (result, _) = run(
+            &mut env,
+            &format!(
+                "track /work/report.txt --scope M.A --as M.A --slot {} {extra}",
+                slot("M.A")
+            ),
+        );
+        assert!(result.is_err(), "{extra}");
+        assert!(!env.fs.exists(Path::new(KQTF)), "{extra}");
+    }
+    // The root has no parent to countersign for it.
+    let mut env = org();
+    let (result, _) = run(
+        &mut env,
+        &format!(
+            "track /work/report.txt --scope M --as M --slot {} --owner-rule author+parent",
+            slot("M")
+        ),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn a_countersignature_records_the_relationship_and_the_decision_its_reason() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    edit(&mut env, "totals: BY DESCENDANT\n");
+    ok(
+        &mut env,
+        &format!(
+            "checkin {KQTF} --from /work/edited.txt --as M.A.1 --slot {}",
+            slot("M.A.1")
+        ),
+    );
+    ok(
+        &mut env,
+        &format!("countersign {KQTF} --as M.A --slot {}", slot("M.A")),
+    );
+    let history = ok(&mut env, &format!("history {KQTF}"));
+    assert!(history.contains("for_actor=M.A.1"), "{history}");
+    assert!(history.contains("relationship=DIRECT_PARENT"), "{history}");
+    assert!(
+        history.contains("reason=AUTHOR_SIGNATURE + REQUIRED_PARENT_COUNTERSIGNATURE"),
+        "{history}"
+    );
+}

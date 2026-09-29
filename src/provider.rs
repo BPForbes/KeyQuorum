@@ -237,6 +237,22 @@ pub fn system_now_utc() -> Result<String> {
     Ok(unix_to_utc_minute(secs))
 }
 
+/// UTC `YYYY-MM-DD HH:MM:SS.mmm` from the system clock. Tracked-file
+/// revisions use it so adjacent check-ins get distinguishable labels.
+pub fn system_now_utc_millis() -> Result<String> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, e)))?;
+    let secs = now.as_secs();
+    let minute = unix_to_utc_minute(secs);
+    Ok(format!(
+        "{}{:02}.{:03}",
+        &minute[..minute.len() - 2],
+        secs % 60,
+        now.subsec_millis()
+    ))
+}
+
 fn cert_preimage(body: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(CERT_DOMAIN);

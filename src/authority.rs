@@ -57,6 +57,17 @@ pub fn is_ancestor_or_self(authorizer: &str, subject: &str) -> bool {
         .is_some_and(|rest| rest.starts_with('.'))
 }
 
+/// True when `ancestor` is a strict ancestor of `descendant` (not the same
+/// label).
+pub fn is_ancestor(ancestor: &str, descendant: &str) -> bool {
+    ancestor != descendant && is_ancestor_or_self(ancestor, descendant)
+}
+
+/// True when `descendant` sits strictly below `ancestor`.
+pub fn is_descendant(descendant: &str, ancestor: &str) -> bool {
+    is_ancestor(ancestor, descendant)
+}
+
 /// True when `parent` is the direct (one-step) parent of `child`.
 pub fn direct_parent(parent: &str, child: &str) -> bool {
     parent_node_label(child) == Some(parent)

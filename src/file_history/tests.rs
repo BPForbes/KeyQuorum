@@ -619,3 +619,31 @@ fn renaming_a_file_does_not_invalidate_older_revisions() {
     );
     assert_eq!(decoded.logical_name, "renamed.txt");
 }
+
+#[test]
+fn a_different_user_label_or_millisecond_is_a_different_revision() {
+    let make = |label: Option<&str>, at: &str| {
+        let mut file = tracked_file();
+        let mut new = new_revision(vec![], at);
+        new.user_label = label.map(str::to_string);
+        let id = file.check_in(new, b"same bytes".to_vec()).unwrap();
+        let generated = file
+            .graph()
+            .get(&id)
+            .unwrap()
+            .revision
+            .generated_label
+            .clone();
+        (id, generated)
+    };
+    let (plain, plain_label) = make(None, T1);
+    let (labelled, labelled_label) = make(Some("Updated totals"), T1);
+    // The label is part of the immutable revision: changing it after
+    // check-in would mean a different revision, never a mutated one.
+    assert_ne!(plain, labelled);
+    assert_eq!(plain_label, labelled_label);
+    // Adjacent operations are told apart by sub-second time.
+    let (_, later) = make(None, "2026-10-01T09:00:00.001Z");
+    assert_ne!(plain_label, later);
+    assert_eq!(plain_label, "Rsales-report-20261001T090000.000Z-M.A");
+}

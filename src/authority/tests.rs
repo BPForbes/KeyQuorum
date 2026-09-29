@@ -149,3 +149,18 @@ fn ancestor_or_self_rejects_malformed_labels() {
     assert!(!is_ancestor_or_self(".A", ".A"));
     assert!(is_ancestor_or_self("M", "M.A.1"));
 }
+
+#[test]
+fn strict_ancestor_and_descendant_helpers() {
+    assert!(is_ancestor("M", "M.A.1"));
+    assert!(is_ancestor("M.A", "M.A.1"));
+    assert!(
+        !is_ancestor("M.A", "M.A"),
+        "a label is not its own ancestor"
+    );
+    assert!(!is_ancestor("M.S", "M.SALES.1"));
+    assert!(is_descendant("M.A.1", "M.A"));
+    assert!(!is_descendant("M.A", "M.A.1"));
+    assert!(!is_descendant("M", "M"));
+    assert!(!is_ancestor("M.", "M..A"));
+}

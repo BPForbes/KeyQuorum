@@ -25,6 +25,9 @@ pub struct MemoryEnv {
     pub prompts: std::collections::VecDeque<String>,
     /// The clock (`yyyy-mm-dd hh:mm`); a fixed default when unset.
     pub now: Option<String>,
+    /// Milliseconds the precise clock adds after the seconds (`"482"`);
+    /// none by default, so the precise clock equals [`MemoryEnv::now`].
+    pub millis: Option<String>,
 }
 
 impl Env for MemoryEnv {
@@ -64,6 +67,15 @@ impl Env for MemoryEnv {
             .now
             .clone()
             .unwrap_or_else(|| "2026-09-27 00:00".into()))
+    }
+
+    fn now_utc_precise(&self) -> Result<String> {
+        let now = self.now_utc()?;
+        Ok(match &self.millis {
+            Some(millis) if now.len() == 16 => format!("{now}:00.{millis}"),
+            Some(millis) => format!("{now}.{millis}"),
+            None => now,
+        })
     }
 
     fn open_db(&mut self, path: &Path) -> Result<Connection> {

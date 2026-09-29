@@ -176,7 +176,10 @@ checkout, status, history, verify). Signing a native file with `--scope` is
 the first content signature and starts tracking (the same steps as `track`);
 `rename` changes only `logical_name` and appends `FILE_RENAMED`, never the
 file or revision ids. `status` derives `current_revision_id` and
-`trusted_revision_id` from the store's keys; the container never stores them. It decides no
+`trusted_revision_id` from the store's keys; the container never stores them. A file's rules are fixed at
+`track` (`--owner-rule` and friends, checked by `FilePolicy::with_rules`; `policy`
+shows them and the hash); revisions are stamped to the millisecond through
+`Env::now_utc_precise`, while events keep whole seconds. It decides no
 trust: it calls `file_history` and prints the result. The `.kqtf` container
 carries its own policy; the store only supplies signing keys, through
 `StoreTrust`, which accepts a key only for the identity the store knows for

@@ -37,6 +37,37 @@ pub enum Requirement {
 }
 
 impl Requirement {
+    /// The word a person types for this rule (`--owner-rule author`, ...).
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Self::Forbidden => "forbidden",
+            Self::AuthorSign => "author",
+            Self::AuthorSignDirectParent => "author+parent",
+            Self::AuthorSignBridgeOrOwner => "author+bridge-or-owner",
+        }
+    }
+
+    pub fn from_keyword(word: &str) -> Option<Self> {
+        [
+            Self::Forbidden,
+            Self::AuthorSign,
+            Self::AuthorSignDirectParent,
+            Self::AuthorSignBridgeOrOwner,
+        ]
+        .into_iter()
+        .find(|rule| rule.keyword() == word)
+    }
+
+    /// Why a revision that met this rule is trusted, in the design's words.
+    pub fn trusted_because(self) -> &'static str {
+        match self {
+            Self::Forbidden => "ROLE_FORBIDDEN",
+            Self::AuthorSign => "AUTHOR_SIGNATURE",
+            Self::AuthorSignDirectParent => "AUTHOR_SIGNATURE + REQUIRED_PARENT_COUNTERSIGNATURE",
+            Self::AuthorSignBridgeOrOwner => "AUTHOR_SIGNATURE + BRIDGE_OR_SCOPE_OWNER_APPROVAL",
+        }
+    }
+
     fn from_u8(value: u8) -> Result<Self> {
         Ok(match value {
             0 => Self::Forbidden,
@@ -74,6 +105,37 @@ impl FilePolicy {
             cross_branch: Requirement::AuthorSignBridgeOrOwner,
             auto_merge: true,
         }
+    }
+
+    /// A policy with the given rule for each role, or `None` for the
+    /// standard one. Refuses rules that cannot be met: the scope owner may
+    /// not be forbidden, only cross-branch authors can rely on a bridge, and
+    /// a parent countersignature needs a parent to give it.
+    pub fn with_rules(
+        scope_root: &str,
+        rules: [Option<Requirement>; 4],
+        auto_merge: bool,
+    ) -> Result<Self> {
+        let mut policy = Self::standard(scope_root);
+        policy.auto_merge = auto_merge;
+        let [owner, descendants, ancestors, cross_branch] = rules;
+        policy.scope_owner = owner.unwrap_or(policy.scope_owner);
+        policy.descendants = descendants.unwrap_or(policy.descendants);
+        policy.ancestors = ancestors.unwrap_or(policy.ancestors);
+        policy.cross_branch = cross_branch.unwrap_or(policy.cross_branch);
+        let needs_parent = |rule: Requirement| rule == Requirement::AuthorSignDirectParent;
+        let bridge = Requirement::AuthorSignBridgeOrOwner;
+        let has_parent = authority::parent_node_label(scope_root).is_some();
+        let bad = policy.scope_owner == Requirement::Forbidden
+            || policy.scope_owner == bridge
+            || policy.descendants == bridge
+            || policy.ancestors == bridge
+            || (needs_parent(policy.scope_owner) && !has_parent)
+            || needs_parent(policy.cross_branch);
+        if bad {
+            return Err(Error::InvalidTrackedFile);
+        }
+        Ok(policy)
     }
 
     /// `lp(scope_root) | owner | descendants | ancestors | cross_branch |
@@ -129,7 +191,9 @@ impl FilePolicy {
             .is_some_and(|requirement| requirement != Requirement::Forbidden)
     }
 
-    fn requirement_for(&self, author_label: &str) -> Option<Requirement> {
+    /// The rule that applies to an author relative to the scope, or `None`
+    /// for an unrelated one.
+    pub fn requirement_for(&self, author_label: &str) -> Option<Requirement> {
         match authority::relationship(&self.scope_root, author_label) {
             RevisionAuthority::ScopeOwner => Some(self.scope_owner),
             RevisionAuthority::Descendant { .. } => Some(self.descendants),

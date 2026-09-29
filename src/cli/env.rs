@@ -41,6 +41,12 @@ pub trait Env: Any {
     /// The current UTC time, as `provider::system_now_utc` formats it, for
     /// certificate checks.
     fn now_utc(&self) -> Result<String>;
+    /// The current UTC time with sub-second precision, for tracked-file
+    /// revisions. Defaults to [`Env::now_utc`], so a fixed test clock stays
+    /// fixed.
+    fn now_utc_precise(&self) -> Result<String> {
+        self.now_utc()
+    }
     /// Open (creating if needed) the organization store at `path`.
     fn open_db(&mut self, path: &Path) -> Result<Connection>;
     /// Hand a store opened by [`Env::open_db`] back when the command ends.
@@ -128,6 +134,10 @@ impl Env for NativeEnv {
 
     fn now_utc(&self) -> Result<String> {
         crate::provider::system_now_utc()
+    }
+
+    fn now_utc_precise(&self) -> Result<String> {
+        crate::provider::system_now_utc_millis()
     }
 
     fn open_db(&mut self, path: &Path) -> Result<Connection> {
@@ -387,6 +397,10 @@ pub fn provider_root() -> [u8; 32] {
 
 pub fn now_utc() -> Result<String> {
     with(|env| env.now_utc())
+}
+
+pub fn now_utc_precise() -> Result<String> {
+    with(|env| env.now_utc_precise())
 }
 
 /// Hand `f` the current environment's stdout as a writer.

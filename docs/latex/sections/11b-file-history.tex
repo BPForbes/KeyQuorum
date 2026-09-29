@@ -102,6 +102,32 @@ and \emph{denied} if a signature is present but wrong. A newer revision
 never becomes trusted just because it is newer, and time stamps never decide
 anything.
 
+The rules are chosen when the file is tracked and are fixed for its life.
+Each role has its own option, which takes \code{forbidden}, \code{author}
+or \code{author+parent}:
+
+\begin{itemize}
+  \item \flag{--owner-rule}
+  \item \flag{--descendants-rule}
+  \item \flag{--ancestors-rule}
+  \item \flag{--cross-branch-rule}, which may also take
+  \code{author+bridge-or-owner}.
+\end{itemize}
+
+The defaults are the table above. A rule that cannot be met --- a forbidden
+owner, a bridge for anyone but a cross-branch author, a parent
+countersignature where there is no parent --- is refused before anything is
+written. \code{file policy} prints the rules and the \code{policy_hash} that
+every revision carries, so later verification knows which rules applied. When
+a countersignature arrives, the history records its \code{relationship} to
+the author (for example \code{DIRECT_PARENT}) and the policy decision records
+its \code{reason}.
+
+Revision labels are \code{R<name>-<UTC time>-<HCP label>} with the time to the
+millisecond where the clock has it, so adjacent check-ins get different
+labels. A label is part of the immutable revision: changing it would mean a
+different revision, never an edit of the existing one.
+
 \begin{lstlisting}
 keyquorum file track report.txt --scope M.A --as M.A --slot ./usb=M.A
 keyquorum file checkin report.txt.kqtf --from edited.txt --as M.A.1 --unsigned

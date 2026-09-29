@@ -21,7 +21,8 @@ use crate::file_history::{
     select_shareable_revision, verify_tracked_file, AutoMergeOutcome, BridgeEvidence, ChangeKind,
     DeliveryDecisionKind, EventDetails, ExpiryContext, FilePolicy, HistoryEvent, HistoryEventType,
     HistoryOutcome, HistoryRelation, HistorySnapshot, ImportContext, MergeBase, NewEvent,
-    NewRevision, ResolverSelection, TrackedFile, TrustContext, TrustReason, TrustState,
+    NewRevision, Requirement, ResolverSelection, TrackedFile, TrustContext, TrustReason,
+    TrustState,
 };
 use crate::{authority, file_delivery, key_tree, private_bridge, signing, transfer};
 use clap::Subcommand;
@@ -66,7 +67,23 @@ pub enum FileCommand {
         /// a person, however clean the merge would be
         #[arg(long)]
         no_auto_merge: bool,
+        /// What the scope owner must present: forbidden, author,
+        /// author+parent
+        #[arg(long, value_parser = parse_requirement)]
+        owner_rule: Option<Requirement>,
+        /// What a descendant must present (default author+parent)
+        #[arg(long, value_parser = parse_requirement)]
+        descendants_rule: Option<Requirement>,
+        /// What an ancestor must present (default author)
+        #[arg(long, value_parser = parse_requirement)]
+        ancestors_rule: Option<Requirement>,
+        /// What a cross-branch author must present (default
+        /// author+bridge-or-owner)
+        #[arg(long, value_parser = parse_requirement)]
+        cross_branch_rule: Option<Requirement>,
     },
+    /// Show the rules a tracked file's revisions are judged by
+    Policy { kqtf: PathBuf },
     /// Check in a new revision from a native file
     Checkin {
         /// The tracked file (.kqtf)
@@ -365,18 +382,30 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             name,
             out,
             no_auto_merge,
-        } => track(
-            conn,
-            &path,
-            &scope,
-            &as_label,
-            slot,
-            signing_key_file,
-            label,
-            name,
-            out,
-            no_auto_merge,
-        ),
+            owner_rule,
+            descendants_rule,
+            ancestors_rule,
+            cross_branch_rule,
+        } => {
+            let policy = FilePolicy::with_rules(
+                &scope,
+                [owner_rule, descendants_rule, ancestors_rule, cross_branch_rule],
+                !no_auto_merge,
+            )
+            .map_err(|_| usage("those rules cannot be met: the owner cannot be forbidden, only cross-branch authors use a bridge, and a parent countersignature needs a parent"))?;
+            track(
+                conn,
+                &path,
+                &as_label,
+                slot,
+                signing_key_file,
+                label,
+                name,
+                out,
+                policy,
+            )
+        }
+        FileCommand::Policy { kqtf } => show_policy(&kqtf),
         FileCommand::Checkin {
             kqtf,
             from,
@@ -602,9 +631,19 @@ fn signing_secret(slot: Option<String>, key_file: Option<PathBuf>) -> Result<Zer
     }
 }
 
+/// The creation time of a revision, with sub-second precision where the
+/// clock has it, so adjacent check-ins get distinguishable generated labels.
+pub(super) fn revision_instant() -> Result<String> {
+    utc_form(&env::now_utc_precise()?)
+}
+
 /// `2026-09-27 00:00` or `2026-09-27 00:00:00` as `2026-09-27T00:00:00Z`.
 pub(super) fn utc_instant() -> Result<String> {
-    let now = env::now_utc()?;
+    utc_form(&env::now_utc()?)
+}
+
+fn utc_form(now: &str) -> Result<String> {
+    let now = now.to_string();
     let now = now.trim().replace(' ', "T");
     let now = if now.len() == 16 {
         format!("{now}:00")
@@ -841,13 +880,34 @@ fn decide(
         identity,
         label,
         generation,
-        EventDetails::new().with("result", &trust_text(state)),
+        EventDetails::new()
+            .with("result", &trust_text(state))
+            .with("reason", &decision_reason(&policy, file, &revision, state)),
     );
     if matches!(state, TrustState::Denied(_)) {
         recorded.outcome = HistoryOutcome::Denied;
     }
     file.append(recorded)?;
     Ok(state)
+}
+
+/// The design's wording for why the policy decided as it did.
+fn decision_reason(
+    policy: &FilePolicy,
+    file: &TrackedFile,
+    revision: &[u8; 32],
+    state: TrustState,
+) -> String {
+    match state {
+        TrustState::Trusted => file
+            .graph()
+            .get(revision)
+            .and_then(|stored| policy.requirement_for(&stored.revision.author_hcp_label))
+            .map_or_else(String::new, |rule| rule.trusted_because().to_string()),
+        TrustState::Pending(reason) | TrustState::Denied(reason) => {
+            format!("{reason:?}").to_uppercase()
+        }
+    }
 }
 
 fn refuse_if_denied(state: TrustState, label: &str) -> Result<()> {
@@ -866,17 +926,15 @@ fn refuse_if_denied(state: TrustState, label: &str) -> Result<()> {
 fn track(
     conn: &Connection,
     path: &Path,
-    scope: &str,
     as_label: &str,
     slot: Option<String>,
     key_file: Option<PathBuf>,
     user_label: Option<String>,
     name: Option<String>,
     out: Option<PathBuf>,
-    no_auto_merge: bool,
+    policy: FilePolicy,
 ) -> Result<()> {
-    let mut policy = FilePolicy::standard(scope);
-    policy.auto_merge = !no_auto_merge;
+    let scope = policy.scope_root.as_str();
     if !policy.may_author(as_label) {
         return Err(usage("--as is outside the scope of this file"));
     }
@@ -913,7 +971,7 @@ fn track(
             user_label,
             author_identity: Some(identity),
             author_hcp_label: as_label.to_string(),
-            created_at_utc: at.clone(),
+            created_at_utc: revision_instant()?,
             topology_generation: generation,
             policy_hash: policy.policy_hash()?,
         },
@@ -986,7 +1044,7 @@ fn checkin(
             user_label,
             author_identity: Some(identity),
             author_hcp_label: as_label.to_string(),
-            created_at_utc: at.clone(),
+            created_at_utc: revision_instant()?,
             topology_generation: generation,
             policy_hash: policy.policy_hash()?,
         },
@@ -1068,14 +1126,13 @@ fn activate_on_first_signature(
     track(
         conn,
         native,
-        &scope,
         as_label,
         slot,
         key_file,
         None,
         None,
         Some(container),
-        false,
+        FilePolicy::standard(&scope),
     )
 }
 
@@ -1141,7 +1198,10 @@ fn countersign(
         identity,
         as_label,
         generation,
-        EventDetails::new().with("for_actor", &author),
+        EventDetails::new().with("for_actor", &author).with(
+            "relationship",
+            countersigner_relationship(as_label, &author),
+        ),
     ))?;
     let state = decide(conn, &mut file, target, &at, identity, as_label, generation)?;
     // A countersignature by the wrong person is stored but earns nothing;
@@ -1152,6 +1212,46 @@ fn countersign(
     outln!("Countersigned {} as {as_label}", short(&target));
     outln!("  trust {}", trust_text(state));
     Ok(())
+}
+
+fn parse_requirement(word: &str) -> std::result::Result<Requirement, String> {
+    Requirement::from_keyword(word)
+        .ok_or_else(|| "use forbidden, author, author+parent or author+bridge-or-owner".to_string())
+}
+
+/// The rules the file's revisions are judged by, and the hash every
+/// revision carries so later verification knows which rules applied.
+fn show_policy(kqtf: &Path) -> Result<()> {
+    let file = load(kqtf)?;
+    let policy = policy_of(&file)?;
+    outln!("{} ({})", file.logical_name, hex::encode(file.file_id));
+    outln!("  scope_root          {}", policy.scope_root);
+    outln!("  scope owner         {}", policy.scope_owner.keyword());
+    outln!("  descendants         {}", policy.descendants.keyword());
+    outln!("  ancestors           {}", policy.ancestors.keyword());
+    outln!("  cross-branch        {}", policy.cross_branch.keyword());
+    outln!(
+        "  edits by descendants {}",
+        policy.descendants != Requirement::Forbidden
+    );
+    outln!("  auto merge          {}", policy.auto_merge);
+    outln!(
+        "  policy_hash         {}",
+        hex::encode(policy.policy_hash()?)
+    );
+    outln!("The rules are fixed when the file is tracked; every revision carries this hash.");
+    Ok(())
+}
+
+/// How the countersigner stands to the author it backs.
+fn countersigner_relationship(countersigner: &str, author: &str) -> &'static str {
+    if authority::direct_parent(countersigner, author) {
+        "DIRECT_PARENT"
+    } else if authority::is_ancestor_or_self(countersigner, author) {
+        "ANCESTOR"
+    } else {
+        "OTHER"
+    }
 }
 
 fn status(conn: &Connection, kqtf: &Path) -> Result<()> {
@@ -1796,14 +1896,14 @@ fn merge(conn: &Connection, kqtf: &Path, as_label: &str, user_label: Option<Stri
         )));
     };
     let (left, right) = (*left, *right);
-    let (identity, at) = (identity_for(conn, as_label)?, utc_instant()?);
+    let identity = identity_for(conn, as_label)?;
     let generation = generation_for(conn, &policy.scope_root)?;
     let new = NewRevision {
         parent_revision_ids: Vec::new(),
         user_label,
         author_identity: Some(identity),
         author_hcp_label: as_label.to_string(),
-        created_at_utc: at,
+        created_at_utc: revision_instant()?,
         topology_generation: generation,
         policy_hash: policy.policy_hash()?,
     };
