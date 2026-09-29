@@ -313,4 +313,41 @@ test.describe("desktop lab", () => {
     await card.getByRole("button", { name: "Verify history" }).click();
     await expect(page.getByTestId("opened-file")).toContainText("Tombstone");
   });
+
+  test("revision view, diff, snapshots and gate links all work from the tracked-files panel", async ({ page }) => {
+    await loadLab(page);
+    const panel = page.getByTestId("tracked-files");
+    await panel.getByLabel("New tracked file").fill("log.txt");
+    await panel.getByLabel("First revision").fill("one");
+    await panel.getByRole("button", { name: "Track and sign" }).click();
+    const card = panel.locator('[data-testid="tracked-file"][data-path="/home/alice/tracked/log.txt.kqtf"]');
+    await card.getByLabel("Edit the current revision").fill("two");
+    await card.getByRole("button", { name: "Check in" }).click();
+    await expect(card.locator("li[data-trust]")).toHaveCount(2);
+
+    // View an older revision and the changes in the newer one.
+    await card.locator("li[data-trust]").first().getByRole("button", { name: /^View revision/ }).click();
+    await expect(page.getByTestId("opened-file")).toHaveText("one");
+    await page.getByRole("button", { name: "Close" }).click();
+    await card.locator("li[data-trust]").last().getByRole("button", { name: /^Diff revision/ }).click();
+    await expect(page.getByTestId("opened-file")).toContainText("two");
+    await page.getByRole("button", { name: "Close" }).click();
+
+    // Export a snapshot, then check it against the file.
+    await card.getByRole("button", { name: "Export history snapshot" }).click();
+    await card.getByRole("button", { name: "Check log.txt-1.kqhs" }).click();
+    await expect(page.getByTestId("opened-file")).toContainText("It is a point in the history of log.txt");
+    await page.getByRole("button", { name: "Close" }).click();
+
+    // Link a quorum file's gate; opening that file lands in this timeline.
+    await card.getByLabel("Record unlocks of").selectOption({ label: "architecture.md (quorum)" });
+    await card.getByRole("button", { name: "Link gate" }).click();
+    await expect(card.getByTestId("tracked-links")).toContainText("architecture.md (quorum)");
+    await openFolder(page, "engineering");
+    await page.locator('[data-testid^="file-row-"]', { hasText: "architecture.md" }).first().dblclick();
+    await expect(status(page)).toHaveText("Access granted: architecture.md");
+    await page.getByRole("button", { name: "Close" }).click();
+    await page.locator('[data-panel="activity"] details.log > summary').click();
+    await expect(page.locator('[data-panel="activity"] [data-event="QuorumUnlockAttempted"]').first()).toBeVisible();
+  });
 });

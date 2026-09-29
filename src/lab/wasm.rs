@@ -371,6 +371,68 @@ impl KeyQuorumLab {
         to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
     }
 
+    /// `keyquorum file diff` between two revisions (defaults: head and its parent).
+    pub fn history_diff(
+        &mut self,
+        path: &str,
+        from: Option<String>,
+        to: Option<String>,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self
+            .state
+            .history_diff(path, from.as_deref(), to.as_deref());
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum file checkout` of one revision, shown like an opened file.
+    pub fn history_view_revision(
+        &mut self,
+        path: &str,
+        revision: &str,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self.state.history_view_revision(path, revision);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum file history --export`: write a verifiable history snapshot.
+    pub fn history_export(&mut self, path: &str) -> std::result::Result<String, JsError> {
+        let outcome = self.state.history_export(path);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum file verify-snapshot --against` the tracked file.
+    pub fn history_verify_snapshot(
+        &mut self,
+        path: &str,
+        snapshot: &str,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self.state.history_verify_snapshot(path, snapshot);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum file import`: bring another followed copy into this one.
+    pub fn history_import(
+        &mut self,
+        path: &str,
+        from: &str,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self.state.history_import(path, from);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum file link|unlink` a quorum (`gate = "quorum"`) or password
+    /// (`gate = "password"`) file.
+    pub fn history_link(
+        &mut self,
+        path: &str,
+        gate: &str,
+        id: i32,
+        link: bool,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self.state.history_link(path, gate, i64::from(id), link);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
     /// `keyquorum file share`: seal the newest trusted revision to another person.
     pub fn history_share(
         &mut self,

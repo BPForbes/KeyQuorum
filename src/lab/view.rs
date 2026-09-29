@@ -366,6 +366,18 @@ pub struct TrackedFileView {
     pub expires_at: Option<String>,
     /// Whether every revision's content was destroyed at expiry.
     pub destroyed: bool,
+    /// History snapshots (`KQHS`) exported from this file in the lab.
+    pub snapshots: Vec<String>,
+    /// Quorum or password files whose gate records into this history.
+    pub links: Vec<TrackedLinkView>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackedLinkView {
+    /// `quorum` or `password`.
+    pub gate: String,
+    pub id: i64,
 }
 
 #[derive(Clone, Debug, Serialize)]

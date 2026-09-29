@@ -277,9 +277,11 @@ with `fileId`, `revisionId`, `generatedLabel`, `historyRoot`,
 `finalizationState`, ...) beneath the action's own entry, which stays newest
 because tutorial gates read `activity[0]`. The Activity page's tracked-file
 buttons (track, check in signed or unsigned, sign, countersign, merge, review,
-verify, share, receive or refuse, record the answer) each run one `keyquorum
-file` command as the active person against their own store with their own slot;
-letters and acknowledgements pass through `/srv/keyquorum/tracked/letters` and
+verify, share, receive or refuse, record the answer, expire, view a revision,
+diff, export and check a snapshot, import another copy, link or unlink a quorum
+or password gate) each run one `keyquorum file` command as the active person against their own store with their own slot
+(a quorum gate is linked in the org store and a password gate in its owner's
+store, where each gate runs); letters and acknowledgements pass through `/srv/keyquorum/tracked/letters` and
 `acks`. `Snapshot::tracked_files` judges revisions with that store's
 `StoreTrust`; the lab adds no gate or rule of its own, event categories come
 from `HistoryEventType::category`, and entries without a history serialize

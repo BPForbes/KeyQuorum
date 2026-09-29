@@ -24,6 +24,8 @@ pub(in crate::lab) struct Tracked {
     path: PathBuf,
     /// Hash of the newest event already in the activity log.
     last: Option<[u8; 32]>,
+    /// History snapshots (`KQHS`) exported from this file.
+    snapshots: Vec<PathBuf>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -118,7 +120,11 @@ impl LabState {
             .and_then(|bytes| TrackedFile::decode(&bytes).ok())
             .is_some();
         if readable {
-            self.tracked.push(Tracked { path, last: None });
+            self.tracked.push(Tracked {
+                path,
+                last: None,
+                snapshots: Vec::new(),
+            });
         }
         readable
     }
@@ -313,6 +319,12 @@ impl LabState {
                     shareable,
                     expires_at: file.expires_at(),
                     destroyed: file.is_destroyed(),
+                    snapshots: tracked
+                        .snapshots
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect(),
+                    links: self.gate_links(&file.file_id),
                 })
             })
             .collect()
@@ -612,6 +624,208 @@ impl LabState {
             format!("Destroy the content of {name}")
         };
         let (outcome, _) = self.history_command("history-expire", &title, line);
+        Ok(outcome)
+    }
+
+    /// The gates (quorum files in the org store, password files in their
+    /// owner's store) linked to this tracked file. Read-only.
+    fn gate_links(&self, file_id: &[u8; 16]) -> Vec<TrackedLinkView> {
+        let mut stores = vec![ORG_DB.to_string()];
+        stores.extend(self.users.iter().map(|user| user.store()));
+        let mut links = Vec::new();
+        for store in stores {
+            let Some(conn) = self.vm().store(&store) else {
+                continue;
+            };
+            let rows = conn
+                .prepare(
+                    "SELECT gate, gate_file_id FROM tracked_gate_links WHERE tracked_file_id = ?1",
+                )
+                .and_then(|mut stmt| {
+                    stmt.query_map([file_id.as_slice()], |row| Ok((row.get(0)?, row.get(1)?)))?
+                        .collect::<rusqlite::Result<Vec<(String, i64)>>>()
+                });
+            for (gate, id) in rows.unwrap_or_default() {
+                links.push(TrackedLinkView { gate, id });
+            }
+        }
+        links
+    }
+
+    /// `keyquorum file diff`: the changed lines between two revisions (by
+    /// default the head and its first parent), shown like an opened file.
+    pub fn history_diff(
+        &mut self,
+        path: &str,
+        from: Option<&str>,
+        to: Option<&str>,
+    ) -> Result<Outcome> {
+        let Some(kqtf) = self.tracked_path(path) else {
+            return Ok(Self::unknown_tracked(path));
+        };
+        let mut line = format!(
+            "{} diff {}",
+            self.file_line(),
+            quote(&kqtf.display().to_string())
+        );
+        for (flag, value) in [("--from", from), ("--to", to)] {
+            if let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) {
+                line.push_str(&format!(" {flag} {value}"));
+            }
+        }
+        let name = self.tracked_name(&kqtf);
+        self.report_line(line, "history-diff", &format!("Diff {name}"))
+    }
+
+    /// `keyquorum file checkout` of one revision into a scratch file, read
+    /// back and removed: an older revision viewed without replacing anything.
+    pub fn history_view_revision(&mut self, path: &str, revision: &str) -> Result<Outcome> {
+        let Some(kqtf) = self.tracked_path(path) else {
+            return Ok(Self::unknown_tracked(path));
+        };
+        let scratch = self.actor().home().join("tracked").join(".checkout");
+        if self.vm().exists(&scratch) {
+            self.remove_file(&scratch)?;
+        }
+        let line = format!(
+            "{} checkout {} --revision {} --out {}",
+            self.file_line(),
+            quote(&kqtf.display().to_string()),
+            revision.trim(),
+            quote(&scratch.display().to_string()),
+        );
+        let name = self.tracked_name(&kqtf);
+        let title = format!(
+            "View {name} at {}",
+            &revision.trim()[..revision.trim().len().min(8)]
+        );
+        let (mut outcome, run) = self.history_command("history-checkout", &title, line);
+        if run.ok {
+            let text = String::from_utf8_lossy(&self.vm().read(&scratch)?).into_owned();
+            self.remove_file(&scratch)?;
+            outcome.opened = Some(OpenedFile { name: title, text });
+        }
+        Ok(outcome)
+    }
+
+    fn report_line(&mut self, line: String, kind: &str, title: &str) -> Result<Outcome> {
+        let (mut outcome, run) = self.history_command(kind, title, line);
+        if run.ok {
+            outcome.opened = Some(OpenedFile {
+                name: title.to_string(),
+                text: run.stdout_text(),
+            });
+        }
+        Ok(outcome)
+    }
+
+    /// `keyquorum file history --export`: a portable, verifiable snapshot
+    /// (`KQHS`) of the event history, kept next to the active person's files.
+    pub fn history_export(&mut self, path: &str) -> Result<Outcome> {
+        let Some(kqtf) = self.tracked_path(path) else {
+            return Ok(Self::unknown_tracked(path));
+        };
+        let name = self.tracked_name(&kqtf);
+        let index = self
+            .tracked
+            .iter()
+            .position(|t| t.path == kqtf)
+            .unwrap_or(0);
+        let number = self.tracked[index].snapshots.len() + 1;
+        let out = self
+            .actor()
+            .home()
+            .join("tracked")
+            .join(format!("{name}-{number}.kqhs"));
+        let line = format!(
+            "{} history {} --export {}",
+            self.file_line(),
+            quote(&kqtf.display().to_string()),
+            quote(&out.display().to_string()),
+        );
+        let (outcome, run) = self.history_command(
+            "history-export",
+            &format!("Export the history of {name}"),
+            line,
+        );
+        if run.ok {
+            self.tracked[index].snapshots.push(out);
+        }
+        Ok(outcome)
+    }
+
+    /// `keyquorum file verify-snapshot --against`: the snapshot verifies and
+    /// is a point in this file's history.
+    pub fn history_verify_snapshot(&mut self, path: &str, snapshot: &str) -> Result<Outcome> {
+        let Some(kqtf) = self.tracked_path(path) else {
+            return Ok(Self::unknown_tracked(path));
+        };
+        let line = format!(
+            "{} verify-snapshot {} --against {}",
+            self.file_line(),
+            quote(snapshot),
+            quote(&kqtf.display().to_string()),
+        );
+        let name = self.tracked_name(&kqtf);
+        self.report_line(
+            line,
+            "history-verify-snapshot",
+            &format!("Check a snapshot of {name}"),
+        )
+    }
+
+    /// `keyquorum file import`: bring another followed copy of the same file
+    /// into this one. A fork is kept as two heads.
+    pub fn history_import(&mut self, path: &str, from: &str) -> Result<Outcome> {
+        let (Some(kqtf), Some(other)) = (self.tracked_path(path), self.tracked_path(from)) else {
+            return Ok(Self::unknown_tracked(path));
+        };
+        let who = self.actor().label.clone();
+        let line = format!(
+            "{} import {} --from {} --as {who}",
+            self.file_line(),
+            quote(&kqtf.display().to_string()),
+            quote(&other.display().to_string()),
+        );
+        let name = self.tracked_name(&kqtf);
+        let (outcome, _) = self.history_command(
+            "history-import",
+            &format!("Import another copy of {name}"),
+            line,
+        );
+        Ok(outcome)
+    }
+
+    /// `keyquorum file link|unlink`: record (or stop recording) what happens
+    /// at a quorum file's gate (org store) or a password file's gate (the
+    /// active person's store, where their password files live).
+    pub fn history_link(&mut self, path: &str, gate: &str, id: i64, link: bool) -> Result<Outcome> {
+        let Some(kqtf) = self.tracked_path(path) else {
+            return Ok(Self::unknown_tracked(path));
+        };
+        let (store, flag) = match gate {
+            "quorum" => (ORG_DB.to_string(), "--quorum-file"),
+            "password" => (self.own_store(), "--locked-file"),
+            other => {
+                return Ok(Outcome::done(
+                    false,
+                    format!("No gate kind {other}"),
+                    vec![],
+                ))
+            }
+        };
+        let verb = if link { "link" } else { "unlink" };
+        let line = format!(
+            "keyquorum --db {store} file {verb} {} {flag} {id}",
+            quote(&kqtf.display().to_string()),
+        );
+        let name = self.tracked_name(&kqtf);
+        let title = if link {
+            format!("Link {gate} file {id} to {name}")
+        } else {
+            format!("Unlink {gate} file {id} from {name}")
+        };
+        let (outcome, _) = self.history_command("history-link", &title, line);
         Ok(outcome)
     }
 

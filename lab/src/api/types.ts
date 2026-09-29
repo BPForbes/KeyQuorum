@@ -261,6 +261,10 @@ export interface TrackedFileView {
   expiresAt: string | null;
   /** Whether every revision's content was destroyed at expiry. */
   destroyed: boolean;
+  /** History snapshots (`KQHS`) exported from this file in the lab. */
+  snapshots: string[];
+  /** Quorum or password files whose gate records into this history. */
+  links: { gate: "quorum" | "password"; id: number }[];
 }
 
 export interface TrackedLetterView {

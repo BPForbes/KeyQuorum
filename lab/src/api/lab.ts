@@ -173,6 +173,30 @@ export class LabClient {
     return this.call(this.lab.history_expire(path, at));
   }
 
+  historyDiff(path: string, from?: string, to?: string): ActionResult {
+    return this.call(this.lab.history_diff(path, from, to));
+  }
+
+  historyViewRevision(path: string, revision: string): ActionResult {
+    return this.call(this.lab.history_view_revision(path, revision));
+  }
+
+  historyExport(path: string): ActionResult {
+    return this.call(this.lab.history_export(path));
+  }
+
+  historyVerifySnapshot(path: string, snapshot: string): ActionResult {
+    return this.call(this.lab.history_verify_snapshot(path, snapshot));
+  }
+
+  historyImport(path: string, from: string): ActionResult {
+    return this.call(this.lab.history_import(path, from));
+  }
+
+  historyLink(path: string, gate: "quorum" | "password", id: number, link: boolean): ActionResult {
+    return this.call(this.lab.history_link(path, gate, id, link));
+  }
+
   historyShare(path: string, toUser: string): ActionResult {
     return this.call(this.lab.history_share(path, toUser));
   }

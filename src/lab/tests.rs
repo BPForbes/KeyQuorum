@@ -1871,3 +1871,88 @@ fn expiring_a_tracked_file_from_the_gui_leaves_a_tombstone_the_timeline_shows() 
     );
     assert!(!state.read_text(NOTES).unwrap().contains("SECRET draft"));
 }
+
+#[test]
+fn diff_view_export_and_snapshot_checks_run_from_the_gui() {
+    let mut state = lab();
+    state.switch_user("sarah").unwrap();
+    ok(state.history_track("notes.txt", "one\ntwo\n"));
+    ok(state.history_checkin(NOTES, "one\nTWO\n", true, None));
+    let diff = ok(state.history_diff(NOTES, None, None))
+        .opened
+        .unwrap()
+        .text;
+    assert!(
+        diff.contains("- ") && diff.contains("two") && diff.contains("TWO"),
+        "{diff}"
+    );
+    let first = tracked(&snap(&state), NOTES).revisions[0].id.clone();
+    let view = ok(state.history_view_revision(NOTES, &first))
+        .opened
+        .unwrap();
+    assert_eq!(view.text, "one\ntwo\n");
+    // The scratch file used to show it is gone again.
+    assert!(state.read_text("/home/sarah/tracked/.checkout").is_err());
+
+    ok(state.history_export(NOTES));
+    let snapshot = tracked(&snap(&state), NOTES).snapshots[0].clone();
+    assert!(snapshot.ends_with("notes.txt-1.kqhs"));
+    // Still a point in the history after more is recorded.
+    ok(state.history_checkin(NOTES, "one\nTWO\nthree\n", true, None));
+    let checked = ok(state.history_verify_snapshot(NOTES, &snapshot))
+        .opened
+        .unwrap()
+        .text;
+    assert!(
+        checked.contains("It is a point in the history of notes.txt"),
+        "{checked}"
+    );
+}
+
+#[test]
+fn importing_another_followed_copy_joins_its_revisions() {
+    let mut state = lab();
+    state.switch_user("sarah").unwrap();
+    ok(state.history_track("notes.txt", "a\n"));
+    ok(state.history_share(NOTES, "alice"));
+    state.switch_user("alice").unwrap();
+    let letter = snap(&state).tracked_letters[0].id;
+    ok(state.history_receive(letter, true));
+    let copy = "/home/alice/tracked/notes.txt.kqtf";
+    ok(state.history_checkin(copy, "b\n", false, None));
+    state.switch_user("sarah").unwrap();
+    ok(state.history_import(NOTES, copy));
+    assert_eq!(tracked(&snap(&state), NOTES).revisions.len(), 2);
+    assert!(snap(&state).activity[1..]
+        .iter()
+        .filter_map(|e| e.history.as_ref())
+        .any(|h| h.history_event_type == "HistoryImported"));
+}
+
+#[test]
+fn a_linked_quorum_file_records_its_unlocks_in_the_tracked_timeline() {
+    let mut state = lab();
+    let path = "/home/alice/tracked/notes.txt.kqtf";
+    ok(state.history_track("notes.txt", "a\n"));
+    let id = snap(&state)
+        .files
+        .iter()
+        .find(|f| f.name == "architecture.md")
+        .and_then(|f| f.quorum_file_id)
+        .unwrap();
+    ok(state.history_link(path, "quorum", id, true));
+    let links = tracked(&snap(&state), path).links.clone();
+    assert_eq!(links.len(), 1);
+    assert_eq!((links[0].gate.as_str(), links[0].id), ("quorum", id));
+
+    assert!(state.unlock("architecture.md").unwrap().ok);
+    let unlocked = snap(&state)
+        .activity
+        .iter()
+        .filter_map(|e| e.history.as_ref())
+        .any(|h| h.file_name == "notes.txt" && h.history_event_type == "QuorumUnlockAttempted");
+    assert!(unlocked);
+    ok(state.history_link(path, "quorum", id, false));
+    assert!(tracked(&snap(&state), path).links.is_empty());
+    assert!(!state.history_link(path, "sideways", id, true).unwrap().ok);
+}

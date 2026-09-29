@@ -11,6 +11,9 @@ import { FileViewer } from "./FileViewer";
 
 const short = (id: string) => id.slice(0, 8);
 
+/** Run a command whose output opens in the file viewer. */
+type Report = (run: Parameters<Act>[0], title: string) => void;
+
 /** `M.S.1` → `M.S`; the root has no parent. */
 const parentOf = (label: string) => (label.includes(".") ? label.slice(0, label.lastIndexOf(".")) : null);
 
@@ -60,11 +63,13 @@ function RevisionRow({
   revision,
   me,
   act,
+  report,
 }: {
   file: TrackedFileView;
   revision: TrackedRevisionView;
   me: string;
   act: Act;
+  report: Report;
 }) {
   const mine = revision.author === me;
   const countersigner = parentOf(revision.author) === me;
@@ -78,6 +83,26 @@ function RevisionRow({
       </span>{" "}
       <span className="badge">{revision.trust}</span>
       {revision.reason ? <span className="muted small"> {revision.reason}</span> : null}
+      {file.destroyed ? null : (
+        <button
+          type="button"
+          className="btn small-btn"
+          aria-label={`View revision ${short(revision.id)}`}
+          onClick={() => report((client) => client.historyViewRevision(file.path, revision.id), `${file.name} at ${short(revision.id)}`)}
+        >
+          View
+        </button>
+      )}
+      {!file.destroyed && revision.parents.length > 0 ? (
+        <button
+          type="button"
+          className="btn small-btn"
+          aria-label={`Diff revision ${short(revision.id)}`}
+          onClick={() => report((client) => client.historyDiff(file.path, undefined, revision.id), `Changes in ${short(revision.id)}`)}
+        >
+          Diff
+        </button>
+      ) : null}
       {revision.trust === "pending" && mine ? (
         <button
           type="button"
@@ -170,6 +195,112 @@ function ExpiryForm({ file, act }: { file: TrackedFileView; act: Act }) {
   );
 }
 
+function HistoryTools({
+  file,
+  snapshot,
+  act,
+  report,
+}: {
+  file: TrackedFileView;
+  snapshot: Snapshot;
+  act: Act;
+  report: Report;
+}) {
+  const id = useId();
+  const copies = snapshot.trackedFiles.filter((other) => other.fileId === file.fileId && other.path !== file.path);
+  const [from, setFrom] = useState(copies[0]?.path ?? "");
+  const me = snapshot.activeUser.label;
+  const gates: { gate: "quorum" | "password"; id: number; label: string }[] = [
+    ...snapshot.files
+      .filter((candidate) => candidate.quorumFileId != null)
+      .map((candidate) => ({ gate: "quorum" as const, id: candidate.quorumFileId as number, label: `${candidate.name} (quorum)` })),
+    ...snapshot.passwordFiles
+      .filter((candidate) => candidate.owner === me)
+      .map((candidate) => ({ gate: "password" as const, id: candidate.id, label: `${candidate.name} (password)` })),
+  ];
+  const [gate, setGate] = useState(gates[0] ? `${gates[0].gate}:${gates[0].id}` : "");
+  const linkName = (link: { gate: string; id: number }) =>
+    gates.find((candidate) => candidate.gate === link.gate && candidate.id === link.id)?.label ?? `${link.gate} file ${link.id}`;
+  return (
+    <div className="tracked-tools" data-testid="history-tools">
+      <div className="tracked-actions">
+        <button type="button" className="btn small-btn" onClick={() => act((client) => client.historyExport(file.path))}>
+          Export history snapshot
+        </button>
+        {file.snapshots.map((path) => (
+          <button
+            key={path}
+            type="button"
+            className="btn small-btn"
+            onClick={() => report((client) => client.historyVerifySnapshot(file.path, path), `Check ${path.split("/").pop()}`)}
+          >
+            Check {path.split("/").pop()}
+          </button>
+        ))}
+      </div>
+      {copies.length > 0 && !file.destroyed ? (
+        <form
+          className="tracked-form tracked-share"
+          data-testid="history-import"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (from) act((client) => client.historyImport(file.path, from));
+          }}
+        >
+          <label htmlFor={`${id}-from`}>Import from</label>
+          <select id={`${id}-from`} value={from} onChange={(event) => setFrom(event.target.value)}>
+            {copies.map((copy) => (
+              <option key={copy.path} value={copy.path}>
+                {copy.path}
+              </option>
+            ))}
+          </select>
+          <button type="submit" className="btn small-btn">
+            Import copy
+          </button>
+        </form>
+      ) : null}
+      <form
+        className="tracked-form tracked-share"
+        data-testid="history-link"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const [kind, number] = gate.split(":");
+          if (kind && number) act((client) => client.historyLink(file.path, kind as "quorum" | "password", Number(number), true));
+        }}
+      >
+        <label htmlFor={`${id}-gate`}>Record unlocks of</label>
+        <select id={`${id}-gate`} value={gate} onChange={(event) => setGate(event.target.value)}>
+          {gates.map((candidate) => (
+            <option key={`${candidate.gate}:${candidate.id}`} value={`${candidate.gate}:${candidate.id}`}>
+              {candidate.label}
+            </option>
+          ))}
+        </select>
+        <button type="submit" className="btn small-btn" disabled={!gate}>
+          Link gate
+        </button>
+      </form>
+      {file.links.length > 0 ? (
+        <ul className="tracked-links" data-testid="tracked-links">
+          {file.links.map((link) => (
+            <li key={`${link.gate}:${link.id}`}>
+              {linkName(link)}{" "}
+              <button
+                type="button"
+                className="btn small-btn"
+                onClick={() => act((client) => client.historyLink(file.path, link.gate, link.id, false))}
+              >
+                Unlink
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 function TrackedFileCard({
   file,
   snapshot,
@@ -211,7 +342,7 @@ function TrackedFileCard({
       ) : null}
       <ol className="tracked-revisions" data-testid="tracked-revisions">
         {file.revisions.map((revision) => (
-          <RevisionRow key={revision.id} file={file} revision={revision} me={me} act={act} />
+          <RevisionRow key={revision.id} file={file} revision={revision} me={me} act={act} report={report} />
         ))}
       </ol>
       <p className="small" data-testid="tracked-shareable">
@@ -253,6 +384,7 @@ function TrackedFileCard({
           </>
         ) : null}
       </div>
+      <HistoryTools file={file} snapshot={snapshot} act={act} report={report} />
       {file.destroyed ? null : (
         <>
           <EditForm key={heads.join()} file={file} act={act} />
