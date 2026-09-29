@@ -136,6 +136,14 @@ impl TrackedFile {
             .map_or_else(|| genesis_hash(&self.file_id), |event| event.event_hash)
     }
 
+    /// Whether this history was once at `root`: the genesis hash, or the
+    /// hash of one of its events. Each event hash covers the one before, so
+    /// on a verified chain this means the whole history up to `root` is a
+    /// prefix of this one.
+    pub fn passes_through(&self, root: &[u8; 32]) -> bool {
+        *root == genesis_hash(&self.file_id) || self.events.iter().any(|e| e.event_hash == *root)
+    }
+
     /// Append an event: assigns a random event id, the next sequence and
     /// the link to the current root. Existing events are never touched, and
     /// the chain is verified first so a damaged history is not extended.

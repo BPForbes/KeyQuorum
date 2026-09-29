@@ -1422,6 +1422,60 @@ fn a_receiver_records_whether_each_history_is_newer_than_what_it_accepted() {
 }
 
 #[test]
+fn a_newer_revision_on_a_rewritten_event_chain_is_not_called_newer() {
+    let mut env = delivering();
+    let before = env.fs.read(Path::new(KQTF)).unwrap();
+    let freshness = |env: &mut MemoryEnv, path: &str| {
+        let history = ok(env, &format!("history {path}"));
+        history
+            .lines()
+            .rfind(|l| l.contains("ShareDelivered"))
+            .and_then(|l| l.split_whitespace().find(|w| w.starts_with("freshness=")))
+            .map(str::to_string)
+            .expect("a recorded delivery")
+    };
+    let clear = |env: &mut MemoryEnv| {
+        for dir in ["/out", "/acks"] {
+            for file in env.fs.list(Path::new(dir)).unwrap_or_default() {
+                env.fs.delete(&file).unwrap();
+            }
+        }
+    };
+    // M.B accepts R1 after a rename to a.txt.
+    ok(
+        &mut env,
+        &format!("rename {KQTF} a.txt --as M.A --slot {}", slot("M.A")),
+    );
+    share_to_mb(&mut env, "").0.unwrap();
+    let (result, out) = receive_as_mb(&mut env, "--out /work/r.kqtf");
+    assert!(result.is_ok(), "{out}");
+    assert_eq!(freshness(&mut env, "/work/r.kqtf"), "freshness=FIRST");
+    clear(&mut env);
+
+    // The sender's copy from before that rename takes another event chain
+    // (renamed to b.txt instead) and adds R2 on top of the same R1. The
+    // revisions extend what M.B accepted; the event history does not.
+    env.fs.delete(Path::new(KQTF)).unwrap();
+    env.fs.write(Path::new(KQTF), &before).unwrap();
+    ok(
+        &mut env,
+        &format!("rename {KQTF} b.txt --as M.A --slot {}", slot("M.A")),
+    );
+    edit(&mut env, "totals: 200\n");
+    ok(
+        &mut env,
+        &format!(
+            "checkin {KQTF} --from /work/edited.txt --as M.A --slot {}",
+            slot("M.A")
+        ),
+    );
+    share_to_mb(&mut env, "").0.unwrap();
+    let (result, out) = receive_as_mb(&mut env, "--out /work/r2.kqtf");
+    assert!(result.is_ok(), "{out}");
+    assert_eq!(freshness(&mut env, "/work/r2.kqtf"), "freshness=NOT_NEWER");
+}
+
+#[test]
 fn a_received_file_answers_its_provenance_without_the_senders_store() {
     let mut env = delivering();
     share_to_mb(&mut env, "").0.unwrap();

@@ -349,40 +349,61 @@ fn letter_for(revision: u8, root: u8) -> HistoryLetter {
 #[test]
 fn freshness_is_judged_against_what_this_store_accepted_before() {
     let conn = db::open_in_memory().unwrap();
+    let any = |_: &[u8; 32]| true;
     let r1 = letter_for(1, 10);
     // Nothing seen yet.
-    assert_eq!(freshness(&conn, &r1, |_| true).unwrap(), Freshness::First);
+    assert_eq!(freshness(&conn, &r1, any, any).unwrap(), Freshness::First);
     record_seen_root(&conn, &r1).unwrap();
     // The same revision and root again: a replay.
     assert_eq!(
-        freshness(&conn, &r1, |_| true).unwrap(),
+        freshness(&conn, &r1, any, any).unwrap(),
         Freshness::Replayed
     );
     record_seen_root(&conn, &r1).unwrap();
-    // A later revision whose history holds R1: newer.
+    // A later revision whose history holds R1 and whose chain passes
+    // through R1's root: newer.
     let r2 = letter_for(2, 20);
     let holds_r1 = |id: &[u8; 32]| *id == [1; 32] || *id == [2; 32];
-    assert_eq!(freshness(&conn, &r2, holds_r1).unwrap(), Freshness::Newer);
+    let through_10 = |root: &[u8; 32]| *root == [10; 32] || *root == [20; 32];
+    assert_eq!(
+        freshness(&conn, &r2, holds_r1, through_10).unwrap(),
+        Freshness::Newer
+    );
     record_seen_root(&conn, &r2).unwrap();
     // R1 again under another root (an older copy re-sent): not newer.
     let old = letter_for(1, 11);
     assert_eq!(
-        freshness(&conn, &old, |_| true).unwrap(),
+        freshness(&conn, &old, any, any).unwrap(),
         Freshness::NotNewer
     );
     // A branch that lacks R2: not newer, whatever it adds.
     let side = letter_for(3, 30);
     let lacks_r2 = |id: &[u8; 32]| *id != [2; 32];
     assert_eq!(
-        freshness(&conn, &side, lacks_r2).unwrap(),
+        freshness(&conn, &side, lacks_r2, any).unwrap(),
         Freshness::NotNewer
     );
     // Another file starts fresh.
     let mut other = letter_for(1, 10);
     other.file_id = [9; 16];
     assert_eq!(
-        freshness(&conn, &other, |_| true).unwrap(),
+        freshness(&conn, &other, any, any).unwrap(),
         Freshness::First
+    );
+}
+
+#[test]
+fn the_same_revisions_under_a_different_event_chain_are_not_newer() {
+    let conn = db::open_in_memory().unwrap();
+    record_seen_root(&conn, &letter_for(1, 10)).unwrap();
+    // R2 holds R1, but its event chain never passed through root 10: its
+    // history was rewritten even though the revisions match.
+    let r2 = letter_for(2, 20);
+    let holds_r1 = |id: &[u8; 32]| *id == [1; 32] || *id == [2; 32];
+    let elsewhere = |root: &[u8; 32]| *root == [11; 32] || *root == [20; 32];
+    assert_eq!(
+        freshness(&conn, &r2, holds_r1, elsewhere).unwrap(),
+        Freshness::NotNewer
     );
 }
 

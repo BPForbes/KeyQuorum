@@ -716,11 +716,13 @@ pub enum Freshness {
     /// The same revision and history root were accepted before (a replay or
     /// a retry).
     Replayed,
-    /// The letter's history holds every revision accepted here before, and
-    /// more: it is newer than anything this store has authenticated.
+    /// The letter's event chain passes through every history root accepted
+    /// here before, holds every revision accepted with them, and adds a
+    /// revision: it extends everything this store has authenticated.
     Newer,
     /// The same revision as before, or a history missing something accepted
-    /// here before (an older copy, or another branch). Not newer.
+    /// here before (an older copy, another branch, or the same revisions
+    /// under a different event chain). Not newer.
     NotNewer,
 }
 
@@ -737,12 +739,14 @@ impl Freshness {
 
 /// Compare a letter's authenticated history with what this store accepted
 /// before for the same file. `holds` answers whether the letter's container
-/// includes a revision id; the caller supplies it from the decoded
+/// includes a revision id, and `passes_through` whether its event chain
+/// contains a history root; the caller supplies both from the decoded
 /// container, so this module never decodes one.
 pub fn freshness(
     conn: &Connection,
     letter: &HistoryLetter,
     holds: impl Fn(&[u8; 32]) -> bool,
+    passes_through: impl Fn(&[u8; 32]) -> bool,
 ) -> Result<Freshness> {
     let mut seen = conn
         .prepare("SELECT revision_id, history_root FROM tracked_seen_roots WHERE file_id = ?1")?;
@@ -755,16 +759,20 @@ pub fn freshness(
         return Ok(Freshness::First);
     }
     let mut revisions = Vec::new();
+    let mut roots = Vec::new();
     for (revision, root) in rows {
         let revision: [u8; 32] = revision.try_into().map_err(|_| Error::InvalidTrackedFile)?;
-        if revision == letter.revision_id && root.as_slice() == letter.history_root {
+        let root: [u8; 32] = root.try_into().map_err(|_| Error::InvalidTrackedFile)?;
+        if revision == letter.revision_id && root == letter.history_root {
             return Ok(Freshness::Replayed);
         }
         revisions.push(revision);
+        roots.push(root);
     }
     let covers_all = revisions.iter().all(&holds);
+    let extends_all = roots.iter().all(&passes_through);
     let adds = !revisions.contains(&letter.revision_id);
-    Ok(if covers_all && adds {
+    Ok(if covers_all && extends_all && adds {
         Freshness::Newer
     } else {
         Freshness::NotNewer

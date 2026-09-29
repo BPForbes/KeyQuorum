@@ -2004,8 +2004,12 @@ fn receive(
         short(&letter.revision_id)
     );
     // Compared with what this store accepted before, never assumed newest.
-    let freshness =
-        file_delivery::freshness(conn, &letter, |id| incoming.graph().get(id).is_some())?;
+    let freshness = file_delivery::freshness(
+        conn,
+        &letter,
+        |id| incoming.graph().get(id).is_some(),
+        |root| incoming.passes_through(root),
+    )?;
     errln!(
         "History: {} (against what this store accepted before)",
         freshness.name()
