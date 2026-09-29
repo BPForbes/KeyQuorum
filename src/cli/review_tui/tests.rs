@@ -12,6 +12,10 @@ fn state() -> ReviewState {
     };
     ReviewState::new(ReviewView {
         title: "plan.txt — merge review".to_string(),
+        status: vec![
+            "STATUS".to_string(),
+            "  review M.S (PriorNeutralOwner)".to_string(),
+        ],
         panes: vec![
             Pane {
                 heading: "LEFT".into(),
@@ -33,7 +37,7 @@ fn state() -> ReviewState {
 }
 
 fn render(state: &ReviewState, message: &str) -> (String, Layouts) {
-    let mut terminal = Terminal::new(TestBackend::new(70, 14)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(70, 18)).unwrap();
     let mut layouts = Layouts::default();
     terminal
         .draw(|frame| draw(frame, state, message, &mut layouts))
@@ -62,6 +66,10 @@ fn both_sides_the_note_and_who_wrote_the_line_are_drawn() {
         "{text}"
     );
     assert!(text.contains("? for help"));
+    assert!(
+        text.contains("merge status") && text.contains("PriorNeutralOwner"),
+        "{text}"
+    );
 }
 
 #[test]

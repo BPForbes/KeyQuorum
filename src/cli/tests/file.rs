@@ -1247,3 +1247,76 @@ fn interactive_review_needs_the_tui_build_and_a_fork() {
     let (result, _) = run(&mut env, &format!("review {KQTF} --interactive"));
     assert!(result.is_err());
 }
+
+#[test]
+fn each_changed_line_is_attributed_to_the_revision_that_wrote_it() {
+    use crate::cli::review_view::ReviewView;
+    use crate::file_history::{ChangeKind, NewRevision, TrackedFile};
+    let mut env = org();
+    env.fs
+        .write(Path::new("/work/report.txt"), b"one\ntwo\nthree\n")
+        .unwrap();
+    track(&mut env, "M.A", "M.A");
+    let mut file = TrackedFile::decode(&env.fs.read(Path::new(KQTF)).unwrap()).unwrap();
+    let base = file.graph().heads()[0];
+    let policy_hash = file.policy().unwrap().policy_hash().unwrap();
+    let revision = |file: &mut TrackedFile, parent, label: &str, minute: u8, text: &str| {
+        file.check_in(
+            NewRevision {
+                parent_revision_ids: vec![parent],
+                user_label: None,
+                author_identity: Some([minute; 16]),
+                author_hcp_label: label.to_string(),
+                created_at_utc: format!("2026-09-27T00:0{minute}:00Z"),
+                topology_generation: 0,
+                policy_hash,
+            },
+            text.as_bytes().to_vec(),
+        )
+        .unwrap()
+    };
+    // Left: M.A.1 edits line 1, then M.A.2 edits line 3 and drops line 2.
+    let first = revision(&mut file, base, "M.A.1", 1, "ONE\ntwo\nthree\n");
+    revision(&mut file, first, "M.A.2", 2, "ONE\nTHREE\n");
+    // Right: one author edits line 2.
+    revision(&mut file, base, "M.S.1", 3, "one\nTWO\nthree\n");
+
+    let view = ReviewView::of(&file).expect("two heads");
+    let left = &view.panes[0];
+    let by = |kind, text: &str| {
+        left.lines
+            .iter()
+            .find(|l| l.kind == kind && l.text == text)
+            .unwrap_or_else(|| panic!("{kind:?} {text}: {:?}", left.lines))
+            .provenance
+            .clone()
+    };
+    assert!(
+        by(ChangeKind::Added, "ONE").starts_with("M.A.1"),
+        "{}",
+        by(ChangeKind::Added, "ONE")
+    );
+    assert!(by(ChangeKind::Removed, "one").starts_with("M.A.1"));
+    assert!(by(ChangeKind::Added, "THREE").starts_with("M.A.2"));
+    assert!(by(ChangeKind::Removed, "two").starts_with("M.A.2"));
+    assert!(by(ChangeKind::Removed, "three").starts_with("M.A.2"));
+    // The other side names its own author, and the pane header still names the head.
+    assert!(view.panes[1]
+        .lines
+        .iter()
+        .all(|l| l.provenance.starts_with("M.S.1")));
+    assert!(left.revision.starts_with("M.A.2"));
+}
+
+#[test]
+fn the_printed_review_carries_the_merge_status_the_interactive_one_shows() {
+    let mut env = org();
+    forked(&mut env, "totals: 100\n", "totals: 125\n", "totals: 130\n");
+    let out = ok(&mut env, &format!("review {KQTF}"));
+    assert!(out.contains("STATUS"), "{out}");
+    assert!(
+        out.contains("merge  RequiresHuman (OVERLAPPING_EDIT)"),
+        "{out}"
+    );
+    assert!(out.contains("review M.A (PriorNeutralOwner)"), "{out}");
+}

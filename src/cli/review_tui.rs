@@ -27,9 +27,15 @@ pub struct Layouts {
 }
 
 fn draw(frame: &mut Frame, state: &ReviewState, message: &str, layouts: &mut Layouts) {
+    let status_height = if state.view.status.is_empty() {
+        0
+    } else {
+        state.view.status.len() as u16 + 2
+    };
     let rows = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(3),
+        Constraint::Length(status_height),
         Constraint::Length(3),
         Constraint::Length(1),
     ])
@@ -75,16 +81,23 @@ fn draw(frame: &mut Frame, state: &ReviewState, message: &str, layouts: &mut Lay
         frame.render_stateful_widget(list, columns[i], &mut layouts.lists[i]);
     }
 
+    if status_height > 0 {
+        frame.render_widget(
+            Paragraph::new(state.view.status.join("\n"))
+                .block(Block::new().borders(Borders::ALL).title("merge status")),
+            rows[2],
+        );
+    }
     let who = state.provenance().unwrap_or("").to_string();
     frame.render_widget(
         Paragraph::new(who).block(Block::new().borders(Borders::ALL).title("written by")),
-        rows[2],
+        rows[3],
     );
     let bottom = match state.mode {
         Mode::Command => format!(":{}", state.command),
         Mode::Normal => message.to_string(),
     };
-    frame.render_widget(Paragraph::new(bottom), rows[3]);
+    frame.render_widget(Paragraph::new(bottom), rows[4]);
 }
 
 fn key_of(code: KeyCode, modifiers: KeyModifiers) -> Option<Key> {
