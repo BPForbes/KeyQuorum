@@ -1486,7 +1486,7 @@ fn expiry_needs_the_owners_own_key_not_just_the_label() {
         &format!("expire {KQTF} --as M --now --slot {}", slot("M.A")),
     );
     assert!(result.is_err());
-    // An ancestor label the store has never registered has no key to prove.
+    // A label outside the file's ancestry is refused before any key is opened.
     let (result, _) = run(
         &mut env,
         &format!("expire {KQTF} --as X --now --slot {}", slot("M")),
