@@ -8,6 +8,7 @@
 //! bridge evidence supplied by the caller from `private_bridge`. It adds no
 //! ancestry, signature or bridge logic of its own.
 
+use super::codec::{take_fixed, take_str};
 use super::container::TrackedFile;
 use super::proof::{ProofKind, RevisionProof};
 use super::revision::FileRevision;
@@ -35,6 +36,18 @@ pub enum Requirement {
     AuthorSignBridgeOrOwner = 3,
 }
 
+impl Requirement {
+    fn from_u8(value: u8) -> Result<Self> {
+        Ok(match value {
+            0 => Self::Forbidden,
+            1 => Self::AuthorSign,
+            2 => Self::AuthorSignDirectParent,
+            3 => Self::AuthorSignBridgeOrOwner,
+            _ => return Err(Error::InvalidTrackedFile),
+        })
+    }
+}
+
 /// Per-file revision policy, anchored at `scope_root`. An unrelated actor
 /// is never trusted, whatever the policy says.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,6 +72,31 @@ impl FilePolicy {
         }
     }
 
+    /// `lp(scope_root) | owner | descendants | ancestors | cross_branch`, the
+    /// same bytes `policy_hash` covers.
+    pub(super) fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        push_len_prefixed(out, self.scope_root.as_bytes())?;
+        out.extend_from_slice(&[
+            self.scope_owner as u8,
+            self.descendants as u8,
+            self.ancestors as u8,
+            self.cross_branch as u8,
+        ]);
+        Ok(())
+    }
+
+    pub(super) fn decode(data: &mut &[u8]) -> Result<Self> {
+        let scope_root = take_str(data)?;
+        let [owner, descendants, ancestors, cross_branch] = take_fixed::<4>(data)?;
+        Ok(Self {
+            scope_root,
+            scope_owner: Requirement::from_u8(owner)?,
+            descendants: Requirement::from_u8(descendants)?,
+            ancestors: Requirement::from_u8(ancestors)?,
+            cross_branch: Requirement::from_u8(cross_branch)?,
+        })
+    }
+
     /// Stored in each revision so later verification knows which rules
     /// applied when it was made.
     pub fn policy_hash(&self) -> Result<[u8; 32]> {
@@ -78,7 +116,7 @@ impl FilePolicy {
 
     /// Whether `label` may create or review revisions of this file at all:
     /// related to the scope and not in a forbidden role.
-    pub(super) fn may_author(&self, label: &str) -> bool {
+    pub fn may_author(&self, label: &str) -> bool {
         self.requirement_for(label)
             .is_some_and(|requirement| requirement != Requirement::Forbidden)
     }

@@ -157,6 +157,13 @@ could not settle (prior neutral owner, then seniority, sector size, common
 ancestor), from owners whose revisions are trusted under policy; conflicting
 authors never review their own collision, a private bridge is never named
 in history, and nothing is guessed when no one qualifies.
+`src/cli/file_cmd.rs` is the `keyquorum file` command layer over `file_history`
+(track, checkin, sign, countersign, status, history, verify). It decides no
+trust: it calls `file_history` and prints the result. The `.kqtf` container
+carries its own policy; the store only supplies signing keys, through
+`StoreTrust`, which accepts a key only for the identity the store knows for
+that label (the enrolled identity from `transfer`, else one derived from the
+label). Containers are replaced by writing a sibling and renaming.
 
 `src/lab/` (feature `lab`) is KeyQuorum Lab, the public browser
 demonstration published from `lab/` to GitHub Pages and embedded by

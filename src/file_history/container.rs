@@ -1,7 +1,7 @@
 //! `KQTF`: the tracked-file container. Layout (all integers big-endian):
 //!
 //! `magic(4) | version(1) | file_id(16) | lp(logical_name) | history_root(32)
-//!  | revision_count(u32) | revisions… | proof_count(u32) | proofs…
+//!  | policy_flag(1) [policy] | revision_count(u32) | revisions… | proof_count(u32) | proofs…
 //!  | event_count(u32) | events…`
 //!
 //! Each revision is its canonical body, its id, and the payload it commits
@@ -9,10 +9,12 @@
 //! whose stored `history_root` disagrees, whose revision ids or content
 //! commitments do not recompute, or whose events name unknown revisions.
 //! Version 2 replaced the single payload of version 1 with revisions;
-//! version 3 added revision proofs (signatures) between revisions and events.
+//! version 3 added revision proofs (signatures) between revisions and events;
+//! version 4 added the file's policy after the history root.
 
 use super::codec::{bad, take_fixed};
 use super::event::{genesis_hash, verify_chain, HistoryEvent, NewEvent};
+use super::policy::FilePolicy;
 use super::proof::RevisionProof;
 use super::revision::{FileRevision, NewRevision, RevisionGraph, StoredRevision};
 use super::verify::verify_structure;
@@ -22,7 +24,7 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 
 pub const CONTAINER_MAGIC: &[u8; 4] = b"KQTF";
-pub const CONTAINER_VERSION: u8 = 3;
+pub const CONTAINER_VERSION: u8 = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackedFile {
@@ -39,6 +41,9 @@ pub struct TrackedFile {
     /// Read through [`TrackedFile::events`]; only this module appends, so
     /// callers cannot rewrite or drop events behind the chain's back.
     pub(super) events: Vec<HistoryEvent>,
+    /// The rules revisions of this file are judged by; `None` for a file
+    /// that has not been given a policy.
+    pub(super) policy: Option<FilePolicy>,
 }
 
 impl TrackedFile {
@@ -49,7 +54,19 @@ impl TrackedFile {
             revisions: Vec::new(),
             proofs: Vec::new(),
             events: Vec::new(),
+            policy: None,
         }
+    }
+
+    /// A new file bound to `policy`.
+    pub fn with_policy(file_id: [u8; 16], logical_name: &str, policy: FilePolicy) -> Self {
+        let mut file = Self::new(file_id, logical_name);
+        file.policy = Some(policy);
+        file
+    }
+
+    pub fn policy(&self) -> Option<&FilePolicy> {
+        self.policy.as_ref()
     }
 
     pub fn graph(&self) -> RevisionGraph<'_> {
@@ -142,6 +159,13 @@ impl TrackedFile {
         out.extend_from_slice(&self.file_id);
         push_len_prefixed(&mut out, self.logical_name.as_bytes())?;
         out.extend_from_slice(&self.history_root());
+        match &self.policy {
+            Some(policy) => {
+                out.push(1);
+                policy.encode(&mut out)?;
+            }
+            None => out.push(0),
+        }
         let revision_count =
             u32::try_from(self.revisions.len()).map_err(|_| Error::BundleFieldTooLarge)?;
         out.extend_from_slice(&revision_count.to_be_bytes());
@@ -173,6 +197,11 @@ impl TrackedFile {
         let file_id = take_fixed::<16>(&mut data)?;
         let logical_name = bad(take_len_prefixed(&mut data).and_then(utf8))?;
         let stored_root = take_fixed::<32>(&mut data)?;
+        let policy = match take_fixed::<1>(&mut data)?[0] {
+            0 => None,
+            1 => Some(FilePolicy::decode(&mut data)?),
+            _ => return Err(Error::InvalidTrackedFile),
+        };
         let revision_count = bad(take_u32(&mut data))?;
         let mut revisions = Vec::new();
         for _ in 0..revision_count {
@@ -194,6 +223,7 @@ impl TrackedFile {
             revisions,
             proofs,
             events,
+            policy,
         };
         if !data.is_empty() || verify_structure(&file)? != stored_root {
             return Err(Error::InvalidTrackedFile);

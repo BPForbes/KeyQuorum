@@ -31,6 +31,7 @@ mod deliver_cmd;
 mod device_cmd;
 pub mod device_tool;
 pub mod env;
+mod file_cmd;
 #[cfg(feature = "provider")]
 pub mod host_args;
 mod transfer_cmd;
@@ -353,6 +354,11 @@ pub enum Command {
     Deliver {
         #[command(subcommand)]
         command: deliver_cmd::DeliverCommand,
+    },
+    /// Track files with a signed, hash-chained revision history
+    File {
+        #[command(subcommand)]
+        command: file_cmd::FileCommand,
     },
     /// Push and pull opaque .kqpb envelopes through the mailbox relay
     Relay {
@@ -939,6 +945,7 @@ fn run_in_store(conn: &mut Connection, command: Command) -> Result<()> {
         Command::Share { command } => run_share(conn, command)?,
         Command::Pin { command } => run_pin(conn, command)?,
         Command::Deliver { command } => deliver_cmd::run(conn, command)?,
+        Command::File { command } => file_cmd::run(conn, command)?,
         Command::Device { command } => device_cmd::run(conn, command)?,
         Command::Transfer { .. } | Command::Relay { .. } | Command::Loadkey { .. } => {
             unreachable!("transfer and relay commands are handled before opening the org db")
@@ -1270,6 +1277,7 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
         | Command::Share { .. }
         | Command::Pin { .. }
         | Command::Deliver { .. }
+        | Command::File { .. }
         | Command::Relay { .. }
         | Command::Loadkey { .. }
         | Command::Device { .. }
