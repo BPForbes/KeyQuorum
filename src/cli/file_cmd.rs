@@ -374,7 +374,7 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
         } => merge(conn, &kqtf, &as_label, label),
         FileCommand::Review { kqtf, interactive } => {
             if interactive {
-                review_interactive(&kqtf)
+                review_interactive(conn, &kqtf)
             } else {
                 review(conn, &kqtf)
             }
@@ -1426,15 +1426,17 @@ fn merge(conn: &Connection, kqtf: &Path, as_label: &str, user_label: Option<Stri
 }
 
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
-fn review_interactive(kqtf: &Path) -> Result<()> {
+fn review_interactive(conn: &Connection, kqtf: &Path) -> Result<()> {
     let file = load(kqtf)?;
-    let view = ReviewView::of(&file)
+    let policy = policy_of(&file)?.clone();
+    let mut view = ReviewView::of(&file)
         .ok_or_else(|| usage("nothing to review: the history does not have exactly two heads"))?;
+    view.status = merge_status(conn, &file, &policy)?;
     super::review_tui::run(view)
 }
 
 #[cfg(not(all(feature = "tui", not(target_arch = "wasm32"))))]
-fn review_interactive(_kqtf: &Path) -> Result<()> {
+fn review_interactive(_conn: &Connection, _kqtf: &Path) -> Result<()> {
     Err(usage(
         "this build has no interactive review; rebuild with `--features tui`, or use `file review`",
     ))
@@ -1450,10 +1452,6 @@ fn review(conn: &Connection, kqtf: &Path) -> Result<()> {
             heads.len()
         );
         return Ok(());
-    };
-    let base = match file.graph().merge_base(left, right) {
-        MergeBase::Unique(id) => Some(id),
-        _ => None,
     };
     let view = ReviewView::of(&file).expect("two heads were just found");
     outln!("{}", view.title);
@@ -1472,31 +1470,51 @@ fn review(conn: &Connection, kqtf: &Path) -> Result<()> {
             outln!("  {mark} {:>4} | {}", line.number, line.text);
         }
     }
-    let plan = file.plan_auto_merge(left, right, policy.auto_merge)?;
     outln!("");
-    outln!("MERGE");
-    if let Some(base) = base {
-        outln!("  base   {}", short(&base));
+    for line in merge_status(conn, &file, &policy)? {
+        outln!("{line}");
     }
-    outln!("  left   {}", short(left));
-    outln!("  right  {}", short(right));
-    outln!("STATUS");
-    outln!("  merge  {:?} ({})", plan.outcome, plan.reason);
+    Ok(())
+}
+
+/// The MERGE and STATUS section of a review: the heads, what the automatic
+/// merge would do, and who reviews when it stops. Both the printed and the
+/// interactive review show exactly these lines.
+fn merge_status(conn: &Connection, file: &TrackedFile, policy: &FilePolicy) -> Result<Vec<String>> {
+    let heads = file.graph().heads();
+    let [left, right] = heads.as_slice() else {
+        return Ok(Vec::new());
+    };
+    let base = match file.graph().merge_base(left, right) {
+        MergeBase::Unique(id) => Some(id),
+        _ => None,
+    };
+    let plan = file.plan_auto_merge(left, right, policy.auto_merge)?;
+    let mut lines = vec!["MERGE".to_string()];
+    if let Some(base) = base {
+        lines.push(format!("  base   {}", short(&base)));
+    }
+    lines.push(format!("  left   {}", short(left)));
+    lines.push(format!("  right  {}", short(right)));
+    lines.push("STATUS".to_string());
+    lines.push(format!("  merge  {:?} ({})", plan.outcome, plan.reason));
     if !matches!(
         plan.outcome,
         AutoMergeOutcome::CleanMerge | AutoMergeOutcome::AlreadyEquivalent
     ) {
-        let selection = file.select_resolver(left, right, &policy, &StoreTrust { conn })?;
-        match selection {
+        let selection = file.select_resolver(left, right, policy, &StoreTrust { conn })?;
+        lines.push(match selection {
             ResolverSelection::Assigned { reviewer, rule, .. } => {
-                outln!("  review {reviewer} ({rule:?})")
+                format!("  review {reviewer} ({rule:?})")
             }
-            ResolverSelection::Unresolved => outln!("  review UNRESOLVED (no authorized reviewer)"),
-        }
+            ResolverSelection::Unresolved => {
+                "  review UNRESOLVED (no authorized reviewer)".to_string()
+            }
+        });
     } else {
-        outln!("  review the result, then `keyquorum file merge` and `file sign`");
+        lines.push("  review the result, then `keyquorum file merge` and `file sign`".to_string());
     }
-    Ok(())
+    Ok(lines)
 }
 
 fn graph(conn: &Connection, kqtf: &Path) -> Result<()> {

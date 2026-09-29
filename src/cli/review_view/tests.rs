@@ -20,6 +20,7 @@ fn view() -> ReviewView {
     };
     ReviewView {
         title: "plan.txt — merge review".to_string(),
+        status: Vec::new(),
         panes: vec![pane("LEFT", "M.A rev a", 25), pane("RIGHT", "M.B rev b", 2)],
     }
 }

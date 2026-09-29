@@ -10,7 +10,8 @@
 // and by the tests; `ReviewView` is what `keyquorum file review` prints too.
 #![cfg_attr(not(feature = "tui"), allow(dead_code))]
 
-use crate::file_history::{ChangeKind, MergeBase, TrackedFile};
+use crate::file_history::{diff_text, ChangeKind, MergeBase, TrackedFile};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ViewLine {
@@ -35,6 +36,9 @@ pub struct Pane {
 pub struct ReviewView {
     pub title: String,
     pub panes: Vec<Pane>,
+    /// Merge outcome and who reviews it: filled by the caller from
+    /// `file_history` (it needs the store's keys), empty until then.
+    pub status: Vec<String>,
 }
 
 fn short(id: &[u8; 32]) -> String {
@@ -62,6 +66,90 @@ fn text(file: &TrackedFile, id: &[u8; 32]) -> Option<String> {
     String::from_utf8(stored.payload.clone()).ok()
 }
 
+/// Which revision on one side wrote each line of its diff from the merge
+/// base. The side's first-parent chain is replayed one revision at a time:
+/// a line a step adds belongs to that step's revision, and a line the step
+/// removes from the base is removed by it. `None` (so the caller falls back
+/// to the head) when the chain does not reach the base, is not text, or is
+/// too large to compare.
+struct Blame {
+    /// New-text line number (1-based) -> the revision that wrote it.
+    added_by: HashMap<usize, [u8; 32]>,
+    /// Base-text line number (1-based) -> the revision that removed it.
+    removed_by: HashMap<usize, [u8; 32]>,
+}
+
+fn blame(file: &TrackedFile, base: &[u8; 32], head: &[u8; 32]) -> Option<Blame> {
+    let graph = file.graph();
+    let mut chain = Vec::new();
+    let mut at = *head;
+    while at != *base {
+        chain.push(at);
+        at = *graph.get(&at)?.revision.parent_revision_ids.first()?;
+    }
+    chain.reverse();
+
+    #[derive(Clone)]
+    struct Origin {
+        rev: Option<[u8; 32]>,
+        base_line: Option<usize>,
+    }
+    let mut previous = text(file, base)?;
+    let mut current: Vec<Origin> = (1..=previous.split_inclusive('\n').count())
+        .map(|n| Origin {
+            rev: None,
+            base_line: Some(n),
+        })
+        .collect();
+    let mut removed_by = HashMap::new();
+    for id in chain {
+        let next = text(file, &id)?;
+        let changes = diff_text(&previous, &next)?;
+        let removed: HashSet<usize> = changes
+            .iter()
+            .filter(|c| c.kind == ChangeKind::Removed)
+            .map(|c| c.line)
+            .collect();
+        let added: HashSet<usize> = changes
+            .iter()
+            .filter(|c| c.kind == ChangeKind::Added)
+            .map(|c| c.line)
+            .collect();
+        for line in &removed {
+            if let Some(base_line) = current.get(line - 1).and_then(|o| o.base_line) {
+                removed_by.insert(base_line, id);
+            }
+        }
+        let mut carried = Vec::new();
+        let mut old = 0usize;
+        for n in 1..=next.split_inclusive('\n').count() {
+            if added.contains(&n) {
+                carried.push(Origin {
+                    rev: Some(id),
+                    base_line: None,
+                });
+                continue;
+            }
+            while removed.contains(&(old + 1)) {
+                old += 1;
+            }
+            carried.push(current.get(old)?.clone());
+            old += 1;
+        }
+        current = carried;
+        previous = next;
+    }
+    let added_by = current
+        .iter()
+        .enumerate()
+        .filter_map(|(i, o)| o.rev.map(|rev| (i + 1, rev)))
+        .collect();
+    Some(Blame {
+        added_by,
+        removed_by,
+    })
+}
+
 impl ReviewView {
     /// The two sides of a forked history, each as the lines it changed
     /// since the unique common ancestor. `None` unless there are exactly
@@ -83,22 +171,38 @@ impl ReviewView {
                     Some("no single common ancestor: no line view".to_string()),
                 ),
                 Some(base) => match (text(file, &base), text(file, id)) {
-                    (Some(old), Some(new)) => match crate::file_history::diff_text(&old, &new) {
+                    (Some(old), Some(new)) => match diff_text(&old, &new) {
                         Some(changes) if changes.is_empty() => {
                             (Vec::new(), Some("no changed lines".to_string()))
                         }
-                        Some(changes) => (
-                            changes
-                                .into_iter()
-                                .map(|c| ViewLine {
-                                    kind: c.kind,
-                                    number: c.line,
-                                    text: c.text.trim_end_matches('\n').to_string(),
-                                    provenance: provenance.clone(),
-                                })
-                                .collect(),
-                            None,
-                        ),
+                        Some(changes) => {
+                            // Each line is attributed to the revision on this
+                            // side that wrote it; the head describes any
+                            // line the replay cannot place.
+                            let blame = blame(file, &base, id);
+                            let who = |line: &crate::file_history::LineChange| {
+                                blame
+                                    .as_ref()
+                                    .and_then(|b| match line.kind {
+                                        ChangeKind::Added => b.added_by.get(&line.line),
+                                        ChangeKind::Removed => b.removed_by.get(&line.line),
+                                    })
+                                    .map(|rev| describe(file, rev))
+                                    .unwrap_or_else(|| provenance.clone())
+                            };
+                            (
+                                changes
+                                    .iter()
+                                    .map(|c| ViewLine {
+                                        kind: c.kind,
+                                        number: c.line,
+                                        text: c.text.trim_end_matches('\n').to_string(),
+                                        provenance: who(c),
+                                    })
+                                    .collect(),
+                                None,
+                            )
+                        }
                         None => (
                             Vec::new(),
                             Some("too large to compare: no line view".to_string()),
@@ -117,6 +221,7 @@ impl ReviewView {
         Some(Self {
             title: format!("{} — merge review", file.logical_name),
             panes: vec![pane("LEFT", left), pane("RIGHT", right)],
+            status: Vec::new(),
         })
     }
 }
