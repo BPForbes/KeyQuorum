@@ -142,8 +142,10 @@ The bridge inbox carries them like any other non-device letter. Tracked
 files travel as `KIND_FILE_HISTORY` / `KIND_FILE_HISTORY_ACK` (15, 16) in the
 same module: the sender signs the header and the container's hash, and the
 container carries only the delivered revision and its ancestors
-(`TrackedFile::extract_revision`), so an untrusted newer revision never
-leaves. That signature authenticates transport only; the receiver judges
+(`TrackedFile::extract_revision`, which also keeps events that name no
+revision, such as a rename), so an untrusted newer revision never
+leaves. Both `file receive` and `deliver open` require the letter's recipient
+label to own the key that opened it (`deliver_cmd::require_recipient_key`). That signature authenticates transport only; the receiver judges
 the revision by the file's own policy (`keyquorum file receive`) and
 answers with a signed accept or reject.
 `src/file_history.rs` owns the tracked-file container (`KQTF`, its own

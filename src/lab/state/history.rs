@@ -10,7 +10,7 @@ use super::*;
 use crate::cli::file_cmd::StoreTrust;
 use crate::file_history::{
     current_revision, evaluate_revision_trust, latest_trusted_revision, select_shareable_revision,
-    DeliveryDecisionKind, HistoryOutcome, TrackedFile, TrustState,
+    HistoryOutcome, TrackedFile, TrustState,
 };
 
 /// Where tracked-file letters and acknowledgements are handed over: a
@@ -294,11 +294,7 @@ impl LabState {
                 let shareable = match heads.as_slice() {
                     [head] => select_shareable_revision(&file, head, None, &policy, &ctx)
                         .ok()
-                        .and_then(|decision| {
-                            (decision.decision != DeliveryDecisionKind::DeniedNoTrustedRevision)
-                                .then(|| decision.delivered_revision.map(hex::encode))
-                                .flatten()
-                        }),
+                        .and_then(|decision| decision.delivered_revision.map(hex::encode)),
                     _ => None,
                 };
                 let owner = homes

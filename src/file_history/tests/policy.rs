@@ -443,6 +443,16 @@ fn nothing_trusted_means_nothing_is_delivered() {
 }
 
 #[test]
+fn a_revision_the_rules_refuse_is_denied_by_policy_not_just_untrusted() {
+    // An author outside the file's scope is refused outright, unlike a
+    // revision that is merely waiting for its signature.
+    let (file, id) = one("X.1", 2);
+    let d = shared(&file, &id, None);
+    assert_eq!(d.decision, DeliveryDecisionKind::DeniedPolicy);
+    assert_eq!(d.delivered_revision, None);
+}
+
+#[test]
 fn fallback_only_considers_ancestors_of_the_candidate() {
     // Trusted work on a sibling branch is not a fallback for this one.
     let mut file = TrackedFile::new(FILE, "report.txt");

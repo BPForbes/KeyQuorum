@@ -126,7 +126,12 @@ impl FilePolicy {
         let needs_parent = |rule: Requirement| rule == Requirement::AuthorSignDirectParent;
         let bridge = Requirement::AuthorSignBridgeOrOwner;
         let has_parent = authority::parent_node_label(scope_root).is_some();
+        // Ancestors include the root, which has no parent to countersign, so
+        // for a scope below the root an ancestor rule of `author+parent`
+        // could never be met by every ancestor.
+        let root_is_ancestor = has_parent;
         let bad = policy.scope_owner == Requirement::Forbidden
+            || (needs_parent(policy.ancestors) && root_is_ancestor)
             || policy.scope_owner == bridge
             || policy.descendants == bridge
             || policy.ancestors == bridge
@@ -378,7 +383,12 @@ pub enum DeliveryDecisionKind {
     CurrentTrustedRevision,
     LastTrustedRevision,
     RequesterAlreadyCurrent,
+    /// Nothing trusted exists yet, but nothing was refused either: the
+    /// candidate may still become trusted.
     DeniedNoTrustedRevision,
+    /// Nothing is delivered because the policy refuses the candidate outright
+    /// (a forbidden role, an unrelated author, invalid evidence).
+    DeniedPolicy,
 }
 
 impl DeliveryDecisionKind {
@@ -389,6 +399,7 @@ impl DeliveryDecisionKind {
             Self::LastTrustedRevision => 2,
             Self::RequesterAlreadyCurrent => 3,
             Self::DeniedNoTrustedRevision => 4,
+            Self::DeniedPolicy => 5,
         }
     }
 
@@ -398,6 +409,7 @@ impl DeliveryDecisionKind {
             2 => Self::LastTrustedRevision,
             3 => Self::RequesterAlreadyCurrent,
             4 => Self::DeniedNoTrustedRevision,
+            5 => Self::DeniedPolicy,
             _ => return None,
         })
     }
@@ -476,7 +488,21 @@ pub fn select_shareable_revision(
             .find(|id| id != candidate && ancestors.contains(id) && is_trusted(id));
         match fallback {
             Some(id) => (Some(id), DeliveryDecisionKind::LastTrustedRevision),
-            None => (None, DeliveryDecisionKind::DeniedNoTrustedRevision),
+            None => {
+                // Refused outright is not the same as not yet trusted.
+                let refused = matches!(
+                    evaluate_revision_trust(file, candidate, policy, ctx),
+                    Ok(TrustState::Denied(_))
+                );
+                (
+                    None,
+                    if refused {
+                        DeliveryDecisionKind::DeniedPolicy
+                    } else {
+                        DeliveryDecisionKind::DeniedNoTrustedRevision
+                    },
+                )
+            }
         }
     };
     let kind = match (delivered, requester_has) {

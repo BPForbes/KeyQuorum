@@ -404,7 +404,7 @@ impl TrackedFile {
         let (actor, label, at, generation) = (
             new.author_identity,
             new.author_hcp_label.clone(),
-            new.created_at_utc.clone(),
+            super::revision::whole_seconds(&new.created_at_utc),
             new.topology_generation,
         );
         if let (O::CleanMerge | O::AlreadyEquivalent, Some(content)) =

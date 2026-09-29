@@ -9,7 +9,8 @@
 //! the label (see [`identity_for`]).
 
 use super::deliver_cmd::{
-    carry, recipient_secrets, registered_encryption_key, sender_keys, Letter, RecipientSecrets,
+    carry, recipient_secrets, registered_encryption_key, require_recipient_key, sender_keys,
+    Letter, RecipientSecrets,
 };
 use super::env::{self, errln, outln};
 use super::gate_link::{self, Gate};
@@ -1435,6 +1436,19 @@ fn share(
     let (identity, at) = (identity_for(conn, as_label)?, utc_instant()?);
     let generation = generation_for(conn, &policy.scope_root)?;
     let Some(delivered) = decision.delivered_revision else {
+        // Refused outright by the rules, or simply not trusted yet.
+        let by_policy = decision.decision == DeliveryDecisionKind::DeniedPolicy;
+        let (recorded, message) = if by_policy {
+            (
+                "delivery denied by policy",
+                "the file's rules refuse to deliver this revision",
+            )
+        } else {
+            (
+                "no trusted revision to share",
+                "no trusted revision exists to share",
+            )
+        };
         let mut refused = event(
             HistoryEventType::ShareAttempted,
             Some(candidate),
@@ -1442,15 +1456,13 @@ fn share(
             identity,
             as_label,
             generation,
-            EventDetails::new()
-                .with("to", to)
-                .with("result", "no trusted revision to share"),
+            EventDetails::new().with("to", to).with("result", recorded),
         );
         refused.outcome = HistoryOutcome::Denied;
         file.append(refused)?;
         save(kqtf, &file)?;
         index_after(conn, &file);
-        return Err(usage("no trusted revision exists to share"));
+        return Err(usage(message));
     };
     let extract = file.extract_revision(&delivered)?;
     let container = extract.encode()?;
@@ -1515,22 +1527,7 @@ fn receive(
 ) -> Result<()> {
     let bytes = env::read(letter_path)?;
     let letter = file_delivery::open_history_letter(conn, &secrets.encryption, &bytes)?;
-    // The recipient label is the sender's claim; it must name the key that
-    // opened the letter, or the delivery would be credited to someone else.
-    let opened_with = crate::keys::encryption_public_from_secret(&secrets.encryption);
-    let owns_key = crate::keys::active_keys_for(
-        conn,
-        &letter.recipient_label,
-        crate::keys::KeyType::Encryption,
-    )?
-    .iter()
-    .any(|key| key.public_key.as_slice() == opened_with.as_slice());
-    if !owns_key {
-        return Err(usage(&format!(
-            "the letter names {} as recipient, but this store has no encryption key for that label matching the key that opened it",
-            letter.recipient_label
-        )));
-    }
+    require_recipient_key(conn, &letter.recipient_label, &secrets.encryption)?;
     // The letter's header is only a claim about the container.
     let mut incoming = TrackedFile::decode(&letter.container)
         .map_err(|_| usage("the delivered container does not verify"))?;

@@ -386,6 +386,28 @@ fn stale_revisions_are_not_merged_while_newer_heads_exist() {
 }
 
 #[test]
+fn merge_events_keep_whole_seconds_even_when_the_revision_is_millisecond_stamped() {
+    let (mut file, _, left, right) = fork(b"a\nb\nc\n", b"a\nB\nc\n", b"a\nb\nC\n");
+    file.auto_merge(&left, &right, true, rev(vec![], "2026-10-03T08:00:00.482Z"))
+        .unwrap();
+    let merged = file.graph().heads()[0];
+    assert!(file
+        .graph()
+        .get(&merged)
+        .unwrap()
+        .revision
+        .generated_label
+        .contains("T080000.482Z"));
+    let stamped: Vec<&str> = file
+        .events()
+        .iter()
+        .map(|e| e.occurred_at.as_str())
+        .collect();
+    assert!(!stamped.is_empty());
+    assert!(stamped.iter().all(|at| !at.contains('.')), "{stamped:?}");
+}
+
+#[test]
 fn a_failed_multi_step_change_leaves_nothing_behind() {
     let (mut file, _, l, r) = fork(b"a\n", b"b\n", b"c\n");
     let (revisions, events) = (file.revisions().len(), file.events().len());

@@ -249,6 +249,19 @@ test.describe("desktop lab", () => {
     await expect(panel.getByTestId("revision-graph")).toContainText("forecast.txt");
     await filter("All").click();
     await expect(panel.getByTestId("revision-graph")).toContainText("budget.txt");
+
+    // A file or a revision narrows the log and the graph to itself.
+    const graph = panel.getByTestId("revision-graph");
+    const sections = graph.locator("section");
+    expect(await sections.count()).toBeGreaterThan(1);
+    const budgetId = await panel.locator("#history-file-filter option", { hasText: "budget.txt" }).getAttribute("value");
+    await panel.getByLabel("File", { exact: true }).selectOption(budgetId!);
+    await expect(sections).toHaveCount(1);
+    await expect(graph).toContainText("budget.txt");
+    await expect(graph).not.toContainText("forecast.txt");
+    await panel.getByLabel("File", { exact: true }).selectOption("");
+    await panel.getByLabel("Revision", { exact: true }).fill("no such revision");
+    await expect(panel.getByText("Nothing matches these filters yet.")).toBeVisible();
   });
 
   test("tracked files can be made, edited, signed, verified and handed over from the Activity page", async ({ page }) => {

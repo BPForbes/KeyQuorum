@@ -81,7 +81,15 @@ impl TrackedFile {
         let events = self
             .events
             .iter()
-            .take_while(|event| event.revision_id.as_ref().is_some_and(keep))
+            // An event that names a revision travels only if that revision
+            // does. A rename names none and only says which name a file
+            // had, so it travels too. Any other event without a revision
+            // (an import, a fork notice) can describe newer revisions, so
+            // it ends the copied prefix, as the hash chain cannot skip it.
+            .take_while(|event| match event.revision_id.as_ref() {
+                Some(id) => keep(id),
+                None => event.event_type == HistoryEventType::FileRenamed,
+            })
             .cloned()
             .collect();
         let pruned = TrackedFile {

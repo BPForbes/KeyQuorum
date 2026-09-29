@@ -173,6 +173,7 @@ pub fn run(conn: &Connection, command: DeliverCommand) -> Result<()> {
             let bytes = env::read(&file)?;
             let secrets = recipient_secrets(slot, share_file, signing_key_file)?;
             let letter = file_delivery::open_letter(conn, &secrets.encryption, &bytes)?;
+            require_recipient_key(conn, &letter.recipient_label, &secrets.encryption)?;
             errln!(
                 "From {} to {}: {} ({} bytes), signature verified",
                 letter.sender_label,
@@ -287,6 +288,27 @@ pub(super) fn carry(
         );
     }
     Ok(())
+}
+
+/// The recipient label in a letter is the sender's claim. It must name the
+/// key that opened the letter, or a delivery, and the answer to it, would be
+/// credited to a label that took no part.
+pub(super) fn require_recipient_key(
+    conn: &Connection,
+    recipient_label: &str,
+    opened_with: &[u8; 32],
+) -> Result<()> {
+    let public = keys::encryption_public_from_secret(opened_with);
+    let owns_key = keys::active_keys_for(conn, recipient_label, KeyType::Encryption)?
+        .iter()
+        .any(|key| key.public_key.as_slice() == public.as_slice());
+    if owns_key {
+        Ok(())
+    } else {
+        Err(usage(&format!(
+            "the letter names {recipient_label} as recipient, but this store has no encryption key for that label matching the key that opened it"
+        )))
+    }
 }
 
 pub(super) fn registered_encryption_key(conn: &Connection, label: &str) -> Result<[u8; 32]> {

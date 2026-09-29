@@ -1733,6 +1733,91 @@ fn renaming_keeps_the_file_and_revision_identity_and_is_recorded() {
 }
 
 #[test]
+fn a_rename_travels_with_the_delivered_history() {
+    let mut env = delivering();
+    ok(
+        &mut env,
+        &format!("rename {KQTF} q3.txt --as M.A --slot {}", slot("M.A")),
+    );
+    ok(
+        &mut env,
+        &format!(
+            "share {KQTF} --to M.B --as M.A --slot {} --output-dir /out",
+            slot("M.A")
+        ),
+    );
+    let (result, out) = receive_as_mb(&mut env, "--out /work/received.kqtf");
+    assert!(result.is_ok(), "{result:?}\n{out}");
+    let history = ok(&mut env, "history /work/received.kqtf");
+    assert!(history.contains("FileRenamed"), "{history}");
+    assert!(ok(&mut env, "status /work/received.kqtf").starts_with("q3.txt ("));
+}
+
+#[test]
+fn rules_no_ancestor_can_meet_are_refused_but_a_root_scope_has_no_ancestors() {
+    let mut env = org();
+    // Below the root, the root is an ancestor and has no parent to countersign.
+    let (result, _) = run(
+        &mut env,
+        &format!(
+            "track /work/report.txt --scope M.A --as M.A --slot {} --ancestors-rule author+parent",
+            slot("M.A")
+        ),
+    );
+    assert!(result.is_err());
+    assert!(!env.fs.exists(Path::new(KQTF)));
+    // A root scope has no ancestors, so the rule is never asked of anyone.
+    ok(
+        &mut env,
+        &format!(
+            "track /work/report.txt --scope M --as M --slot {} --ancestors-rule author+parent",
+            slot("M")
+        ),
+    );
+}
+
+#[test]
+fn deliver_open_also_requires_the_named_recipient_to_own_the_opening_key() {
+    use crate::file_delivery::{seal_letter, Outgoing};
+    let mut env = delivering();
+    let mb_public: [u8; 32] = crate::keys::active_keys_for(
+        env.store("/home/org/keyquorum.sqlite"),
+        "M.B",
+        crate::keys::KeyType::Encryption,
+    )
+    .unwrap()[0]
+        .public_key
+        .clone()
+        .try_into()
+        .unwrap();
+    let (result, _) = env.run(|| {
+        let secrets = crate::cli::open_slot_secrets(&slot("M.A"))?;
+        let sender_public = crate::keys::encryption_public_from_secret(&secrets.encryption_secret);
+        let letter = seal_letter(&Outgoing {
+            sender_label: "M.A",
+            sender_signing_secret: &secrets.signing_secret,
+            sender_encryption_public: &sender_public,
+            recipient_label: "M",
+            recipient_encryption_public: &mb_public,
+            file_name: "note.txt",
+            contents: b"hello",
+        })?;
+        crate::cli::env::create_dir_all(Path::new("/out"))?;
+        crate::cli::env::write(Path::new("/out/forged.kqpb"), &letter.bytes)
+    });
+    assert!(result.is_ok(), "{result:?}");
+    let (result, _) = env.keyquorum(&format!(
+        "keyquorum {DB} deliver open --file /out/forged.kqpb --slot {} --ack-dir /acks",
+        slot("M.B")
+    ));
+    let message = result.unwrap_err().to_string();
+    assert!(
+        message.contains("matching the key that opened it"),
+        "{message}"
+    );
+}
+
+#[test]
 fn a_letter_must_name_the_label_whose_key_opened_it() {
     use crate::file_delivery::{seal_history_letter, OutgoingHistory};
     use crate::file_history::TrackedFile;

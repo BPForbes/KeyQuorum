@@ -336,11 +336,12 @@ fn decision_codes_round_trip_and_reject_unknown() {
         K::LastTrustedRevision,
         K::RequesterAlreadyCurrent,
         K::DeniedNoTrustedRevision,
+        K::DeniedPolicy,
     ] {
         assert_eq!(K::from_code(kind.code()), Some(kind));
     }
     assert_eq!(K::from_code(0), None);
-    assert_eq!(K::from_code(5), None);
+    assert_eq!(K::from_code(6), None);
 }
 
 #[test]
@@ -354,4 +355,23 @@ fn an_extract_stops_at_an_event_that_names_no_revision() {
         .unwrap();
     let extract = file.extract_revision(&base).unwrap();
     assert_eq!(extract.events().len(), 1);
+}
+
+#[test]
+fn a_rename_event_travels_with_an_extract_but_nothing_after_an_import_does() {
+    let (mut file, base) = base_copy();
+    let before = file.events().len();
+    file.append(new_event(HistoryEventType::FileRenamed, None))
+        .unwrap();
+    file.append(new_event(HistoryEventType::RevisionSigned, Some(base)))
+        .unwrap();
+    file.append(new_event(HistoryEventType::HistoryImported, None))
+        .unwrap();
+    file.append(new_event(HistoryEventType::RevisionSigned, Some(base)))
+        .unwrap();
+    let extract = file.extract_revision(&base).unwrap();
+    let kinds: Vec<_> = extract.events().iter().map(|e| e.event_type).collect();
+    assert_eq!(kinds.len(), before + 2, "{kinds:?}");
+    assert!(kinds.contains(&HistoryEventType::FileRenamed));
+    assert!(!kinds.contains(&HistoryEventType::HistoryImported));
 }

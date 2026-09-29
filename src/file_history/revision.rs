@@ -111,6 +111,16 @@ fn normalize_name(name: &str) -> String {
 /// `2026-10-02T14:32:05.482Z` → `20261002T143205.482Z`. Only UTC (`Z`)
 /// timestamps with optional fractional seconds and a real calendar date and
 /// clock time are accepted.
+/// `2026-10-02T14:32:05.482Z` as `2026-10-02T14:32:05Z`. Events keep whole
+/// seconds even when the revision they concern is stamped to the
+/// millisecond, so expiry can compare event times as text.
+pub(crate) fn whole_seconds(instant: &str) -> String {
+    match (instant.find('.'), instant.strip_suffix('Z')) {
+        (Some(dot), Some(_)) => format!("{}Z", &instant[..dot]),
+        _ => instant.to_string(),
+    }
+}
+
 fn compact_utc(value: &str) -> Result<String> {
     let digits = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
     let (date, time) = value.split_once('T').ok_or(Error::InvalidTrackedFile)?;

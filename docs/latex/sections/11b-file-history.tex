@@ -51,8 +51,14 @@ Signing a native file that has no container yet is the first content
 signature: \code{file sign report.txt --scope M.A --as M.A --slot ...}
 allocates the file id, records revision R1, signs it and writes
 \file{report.txt.kqtf}, the same steps as \code{file track}. Files nobody
-signs this way stay untracked, and a second \code{file sign} on the same
-native file is refused instead of minting a second identity.
+signs this way stay untracked. Tracking begins at the first \emph{trusted}
+signature: if the first revision would still wait for a countersignature (a
+descendant signing alone), nothing is written and the command says who can
+start tracking; the explicit \code{file track} may still begin pending. A
+second \code{file sign} on the same native path is refused instead of minting
+a second identity. The check is by path: the same bytes signed from a copy at
+another path start a separate tracked file, because a file's identity is a
+random id and not a fingerprint of its content.
 
 The file's identity does not depend on its name, path or holder.
 \code{file rename} (scope owner or an ancestor, proven with \flag{--slot})
@@ -158,7 +164,11 @@ checked in an edit without signing it --- the letter carries its nearest
 trusted \emph{ancestor} instead. Trusted work on another branch is never
 substituted, and the unsigned revision never leaves your copy: the container
 in the letter holds only the delivered revision and its ancestors. If no
-ancestor is trusted, nothing is sent and the refusal is recorded.
+ancestor is trusted, nothing is sent and the refusal is recorded. The
+refusal says why: \emph{denied by policy} when the file's rules refuse the
+revision outright (an unrelated or forbidden author, evidence that does not
+verify), and \emph{no trusted revision} when it is only waiting for a
+signature.
 
 \begin{lstlisting}
 keyquorum file share report.txt.kqtf --to M.B --as M.A --slot ./usb=M.A \
@@ -174,7 +184,10 @@ like any other letter. The sender's signature on the letter is
 delivered revision by the file's own policy against their own store, and
 refuses it if it is not trusted there. The recipient's store must also hold the encryption key that
 opened the letter under the recipient label the letter names, so a letter
-sealed to one person cannot credit the delivery to another. \flag{--into} merges a letter into a
+sealed to one person cannot credit the delivery to another; \code{deliver
+open} makes the same check. A rename made before sharing travels with the
+letter, and so does any later history that does not concern a revision
+outside the delivered one. \flag{--into} merges a letter into a
 copy you already hold. Either way the recipient seals back a signed accept
 or reject, and \code{file ack} records it once in the sender's history.
 

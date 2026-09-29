@@ -38,17 +38,30 @@ const FILTERS: { id: Filter; label: string }[] = [
 
 const short = (id: string) => id.slice(0, 8);
 
+interface Narrow {
+  /** A tracked file's id, or "" for every file. */
+  fileId: string;
+  /** Text matched against a revision's id, generated label or user label. */
+  revision: string;
+}
+
 /** Only history entries belong to a category; the rest show under All. */
-function matches(entry: ActivityView, filter: Filter) {
-  return filter === "all" || entry.historyCategory === filter;
+function matches(entry: ActivityView, filter: Filter, narrow: Narrow = { fileId: "", revision: "" }) {
+  if (filter !== "all" && entry.historyCategory !== filter) return false;
+  if (narrow.fileId && entry.fileId !== narrow.fileId) return false;
+  const text = narrow.revision.trim().toLowerCase();
+  if (!text) return true;
+  return [entry.revisionId, entry.generatedLabel, entry.userLabel].some((field) => field?.toLowerCase().includes(text));
 }
 
 function HistoryEntry({ entry }: { entry: ActivityView }) {
+  // The person's own description leads; the generated label and the short
+  // hash follow. Commands always take the full id.
   const facts: [string, string | undefined][] = [
     ["File", entry.fileName],
-    ["Revision", entry.revisionId ? short(entry.revisionId) : undefined],
-    ["Generated label", entry.generatedLabel],
     ["Label", entry.userLabel],
+    ["Generated label", entry.generatedLabel],
+    ["Revision", entry.revisionId ? short(entry.revisionId) : undefined],
     ["Parents", entry.parentRevisionIds?.length ? entry.parentRevisionIds.map(short).join(" + ") : undefined],
     ["Trust when recorded", entry.finalizationState],
     ["History root", entry.historyRoot ? short(entry.historyRoot) : undefined],
@@ -84,21 +97,24 @@ function RevisionGraph({ entries }: { entries: ActivityView[] }) {
     if (entry.revisionId && entry.generatedLabel && !nodes.has(entry.revisionId)) nodes.set(entry.revisionId, entry);
   }
   if (nodes.size === 0) return null;
-  const files = new Map<string, [string, ActivityView][]>();
+  // Grouped by the stable file id, so two files with the same name stay apart.
+  const files = new Map<string, { name: string; revisions: [string, ActivityView][] }>();
   for (const node of nodes.entries()) {
-    const name = node[1].fileName ?? "";
-    files.set(name, [...(files.get(name) ?? []), node]);
+    const key = node[1].fileId ?? node[1].fileName ?? "";
+    const group = files.get(key) ?? { name: node[1].fileName ?? "", revisions: [] };
+    group.revisions.push(node);
+    files.set(key, group);
   }
   return (
     <div className="revision-graph" data-testid="revision-graph">
-      {[...files.entries()].map(([name, revisions]) => (
-        <section key={name}>
+      {[...files.entries()].map(([key, { name, revisions }]) => (
+        <section key={key} data-file-id={key}>
           <h3 className="small">{name}</h3>
           <ol>
             {revisions.map(([id, entry]) => (
               <li key={id} data-state={entry.finalizationState}>
-                <code>{short(id)}</code> {entry.generatedLabel}
-                {entry.userLabel ? <> · {entry.userLabel}</> : null}
+                {entry.userLabel ? <>{entry.userLabel} · </> : null}
+                {entry.generatedLabel} <code>{short(id)}</code>
                 {entry.parentRevisionIds?.length ? (
                   <span className="muted small"> ← {entry.parentRevisionIds.map(short).join(" + ")}</span>
                 ) : (
@@ -117,8 +133,13 @@ function RevisionGraph({ entries }: { entries: ActivityView[] }) {
 export function ActivityPanel({ snapshot, last, act }: { snapshot: Snapshot; last: ActionResult | null; act: Act }) {
   const latest = snapshot.activity[0];
   const [filter, setFilter] = useState<Filter>("all");
-  const visible = snapshot.activity.filter((entry) => matches(entry, filter));
+  const [narrow, setNarrow] = useState<Narrow>({ fileId: "", revision: "" });
+  const narrowed = narrow.fileId !== "" || narrow.revision.trim() !== "";
+  // A file or revision filter only concerns tracked-file entries.
+  const visible = snapshot.activity.filter((entry) => (narrowed && entry.kind !== "history" ? false : matches(entry, filter, narrow)));
   const historyEntries = snapshot.activity.filter((entry) => entry.kind === "history");
+  const trackedNames = new Map<string, string>();
+  for (const entry of historyEntries) if (entry.fileId && entry.fileName) trackedNames.set(entry.fileId, entry.fileName);
   const showing = last && last.trace.length > 0 ? last : null;
   return (
     <section className="panel panel-wide" data-panel="activity" aria-labelledby="activity-heading">
@@ -159,7 +180,34 @@ export function ActivityPanel({ snapshot, last, act }: { snapshot: Snapshot; las
             </button>
           ))}
         </div>
-        {filter !== "all" && visible.length === 0 ? <p className="empty">Nothing under {FILTERS.find((f) => f.id === filter)?.label} yet.</p> : null}
+        <div className="tracked-form" data-testid="history-narrow">
+          <label htmlFor="history-file-filter">File</label>
+          <select
+            id="history-file-filter"
+            value={narrow.fileId}
+            onChange={(event) => setNarrow({ ...narrow, fileId: event.target.value })}
+          >
+            <option value="">Every file</option>
+            {[...trackedNames.entries()].map(([id, name]) => (
+              <option key={id} value={id}>
+                {name} ({short(id)})
+              </option>
+            ))}
+          </select>
+          <label htmlFor="history-revision-filter">Revision</label>
+          <input
+            id="history-revision-filter"
+            type="text"
+            placeholder="id, label or description"
+            value={narrow.revision}
+            onChange={(event) => setNarrow({ ...narrow, revision: event.target.value })}
+          />
+        </div>
+        {(filter !== "all" || narrowed) && visible.length === 0 ? (
+          <p className="empty">
+            {narrowed ? "Nothing matches these filters yet." : `Nothing under ${FILTERS.find((f) => f.id === filter)?.label} yet.`}
+          </p>
+        ) : null}
         <ol>
           {visible.map((entry) => (
             <li key={entry.seq} data-kind={entry.kind}>
@@ -178,7 +226,7 @@ export function ActivityPanel({ snapshot, last, act }: { snapshot: Snapshot; las
             </li>
           ))}
         </ol>
-        {filter !== "all" ? <RevisionGraph entries={historyEntries.filter((entry) => matches(entry, filter))} /> : <RevisionGraph entries={historyEntries} />}
+        <RevisionGraph entries={historyEntries.filter((entry) => matches(entry, filter, narrow))} />
       </details>
     </section>
   );

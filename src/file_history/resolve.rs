@@ -245,7 +245,7 @@ impl TrackedFile {
         let actor = (
             new.author_identity,
             new.author_hcp_label.clone(),
-            new.created_at_utc.clone(),
+            super::revision::whole_seconds(&new.created_at_utc),
             new.topology_generation,
         );
         let auto = self.auto_merge(left, right, allowed, new)?;
