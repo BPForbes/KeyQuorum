@@ -18,9 +18,7 @@ use crate::cli::file_cmd::StoreTrust;
 use crate::device::{self, CustodyMode, UnlockApproval};
 use crate::envelope;
 use crate::error::{Error, Result};
-use crate::file_history::{
-    evaluate_revision_trust, HistoryEventType, HistoryOutcome, TrackedFile, TrustState,
-};
+use crate::file_history::{evaluate_revision_trust, HistoryOutcome, TrackedFile, TrustState};
 use crate::key_tree::{self, KeyQuorumTree, TreeNodeSummary};
 use crate::keys;
 use crate::private_bridge::{is_ancestor_or_self, parent_node_label};
@@ -668,14 +666,6 @@ impl LabState {
                             .and_then(|(id, policy)| {
                                 evaluate_revision_trust(&file, &id, policy, &ctx).ok()
                             });
-                    let review = match event.event_type {
-                        HistoryEventType::AutoMergeRequiresHuman
-                        | HistoryEventType::ContentConflictDetected => Some("needs-human"),
-                        HistoryEventType::ConflictReviewAssigned => Some("assigned"),
-                        HistoryEventType::ConflictReviewEscalated => Some("escalated"),
-                        HistoryEventType::ConflictUnresolved => Some("unresolved"),
-                        _ => None,
-                    };
                     ActivityView {
                         seq: 0,
                         actor: event
@@ -705,7 +695,7 @@ impl LabState {
                             file_id: hex::encode(file.file_id),
                             file_name: file.logical_name.clone(),
                             history_event_type: format!("{:?}", event.event_type),
-                            history_category: history_category(event.event_type).to_string(),
+                            history_category: event.event_type.category().to_string(),
                             history_root: hex::encode(event.event_hash),
                             revision_id: event.revision_id.map(hex::encode),
                             generated_label: revision.map(|(_, r)| r.generated_label.clone()),
@@ -715,7 +705,6 @@ impl LabState {
                                     r.parent_revision_ids.iter().map(hex::encode).collect()
                                 })
                                 .unwrap_or_default(),
-                            review_state: review.map(str::to_string),
                             finalization_state: finalization.map(|state| {
                                 match state {
                                     TrustState::Trusted => "trusted",
@@ -3695,39 +3684,4 @@ fn humanize(name: &str) -> String {
         }
     }
     out
-}
-
-/// The Activity filter a history event belongs under.
-fn history_category(kind: HistoryEventType) -> &'static str {
-    use HistoryEventType as E;
-    match kind {
-        E::TrackingStarted | E::HistoryImported | E::GateLinked => "file",
-        E::EditCheckedIn
-        | E::RevisionSigned
-        | E::CountersignatureAdded
-        | E::PolicyDecision
-        | E::AutoMergeAttempted
-        | E::AutoMergeFastForward
-        | E::AutoMergeEquivalent
-        | E::AutoMergeClean => "revision",
-        E::QuorumUnlockAttempted
-        | E::PasswordUnlockAttempted
-        | E::FileExpired
-        | E::ContentDestroyed
-        | E::ExpiredAccessAttempt
-        | E::TamperDetected => "security",
-        E::ShareAttempted
-        | E::ShareDelivered
-        | E::ShareLinkCreated
-        | E::ShareLinkRedeemed
-        | E::ShareLinkRevoked => "sharing",
-        E::AutoMergeBlocked
-        | E::AutoMergeRequiresHuman
-        | E::HistoryForkDetected
-        | E::ContentConflictDetected
-        | E::ConflictReviewAssigned
-        | E::ConflictReviewEscalated
-        | E::BridgeUsed
-        | E::ConflictUnresolved => "conflict",
-    }
 }

@@ -54,6 +54,43 @@ pub enum HistoryEventType {
 }
 
 impl HistoryEventType {
+    /// Which group of activity this event belongs to, for a reader that
+    /// filters a history: `file`, `revision`, `security`, `sharing` or
+    /// `conflict`. Presentation only; it is not part of the wire format.
+    pub fn category(self) -> &'static str {
+        use HistoryEventType as E;
+        match self {
+            E::TrackingStarted | E::HistoryImported | E::GateLinked => "file",
+            E::EditCheckedIn
+            | E::RevisionSigned
+            | E::CountersignatureAdded
+            | E::PolicyDecision
+            | E::AutoMergeAttempted
+            | E::AutoMergeFastForward
+            | E::AutoMergeEquivalent
+            | E::AutoMergeClean => "revision",
+            E::QuorumUnlockAttempted
+            | E::PasswordUnlockAttempted
+            | E::FileExpired
+            | E::ContentDestroyed
+            | E::ExpiredAccessAttempt
+            | E::TamperDetected => "security",
+            E::ShareAttempted
+            | E::ShareDelivered
+            | E::ShareLinkCreated
+            | E::ShareLinkRedeemed
+            | E::ShareLinkRevoked => "sharing",
+            E::AutoMergeBlocked
+            | E::AutoMergeRequiresHuman
+            | E::HistoryForkDetected
+            | E::ContentConflictDetected
+            | E::ConflictReviewAssigned
+            | E::ConflictReviewEscalated
+            | E::BridgeUsed
+            | E::ConflictUnresolved => "conflict",
+        }
+    }
+
     fn from_u8(value: u8) -> Result<Self> {
         Ok(match value {
             1 => Self::TrackingStarted,

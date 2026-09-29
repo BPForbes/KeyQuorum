@@ -50,7 +50,6 @@ function HistoryEntry({ entry }: { entry: ActivityView }) {
     ["Label", entry.userLabel],
     ["Parents", entry.parentRevisionIds?.length ? entry.parentRevisionIds.map(short).join(" + ") : undefined],
     ["Trust now", entry.finalizationState],
-    ["Review", entry.reviewState],
     ["History root", entry.historyRoot ? short(entry.historyRoot) : undefined],
   ];
   return (
@@ -58,7 +57,6 @@ function HistoryEntry({ entry }: { entry: ActivityView }) {
       <summary>
         <span className={`outcome outcome-${entry.outcome}`}>{entry.outcome}</span> {entry.title}{" "}
         <span className="muted small">· {entry.actor}</span>
-        {entry.reviewState ? <span className="badge"> {entry.reviewState}</span> : null}
       </summary>
       <dl className="history-facts">
         {facts

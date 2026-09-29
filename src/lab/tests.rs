@@ -1558,10 +1558,14 @@ fn the_seeded_tracked_files_tell_three_different_stories_from_real_commands() {
                 .is_some_and(|h| h.history_event_type == "ConflictReviewAssigned")
         })
         .unwrap();
-    assert_eq!(
-        assigned.history.as_ref().unwrap().review_state.as_deref(),
-        Some("assigned")
-    );
+    // Who reviews, and by which rule, is whatever the event itself recorded.
+    for key in ["reviewer: M.S", "selection_rule: PRIOR_NEUTRAL_OWNER"] {
+        assert!(
+            assigned.trace.iter().any(|step| step.text.starts_with(key)),
+            "{key}: {:?}",
+            assigned.trace
+        );
+    }
     assert_eq!(
         assigned.history.as_ref().unwrap().history_category,
         "conflict"

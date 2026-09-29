@@ -259,8 +259,9 @@ last trusted revision, two edits that auto-merge, and two edits to one line that
 go to a named reviewer. `import_history` reads each container's events back into
 `ActivityView` (`kind == "history"`) with the optional history fields
 (`fileId`, `revisionId`, `generatedLabel`, `historyRoot`, `finalizationState`,
-`reviewState`, ...). Those fields come from the container and from
-`file_history`'s own trust evaluation, never from lab-side rules, and entries
+...). Those fields come from the container and from
+`file_history` (trust evaluation, `HistoryEventType::category`), never from lab-side
+interpretation of what an event means, and entries
 without a history serialize exactly as before.
 
 ## Working conventions

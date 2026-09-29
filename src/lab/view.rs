@@ -200,7 +200,8 @@ pub struct HistoryFields {
     pub file_id: String,
     pub file_name: String,
     pub history_event_type: String,
-    /// `file`, `revision`, `security`, `sharing` or `conflict`.
+    /// From `HistoryEventType::category`: `file`, `revision`, `security`,
+    /// `sharing` or `conflict`.
     pub history_category: String,
     /// The event's own hash: the history root as of this event.
     pub history_root: String,
@@ -212,9 +213,6 @@ pub struct HistoryFields {
     pub user_label: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub parent_revision_ids: Vec<String>,
-    /// `needs-human`, `assigned`, `escalated` or `unresolved`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub review_state: Option<String>,
     /// The revision's trust under the file's policy now: `trusted`,
     /// `pending` or `denied`.
     #[serde(skip_serializing_if = "Option::is_none")]

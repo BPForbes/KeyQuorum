@@ -146,3 +146,17 @@ fn a_bad_policy_block_is_rejected() {
         );
     }
 }
+
+#[test]
+fn every_event_type_belongs_to_a_known_category() {
+    let known = ["file", "revision", "security", "sharing", "conflict"];
+    for kind in ALL_TYPES {
+        assert!(known.contains(&kind.category()), "{kind:?}");
+    }
+    assert_eq!(
+        HistoryEventType::ConflictReviewAssigned.category(),
+        "conflict"
+    );
+    assert_eq!(HistoryEventType::ShareAttempted.category(), "sharing");
+    assert_eq!(HistoryEventType::FileExpired.category(), "security");
+}

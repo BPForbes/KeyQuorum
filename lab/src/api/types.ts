@@ -125,7 +125,6 @@ export interface ActivityView {
   generatedLabel?: string;
   userLabel?: string;
   parentRevisionIds?: string[];
-  reviewState?: "needs-human" | "assigned" | "escalated" | "unresolved";
   /** The revision's trust under the file's policy: trusted, pending or denied. */
   finalizationState?: "trusted" | "pending" | "denied";
 }
