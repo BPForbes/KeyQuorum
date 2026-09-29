@@ -93,6 +93,31 @@ fn export_file_bundle_round_trips() {
 }
 
 #[test]
+fn export_tracked_file_preserves_the_verified_container() {
+    use crate::file_history::TrackedFile;
+
+    let file = TrackedFile::new([7; 16], "report.txt");
+    let container = file.encode().expect("encode tracked file");
+    let (secret_key, public_key) = recipient_keypair();
+
+    let bundle = export_tracked_file(&container, &public_key).expect("export tracked file");
+    let decoded = decode_bundle(&bundle);
+    assert_eq!(decoded.bundle_type, BUNDLE_TYPE_TRACKED_FILE);
+    let plaintext = secret_key
+        .unseal(&decoded.sealed_payload)
+        .expect("unseal should succeed with the matching secret key");
+    assert_eq!(plaintext, container);
+    TrackedFile::decode(&plaintext).expect("exported KQTF remains valid");
+}
+
+#[test]
+fn export_tracked_file_refuses_an_invalid_container() {
+    let (_secret_key, public_key) = recipient_keypair();
+    let result = export_tracked_file(b"not a KQTF", &public_key);
+    assert!(matches!(result, Err(Error::InvalidTrackedFile)));
+}
+
+#[test]
 fn export_credential_rejects_an_oversized_label() {
     let conn = db::open_in_memory().expect("schema should apply");
     let long_label = "x".repeat(u16::MAX as usize + 1);

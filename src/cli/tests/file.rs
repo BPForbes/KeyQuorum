@@ -78,6 +78,32 @@ fn edit(env: &mut MemoryEnv, text: &str) {
 }
 
 #[test]
+fn export_tracked_file_seals_the_complete_kqtf() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    let secret = crypto_box::SecretKey::generate(&mut rand::rngs::OsRng);
+    env.fs
+        .write_new(
+            Path::new("/work/recipient.pub"),
+            secret.public_key().as_bytes(),
+        )
+        .unwrap();
+
+    let (result, output) = env.keyquorum(&format!(
+        "keyquorum {DB} export tracked-file {KQTF} \
+         --recipient-key-file /work/recipient.pub --output /work/report.kqxb"
+    ));
+    assert!(result.is_ok(), "{result:?}\n{output}");
+
+    let bundle = env.fs.read(Path::new("/work/report.kqxb")).unwrap();
+    assert_eq!(&bundle[..6], b"KQXB\x01\x03");
+    let sealed_len = u32::from_be_bytes(bundle[38..42].try_into().unwrap()) as usize;
+    let container = secret.unseal(&bundle[42..42 + sealed_len]).unwrap();
+    assert_eq!(container, env.fs.read(Path::new(KQTF)).unwrap());
+    crate::file_history::TrackedFile::decode(&container).unwrap();
+}
+
+#[test]
 fn tracking_writes_a_signed_trusted_container() {
     let mut env = org();
     let out = track(&mut env, "M.A", "M.A");
