@@ -182,6 +182,13 @@ label). Containers are replaced by writing a sibling and renaming.
 `tracked_history_index` as a rebuildable cache over `.kqtf` files: metadata
 only, no payload and no trust state, and `file reindex` restores it from the
 containers, which remain the authority.
+`src/cli/review_view.rs` is the review's view model and key handler (Vim keys,
+`:` commands, per-line provenance for the cursor or pointer) with no terminal
+and no dependencies; `keyquorum file review` prints from the same
+`ReviewView`. `src/cli/review_tui.rs` (feature `tui`, `ratatui`, native-only,
+refused by `build.rs` on wasm32) only draws it and reads keys and the mouse.
+It decides no trust and edits no history: `:sign`, `:accept`, `:reject` and
+`:finalize` answer with the CLI command to run.
 `src/cli/gate_link.rs` ties a quorum-protected or password-locked file to a
 tracked `.kqtf` (`keyquorum file link --quorum-file|--locked-file`, table `tracked_gate_links`, deliberately without a
 foreign key to the gate so a purged gate keeps its link) and appends what

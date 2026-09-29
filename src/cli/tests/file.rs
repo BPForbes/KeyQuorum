@@ -1199,3 +1199,51 @@ fn an_imported_forged_signature_does_not_stop_the_author_signing() {
     );
     assert!(out.contains("trust TRUSTED"), "{out}");
 }
+
+// ---- review view -----------------------------------------------------------
+
+#[test]
+fn the_review_view_lists_each_sides_changes_with_who_wrote_them() {
+    use crate::cli::review_view::ReviewView;
+    use crate::file_history::{ChangeKind, TrackedFile};
+    let mut env = org();
+    forked(&mut env, "totals: 100\n", "totals: 125\n", "totals: 130\n");
+    let file = TrackedFile::decode(&env.fs.read(Path::new(KQTF)).unwrap()).unwrap();
+    let view = ReviewView::of(&file).expect("two heads");
+    assert_eq!(view.panes.len(), 2);
+    for (pane, text, who) in [
+        (&view.panes[0], "totals: 125", "M.A.1"),
+        (&view.panes[1], "totals: 130", "M.S.1"),
+    ] {
+        assert!(pane.note.is_none());
+        assert_eq!(pane.lines.len(), 2, "one removal and one addition");
+        assert_eq!(pane.lines[0].kind, ChangeKind::Removed);
+        assert_eq!(pane.lines[0].text, "totals: 100");
+        assert_eq!(pane.lines[1].kind, ChangeKind::Added);
+        assert_eq!(pane.lines[1].text, text);
+        assert!(
+            pane.lines[1].provenance.starts_with(who),
+            "{}",
+            pane.lines[1].provenance
+        );
+    }
+    // The printed review is drawn from the same view.
+    let out = ok(&mut env, &format!("review {KQTF}"));
+    assert!(
+        out.contains("CHANGED LINES (LEFT)") && out.contains("+    1 | totals: 125"),
+        "{out}"
+    );
+    // One head is not a review.
+    let mut solo = org();
+    track(&mut solo, "M.A", "M.A");
+    let single = TrackedFile::decode(&solo.fs.read(Path::new(KQTF)).unwrap()).unwrap();
+    assert!(ReviewView::of(&single).is_none());
+}
+
+#[test]
+fn interactive_review_needs_the_tui_build_and_a_fork() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    let (result, _) = run(&mut env, &format!("review {KQTF} --interactive"));
+    assert!(result.is_err());
+}

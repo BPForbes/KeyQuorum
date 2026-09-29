@@ -13,6 +13,7 @@ use super::deliver_cmd::{
 };
 use super::env::{self, errln, outln};
 use super::gate_link::{self, Gate};
+use super::review_view::ReviewView;
 use super::{open_slot_secrets, read_key_array_32, usage};
 use crate::error::{Error, Result};
 use crate::file_history::{
@@ -121,7 +122,13 @@ pub enum FileCommand {
         label: Option<String>,
     },
     /// Show what each side of a fork changed, and who reviews a conflict
-    Review { kqtf: PathBuf },
+    Review {
+        kqtf: PathBuf,
+        /// Open the interactive review (Vim keys, mouse hover for who wrote
+        /// a line). Needs a build with the `tui` feature.
+        #[arg(long)]
+        interactive: bool,
+    },
     /// Show the revisions, their parents and their trust
     Graph { kqtf: PathBuf },
     /// Show the changed lines between two revisions of text
@@ -365,7 +372,13 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             as_label,
             label,
         } => merge(conn, &kqtf, &as_label, label),
-        FileCommand::Review { kqtf } => review(conn, &kqtf),
+        FileCommand::Review { kqtf, interactive } => {
+            if interactive {
+                review_interactive(&kqtf)
+            } else {
+                review(conn, &kqtf)
+            }
+        }
         FileCommand::Graph { kqtf } => graph(conn, &kqtf),
         FileCommand::Diff { kqtf, from, to } => diff(&kqtf, from, to),
         FileCommand::Checkout {
@@ -1327,22 +1340,6 @@ fn verify(conn: &Connection, kqtf: &Path) -> Result<()> {
     Ok(())
 }
 
-fn who(file: &TrackedFile, id: &[u8; 32]) -> String {
-    file.graph()
-        .get(id)
-        .map(|stored| {
-            let revision = &stored.revision;
-            format!(
-                "{} · revision {} ({}) · {}",
-                revision.author_hcp_label,
-                short(id),
-                revision.generated_label,
-                revision.created_at_utc
-            )
-        })
-        .unwrap_or_default()
-}
-
 fn text_of(file: &TrackedFile, id: &[u8; 32]) -> Result<String> {
     let stored = file
         .graph()
@@ -1428,6 +1425,21 @@ fn merge(conn: &Connection, kqtf: &Path, as_label: &str, user_label: Option<Stri
     Ok(())
 }
 
+#[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
+fn review_interactive(kqtf: &Path) -> Result<()> {
+    let file = load(kqtf)?;
+    let view = ReviewView::of(&file)
+        .ok_or_else(|| usage("nothing to review: the history does not have exactly two heads"))?;
+    super::review_tui::run(view)
+}
+
+#[cfg(not(all(feature = "tui", not(target_arch = "wasm32"))))]
+fn review_interactive(_kqtf: &Path) -> Result<()> {
+    Err(usage(
+        "this build has no interactive review; rebuild with `--features tui`, or use `file review`",
+    ))
+}
+
 fn review(conn: &Connection, kqtf: &Path) -> Result<()> {
     let file = load(kqtf)?;
     let policy = policy_of(&file)?.clone();
@@ -1443,23 +1455,21 @@ fn review(conn: &Connection, kqtf: &Path) -> Result<()> {
         MergeBase::Unique(id) => Some(id),
         _ => None,
     };
-    outln!("{} — merge review", file.logical_name);
-    for (side, id) in [("LEFT", left), ("RIGHT", right)] {
+    let view = ReviewView::of(&file).expect("two heads were just found");
+    outln!("{}", view.title);
+    for pane in &view.panes {
         outln!("");
-        outln!("CHANGED LINES ({side})");
-        outln!("  {}", who(&file, id));
-        match base {
-            Some(base) => match (text_of(&file, &base), text_of(&file, id)) {
-                (Ok(old), Ok(new)) => {
-                    // Too large to compare is not a reason to stop reviewing:
-                    // the status and reviewer below still matter.
-                    if print_changes(&old, &new).is_err() {
-                        outln!("  (too large to compare: no line view)");
-                    }
-                }
-                _ => outln!("  (not UTF-8 text: no line view)"),
-            },
-            None => outln!("  (no single common ancestor: no line view)"),
+        outln!("CHANGED LINES ({})", pane.heading);
+        outln!("  {}", pane.revision);
+        if let Some(note) = &pane.note {
+            outln!("  ({note})");
+        }
+        for line in &pane.lines {
+            let mark = match line.kind {
+                ChangeKind::Removed => '-',
+                ChangeKind::Added => '+',
+            };
+            outln!("  {mark} {:>4} | {}", line.number, line.text);
         }
     }
     let plan = file.plan_auto_merge(left, right, policy.auto_merge)?;
