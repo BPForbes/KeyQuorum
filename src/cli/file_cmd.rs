@@ -204,6 +204,18 @@ fn identity_for(conn: &Connection, label: &str) -> Result<[u8; 16]> {
     Ok(id)
 }
 
+/// A ghost keeps its place in the hierarchy but has given up its private
+/// key (a MOVE), so it may not author or sign anything new. Verifying what
+/// it signed earlier is unaffected: that goes through `StoreTrust`.
+pub(super) fn require_active(conn: &Connection, label: &str) -> Result<()> {
+    if transfer::possession(conn, label)? == Some(transfer::Possession::Ghost) {
+        return Err(usage(&format!(
+            "{label} is a ghost on this store and cannot author or sign"
+        )));
+    }
+    Ok(())
+}
+
 fn signing_secret(slot: Option<String>, key_file: Option<PathBuf>) -> Result<Zeroizing<[u8; 32]>> {
     match (slot, key_file) {
         (Some(slot), None) => Ok(open_slot_secrets(&slot)?.signing_secret),
@@ -377,6 +389,7 @@ fn track(
     if !policy.may_author(as_label) {
         return Err(usage("--as is outside the scope of this file"));
     }
+    require_active(conn, as_label)?;
     let name = match name {
         Some(name) => name,
         None => path
@@ -465,6 +478,7 @@ fn checkin(
     if !policy.may_author(as_label) {
         return Err(usage("--as is outside the scope of this file"));
     }
+    require_active(conn, as_label)?;
     let parent = pick_revision(&file, None)?;
     let secret = if unsigned {
         None
@@ -532,6 +546,7 @@ fn sign(
     key_file: Option<PathBuf>,
 ) -> Result<()> {
     let mut file = load(kqtf)?;
+    require_active(conn, as_label)?;
     let target = pick_revision(&file, revision.as_deref())?;
     let secret = signing_secret(slot, key_file)?;
     let (identity, at) = (identity_for(conn, as_label)?, utc_instant()?);
@@ -564,6 +579,7 @@ fn countersign(
     key_file: Option<PathBuf>,
 ) -> Result<()> {
     let mut file = load(kqtf)?;
+    require_active(conn, as_label)?;
     let target = pick_revision(&file, revision.as_deref())?;
     let secret = signing_secret(slot, key_file)?;
     let (identity, at) = (identity_for(conn, as_label)?, utc_instant()?);

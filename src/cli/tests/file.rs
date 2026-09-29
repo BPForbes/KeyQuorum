@@ -292,3 +292,61 @@ fn a_revision_is_named_by_a_unique_prefix() {
     );
     assert!(out.contains(&ids[1]));
 }
+
+#[test]
+fn a_ghost_identity_cannot_author_or_sign_anything_new() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    let container = Path::new("/work/report.txt.kqtf");
+    let before = env.fs.read(container).unwrap();
+    // M.A becomes a ghost here: the hierarchy row stays, the key is gone.
+    let conn = env.store("/home/org/keyquorum.sqlite");
+    conn.execute(
+        "INSERT INTO key_identities
+             (id, label, parent_label, enc_public, sign_public, enc_fingerprint, sign_fingerprint)
+         VALUES (?1, 'M.A', 'M', ?2, ?2, 'e', 's')",
+        rusqlite::params![vec![7u8; 16], vec![9u8; 32]],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO key_possession (identity_id, state, generation) VALUES (?1, 'ghost', 1)",
+        rusqlite::params![vec![7u8; 16]],
+    )
+    .unwrap();
+
+    edit(&mut env, "totals: 200\n");
+    let attempts = [
+        format!(
+            "track /work/report.txt --scope M.A --as M.A --slot {} --out /work/g.kqtf",
+            slot("M.A")
+        ),
+        "checkin /work/report.txt.kqtf --from /work/edited.txt --as M.A --unsigned".to_string(),
+        format!(
+            "checkin /work/report.txt.kqtf --from /work/edited.txt --as M.A --slot {}",
+            slot("M.A")
+        ),
+        format!("sign /work/report.txt.kqtf --as M.A --slot {}", slot("M.A")),
+        format!(
+            "countersign /work/report.txt.kqtf --as M.A --slot {}",
+            slot("M.A")
+        ),
+    ];
+    for attempt in attempts {
+        let (result, _) = run(&mut env, &attempt);
+        let error = result.expect_err(&attempt).to_string();
+        assert!(error.contains("ghost"), "{attempt}: {error}");
+    }
+    assert!(!env.fs.exists(Path::new("/work/g.kqtf")));
+    assert_eq!(
+        env.fs.read(container).unwrap(),
+        before,
+        "nothing was written"
+    );
+    // Other labels are unaffected.
+    edit(&mut env, "totals: 201\n");
+    let out = ok(
+        &mut env,
+        "checkin /work/report.txt.kqtf --from /work/edited.txt --as M.B --unsigned",
+    );
+    assert!(out.contains("Checked in"), "{out}");
+}

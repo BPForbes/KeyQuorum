@@ -69,6 +69,13 @@ impl Env for MemoryEnv {
 }
 
 impl MemoryEnv {
+    /// The store at `path`, once a command has opened it.
+    pub fn store(&self, path: &str) -> &Connection {
+        self.stores
+            .get(Path::new(path))
+            .expect("a command has opened this store")
+    }
+
     /// Run one `keyquorum` command line; returns its result and stdout.
     pub fn keyquorum(&mut self, line: &str) -> (Result<()>, String) {
         let cli = Cli::try_parse_from(line.split_whitespace()).expect("command line parses");
