@@ -163,6 +163,59 @@ impl HistoryOutcome {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EventDetails(Vec<(String, String)>);
 
+/// Every detail key a producer in this crate may append. A new producer
+/// adds its key here, which is where a reviewer checks that the value it
+/// carries is safe to keep: ids, labels, counts, outcomes and policy words,
+/// never a share, token, PIN, password, key or plaintext. Appending any
+/// other key is refused; histories decoded from elsewhere are not re-judged.
+pub const SAFE_DETAIL_KEYS: &[&str] = &[
+    "action",
+    "answers",
+    "approval",
+    "approvals",
+    "base",
+    "base_revision",
+    "by",
+    "candidate",
+    "container_hash",
+    "custody",
+    "decision",
+    "delivery_id",
+    "devices",
+    "expires_at",
+    "fallback_reason",
+    "for_actor",
+    "from",
+    "from_history_root",
+    "gate",
+    "gate_file",
+    "left",
+    "minimum_devices",
+    "operation",
+    "pin",
+    "presented",
+    "proofs_added",
+    "reason",
+    "redeemer",
+    "relation",
+    "relationship",
+    "result",
+    "reviewer",
+    "revision_a",
+    "revision_b",
+    "revisions_added",
+    "revisions_destroyed",
+    "right",
+    "scope",
+    "selection_rule",
+    "share",
+    "shares",
+    "state",
+    "threshold",
+    "to",
+    "trust_state",
+];
+
 impl EventDetails {
     pub fn new() -> Self {
         Self::default()
@@ -175,6 +228,14 @@ impl EventDetails {
 
     pub fn entries(&self) -> &[(String, String)] {
         &self.0
+    }
+
+    /// The first key not in [`SAFE_DETAIL_KEYS`], if any.
+    pub fn unsafe_key(&self) -> Option<&str> {
+        self.0
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .find(|key| !SAFE_DETAIL_KEYS.contains(key))
     }
 }
 

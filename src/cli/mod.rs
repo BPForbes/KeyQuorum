@@ -1987,6 +1987,26 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
             let file_status = quorum::status(conn, id)?;
             let shares =
                 collect_shares(conn, &file_status.tree.root, &args.share_files, &args.slots)?;
+            // What the gate's history may say about this attempt: counts and
+            // the policy it ran under, never a share, key or device secret.
+            let policy = device::custody_policy(conn, file_status.tree.key_id)?;
+            let mut safe = vec![
+                ("shares", shares.len().to_string()),
+                (
+                    "threshold",
+                    file_status
+                        .tree
+                        .root
+                        .threshold
+                        .map_or_else(|| "-".to_string(), |t| t.to_string()),
+                ),
+                ("custody", policy.mode.as_str().to_string()),
+                (
+                    "minimum_devices",
+                    policy.minimum_physical_devices.to_string(),
+                ),
+                ("approval", policy.unlock_approval.as_str().to_string()),
+            ];
             if args.verbose {
                 let mut leaves = Vec::new();
                 collect_leaves(&file_status.tree.root, &mut leaves);
@@ -2009,12 +2029,19 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
                     Ok(presented) => presented,
                     Err(err) => {
                         quorum::record_unlock_failure(conn, id, &err)?;
-                        gate_link::record_unlock(Gate::Quorum, conn, id, Some(&err), &[]);
+                        gate_link::record_unlock_with(
+                            Gate::Quorum,
+                            conn,
+                            id,
+                            Some(&err),
+                            &[],
+                            &safe,
+                        );
                         return Err(err);
                     }
                 };
+            safe.push(("devices", presented.devices.len().to_string()));
             if args.verbose {
-                let policy = device::custody_policy(conn, file_status.tree.key_id)?;
                 let used: Vec<&str> = presented
                     .leaves
                     .iter()
@@ -2039,10 +2066,12 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
                     let mut secret = presented.secret;
                     secret.zeroize();
                     quorum::record_unlock_failure(conn, id, &err)?;
-                    gate_link::record_unlock(Gate::Quorum, conn, id, Some(&err), &[]);
+                    safe.push(("approvals", "missing".to_string()));
+                    gate_link::record_unlock_with(Gate::Quorum, conn, id, Some(&err), &[], &safe);
                     return Err(err);
                 }
             };
+            safe.push(("approvals", grants.len().to_string()));
             if args.verbose {
                 for grant in &grants {
                     errln!(
@@ -2059,12 +2088,13 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
                 .collect();
             let unlocked =
                 quorum::complete_unlock_in(&mut env::EnvStorage, conn, id, presented, &grants);
-            gate_link::record_unlock(
+            gate_link::record_unlock_with(
                 Gate::Quorum,
                 conn,
                 id,
                 unlocked.as_ref().err(),
                 &presented_labels,
+                &safe,
             );
             let plaintext = unlocked?;
             match args.output {

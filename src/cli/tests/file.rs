@@ -1067,6 +1067,16 @@ fn an_untrusted_newer_revision_is_never_sent() {
     );
     assert!(out.contains("LastTrustedRevision"), "{out}");
     assert!(out.contains("is not trusted, so it was left out"), "{out}");
+    // The sender's history names the candidate and why it was left out.
+    let history = ok(&mut env, &format!("history {KQTF}"));
+    let line = history
+        .lines()
+        .find(|l| l.contains("ShareAttempted"))
+        .expect("a recorded share");
+    assert!(
+        line.contains("candidate=") && line.contains("fallback_reason=MISSINGCONTENTSIGNATURE"),
+        "{history}"
+    );
     let (result, out) = receive_as_mb(&mut env, "--out /work/received.kqtf");
     assert!(result.is_ok(), "{out}");
     let received = env.fs.read(Path::new("/work/received.kqtf")).unwrap();

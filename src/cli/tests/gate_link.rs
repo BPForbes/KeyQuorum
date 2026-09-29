@@ -8,6 +8,11 @@ const SECRET: &[u8] = b"the launch code is 0000";
 /// A two-of-two quorum file (`Q.A`, `Q.B`) as file 1, next to a tracked
 /// `report.txt` owned by M.A.
 fn gated() -> MemoryEnv {
+    gated_with("")
+}
+
+/// `gated`, with extra `access quorum --state 0` flags (custody policy).
+fn gated_with(policy: &str) -> MemoryEnv {
     let mut env = org();
     for (dir, label) in [("qa", "Q.A"), ("qb", "Q.B")] {
         env.device(&format!("keyquorum-device init /usb/{dir}"))
@@ -37,7 +42,7 @@ fn gated() -> MemoryEnv {
     let (result, out) = env.keyquorum(&format!(
         "keyquorum {DB} access quorum --state 0 --source /work/secret.txt \
          --encrypted-path /work/secret.kqenc --name secret.txt --root Q --threshold 2 \
-         --leaf Q.A=/keys/qa.pub --leaf Q.B=/keys/qb.pub"
+         --leaf Q.A=/keys/qa.pub --leaf Q.B=/keys/qb.pub {policy}"
     ));
     assert!(result.is_ok(), "{out}");
     track(&mut env, "M.A", "M.A");
@@ -95,6 +100,18 @@ fn quorum_unlocks_are_recorded_with_the_gates_own_answer_and_no_secrets() {
         "{history}"
     );
     assert!(!history.contains("launch code"));
+    // Counts and the policy only: no share, key or device secret.
+    for detail in [
+        "shares=2",
+        "threshold=2",
+        "custody=hardware",
+        "minimum_devices=1",
+        "approval=none",
+        "devices=2",
+        "approvals=0",
+    ] {
+        assert!(lines[0].contains(detail), "{detail}: {history}");
+    }
     // The gate's own audit row is still written, once per attempt.
     let audited: i64 = env
         .store("/home/org/keyquorum.sqlite")
@@ -178,6 +195,11 @@ fn a_refusal_by_the_gate_is_recorded_as_a_failure_and_the_gate_still_refuses() {
         "{text}"
     );
     assert!(!text.contains("presented="), "{text}");
+    // The counts that fell short are recorded, not the shares themselves.
+    assert!(
+        line.contains("minimum_devices=3") && line.contains("shares=2"),
+        "{text}"
+    );
 }
 
 // ---- password-locked files -------------------------------------------------
@@ -461,6 +483,61 @@ fn a_pin_check_at_the_password_gate_records_only_its_outcome() {
     assert!(attempts[0].contains("pin=mismatch"), "{text}");
     assert!(attempts[1].contains("pin=verified"), "{text}");
     assert!(!text.contains("4321"), "{text}");
+}
+
+#[test]
+fn a_locked_pin_is_recorded_as_locked_and_never_as_the_pin() {
+    let mut env = org();
+    env.fs.write(Path::new("/work/secret.txt"), SECRET).unwrap();
+    env.prompts
+        .push_back(super::memory_env::PASSPHRASE.to_string());
+    env.prompts.push_back("4321".to_string());
+    let (result, out) = env.keyquorum(&format!(
+        "keyquorum {DB} access password --state 0 --source /work/secret.txt \
+         --encrypted-path /work/secret.kqenc --pin"
+    ));
+    assert!(result.is_ok(), "{out}");
+    track(&mut env, "M.A", "M.A");
+    ok(&mut env, &format!("link {KQTF} --locked-file 1"));
+
+    // Eight wrong PINs lock it (the verifier's own limit); the right PIN
+    // afterwards is refused as locked, and history says only that.
+    for _ in 0..8 {
+        env.prompts.push_back("9087".to_string());
+        let (result, _) = unlock_password(&mut env);
+        assert!(result.is_err());
+    }
+    env.prompts.push_back("4321".to_string());
+    let (result, _) = unlock_password(&mut env);
+    assert!(result.is_err());
+
+    let text = history(&mut env);
+    let attempts: Vec<&str> = text
+        .lines()
+        .filter(|l| l.contains("PasswordUnlockAttempted"))
+        .collect();
+    assert_eq!(attempts.len(), 9, "{text}");
+    assert!(
+        attempts[..8].iter().all(|l| l.contains("pin=mismatch")),
+        "{text}"
+    );
+    assert!(attempts[8].contains("pin=locked"), "{text}");
+    assert!(!text.contains("4321"), "{text}");
+    // Scan the container's own bytes too, not only the printed history.
+    let raw = env.fs.read(Path::new(KQTF)).unwrap();
+    for secret in [
+        &b"4321"[..],
+        b"9087",
+        SECRET,
+        super::memory_env::PASSPHRASE.as_bytes(),
+    ] {
+        assert!(
+            !raw.windows(secret.len()).any(|w| w == secret),
+            "{:?} reached the container",
+            String::from_utf8_lossy(secret)
+        );
+    }
+    assert!(!text.contains("attempt_count"), "{text}");
 }
 
 #[test]

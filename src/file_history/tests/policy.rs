@@ -764,3 +764,105 @@ fn a_finalization_survives_the_container_round_trip_and_older_versions_refuse_it
     old[4] = 5;
     assert!(TrackedFile::decode(&old).is_err());
 }
+
+#[test]
+fn a_store_without_the_finalizers_key_does_not_see_it_final() {
+    let (mut file, id) = one("M.A", 2);
+    file.sign_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    file.finalize_revision(&id, ident(1), "M", &secret(1))
+        .unwrap();
+    // This store trusts the revision (it knows M.A) but has no key for M:
+    // the finalization is missing evidence here, not assumed.
+    let mut here = Ctx::new();
+    here.keys.retain(|(_, label)| *label != "M");
+    assert_eq!(state(&file, &id, &here), Trusted);
+    assert!(!finalized(&file, &id, &here));
+    assert!(finalized(&file, &id, &Ctx::new()));
+}
+
+#[test]
+fn two_stores_judge_the_same_competing_heads_by_their_own_keys() {
+    let mut file = TrackedFile::new(FILE, "report.txt");
+    let base = revision_by(&mut file, vec![], "M.A", 2, &policy(), T1);
+    file.sign_revision(&base, ident(2), "M.A", &secret(2))
+        .unwrap();
+    let left = revision_by(&mut file, vec![base], "M.A", 2, &policy(), T2);
+    let right = revision_by(
+        &mut file,
+        vec![base],
+        "M.A",
+        2,
+        &policy(),
+        "2026-10-02T15:00:00Z",
+    );
+    for id in [left, right] {
+        file.sign_revision(&id, ident(2), "M.A", &secret(2))
+            .unwrap();
+    }
+    // M finalizes the left head, M.A the right one.
+    file.finalize_revision(&left, ident(1), "M", &secret(1))
+        .unwrap();
+    file.finalize_revision(&right, ident(2), "M.A", &secret(2))
+        .unwrap();
+    // The bytes travel unchanged; each store derives its own view.
+    let copy = TrackedFile::decode(&file.encode().unwrap()).unwrap();
+    let full = Ctx::new();
+    let mut no_root = Ctx::new();
+    no_root.keys.retain(|(_, label)| *label != "M");
+    let a = finalized_checkpoints(&file, &policy(), &full);
+    assert!(a.contains(&(left, Some(left))) && a.contains(&(right, Some(right))));
+    let b = finalized_checkpoints(&copy, &policy(), &no_root);
+    assert!(b.contains(&(left, None)), "{b:?}");
+    assert!(b.contains(&(right, Some(right))), "{b:?}");
+    // Neither store picks a winner: both heads stay.
+    assert_eq!(b.len(), 2);
+}
+
+#[test]
+fn an_unsigned_merge_of_two_finalized_heads_is_not_final() {
+    let mut file = TrackedFile::new(FILE, "report.txt");
+    let base = revision_by(&mut file, vec![], "M.A", 2, &policy(), T1);
+    file.sign_revision(&base, ident(2), "M.A", &secret(2))
+        .unwrap();
+    let left = revision_by(&mut file, vec![base], "M.A", 2, &policy(), T2);
+    let right = revision_by(
+        &mut file,
+        vec![base],
+        "M.A",
+        2,
+        &policy(),
+        "2026-10-02T15:00:00Z",
+    );
+    for id in [left, right] {
+        file.sign_revision(&id, ident(2), "M.A", &secret(2))
+            .unwrap();
+        file.finalize_revision(&id, ident(2), "M.A", &secret(2))
+            .unwrap();
+    }
+    let merge = revision_by(
+        &mut file,
+        vec![left, right],
+        "M.A",
+        2,
+        &policy(),
+        "2026-10-03T15:00:00Z",
+    );
+    let ctx = Ctx::new();
+    // A merge carries no proofs of its own, so it starts untrusted and a
+    // finalization proof on it does not count until it is signed.
+    file.finalize_revision(&merge, ident(2), "M.A", &secret(2))
+        .unwrap();
+    assert_eq!(
+        state(&file, &merge, &ctx),
+        Pending(R::MissingContentSignature)
+    );
+    assert!(!finalized(&file, &merge, &ctx));
+    // Its latest finalized ancestor is one of its finalized parents, never
+    // the unsigned merge itself.
+    let behind = latest_finalized_ancestor(&file, &merge, &policy(), &ctx);
+    assert!(behind == Some(left) || behind == Some(right), "{behind:?}");
+    file.sign_revision(&merge, ident(2), "M.A", &secret(2))
+        .unwrap();
+    assert!(finalized(&file, &merge, &ctx));
+}

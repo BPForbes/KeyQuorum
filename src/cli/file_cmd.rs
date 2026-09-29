@@ -1568,6 +1568,20 @@ fn share(
     // Recorded before the letter leaves, so a failed upload still leaves a
     // truthful "attempted" entry and the delivery id an ack must match.
     let delivery = hex::encode(sealed.delivery_id);
+    let mut details = EventDetails::new()
+        .with("to", to)
+        .with("delivery_id", &delivery)
+        .with("decision", &format!("{:?}", decision.decision))
+        .with("container_hash", &hex::encode(sealed.container_hash));
+    if delivered != candidate {
+        // A fallback: name what was asked for and why it stayed behind,
+        // as the candidate's trust state (never its content).
+        let state = evaluate_revision_trust(&file, &candidate, &policy, &StoreTrust { conn })?;
+        details = details.with("candidate", &hex::encode(candidate)).with(
+            "fallback_reason",
+            &decision_reason(&policy, &file, &candidate, state),
+        );
+    }
     file.append(event(
         HistoryEventType::ShareAttempted,
         Some(delivered),
@@ -1575,11 +1589,7 @@ fn share(
         identity,
         as_label,
         generation,
-        EventDetails::new()
-            .with("to", to)
-            .with("delivery_id", &delivery)
-            .with("decision", &format!("{:?}", decision.decision))
-            .with("container_hash", &hex::encode(sealed.container_hash)),
+        details,
     ))?;
     save(kqtf, &file)?;
     index_after(conn, &file);

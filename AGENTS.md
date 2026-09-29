@@ -161,7 +161,11 @@ that travels with it; SQLite may only index it. It frames and chains events
 and reuses `envelope`'s length-prefixed codec. It must not re-decide anything
 another module owns: signatures go through `signing`, ancestry through
 `authority`, quorum through `quorum`. Event type and outcome codes are wire
-format: append, never renumber. History never records secrets.
+format: append, never renumber. History never records secrets. Every detail key
+an event may carry is listed in `event::SAFE_DETAIL_KEYS`; `append` refuses any other, so a new
+producer adds its key there. The quorum gate records only counts and policy words (`shares`,
+`threshold`, `devices`, `minimum_devices`, `custody`, `approval`, `approvals`), and `file share`
+names a fallback's `candidate` and `fallback_reason`.
 `file_history/merge.rs` owns the automatic three-way text merge of divergent
 heads: UTF-8 text only, by line, against the nearest common ancestor. A merge
 is a new two-parent revision with no proofs, so it starts untrusted and goes

@@ -134,6 +134,9 @@ impl TrackedFile {
     /// the chain is verified first so a damaged history is not extended.
     pub fn append(&mut self, new: NewEvent) -> Result<&HistoryEvent> {
         verify_chain(&self.file_id, &self.events)?;
+        if new.details.unsafe_key().is_some() {
+            return Err(Error::InvalidTrackedFile);
+        }
         if new
             .revision_id
             .is_some_and(|id| self.graph().get(&id).is_none())

@@ -657,7 +657,7 @@ pub fn sign_message(secrets: &SlotSecrets, message: &[u8]) -> [u8; 64] {
 }
 
 impl CustodyMode {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Hardware => "hardware",
             Self::Logical => "logical",
@@ -674,7 +674,7 @@ impl CustodyMode {
 }
 
 impl UnlockApproval {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
             Self::Parent => "parent",

@@ -105,6 +105,23 @@ fn appending_links_each_event_to_the_previous_root() {
 }
 
 #[test]
+fn a_detail_key_outside_the_safe_list_is_refused_and_nothing_is_appended() {
+    let mut file = tracked_file();
+    for key in ["password", "pin_value", "token", "share_secret", "note"] {
+        let mut event = new_event(HistoryEventType::TrackingStarted, None);
+        event.details = EventDetails::new().with("result", "ok").with(key, "x");
+        assert!(matches!(file.append(event), Err(Error::InvalidTrackedFile)));
+    }
+    assert!(file.events().is_empty());
+    // Every listed key is accepted.
+    let mut event = new_event(HistoryEventType::TrackingStarted, None);
+    for key in SAFE_DETAIL_KEYS {
+        event.details = event.details.with(key, "x");
+    }
+    file.append(event).unwrap();
+}
+
+#[test]
 fn events_get_distinct_random_ids() {
     let file = sample();
     assert_ne!(file.events[0].event_id, file.events[1].event_id);

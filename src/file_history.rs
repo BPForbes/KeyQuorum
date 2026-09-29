@@ -29,7 +29,7 @@ mod verify;
 pub use container::{TrackedFile, CONTAINER_MAGIC, CONTAINER_VERSION};
 pub use event::{
     genesis_hash, verify_chain, EventDetails, HistoryEvent, HistoryEventType, HistoryOutcome,
-    NewEvent,
+    NewEvent, SAFE_DETAIL_KEYS,
 };
 pub use expiry::ExpiryContext;
 pub use merge::{diff_text, AutoMerge, AutoMergeOutcome, ChangeKind, LineChange};
