@@ -1545,3 +1545,23 @@ fn a_container_changed_since_it_was_read_is_not_overwritten() {
     let name = ok(&mut env, &format!("status {KQTF}"));
     assert!(name.contains("changed.txt"), "{name}");
 }
+
+#[test]
+fn a_new_container_never_replaces_one_that_appeared_meanwhile() {
+    use crate::cli::file_cmd::{load, save};
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    let live = env.fs.read(Path::new(KQTF)).unwrap();
+    env.fs.write(Path::new("/work/other.kqtf"), &live).unwrap();
+    let (result, _) = env.run(|| {
+        // This command never read /work/other.kqtf, so saving there means
+        // creating it; someone else already did.
+        let file = load(Path::new(KQTF))?;
+        assert!(save(Path::new("/work/other.kqtf"), &file).is_err());
+        // A container that vanished after being read is not silently recreated.
+        crate::cli::env::remove_file(Path::new(KQTF))?;
+        assert!(save(Path::new(KQTF), &file).is_err());
+        Ok(())
+    });
+    assert!(result.is_ok(), "{result:?}");
+}

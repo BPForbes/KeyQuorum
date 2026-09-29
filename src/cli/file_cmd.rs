@@ -682,15 +682,24 @@ pub(super) fn save(path: &Path, file: &TrackedFile) -> Result<()> {
     let bytes = file.encode()?;
     let _lock = WriteLock::acquire(path)?;
     let read_at = READ_AT.with(|read| read.borrow_mut().remove(path));
-    if let Some(expected) = read_at {
-        if env::exists(path) {
-            let now: [u8; 32] = Sha256::digest(env::read(path)?).into();
-            if now != expected {
+    match read_at {
+        // Replacing a container this command read: it must be unchanged.
+        Some(expected) => {
+            let unchanged = env::exists(path)
+                && Into::<[u8; 32]>::into(Sha256::digest(env::read(path)?)) == expected;
+            if !unchanged {
                 return Err(usage(
                     "this file changed since the command read it; run the command again",
                 ));
             }
         }
+        // Never read: this must be a new file, never a silent replacement.
+        None if env::exists(path) => {
+            return Err(usage(
+                "this file appeared while the command ran; run the command again",
+            ));
+        }
+        None => {}
     }
     let mut temp = path.as_os_str().to_owned();
     temp.push(".tmp");
@@ -699,7 +708,10 @@ pub(super) fn save(path: &Path, file: &TrackedFile) -> Result<()> {
         env::remove_file(&temp)?;
     }
     env::write_new(&temp, &bytes)?;
-    env::fs(|fs| fs.rename(&temp, path))
+    env::fs(|fs| fs.rename(&temp, path))?;
+    let digest: [u8; 32] = Sha256::digest(&bytes).into();
+    READ_AT.with(|read| read.borrow_mut().insert(path.to_path_buf(), digest));
+    Ok(())
 }
 
 fn short(id: &[u8; 32]) -> String {
