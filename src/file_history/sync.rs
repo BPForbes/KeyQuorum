@@ -16,9 +16,12 @@
 
 use super::container::TrackedFile;
 use super::event::{EventDetails, HistoryEventType, HistoryOutcome, NewEvent};
+use super::proof::RevisionProof;
 use super::proof::MAX_PROOFS_PER_SLOT;
+use super::revision::StoredRevision;
 use super::verify::verify_structure;
 use crate::error::{Error, Result};
+use std::collections::{HashMap, HashSet};
 
 /// How the incoming copy relates to the local one, by revisions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,16 +134,26 @@ impl TrackedFile {
         other: &TrackedFile,
         context: &ImportContext,
     ) -> Result<HistoryMerge> {
-        let has = |file: &TrackedFile, id: &[u8; 32]| file.graph().get(id).is_some();
+        // One id index per side, built once: the loops below are linear.
+        let local: HashMap<[u8; 32], &StoredRevision> = self
+            .revisions
+            .iter()
+            .map(|stored| (stored.revision.revision_id, stored))
+            .collect();
+        let remote: HashSet<[u8; 32]> = other
+            .revisions
+            .iter()
+            .map(|stored| stored.revision.revision_id)
+            .collect();
         let other_new = other
             .revisions
             .iter()
-            .filter(|stored| !has(self, &stored.revision.revision_id))
+            .filter(|stored| !local.contains_key(&stored.revision.revision_id))
             .count();
         let local_new = self
             .revisions
             .iter()
-            .filter(|stored| !has(other, &stored.revision.revision_id))
+            .filter(|stored| !remote.contains(&stored.revision.revision_id))
             .count();
         let relation = match (local_new, other_new) {
             (0, 0) => HistoryRelation::Identical,
@@ -150,28 +163,33 @@ impl TrackedFile {
         };
 
         // `other` is stored parents-first, so each new revision's parents
-        // are already here when it is added.
-        let mut revisions_added = 0;
+        // are already here when it is added. Nothing is pushed until the
+        // whole pass has agreed with what is already held.
+        let mut incoming: Vec<StoredRevision> = Vec::new();
         for stored in &other.revisions {
-            match self.graph().get(&stored.revision.revision_id) {
-                Some(existing) if existing == stored => {}
+            match local.get(&stored.revision.revision_id) {
+                Some(existing) if *existing == stored => {}
                 Some(_) => return Err(Error::InvalidTrackedFile),
-                None => {
-                    self.revisions.push(stored.clone());
-                    revisions_added += 1;
-                }
+                None => incoming.push(stored.clone()),
             }
         }
+        drop(local);
+        let revisions_added = incoming.len();
+        self.revisions.extend(incoming);
         // Competing proofs for a slot are all kept (up to the slot cap):
         // an unverified import must not displace or block a valid one.
+        type Slot = ([u8; 32], u8, String);
+        let slot_of =
+            |p: &RevisionProof| -> Slot { (p.revision_id, p.kind as u8, p.signer_label.clone()) };
+        let mut held: HashMap<Slot, Vec<[u8; 64]>> = HashMap::new();
+        for p in &self.proofs {
+            held.entry(slot_of(p)).or_default().push(p.signature);
+        }
         let mut proofs_added = 0;
         for proof in &other.proofs {
-            let in_slot = self.proofs.iter().filter(|p| p.same_slot(proof)).count();
-            let known = self
-                .proofs
-                .iter()
-                .any(|p| p.same_slot(proof) && p.signature == proof.signature);
-            if !known && in_slot < MAX_PROOFS_PER_SLOT {
+            let signatures = held.entry(slot_of(proof)).or_default();
+            if !signatures.contains(&proof.signature) && signatures.len() < MAX_PROOFS_PER_SLOT {
+                signatures.push(proof.signature);
                 self.proofs.push(proof.clone());
                 proofs_added += 1;
             }
