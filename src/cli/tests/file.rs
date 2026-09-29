@@ -2,7 +2,7 @@ use super::memory_env::MemoryEnv;
 use crate::storage::Storage;
 use std::path::Path;
 
-const DB: &str = "--db /home/org/keyquorum.sqlite";
+pub(super) const DB: &str = "--db /home/org/keyquorum.sqlite";
 
 /// (container directory, label). Everyone's signing key is registered in
 /// the one org store, as in a real deployment.
@@ -14,7 +14,7 @@ const PEOPLE: [(&str, &str); 5] = [
     ("ms1", "M.S.1"),
 ];
 
-fn org() -> MemoryEnv {
+pub(super) fn org() -> MemoryEnv {
     let mut env = MemoryEnv::default();
     for (dir, label) in PEOPLE {
         env.device(&format!("keyquorum-device init /usb/{dir}"))
@@ -35,22 +35,22 @@ fn org() -> MemoryEnv {
     env
 }
 
-fn slot(label: &str) -> String {
+pub(super) fn slot(label: &str) -> String {
     let dir = PEOPLE.iter().find(|(_, l)| *l == label).unwrap().0;
     format!("/usb/{dir}={label}")
 }
 
-fn run(env: &mut MemoryEnv, args: &str) -> (crate::error::Result<()>, String) {
+pub(super) fn run(env: &mut MemoryEnv, args: &str) -> (crate::error::Result<()>, String) {
     env.keyquorum(&format!("keyquorum {DB} file {args}"))
 }
 
-fn ok(env: &mut MemoryEnv, args: &str) -> String {
+pub(super) fn ok(env: &mut MemoryEnv, args: &str) -> String {
     let (result, out) = run(env, args);
     assert!(result.is_ok(), "{args}: {result:?}\n{out}");
     out
 }
 
-fn track(env: &mut MemoryEnv, scope: &str, label: &str) -> String {
+pub(super) fn track(env: &mut MemoryEnv, scope: &str, label: &str) -> String {
     track_with(env, scope, label, "")
 }
 
@@ -357,7 +357,7 @@ fn a_ghost_identity_cannot_author_or_sign_anything_new() {
 
 // ---- merge, review, graph, diff, checkout ---------------------------------
 
-const KQTF: &str = "/work/report.txt.kqtf";
+pub(super) const KQTF: &str = "/work/report.txt.kqtf";
 
 /// Track `base` as M.A (signed, trusted), then add two children of it by
 /// M.A.1 and M.S.1, giving a forked container.
@@ -907,7 +907,7 @@ fn a_snapshot_exports_verifies_and_matches_its_file() {
 
 // ---- tracked delivery ------------------------------------------------------
 
-fn dir_file(env: &MemoryEnv, dir: &str) -> String {
+pub(super) fn dir_file(env: &MemoryEnv, dir: &str) -> String {
     let files = env.fs.list(Path::new(dir)).unwrap_or_default();
     assert_eq!(files.len(), 1, "{dir}: {files:?}");
     files[0].display().to_string()

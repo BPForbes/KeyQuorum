@@ -1,7 +1,7 @@
 use super::*;
 use crate::error::Error;
 
-const ALL_TYPES: [HistoryEventType; 23] = [
+const ALL_TYPES: [HistoryEventType; 27] = [
     HistoryEventType::TrackingStarted,
     HistoryEventType::EditCheckedIn,
     HistoryEventType::RevisionSigned,
@@ -25,6 +25,10 @@ const ALL_TYPES: [HistoryEventType; 23] = [
     HistoryEventType::BridgeUsed,
     HistoryEventType::ConflictUnresolved,
     HistoryEventType::HistoryImported,
+    HistoryEventType::QuorumUnlockAttempted,
+    HistoryEventType::PasswordUnlockAttempted,
+    HistoryEventType::ExpiredAccessAttempt,
+    HistoryEventType::GateLinked,
 ];
 
 const ALL_OUTCOMES: [HistoryOutcome; 4] = [

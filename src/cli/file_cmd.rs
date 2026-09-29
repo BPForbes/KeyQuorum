@@ -12,6 +12,7 @@ use super::deliver_cmd::{
     carry, recipient_secrets, registered_encryption_key, sender_keys, Letter, RecipientSecrets,
 };
 use super::env::{self, errln, outln};
+use super::gate_link::{self, Gate};
 use super::{open_slot_secrets, read_key_array_32, usage};
 use crate::error::{Error, Result};
 use crate::file_history::{
@@ -186,6 +187,20 @@ pub enum FileCommand {
     },
     /// Verify the history chain and revision graph, and judge every revision
     Verify { kqtf: PathBuf },
+    /// Record what happens at a quorum-protected file's gate in this
+    /// tracked file's history. The gate is unchanged and never depends on it.
+    Link {
+        kqtf: PathBuf,
+        /// The quorum-protected file id (see `keyquorum file-lock`)
+        #[arg(long)]
+        quorum_file: i64,
+    },
+    /// Stop recording a gate in this tracked file's history
+    Unlink {
+        kqtf: PathBuf,
+        #[arg(long)]
+        quorum_file: i64,
+    },
     /// Seal the newest trusted revision to another label as a `.kqpb`
     /// letter. A newer revision that is not trusted is never included.
     Share {
@@ -356,6 +371,12 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             as_label,
         } => import(conn, &kqtf, &from, &as_label),
         FileCommand::Verify { kqtf } => verify(conn, &kqtf),
+        FileCommand::Link { kqtf, quorum_file } => {
+            gate_link::link(conn, &kqtf, Gate::Quorum, quorum_file)
+        }
+        FileCommand::Unlink { kqtf, quorum_file } => {
+            gate_link::unlink(conn, &kqtf, Gate::Quorum, quorum_file)
+        }
         FileCommand::Share {
             kqtf,
             to,
@@ -462,7 +483,7 @@ fn signing_secret(slot: Option<String>, key_file: Option<PathBuf>) -> Result<Zer
 }
 
 /// `2026-09-27 00:00` or `2026-09-27 00:00:00` as `2026-09-27T00:00:00Z`.
-fn utc_instant() -> Result<String> {
+pub(super) fn utc_instant() -> Result<String> {
     let now = env::now_utc()?;
     let now = now.trim().replace(' ', "T");
     let now = if now.len() == 16 {
@@ -484,7 +505,7 @@ fn generation_for(conn: &Connection, scope: &str) -> Result<u64> {
         .unwrap_or(0))
 }
 
-fn load(path: &Path) -> Result<TrackedFile> {
+pub(super) fn load(path: &Path) -> Result<TrackedFile> {
     TrackedFile::decode(&env::read(path)?)
 }
 
@@ -494,7 +515,7 @@ fn policy_of(file: &TrackedFile) -> Result<&FilePolicy> {
 }
 
 /// Replace the container atomically: write a sibling, then rename over it.
-fn save(path: &Path, file: &TrackedFile) -> Result<()> {
+pub(super) fn save(path: &Path, file: &TrackedFile) -> Result<()> {
     let bytes = file.encode()?;
     let mut temp = path.as_os_str().to_owned();
     temp.push(".tmp");
@@ -1530,7 +1551,7 @@ fn checkout(
 
 /// Refresh this file's index rows. The index is only a cache, so a failure
 /// is reported but never fails the command that already wrote the file.
-fn index_after(conn: &Connection, file: &TrackedFile) {
+pub(super) fn index_after(conn: &Connection, file: &TrackedFile) {
     if let Err(error) = index::record(conn, file) {
         errln!("Warning: could not update the file index: {error}");
     }

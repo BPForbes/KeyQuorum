@@ -44,6 +44,10 @@ pub enum HistoryEventType {
     BridgeUsed = 21,
     ConflictUnresolved = 22,
     HistoryImported = 23,
+    QuorumUnlockAttempted = 24,
+    PasswordUnlockAttempted = 25,
+    ExpiredAccessAttempt = 26,
+    GateLinked = 27,
 }
 
 impl HistoryEventType {
@@ -72,6 +76,10 @@ impl HistoryEventType {
             21 => Self::BridgeUsed,
             22 => Self::ConflictUnresolved,
             23 => Self::HistoryImported,
+            24 => Self::QuorumUnlockAttempted,
+            25 => Self::PasswordUnlockAttempted,
+            26 => Self::ExpiredAccessAttempt,
+            27 => Self::GateLinked,
             _ => return Err(Error::InvalidTrackedFile),
         })
     }

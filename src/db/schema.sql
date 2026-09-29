@@ -458,3 +458,21 @@ CREATE TABLE IF NOT EXISTS tracked_history_index (
     occurred_at TEXT NOT NULL,
     PRIMARY KEY (file_id, sequence)
 );
+
+-- Ties an existing protection gate (a quorum file or a password-locked
+-- file) to a tracked `.kqtf`, so the CLI can append what happened at the
+-- gate to that file's history. Deliberately no foreign key to the gate
+-- tables: a purged gate row must not take its link, and so the record of
+-- its expiry, with it. The gates never read this table.
+CREATE TABLE IF NOT EXISTS tracked_gate_links (
+    id              INTEGER PRIMARY KEY,
+    tracked_file_id BLOB NOT NULL,
+    gate            TEXT NOT NULL CHECK (gate IN ('quorum', 'password')),
+    gate_file_id    INTEGER NOT NULL,
+    kqtf_path       TEXT NOT NULL,
+    linked_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (tracked_file_id, gate, gate_file_id)
+);
+
+CREATE INDEX IF NOT EXISTS tracked_gate_links_by_gate
+    ON tracked_gate_links (gate, gate_file_id);

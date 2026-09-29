@@ -182,6 +182,15 @@ label). Containers are replaced by writing a sibling and renaming.
 `tracked_history_index` as a rebuildable cache over `.kqtf` files: metadata
 only, no payload and no trust state, and `file reindex` restores it from the
 containers, which remain the authority.
+`src/cli/gate_link.rs` ties a quorum-protected file to a tracked `.kqtf`
+(`keyquorum file link`, table `tracked_gate_links`, deliberately without a
+foreign key to the gate so a purged gate keeps its link) and appends what
+happened at the gate to that file's history: the attempt and its outcome,
+the labels presented on success, and, when the TTL destroys the file,
+`FILE_EXPIRED`, `CONTENT_DESTROYED` and `EXPIRED_ACCESS_ATTEMPT`. The CLI
+calls it only after `quorum` has answered; the gates never read the link,
+recording is best-effort and cannot change an outcome, and no share,
+password, PIN or plaintext is ever recorded.
 `file_history/sync.rs` imports another copy of the same file (same id and
 policy, and it must verify): revisions and proofs are unioned, a fork stays as
 two heads, and the importer records one `HISTORY_IMPORTED` event in its own

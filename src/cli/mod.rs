@@ -32,6 +32,8 @@ mod device_cmd;
 pub mod device_tool;
 pub mod env;
 mod file_cmd;
+mod gate_link;
+use gate_link::Gate;
 #[cfg(feature = "provider")]
 pub mod host_args;
 mod transfer_cmd;
@@ -1964,7 +1966,11 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
             // Before anything else: an expired file is destroyed on the
             // first unlock attempt, whether or not the presented shares
             // would have reconstructed it (see quorum::unlock_file_with_approval).
-            quorum::purge_if_expired_in(&mut env::EnvStorage, conn, id)?;
+            gate_link::note_if_gone(Gate::Quorum, conn, id);
+            if let Err(err) = quorum::purge_if_expired_in(&mut env::EnvStorage, conn, id) {
+                gate_link::record_unlock(Gate::Quorum, conn, id, Some(&err), &[]);
+                return Err(err);
+            }
             let file_status = quorum::status(conn, id)?;
             let shares =
                 collect_shares(conn, &file_status.tree.root, &args.share_files, &args.slots)?;
@@ -1990,6 +1996,7 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
                     Ok(presented) => presented,
                     Err(err) => {
                         quorum::record_unlock_failure(conn, id, &err)?;
+                        gate_link::record_unlock(Gate::Quorum, conn, id, Some(&err), &[]);
                         return Err(err);
                     }
                 };
@@ -2019,6 +2026,7 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
                     let mut secret = presented.secret;
                     secret.zeroize();
                     quorum::record_unlock_failure(conn, id, &err)?;
+                    gate_link::record_unlock(Gate::Quorum, conn, id, Some(&err), &[]);
                     return Err(err);
                 }
             };
@@ -2031,8 +2039,21 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
                     );
                 }
             }
-            let plaintext =
-                quorum::complete_unlock_in(&mut env::EnvStorage, conn, id, presented, &grants)?;
+            let presented_labels: Vec<String> = presented
+                .leaves
+                .iter()
+                .map(|leaf| leaf.leaf_label.clone())
+                .collect();
+            let unlocked =
+                quorum::complete_unlock_in(&mut env::EnvStorage, conn, id, presented, &grants);
+            gate_link::record_unlock(
+                Gate::Quorum,
+                conn,
+                id,
+                unlocked.as_ref().err(),
+                &presented_labels,
+            );
+            let plaintext = unlocked?;
             match args.output {
                 Some(path) => env::write_new(&path, &plaintext)?,
                 None => env::stdout_bytes(&plaintext)?,
