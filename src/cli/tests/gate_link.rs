@@ -1,4 +1,4 @@
-use super::file::{ok, org, run, slot, track, DB, KQTF};
+use super::file::{ok, org, run, track, DB, KQTF};
 use super::memory_env::MemoryEnv;
 use crate::storage::Storage;
 use std::path::Path;
