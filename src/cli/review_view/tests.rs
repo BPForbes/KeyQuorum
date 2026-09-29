@@ -170,3 +170,34 @@ fn a_g_before_command_mode_does_not_leave_a_pending_gg() {
     keys(&mut s, "gg");
     assert_eq!(s.cursor(), 0);
 }
+
+#[test]
+fn search_wraps_and_repeats_in_both_directions() {
+    let mut s = ReviewState::new(view());
+    s.handle(Key::Char('/'));
+    keys(&mut s, "l2");
+    assert_eq!(s.mode, Mode::Search);
+    assert_eq!(s.handle(Key::Enter), Effect::None);
+    assert_eq!(s.cursor(), 2);
+
+    assert_eq!(s.handle(Key::Char('n')), Effect::None);
+    assert_eq!(s.cursor(), 20, "matching is substring-based and wraps");
+    assert_eq!(s.handle(Key::Char('N')), Effect::None);
+    assert_eq!(s.cursor(), 2);
+}
+
+#[test]
+fn search_reports_absent_patterns_and_can_be_cancelled() {
+    let mut s = ReviewState::new(view());
+    assert_eq!(
+        s.handle(Key::Char('n')),
+        Effect::Message("no previous search".to_string())
+    );
+    s.handle(Key::Char('/'));
+    keys(&mut s, "missing");
+    assert!(matches!(s.handle(Key::Enter), Effect::Message(t) if t.contains("pattern not found")));
+    s.handle(Key::Char('/'));
+    keys(&mut s, "discarded");
+    s.handle(Key::Esc);
+    assert_eq!((s.mode, s.command.as_str()), (Mode::Normal, ""));
+}

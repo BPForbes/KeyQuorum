@@ -83,6 +83,16 @@ fn command_mode_shows_what_is_being_typed() {
 }
 
 #[test]
+fn search_mode_shows_what_is_being_typed() {
+    let mut s = state();
+    s.handle(Key::Char('/'));
+    s.handle(Key::Char('n'));
+    let (text, _) = render(&s, "ignored while typing");
+    assert!(text.contains("/n"), "{text}");
+    assert!(!text.contains("ignored while typing"));
+}
+
+#[test]
 fn a_pointer_position_maps_back_to_a_line() {
     let s = state();
     let (_, layouts) = render(&s, "");

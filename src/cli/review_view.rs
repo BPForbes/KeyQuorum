@@ -261,6 +261,7 @@ pub enum Effect {
 pub enum Mode {
     Normal,
     Command,
+    Search,
 }
 
 pub struct ReviewState {
@@ -270,11 +271,12 @@ pub struct ReviewState {
     hover: Option<usize>,
     pub mode: Mode,
     pub command: String,
+    search: Option<String>,
     pending_g: bool,
 }
 
 const HELP: &str = "j/k move · gg/G ends · Ctrl-d/u page · Tab or h/l switch side · \
-:q quit · hover a line for who wrote it";
+/ search · n/N repeat · :q quit · hover a line for who wrote it";
 
 /// The commands the interface does not perform, and what to run.
 fn guidance(command: &str) -> Option<&'static str> {
@@ -304,6 +306,7 @@ impl ReviewState {
             hover: None,
             mode: Mode::Normal,
             command: String::new(),
+            search: None,
             pending_g: false,
         }
     }
@@ -351,6 +354,7 @@ impl ReviewState {
     pub fn handle(&mut self, key: Key) -> Effect {
         match self.mode {
             Mode::Command => self.command_key(key),
+            Mode::Search => self.search_key(key),
             Mode::Normal => self.normal_key(key),
         }
     }
@@ -371,6 +375,12 @@ impl ReviewState {
                 self.mode = Mode::Command;
                 self.command.clear();
             }
+            Key::Char('/') => {
+                self.mode = Mode::Search;
+                self.command.clear();
+            }
+            Key::Char('n') => return self.repeat_search(true),
+            Key::Char('N') => return self.repeat_search(false),
             Key::Char('?') => return Effect::Message(HELP.to_string()),
             Key::Char('q') => return Effect::Quit,
             _ => {}
@@ -405,6 +415,61 @@ impl ReviewState {
             _ => {}
         }
         Effect::None
+    }
+
+    fn search_key(&mut self, key: Key) -> Effect {
+        match key {
+            Key::Esc => {
+                self.mode = Mode::Normal;
+                self.command.clear();
+            }
+            Key::Backspace => match self.command.pop() {
+                Some(_) => {}
+                None => self.mode = Mode::Normal,
+            },
+            Key::Char(c) => self.command.push(c),
+            Key::Enter => {
+                let query = std::mem::take(&mut self.command);
+                self.mode = Mode::Normal;
+                if query.trim().is_empty() {
+                    return Effect::None;
+                }
+                self.search = Some(query);
+                return self.repeat_search(true);
+            }
+            _ => {}
+        }
+        Effect::None
+    }
+
+    fn repeat_search(&mut self, forward: bool) -> Effect {
+        let Some(query) = self.search.clone() else {
+            return Effect::Message("no previous search".to_string());
+        };
+        let needle = query.to_lowercase();
+        let lines = &self.view.panes[self.pane].lines;
+        if lines.is_empty() {
+            return Effect::Message(format!("pattern not found: {query}"));
+        }
+        let start = self.cursor();
+        let found = (1..=lines.len()).find_map(|offset| {
+            let index = if forward {
+                (start + offset) % lines.len()
+            } else {
+                (start + lines.len() - (offset % lines.len())) % lines.len()
+            };
+            lines[index]
+                .text
+                .to_lowercase()
+                .contains(&needle)
+                .then_some(index)
+        });
+        if let Some(index) = found {
+            self.move_to(index);
+            self.hover = None;
+            return Effect::None;
+        }
+        Effect::Message(format!("pattern not found: {query}"))
     }
 }
 

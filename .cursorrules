@@ -222,8 +222,8 @@ label). Containers are replaced by writing a sibling and renaming, under an excl
 only, no payload and no trust state, and `file reindex` restores it from the
 containers, which remain the authority.
 `src/cli/review_view.rs` is the review's view model and key handler (Vim keys,
-`:` commands, per-line provenance for the cursor or pointer) with no terminal
-and no dependencies; `keyquorum file review` prints from the same
+`/` search with `n`/`N` repeat, `:` commands, per-line provenance for the cursor
+or pointer) with no terminal and no dependencies; `keyquorum file review` prints from the same
 `ReviewView`. `src/cli/review_tui.rs` (feature `tui`, `ratatui`, native-only,
 refused by `build.rs` on wasm32) only draws it and reads keys and the mouse.
 It decides no trust and edits no history: `:sign`, `:accept`, `:reject` and

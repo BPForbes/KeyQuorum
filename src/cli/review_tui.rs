@@ -95,6 +95,7 @@ fn draw(frame: &mut Frame, state: &ReviewState, message: &str, layouts: &mut Lay
     );
     let bottom = match state.mode {
         Mode::Command => format!(":{}", state.command),
+        Mode::Search => format!("/{}", state.command),
         Mode::Normal => message.to_string(),
     };
     frame.render_widget(Paragraph::new(bottom), rows[4]);
