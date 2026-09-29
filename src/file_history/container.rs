@@ -26,7 +26,9 @@ use rand::RngCore;
 pub const CONTAINER_MAGIC: &[u8; 4] = b"KQTF";
 /// Version 5 lets a revision's payload be absent (destroyed at expiry).
 /// Version 4 containers, where every payload is present, still decode.
-pub const CONTAINER_VERSION: u8 = 5;
+/// Version 6 adds the finalization proof kind; versions 4 and 5 never
+/// carry one and still decode.
+pub const CONTAINER_VERSION: u8 = 6;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackedFile {
@@ -163,7 +165,13 @@ impl TrackedFile {
         let count = u32::try_from(self.events.len()).map_err(|_| Error::BundleFieldTooLarge)?;
         let mut out = Vec::new();
         out.extend_from_slice(CONTAINER_MAGIC);
-        out.push(CONTAINER_VERSION);
+        // A container without a finalization stays readable by builds that
+        // predate it.
+        let finalized = self
+            .proofs
+            .iter()
+            .any(|proof| proof.kind == super::proof::ProofKind::Finalization);
+        out.push(if finalized { CONTAINER_VERSION } else { 5 });
         out.extend_from_slice(&self.file_id);
         push_len_prefixed(&mut out, self.logical_name.as_bytes())?;
         out.extend_from_slice(&self.history_root());
@@ -221,6 +229,13 @@ impl TrackedFile {
         let mut proofs = Vec::new();
         for _ in 0..proof_count {
             proofs.push(RevisionProof::decode(&mut data)?);
+        }
+        if version < 6
+            && proofs
+                .iter()
+                .any(|proof| proof.kind == super::proof::ProofKind::Finalization)
+        {
+            return Err(Error::InvalidTrackedFile);
         }
         let count = bad(take_u32(&mut data))?;
         let mut events = Vec::new();

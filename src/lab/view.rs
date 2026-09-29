@@ -367,6 +367,9 @@ pub struct TrackedFileView {
     pub current_revision: Option<String>,
     /// The latest revision this store trusts, which need not be the current one.
     pub trusted_revision: Option<String>,
+    /// The latest finalized revision behind the sole head, if any; none on
+    /// a fork, where no branch is picked.
+    pub finalized_revision: Option<String>,
     /// The scheduled expiry (`YYYY-MM-DDTHH:MM:SSZ`), if one was set.
     pub expires_at: Option<String>,
     /// Whether every revision's content was destroyed at expiry.
@@ -398,6 +401,9 @@ pub struct TrackedRevisionView {
     /// `trusted`, `pending` or `denied`, from `file_history`.
     pub trust: String,
     pub reason: Option<String>,
+    /// Whether the scope owner or an ancestor finalized it, judged by this
+    /// store's keys.
+    pub finalized: bool,
     /// The revision's text, when it is UTF-8 and small enough to edit here.
     pub text: Option<String>,
 }

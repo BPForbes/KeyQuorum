@@ -156,6 +156,10 @@ export class LabClient {
     return this.call(this.lab.history_countersign(path, revision));
   }
 
+  historyFinalize(path: string, revision?: string): ActionResult {
+    return this.call(this.lab.history_finalize(path, revision));
+  }
+
   historyMerge(path: string, label?: string): ActionResult {
     return this.call(this.lab.history_merge(path, label));
   }

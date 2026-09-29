@@ -23,6 +23,8 @@ pub const MAX_PROOFS_PER_SLOT: usize = 8;
 pub enum ProofKind {
     Content = 1,
     Countersignature = 2,
+    /// The scope owner or an ancestor marks a trusted revision final.
+    Finalization = 3,
 }
 
 impl ProofKind {
@@ -30,6 +32,7 @@ impl ProofKind {
         match value {
             1 => Ok(Self::Content),
             2 => Ok(Self::Countersignature),
+            3 => Ok(Self::Finalization),
             _ => Err(Error::InvalidTrackedFile),
         }
     }
@@ -88,6 +91,14 @@ impl RevisionProof {
                     &self.policy_hash,
                 )
             }
+            (ProofKind::Finalization, None, _) => signing::file_finalize_preimage(
+                &revision.file_id,
+                &revision.revision_id,
+                &self.signer_identity,
+                &self.signer_label,
+                self.topology_generation,
+                &self.policy_hash,
+            ),
             _ => Err(Error::InvalidTrackedFile),
         }
     }
@@ -187,6 +198,40 @@ impl TrackedFile {
         proof.signature = signing::sign(secret, &proof.preimage(revision)?);
         // Only an equivalent proof (same signature) blocks; a competing
         // one that does not verify must never keep the author out.
+        if self.add_proof(proof) {
+            Ok(())
+        } else {
+            Err(Error::InvalidTrackedFile)
+        }
+    }
+
+    /// Finalize a revision as `signer_label`. Whether that label may
+    /// finalize, whether the revision is trusted, and whether the signature
+    /// verifies are policy questions answered by `is_finalized`; this only
+    /// signs and stores. Refuses an identical finalization already held.
+    pub fn finalize_revision(
+        &mut self,
+        revision_id: &[u8; 32],
+        signer_identity: [u8; 16],
+        signer_label: &str,
+        secret: &[u8; 32],
+    ) -> Result<()> {
+        let revision = self
+            .graph()
+            .get(revision_id)
+            .ok_or(Error::InvalidTrackedFile)?;
+        let revision = &revision.revision;
+        let mut proof = RevisionProof {
+            revision_id: *revision_id,
+            kind: ProofKind::Finalization,
+            signer_identity,
+            signer_label: signer_label.to_string(),
+            author_signature_hash: None,
+            topology_generation: revision.topology_generation,
+            policy_hash: revision.policy_hash,
+            signature: [0; 64],
+        };
+        proof.signature = signing::sign(secret, &proof.preimage(revision)?);
         if self.add_proof(proof) {
             Ok(())
         } else {

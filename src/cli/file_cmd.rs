@@ -18,12 +18,12 @@ use super::review_view::ReviewView;
 use super::{open_slot_secrets, read_key_array_32, usage};
 use crate::error::{Error, Result};
 use crate::file_history::{
-    current_revision, diff_text, evaluate_revision_trust, index, latest_trusted_revision,
-    select_shareable_revision, verify_tracked_file, AutoMergeOutcome, BridgeEvidence, ChangeKind,
-    DeliveryDecisionKind, EventDetails, ExpiryContext, FilePolicy, HistoryEvent, HistoryEventType,
-    HistoryOutcome, HistoryRelation, HistorySnapshot, ImportContext, MergeBase, NewEvent,
-    NewRevision, Requirement, ResolverSelection, TrackedFile, TrustContext, TrustReason,
-    TrustState,
+    current_revision, diff_text, evaluate_revision_trust, index, is_finalized,
+    latest_finalized_ancestor, latest_trusted_revision, select_shareable_revision,
+    verify_tracked_file, AutoMergeOutcome, BridgeEvidence, ChangeKind, DeliveryDecisionKind,
+    EventDetails, ExpiryContext, FilePolicy, HistoryEvent, HistoryEventType, HistoryOutcome,
+    HistoryRelation, HistorySnapshot, ImportContext, MergeBase, NewEvent, NewRevision, Requirement,
+    ResolverSelection, TrackedFile, TrustContext, TrustReason, TrustState,
 };
 use crate::{authority, file_delivery, key_tree, private_bridge, signing, transfer};
 use clap::Subcommand;
@@ -85,6 +85,22 @@ pub enum FileCommand {
     },
     /// Show the rules a tracked file's revisions are judged by
     Policy { kqtf: PathBuf },
+    /// Mark a trusted revision final. Only the file's scope owner or one of
+    /// its ancestors may, and the revision must already be trusted; trust
+    /// itself is unchanged.
+    Finalize {
+        kqtf: PathBuf,
+        /// Revision id or unique prefix (the sole head by default)
+        #[arg(long)]
+        revision: Option<String>,
+        /// Your label: the file's scope owner or one of its ancestors
+        #[arg(long = "as")]
+        as_label: String,
+        #[arg(long, conflicts_with = "signing_key_file")]
+        slot: Option<String>,
+        #[arg(long)]
+        signing_key_file: Option<PathBuf>,
+    },
     /// Check in a new revision from a native file
     Checkin {
         /// The tracked file (.kqtf)
@@ -408,6 +424,13 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             )
         }
         FileCommand::Policy { kqtf } => show_policy(&kqtf),
+        FileCommand::Finalize {
+            kqtf,
+            revision,
+            as_label,
+            slot,
+            signing_key_file,
+        } => finalize(conn, &kqtf, revision, &as_label, slot, signing_key_file),
         FileCommand::Checkin {
             kqtf,
             from,
@@ -1233,6 +1256,63 @@ fn parse_requirement(word: &str) -> std::result::Result<Requirement, String> {
         .ok_or_else(|| "use forbidden, author, author+parent or author+bridge-or-owner".to_string())
 }
 
+/// Finalize a trusted revision. This is the deliberate act on top of trust:
+/// the scope owner or an ancestor signs a finalization proof that any store
+/// holding their key can check. Trust is not changed and no history is
+/// rewritten.
+fn finalize(
+    conn: &Connection,
+    kqtf: &Path,
+    revision: Option<String>,
+    as_label: &str,
+    slot: Option<String>,
+    key_file: Option<PathBuf>,
+) -> Result<()> {
+    let mut file = load_live(conn, kqtf, Some(as_label), "finalize")?;
+    let policy = policy_of(&file)?.clone();
+    if !authority::is_ancestor_or_self(as_label, &policy.scope_root) {
+        return Err(usage(&format!(
+            "only {} or one of its ancestors may finalize a revision of this file",
+            policy.scope_root
+        )));
+    }
+    require_active(conn, as_label)?;
+    let target = pick_revision(&file, revision.as_deref())?;
+    let ctx = StoreTrust { conn };
+    let state = evaluate_revision_trust(&file, &target, &policy, &ctx)?;
+    if state != TrustState::Trusted {
+        return Err(usage(&format!(
+            "only a trusted revision can be finalized; this one is {}",
+            trust_text(state)
+        )));
+    }
+    let secret = signing_secret(slot, key_file)?;
+    let (identity, at) = (identity_for(conn, as_label)?, utc_instant()?);
+    let generation = generation_for(conn, &policy.scope_root)?;
+    file.finalize_revision(&target, identity, as_label, &secret)
+        .map_err(|_| usage(&format!("{as_label} already finalized this revision")))?;
+    // The signature must verify under the key this store registered for the
+    // label; a wrong key is refused before anything is written.
+    if !is_finalized(&file, &target, &policy, &ctx) {
+        return Err(usage(&format!(
+            "the signing key you supplied is not the one registered for {as_label} in this store"
+        )));
+    }
+    file.append(event(
+        HistoryEventType::RevisionFinalized,
+        Some(target),
+        &at,
+        identity,
+        as_label,
+        generation,
+        EventDetails::new(),
+    ))?;
+    save(kqtf, &file)?;
+    index_after(conn, &file);
+    outln!("Finalized {} as {as_label}", short(&target));
+    Ok(())
+}
+
 /// The rules the file's revisions are judged by, and the hash every
 /// revision carries so later verification knows which rules applied.
 fn show_policy(kqtf: &Path) -> Result<()> {
@@ -1305,6 +1385,10 @@ fn status(conn: &Connection, kqtf: &Path) -> Result<()> {
             "    trust {}",
             trust_text(evaluate_revision_trust(&file, head, policy, &ctx)?)
         );
+        match latest_finalized_ancestor(&file, head, policy, &ctx) {
+            Some(id) => outln!("    finalized {}", short(&id)),
+            None => outln!("    finalized none"),
+        }
         let share = select_shareable_revision(&file, head, None, policy, &ctx)?;
         match (share.decision, share.delivered_revision) {
             (DeliveryDecisionKind::CurrentTrustedRevision, _) => {

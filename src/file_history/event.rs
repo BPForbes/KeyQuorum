@@ -53,6 +53,7 @@ pub enum HistoryEventType {
     ShareLinkRevoked = 30,
     ExpiryScheduled = 31,
     FileRenamed = 32,
+    RevisionFinalized = 33,
 }
 
 impl HistoryEventType {
@@ -64,6 +65,7 @@ impl HistoryEventType {
         match self {
             E::TrackingStarted | E::HistoryImported | E::GateLinked | E::FileRenamed => "file",
             E::EditCheckedIn
+            | E::RevisionFinalized
             | E::RevisionSigned
             | E::CountersignatureAdded
             | E::PolicyDecision
@@ -128,6 +130,7 @@ impl HistoryEventType {
             30 => Self::ShareLinkRevoked,
             31 => Self::ExpiryScheduled,
             32 => Self::FileRenamed,
+            33 => Self::RevisionFinalized,
             _ => return Err(Error::InvalidTrackedFile),
         })
     }

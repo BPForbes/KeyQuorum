@@ -82,6 +82,7 @@ function RevisionRow({
         {revision.head ? " · head" : ""}
       </span>{" "}
       <span className="badge">{revision.trust}</span>
+      {revision.finalized ? <span className="badge" data-testid="revision-final"> final</span> : null}
       {revision.reason ? <span className="muted small"> {revision.reason}</span> : null}
       {file.destroyed ? null : (
         <button
@@ -110,6 +111,16 @@ function RevisionRow({
           onClick={() => act((client) => client.historySign(file.path, revision.id))}
         >
           Sign revision
+        </button>
+      ) : null}
+      {revision.trust === "trusted" && !revision.finalized && !file.destroyed ? (
+        <button
+          type="button"
+          className="btn small-btn"
+          title="keyquorum file finalize: the scope owner or an ancestor marks a trusted revision final"
+          onClick={() => act((client) => client.historyFinalize(file.path, revision.id))}
+        >
+          Finalize
         </button>
       ) : null}
       {revision.trust === "pending" && countersigner ? (
@@ -371,7 +382,8 @@ function TrackedFileCard({
         {file.currentRevision
           ? `Current revision ${short(file.currentRevision)}`
           : "Current revision: none (two heads)"}
-        {file.trustedRevision ? `; latest trusted ${short(file.trustedRevision)}.` : "; nothing trusted yet."}
+        {file.trustedRevision ? `; latest trusted ${short(file.trustedRevision)}` : "; nothing trusted yet"}
+        {file.finalizedRevision ? `; final ${short(file.finalizedRevision)}.` : "; nothing final yet."}
       </p>
       <p className="small" data-testid="tracked-shareable">
         {file.destroyed

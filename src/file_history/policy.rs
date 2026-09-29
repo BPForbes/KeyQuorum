@@ -453,6 +453,65 @@ pub fn latest_trusted_revision(
         })
 }
 
+/// Whether the scope owner or an ancestor has finalized `revision_id`: it
+/// must itself be trusted under `policy`, and carry a finalization proof
+/// whose signer holds the scope root or one of its ancestors and whose
+/// signature verifies under a key `ctx` knows. Finalization is a separate,
+/// deliberate act on top of trust, and like trust it is judged by the store
+/// that holds the keys, never taken from the container's say-so.
+pub fn is_finalized(
+    file: &TrackedFile,
+    revision_id: &[u8; 32],
+    policy: &FilePolicy,
+    ctx: &dyn TrustContext,
+) -> bool {
+    let Some(stored) = file.graph().get(revision_id) else {
+        return false;
+    };
+    let revision = &stored.revision;
+    if !matches!(
+        evaluate_revision_trust(file, revision_id, policy, ctx),
+        Ok(TrustState::Trusted)
+    ) {
+        return false;
+    }
+    file.proofs_for(revision_id, ProofKind::Finalization)
+        .any(|proof| {
+            authority::is_ancestor_or_self(&proof.signer_label, &policy.scope_root)
+                && proof_verifies(revision, proof, ctx)
+        })
+}
+
+/// The most recently stored finalized revision that is `head` or an
+/// ancestor of it. Per branch, never across branches, so a fork has no
+/// single winner.
+pub fn latest_finalized_ancestor(
+    file: &TrackedFile,
+    head: &[u8; 32],
+    policy: &FilePolicy,
+    ctx: &dyn TrustContext,
+) -> Option<[u8; 32]> {
+    let ancestors = file.graph().ancestor_set(head);
+    file.revisions()
+        .iter()
+        .rev()
+        .map(|stored| stored.revision.revision_id)
+        .find(|id| ancestors.contains(id) && is_finalized(file, id, policy, ctx))
+}
+
+/// Each head with the latest finalized revision behind it, if any.
+pub fn finalized_checkpoints(
+    file: &TrackedFile,
+    policy: &FilePolicy,
+    ctx: &dyn TrustContext,
+) -> Vec<([u8; 32], Option<[u8; 32]>)> {
+    file.graph()
+        .heads()
+        .into_iter()
+        .map(|head| (head, latest_finalized_ancestor(file, &head, policy, ctx)))
+        .collect()
+}
+
 /// Newer is not trusted. Deliver `candidate` if trusted; otherwise the most
 /// recently stored trusted ancestor of it; otherwise nothing. When the
 /// requester already holds the revision that would be delivered, say so.

@@ -277,7 +277,9 @@ fn guidance(command: &str) -> Option<&'static str> {
         "accept" | "reject" => {
             "not available here: resolve by editing the file, `file checkin`, then `file merge`"
         }
-        "finalize" => "not available here: `keyquorum file merge`, then `file sign`",
+        "finalize" => {
+            "not available here: once the revision is trusted, run `keyquorum file finalize` as the scope owner"
+        }
         _ => return None,
     })
 }

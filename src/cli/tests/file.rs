@@ -1998,3 +1998,90 @@ fn signing_a_native_file_starts_tracking_only_when_the_first_revision_is_trusted
     );
     assert!(env.fs.exists(Path::new(KQTF)));
 }
+
+// ---- finalization -------------------------------------------------------------
+
+#[test]
+fn the_owner_finalizes_a_trusted_revision_and_status_says_so() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    let status = ok(&mut env, &format!("status {KQTF}"));
+    assert!(status.contains("finalized none"), "{status}");
+
+    let out = ok(
+        &mut env,
+        &format!("finalize {KQTF} --as M.A --slot {}", slot("M.A")),
+    );
+    assert!(out.contains("Finalized "), "{out}");
+    let status = ok(&mut env, &format!("status {KQTF}"));
+    assert!(!status.contains("finalized none"), "{status}");
+    let history = ok(&mut env, &format!("history {KQTF}"));
+    assert!(history.contains("RevisionFinalized"), "{history}");
+    // The container still verifies and trust is unchanged.
+    let verify = ok(&mut env, &format!("verify {KQTF}"));
+    assert!(verify.contains("TRUSTED"), "{verify}");
+    // Doing it twice is refused rather than repeated.
+    let (result, _) = run(
+        &mut env,
+        &format!("finalize {KQTF} --as M.A --slot {}", slot("M.A")),
+    );
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("already finalized"));
+}
+
+#[test]
+fn only_a_trusted_revision_can_be_finalized_and_only_by_the_owner_or_an_ancestor() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    // A descendant's unsigned edit is the head and is not trusted.
+    edit(&mut env, "totals: DRAFT\n");
+    ok(
+        &mut env,
+        &format!("checkin {KQTF} --from /work/edited.txt --as M.A.1 --unsigned"),
+    );
+    let (result, _) = run(
+        &mut env,
+        &format!("finalize {KQTF} --as M.A --slot {}", slot("M.A")),
+    );
+    let message = result.unwrap_err().to_string();
+    assert!(message.contains("only a trusted revision"), "{message}");
+    // A descendant may not finalize, even the trusted first revision.
+    let first = ok(&mut env, &format!("graph {KQTF}"));
+    let first = first
+        .split_whitespace()
+        .find(|w| w.len() == 12 && w.chars().all(|c| c.is_ascii_hexdigit()))
+        .expect("a short id")
+        .to_string();
+    let (result, _) = run(
+        &mut env,
+        &format!(
+            "finalize {KQTF} --revision {first} --as M.A.1 --slot {}",
+            slot("M.A.1")
+        ),
+    );
+    assert!(result.is_err());
+    // Someone else's key does not stand in for the owner's.
+    let (result, _) = run(
+        &mut env,
+        &format!(
+            "finalize {KQTF} --revision {first} --as M.A --slot {}",
+            slot("M.B")
+        ),
+    );
+    assert!(result.is_err());
+    assert!(ok(&mut env, &format!("status {KQTF}")).contains("finalized none"));
+    // The owner can finalize the trusted first revision while a newer
+    // unsigned one is the head; the head itself stays unfinalized.
+    ok(
+        &mut env,
+        &format!(
+            "finalize {KQTF} --revision {first} --as M.A --slot {}",
+            slot("M.A")
+        ),
+    );
+    let status = ok(&mut env, &format!("status {KQTF}"));
+    assert!(status.contains("finalized "), "{status}");
+    assert!(!status.contains("finalized none"), "{status}");
+}

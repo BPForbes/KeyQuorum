@@ -34,9 +34,10 @@ pub use event::{
 pub use expiry::ExpiryContext;
 pub use merge::{diff_text, AutoMerge, AutoMergeOutcome, ChangeKind, LineChange};
 pub use policy::{
-    current_revision, evaluate_revision_trust, latest_trusted_revision, select_shareable_revision,
-    BridgeEvidence, DeliveryDecision, DeliveryDecisionKind, FilePolicy, Requirement, TrustContext,
-    TrustReason, TrustState,
+    current_revision, evaluate_revision_trust, finalized_checkpoints, is_finalized,
+    latest_finalized_ancestor, latest_trusted_revision, select_shareable_revision, BridgeEvidence,
+    DeliveryDecision, DeliveryDecisionKind, FilePolicy, Requirement, TrustContext, TrustReason,
+    TrustState,
 };
 pub use proof::{ProofKind, RevisionProof};
 pub use resolve::{Divergence, ResolverSelection, SelectionRule};

@@ -658,3 +658,109 @@ fn competing_proofs_per_slot_are_bounded() {
     });
     assert!(over.encode().is_err() || TrackedFile::decode(&over.encode().unwrap()).is_err());
 }
+
+// ---- finalization ------------------------------------------------------------
+
+fn finalized(file: &TrackedFile, id: &[u8; 32], ctx: &Ctx) -> bool {
+    is_finalized(file, id, &policy(), ctx)
+}
+
+#[test]
+fn only_a_trusted_revision_the_owner_or_an_ancestor_finalized_is_final() {
+    let (mut file, id) = one("M.A", 2);
+    let ctx = Ctx::new();
+    // Not trusted yet, so a finalization proof does not count.
+    file.finalize_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    assert!(!finalized(&file, &id, &ctx));
+    file.sign_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    assert_eq!(state(&file, &id, &ctx), Trusted);
+    assert!(finalized(&file, &id, &ctx));
+    // Finalizing does not touch trust.
+    assert_eq!(state(&file, &id, &ctx), Trusted);
+}
+
+#[test]
+fn a_descendant_or_a_stranger_cannot_finalize() {
+    let (mut file, id) = one("M.A", 2);
+    file.sign_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    let ctx = Ctx::new();
+    // M.A.1 (a descendant) and M.S.1 (cross-branch) hold valid keys but not
+    // the standing to finalize.
+    file.finalize_revision(&id, ident(3), "M.A.1", &secret(3))
+        .unwrap();
+    file.finalize_revision(&id, ident(4), "M.S.1", &secret(4))
+        .unwrap();
+    assert!(!finalized(&file, &id, &ctx));
+    // An ancestor may.
+    file.finalize_revision(&id, ident(1), "M", &secret(1))
+        .unwrap();
+    assert!(finalized(&file, &id, &ctx));
+}
+
+#[test]
+fn a_finalization_signed_with_the_wrong_key_does_not_verify() {
+    let (mut file, id) = one("M.A", 2);
+    file.sign_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    file.finalize_revision(&id, ident(2), "M.A", &secret(9))
+        .unwrap();
+    assert!(!finalized(&file, &id, &Ctx::new()));
+}
+
+#[test]
+fn the_latest_finalized_ancestor_is_per_branch_and_never_a_winner() {
+    let mut file = TrackedFile::new(FILE, "report.txt");
+    let base = revision_by(&mut file, vec![], "M.A", 2, &policy(), T1);
+    file.sign_revision(&base, ident(2), "M.A", &secret(2))
+        .unwrap();
+    file.finalize_revision(&base, ident(2), "M.A", &secret(2))
+        .unwrap();
+    let left = revision_by(&mut file, vec![base], "M.A", 2, &policy(), T2);
+    let right = revision_by(
+        &mut file,
+        vec![base],
+        "M.A",
+        2,
+        &policy(),
+        "2026-10-02T15:00:00Z",
+    );
+    for id in [left, right] {
+        file.sign_revision(&id, ident(2), "M.A", &secret(2))
+            .unwrap();
+    }
+    file.finalize_revision(&right, ident(2), "M.A", &secret(2))
+        .unwrap();
+    let ctx = Ctx::new();
+    let checkpoints = finalized_checkpoints(&file, &policy(), &ctx);
+    assert_eq!(checkpoints.len(), 2);
+    // The left branch is only final as far as the shared base; the right one
+    // is final at its own head.
+    assert!(checkpoints.contains(&(left, Some(base))));
+    assert!(checkpoints.contains(&(right, Some(right))));
+    assert_eq!(
+        latest_finalized_ancestor(&file, &left, &policy(), &ctx),
+        Some(base)
+    );
+}
+
+#[test]
+fn a_finalization_survives_the_container_round_trip_and_older_versions_refuse_it() {
+    let (mut file, id) = one("M.A", 2);
+    file.sign_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    let without = file.encode().unwrap();
+    assert_eq!(without[4], 5, "no finalization keeps the older version");
+    file.finalize_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    let bytes = file.encode().unwrap();
+    assert_eq!(bytes[4], CONTAINER_VERSION);
+    let back = TrackedFile::decode(&bytes).unwrap();
+    assert!(finalized(&back, &id, &Ctx::new()));
+    // A container claiming to be version 5 cannot carry one.
+    let mut old = bytes.clone();
+    old[4] = 5;
+    assert!(TrackedFile::decode(&old).is_err());
+}

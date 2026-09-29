@@ -238,6 +238,8 @@ export interface TrackedRevisionView {
   head: boolean;
   trust: "trusted" | "pending" | "denied" | "unknown";
   reason: string | null;
+  /** Finalized by the scope owner or an ancestor, as this store judges it. */
+  finalized: boolean;
   /** The revision's text, when it is UTF-8 and small enough to edit here. */
   text: string | null;
 }
@@ -247,6 +249,8 @@ export interface TrackedFileView {
   currentRevision: string | null;
   /** The latest revision this store trusts; not always the current one. */
   trustedRevision: string | null;
+  /** The latest finalized revision behind the sole head; null on a fork. */
+  finalizedRevision: string | null;
   path: string;
   name: string;
   fileId: string;

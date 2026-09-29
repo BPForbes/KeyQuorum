@@ -9,8 +9,8 @@
 use super::*;
 use crate::cli::file_cmd::StoreTrust;
 use crate::file_history::{
-    current_revision, evaluate_revision_trust, latest_trusted_revision, select_shareable_revision,
-    HistoryOutcome, TrackedFile, TrustState,
+    current_revision, evaluate_revision_trust, is_finalized, latest_finalized_ancestor,
+    latest_trusted_revision, select_shareable_revision, HistoryOutcome, TrackedFile, TrustState,
 };
 
 /// Where tracked-file letters and acknowledgements are handed over: a
@@ -284,6 +284,7 @@ impl LabState {
                             head: heads.contains(&id),
                             trust: state.as_ref().map_or("unknown", trust_word).to_string(),
                             reason,
+                            finalized: is_finalized(&file, &id, &policy, &ctx),
                             text: stored
                                 .content()
                                 .and_then(|bytes| String::from_utf8(bytes.to_vec()).ok())
@@ -316,6 +317,12 @@ impl LabState {
                     current_revision: current_revision(&file).map(hex::encode),
                     trusted_revision: latest_trusted_revision(&file, &policy, &ctx)
                         .map(hex::encode),
+                    finalized_revision: match heads.as_slice() {
+                        [head] => {
+                            latest_finalized_ancestor(&file, head, &policy, &ctx).map(hex::encode)
+                        }
+                        _ => None,
+                    },
                     expires_at: file.expires_at(),
                     destroyed: file.is_destroyed(),
                     snapshots: tracked
@@ -493,6 +500,12 @@ impl LabState {
     /// `keyquorum file sign`: sign a revision the active person authored.
     pub fn history_sign(&mut self, path: &str, revision: Option<&str>) -> Result<Outcome> {
         self.signing_command(path, revision, "sign", "history-sign", "Sign")
+    }
+
+    /// `keyquorum file finalize`: mark a trusted revision final, as the
+    /// active person with their own slot. The CLI decides who may.
+    pub fn history_finalize(&mut self, path: &str, revision: Option<&str>) -> Result<Outcome> {
+        self.signing_command(path, revision, "finalize", "history-finalize", "Finalize")
     }
 
     /// `keyquorum file countersign`: approve a descendant's revision as its

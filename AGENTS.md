@@ -207,6 +207,10 @@ the labels presented on success, and, when the TTL destroys the file,
 calls it only after `quorum`, `locked_files` (PIN check included) or `sharing` (file share create, redeem, revoke; the share's id, never its token) has answered; the gates never read the link,
 recording is best-effort and cannot change an outcome, and no share,
 password, PIN or plaintext is ever recorded.
+`file finalize` (scope owner or an ancestor, by slot) adds a `Finalization`
+proof (`ProofKind` 3, container v6, event `REVISION_FINALIZED` = 33) to a revision that is
+already trusted; `policy::is_finalized` and `latest_finalized_ancestor` derive it per store
+(never stored), and `status` shows it.
 `file_history/expiry.rs` ends a tracked file: an `EXPIRY_SCHEDULED` event
 sets the time, and destruction removes every retained revision's payload at
 once (container v5 lets a payload be absent; v4 still decodes).

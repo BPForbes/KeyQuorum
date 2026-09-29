@@ -276,3 +276,31 @@ fn file_preimages_sign_and_verify_through_the_shared_engine() {
     assert!(verify_signature(&public_key, &countersign(), &signature).is_err());
     assert!(verify_signature(&public_key, &event(Some(&REV)), &signature).is_err());
 }
+
+#[test]
+fn a_finalization_preimage_is_domain_separated_and_binds_every_field() {
+    let file = [1u8; 16];
+    let revision = [2u8; 32];
+    let who = [3u8; 16];
+    let policy = [4u8; 32];
+    let base = file_finalize_preimage(&file, &revision, &who, "M.A", 7, &policy).unwrap();
+    assert_eq!(
+        base,
+        file_finalize_preimage(&file, &revision, &who, "M.A", 7, &policy).unwrap()
+    );
+    for other in [
+        file_finalize_preimage(&[9; 16], &revision, &who, "M.A", 7, &policy).unwrap(),
+        file_finalize_preimage(&file, &[9; 32], &who, "M.A", 7, &policy).unwrap(),
+        file_finalize_preimage(&file, &revision, &[9; 16], "M.A", 7, &policy).unwrap(),
+        file_finalize_preimage(&file, &revision, &who, "M.B", 7, &policy).unwrap(),
+        file_finalize_preimage(&file, &revision, &who, "M.A", 8, &policy).unwrap(),
+        file_finalize_preimage(&file, &revision, &who, "M.A", 7, &[9; 32]).unwrap(),
+    ] {
+        assert_ne!(base, other);
+    }
+    // Not interchangeable with a countersignature over the same fields.
+    let counter =
+        file_countersign_preimage(&file, &revision, &who, &[0; 32], &who, "M.A", 7, &policy)
+            .unwrap();
+    assert_ne!(base, counter);
+}

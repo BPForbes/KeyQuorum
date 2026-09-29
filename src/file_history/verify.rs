@@ -70,6 +70,7 @@ pub(super) fn verify_structure(file: &TrackedFile) -> Result<[u8; 32]> {
                     && Some(proof.signer_identity) == revision.author_identity
             }
             ProofKind::Countersignature => proof.author_signature_hash.is_some(),
+            ProofKind::Finalization => proof.author_signature_hash.is_none(),
         };
         // A slot may hold competing proofs (an unverified import must not
         // block the real one), but never the same signature twice and never

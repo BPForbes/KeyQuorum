@@ -338,6 +338,16 @@ impl KeyQuorumLab {
         to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
     }
 
+    /// `keyquorum file finalize`: mark a trusted revision final.
+    pub fn history_finalize(
+        &mut self,
+        path: &str,
+        revision: Option<String>,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self.state.history_finalize(path, revision.as_deref());
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
     /// `keyquorum file merge`: join a forked history's two heads.
     pub fn history_merge(
         &mut self,
