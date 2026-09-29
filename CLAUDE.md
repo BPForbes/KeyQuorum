@@ -153,7 +153,8 @@ revision, such as a rename), so an untrusted newer revision never
 leaves. Both `file receive` and `deliver open` require the letter's recipient
 label to own the key that opened it (`deliver_cmd::require_recipient_key`). That signature authenticates transport only; the receiver judges
 the revision by the file's own policy (`keyquorum file receive`) and
-answers with a signed accept or reject.
+answers with a signed accept or reject. Receipt is idempotent by delivery id:
+receiving the same letter again (`--into` or the same `--out`) records nothing new and only reseals the answer.
 `src/file_history.rs` owns the tracked-file container (`KQTF`, its own
 magic and version, not a sealed envelope) and the hash-chained event history
 that travels with it; SQLite may only index it. It frames and chains events

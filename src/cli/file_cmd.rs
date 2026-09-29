@@ -1654,31 +1654,42 @@ fn receive(
         require_active(conn, &letter.recipient_label)?;
         let (identity, at) = (identity_for(conn, &letter.recipient_label)?, utc_instant()?);
         let generation = generation_for(conn, &policy.scope_root)?;
-        let delivered = event(
-            HistoryEventType::ShareDelivered,
-            Some(letter.revision_id),
-            &at,
-            identity,
-            &letter.recipient_label,
-            generation,
-            EventDetails::new()
-                .with("from", &letter.sender_label)
-                .with("delivery_id", &hex::encode(letter.delivery_id))
-                .with("container_hash", &hex::encode(letter.container_hash)),
-        );
+        let delivered = || {
+            event(
+                HistoryEventType::ShareDelivered,
+                Some(letter.revision_id),
+                &at,
+                identity,
+                &letter.recipient_label,
+                generation,
+                EventDetails::new()
+                    .with("from", &letter.sender_label)
+                    .with("delivery_id", &hex::encode(letter.delivery_id))
+                    .with("container_hash", &hex::encode(letter.container_hash)),
+            )
+        };
         match (into, out) {
             (Some(target), _) => {
                 let mut file = load_live(conn, &target, Some(&letter.recipient_label), "receive")?;
                 let context = ImportContext {
                     actor_identity: Some(identity),
                     actor_label: letter.recipient_label.clone(),
-                    occurred_at: at,
+                    occurred_at: at.clone(),
                     topology_generation: generation,
                 };
                 let merged = file.merge_history(&incoming, &context).map_err(|_| {
                     usage("that is not another copy of this file (same id and policy)")
                 })?;
-                file.append(delivered)?;
+                // A retry after a lost acknowledgement must not record the
+                // same delivery twice: the delivery id makes receipt idempotent.
+                if delivery_recorded(&file, &letter.delivery_id) {
+                    outln!(
+                        "Delivery {} was already recorded here.",
+                        hex::encode(letter.delivery_id)
+                    );
+                } else {
+                    file.append(delivered())?;
+                }
                 save(&target, &file)?;
                 index_after(conn, &file);
                 outln!(
@@ -1689,11 +1700,23 @@ fn receive(
                     merged.proofs_added
                 );
             }
-            (None, Some(target)) => {
-                if env::exists(&target) {
+            (None, Some(target)) if env::exists(&target) => {
+                // The same letter saved here before (its acknowledgement was
+                // lost): nothing to write, only the answer to send again.
+                let held = load(&target).ok().filter(|held| {
+                    held.file_id == letter.file_id && delivery_recorded(held, &letter.delivery_id)
+                });
+                if held.is_none() {
                     return Err(usage("--out already exists; use --into to merge"));
                 }
-                incoming.append(delivered)?;
+                outln!(
+                    "Delivery {} was already saved to {}.",
+                    hex::encode(letter.delivery_id),
+                    target.display()
+                );
+            }
+            (None, Some(target)) => {
+                incoming.append(delivered())?;
                 save(&target, &incoming)?;
                 index_after(conn, &incoming);
                 outln!("Saved {} to {}", letter.file_name, target.display());
@@ -1706,6 +1729,18 @@ fn receive(
         bytes: file_delivery::seal_history_ack(&letter, &secrets.signing, accepted)?,
     };
     carry(conn, &ack, ack_dir.as_deref(), push_ack, url, api_key)
+}
+
+/// Whether this container already records accepting `delivery_id`.
+fn delivery_recorded(file: &TrackedFile, delivery_id: &[u8; 16]) -> bool {
+    let delivery = hex::encode(delivery_id);
+    file.events().iter().any(|e| {
+        e.event_type == HistoryEventType::ShareDelivered
+            && e.details
+                .entries()
+                .iter()
+                .any(|(k, v)| k == "delivery_id" && *v == delivery)
+    })
 }
 
 fn record_ack(

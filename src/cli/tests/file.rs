@@ -996,6 +996,61 @@ fn a_trusted_revision_is_delivered_accepted_and_acknowledged() {
 }
 
 #[test]
+fn receiving_the_same_letter_again_does_not_record_the_delivery_twice() {
+    let mut env = delivering();
+    ok(
+        &mut env,
+        &format!(
+            "share {KQTF} --to M.B --as M.A --slot {} --output-dir /out",
+            slot("M.A")
+        ),
+    );
+    let (result, out) = receive_as_mb(&mut env, "--out /work/received.kqtf");
+    assert!(result.is_ok(), "{out}");
+    // The acknowledgement was lost, so the recipient runs it again against
+    // the copy it already holds.
+    env.fs.delete(Path::new(&dir_file(&env, "/acks"))).unwrap();
+    let (result, out) = receive_as_mb(&mut env, "--into /work/received.kqtf");
+    assert!(result.is_ok(), "{result:?}\n{out}");
+    assert!(out.contains("already recorded"), "{out}");
+    let history = ok(&mut env, "history /work/received.kqtf");
+    assert_eq!(history.matches("ShareDelivered").count(), 1, "{history}");
+    // The acknowledgement is sealed again, so the sender can still get it.
+    assert!(env.fs.exists(Path::new(&dir_file(&env, "/acks"))));
+}
+
+#[test]
+fn receiving_the_same_letter_to_the_same_out_file_resends_only_the_answer() {
+    let mut env = delivering();
+    ok(
+        &mut env,
+        &format!(
+            "share {KQTF} --to M.B --as M.A --slot {} --output-dir /out",
+            slot("M.A")
+        ),
+    );
+    let (result, out) = receive_as_mb(&mut env, "--out /work/received.kqtf");
+    assert!(result.is_ok(), "{out}");
+    let before = env.fs.read(Path::new("/work/received.kqtf")).unwrap();
+    env.fs.delete(Path::new(&dir_file(&env, "/acks"))).unwrap();
+    let (result, out) = receive_as_mb(&mut env, "--out /work/received.kqtf");
+    assert!(result.is_ok(), "{result:?}\n{out}");
+    assert!(out.contains("already saved"), "{out}");
+    assert_eq!(
+        env.fs.read(Path::new("/work/received.kqtf")).unwrap(),
+        before
+    );
+    assert!(env.fs.exists(Path::new(&dir_file(&env, "/acks"))));
+
+    // An unrelated file at --out is still refused.
+    env.fs
+        .write(Path::new("/work/other.kqtf"), b"not this file")
+        .unwrap();
+    let (result, _) = receive_as_mb(&mut env, "--out /work/other.kqtf");
+    assert!(result.is_err());
+}
+
+#[test]
 fn an_untrusted_newer_revision_is_never_sent() {
     let mut env = delivering();
     edit(&mut env, "totals: SECRETNEWER\n");
