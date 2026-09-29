@@ -216,6 +216,7 @@ See section~\ref{sec:file-history}.
 \code{file rename} & Change the name a tracked file is shown under. The scope owner or an ancestor proves the label with \flag{--slot}; the file id and every revision id stay the same and the old and new names are recorded. \\
 \code{file countersign} & Countersign a revision the author has signed. \\
 \code{file finalize} & Finalize a trusted revision (scope owner or an ancestor, by slot). \\
+\code{file bridge-approve} & As a member of a private bridge that reaches from the author to the scope, approve a revision with the bridge (kept in this store only). \\
 \code{file resolve} & As a conflict's reviewer, keep one side (\code{--keep left|right}) or supply the edited result (\code{--from}), signed as yours; \code{--reject} refuses a proposed merge. \\
 \code{file merge} & Merge two divergent heads automatically when the edits allow it; otherwise record the conflict and who must review it. A merge is a new revision that stays untrusted until it is signed. \\
 \code{file review} & Show what each side of a fork changed, and who reviews a conflict. \flag{--interactive} needs a build with \flag{--features tui}. \\

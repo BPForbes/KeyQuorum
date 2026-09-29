@@ -172,3 +172,20 @@ fn strict_ancestor_and_descendant_helpers() {
     assert!(!is_descendant("M", "M"));
     assert!(!is_ancestor("M.", "M..A"));
 }
+
+#[test]
+fn a_bridge_connects_an_actor_only_to_the_scope_line_it_reaches() {
+    // M.S <-> M.A reaches M.S.1 (under M.S) to M.A's scope, either way round.
+    assert!(bridge_connects("M.S", "M.A", "M.S.1", "M.A"));
+    assert!(bridge_connects("M.A", "M.S", "M.S.1", "M.A"));
+    // A node inside the scope, or above it, is on its line too.
+    assert!(bridge_connects("M.S", "M.A.2", "M.S.1", "M.A"));
+    assert!(bridge_connects("M.S.1", "M", "M.S.1", "M.A"));
+    // Not when neither end holds the actor, nor when the other end is off
+    // the scope's line, nor for a bridge from a node to itself.
+    assert!(!bridge_connects("M.B", "M.A", "M.S.1", "M.A"));
+    assert!(!bridge_connects("M.S", "M.B", "M.S.1", "M.A"));
+    assert!(!bridge_connects("M.S", "M.S", "M.S.1", "M.S"));
+    // Label shape is segment-wise: M.S never covers M.SALES.1.
+    assert!(!bridge_connects("M.S", "M.A", "M.SALES.1", "M.A"));
+}

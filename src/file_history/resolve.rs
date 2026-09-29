@@ -21,7 +21,8 @@ use super::container::TrackedFile;
 use super::event::{EventDetails, HistoryEventType, HistoryOutcome, NewEvent};
 use super::merge::{AutoMerge, AutoMergeOutcome};
 use super::policy::{
-    evaluate_revision_trust, BridgeEvidence, FilePolicy, TrustContext, TrustState,
+    evaluate_revision_trust, BridgeEvidence, FilePolicy, GenerationEvidence, TrustContext,
+    TrustState,
 };
 use super::revision::{HeadRelation, NewRevision};
 use crate::authority;
@@ -79,6 +80,10 @@ impl TrustContext for WithoutBridges<'_> {
 
     fn bridge_evidence(&self, _: &[u8; 32]) -> BridgeEvidence {
         BridgeEvidence::None
+    }
+
+    fn generation_evidence(&self, scope_root: &str, generation: u64) -> GenerationEvidence {
+        self.0.generation_evidence(scope_root, generation)
     }
 }
 

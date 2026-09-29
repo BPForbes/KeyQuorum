@@ -11,11 +11,13 @@
 //! Version 2 replaced the single payload of version 1 with revisions;
 //! version 3 added revision proofs (signatures) between revisions and events;
 //! version 4 added the file's policy after the history root.
+//! Version 7 appends `event_proof_count(u32) | event proofs…` after the
+//! events; it is written only when an event proof exists.
 
 use super::codec::{bad, take_fixed};
 use super::event::{genesis_hash, verify_chain, HistoryEvent, NewEvent};
 use super::policy::FilePolicy;
-use super::proof::RevisionProof;
+use super::proof::{EventProof, RevisionProof};
 use super::revision::{FileRevision, NewRevision, RevisionGraph, StoredRevision};
 use super::verify::verify_structure;
 use crate::envelope::{push_len_prefixed, take_len_prefixed, take_u32, utf8};
@@ -27,8 +29,9 @@ pub const CONTAINER_MAGIC: &[u8; 4] = b"KQTF";
 /// Version 5 lets a revision's payload be absent (destroyed at expiry).
 /// Version 4 containers, where every payload is present, still decode.
 /// Version 6 adds the finalization proof kind; versions 4 and 5 never
-/// carry one and still decode.
-pub const CONTAINER_VERSION: u8 = 6;
+/// carry one and still decode. Version 7 adds optional event proofs after
+/// the events; a container without any is still written as 5 or 6.
+pub const CONTAINER_VERSION: u8 = 7;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackedFile {
@@ -45,6 +48,9 @@ pub struct TrackedFile {
     /// Read through [`TrackedFile::events`]; only this module appends, so
     /// callers cannot rewrite or drop events behind the chain's back.
     pub(super) events: Vec<HistoryEvent>,
+    /// Actors' signatures on individual events, read through
+    /// [`TrackedFile::event_proofs`] and added by `sign_event`.
+    pub(super) event_proofs: Vec<EventProof>,
     /// The rules revisions of this file are judged by; `None` for a file
     /// that has not been given a policy.
     pub(super) policy: Option<FilePolicy>,
@@ -58,6 +64,7 @@ impl TrackedFile {
             revisions: Vec::new(),
             proofs: Vec::new(),
             events: Vec::new(),
+            event_proofs: Vec::new(),
             policy: None,
         }
     }
@@ -174,7 +181,11 @@ impl TrackedFile {
             .proofs
             .iter()
             .any(|proof| proof.kind == super::proof::ProofKind::Finalization);
-        out.push(if finalized { CONTAINER_VERSION } else { 5 });
+        out.push(match (self.event_proofs.is_empty(), finalized) {
+            (false, _) => CONTAINER_VERSION,
+            (true, true) => 6,
+            (true, false) => 5,
+        });
         out.extend_from_slice(&self.file_id);
         push_len_prefixed(&mut out, self.logical_name.as_bytes())?;
         out.extend_from_slice(&self.history_root());
@@ -200,6 +211,14 @@ impl TrackedFile {
         out.extend_from_slice(&count.to_be_bytes());
         for event in &self.events {
             event.encode(&mut out)?;
+        }
+        if !self.event_proofs.is_empty() {
+            let proof_count =
+                u32::try_from(self.event_proofs.len()).map_err(|_| Error::BundleFieldTooLarge)?;
+            out.extend_from_slice(&proof_count.to_be_bytes());
+            for proof in &self.event_proofs {
+                proof.encode(&mut out)?;
+            }
         }
         Ok(out)
     }
@@ -245,12 +264,25 @@ impl TrackedFile {
         for _ in 0..count {
             events.push(HistoryEvent::decode(&mut data)?);
         }
+        let mut event_proofs = Vec::new();
+        if version >= 7 {
+            let proof_count = bad(take_u32(&mut data))?;
+            // Written only when there is one; an empty list would be a
+            // second encoding of the same file.
+            if proof_count == 0 {
+                return Err(Error::InvalidTrackedFile);
+            }
+            for _ in 0..proof_count {
+                event_proofs.push(EventProof::decode(&mut data)?);
+            }
+        }
         let file = Self {
             file_id,
             logical_name,
             revisions,
             proofs,
             events,
+            event_proofs,
             policy,
         };
         if !data.is_empty() || verify_structure(&file)? != stored_root {

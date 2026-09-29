@@ -34,12 +34,12 @@ pub use event::{
 pub use expiry::ExpiryContext;
 pub use merge::{diff_text, AutoMerge, AutoMergeOutcome, ChangeKind, LineChange};
 pub use policy::{
-    current_revision, evaluate_revision_trust, finalized_checkpoints, is_finalized,
+    current_revision, evaluate_revision_trust, event_attested, finalized_checkpoints, is_finalized,
     latest_finalized_ancestor, latest_trusted_revision, proof_descriptor,
     select_shareable_revision, BridgeEvidence, DeliveryDecision, DeliveryDecisionKind, FilePolicy,
-    Requirement, TrustContext, TrustReason, TrustState,
+    GenerationEvidence, Requirement, TrustContext, TrustReason, TrustState,
 };
-pub use proof::{ProofKind, RevisionProof};
+pub use proof::{EventProof, ProofKind, RevisionProof};
 pub use resolve::{Divergence, OpenConflict, Resolution, ResolverSelection, SelectionRule};
 pub use revision::{
     content_commitment, generated_label, FileRevision, HeadRelation, MergeBase, NewRevision,

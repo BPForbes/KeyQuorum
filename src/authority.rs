@@ -98,6 +98,19 @@ pub fn lowest_common_ancestor(left: &str, right: &str) -> Option<String> {
     (!common.is_empty()).then(|| common.join("."))
 }
 
+/// Whether a bridge between the nodes `end_a` and `end_b` connects `actor`
+/// to `scope`: one end holds `actor` or one of its ancestors, and the other
+/// end sits on the scope's line (the scope, an ancestor of it, or a node
+/// inside it). Only the shape of the hierarchy is judged here; whether the
+/// bridge exists and is live is the bridge owner's answer.
+pub fn bridge_connects(end_a: &str, end_b: &str, actor: &str, scope: &str) -> bool {
+    let covers = |end: &str| is_ancestor_or_self(end, actor);
+    let on_scope_line =
+        |end: &str| is_ancestor_or_self(end, scope) || is_ancestor_or_self(scope, end);
+    end_a != end_b
+        && ((covers(end_a) && on_scope_line(end_b)) || (covers(end_b) && on_scope_line(end_a)))
+}
+
 /// How an actor relates to a scope root. An input to revision policy.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RevisionAuthority {

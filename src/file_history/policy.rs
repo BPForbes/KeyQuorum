@@ -225,17 +225,50 @@ pub enum BridgeEvidence {
     PrivateAuthorized,
 }
 
+/// Whether the store can judge a revision against the topology generation
+/// it was made under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GenerationEvidence {
+    /// The revision's generation is the store's current one (or 0, made
+    /// before any published topology): today's view is that view.
+    Current,
+    /// An earlier generation this store held and recorded.
+    Recorded,
+    /// A generation this store never held: judging it by today's topology
+    /// would be a guess, so the revision stays pending.
+    Unavailable,
+}
+
 /// What policy evaluation needs from the rest of the system.
 pub trait TrustContext {
     /// The Ed25519 signing key registered for this identity and label.
     fn signing_public(&self, identity: &[u8; 16], label: &str) -> Option<[u8; 32]>;
     fn bridge_evidence(&self, revision_id: &[u8; 32]) -> BridgeEvidence;
 
+    /// A bridge's approval of `revision` under `scope_root`: what the
+    /// bridge-or-owner rule accepts in place of the owner's countersignature.
+    /// Defaults to [`TrustContext::bridge_evidence`] by id; a store that
+    /// holds signed approvals checks them against the revision's own fields.
+    fn revision_bridge_evidence(
+        &self,
+        revision: &FileRevision,
+        _scope_root: &str,
+    ) -> BridgeEvidence {
+        self.bridge_evidence(&revision.revision_id)
+    }
+
     /// Whether an authorized bridge connects the branches of `from` and `to`
     /// (labels). This is about the review path between two branches, not
     /// about a revision's authorization; the default reports none.
     fn bridge_between(&self, _from: &str, _to: &str) -> BridgeEvidence {
         BridgeEvidence::None
+    }
+
+    /// Whether this store has the topology of `generation` for `scope_root`.
+    /// The default treats every generation as current (a context with no
+    /// topology history, such as a test).
+    fn generation_evidence(&self, _scope_root: &str, _generation: u64) -> GenerationEvidence {
+        GenerationEvidence::Current
     }
 }
 
@@ -251,6 +284,8 @@ pub enum TrustReason {
     MissingCountersignature,
     InvalidCountersignature,
     MissingBridgeOrOwnerApproval,
+    /// The revision's topology generation is one this store never held.
+    MissingTopologyEvidence,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -314,6 +349,13 @@ pub fn evaluate_revision_trust(
     if requirement == Requirement::Forbidden {
         return Ok(Denied(R::RoleForbidden));
     }
+    // Judge the revision against the topology it was made under, or not at
+    // all: never silently against today's.
+    if ctx.generation_evidence(&policy.scope_root, revision.topology_generation)
+        == GenerationEvidence::Unavailable
+    {
+        return Ok(Pending(R::MissingTopologyEvidence));
+    }
 
     // Only the author's own content proofs count; a proof from anyone else
     // is ignored rather than allowed to shadow it. A slot may hold several
@@ -349,7 +391,10 @@ pub fn evaluate_revision_trust(
             R::MissingCountersignature,
         ),
         Requirement::AuthorSignBridgeOrOwner => {
-            if ctx.bridge_evidence(revision_id) != BridgeEvidence::None {
+            // An authorized bridge's approval of this very revision, as the
+            // store verifies it now. A bridge merely existing between the
+            // labels is not an approval.
+            if ctx.revision_bridge_evidence(revision, &policy.scope_root) != BridgeEvidence::None {
                 return Ok(Trusted);
             }
             (
@@ -460,6 +505,26 @@ pub fn proof_descriptor(file: &TrackedFile, revision: &[u8; 32]) -> Result<[u8; 
         hasher.update(proof.signature);
     }
     Ok(hasher.finalize().into())
+}
+
+/// The label that signed event `sequence`, when one of its event proofs
+/// verifies under a key `ctx` registers for that label and identity (the
+/// event's own actor, as structure verification already requires). `None`
+/// for an unsigned event, or one no store key vouches for: it is still a
+/// hash-chained record, never an attested one.
+pub fn event_attested(file: &TrackedFile, sequence: u64, ctx: &dyn TrustContext) -> Option<String> {
+    let event = file.events().get(usize::try_from(sequence).ok()?)?;
+    let digest = super::proof::event_preimage(&file.file_id, event);
+    file.event_proofs()
+        .iter()
+        .filter(|proof| proof.sequence == sequence)
+        .find(|proof| {
+            ctx.signing_public(&proof.signer_identity, &proof.signer_label)
+                .is_some_and(|public| {
+                    signing::verify_signature(&public, &digest, &proof.signature).is_ok()
+                })
+        })
+        .map(|proof| proof.signer_label.clone())
 }
 
 /// The head the file is at: its only head, or `None` when the history has

@@ -18,13 +18,13 @@ use super::review_view::ReviewView;
 use super::{open_slot_secrets, read_key_array_32, usage};
 use crate::error::{Error, Result};
 use crate::file_history::{
-    current_revision, diff_text, evaluate_revision_trust, index, is_finalized,
+    current_revision, diff_text, evaluate_revision_trust, event_attested, index, is_finalized,
     latest_finalized_ancestor, latest_trusted_revision, proof_descriptor,
     select_shareable_revision, verify_tracked_file, AutoMergeOutcome, BridgeEvidence, ChangeKind,
-    DeliveryDecisionKind, EventDetails, ExpiryContext, FilePolicy, HistoryEvent, HistoryEventType,
-    HistoryOutcome, HistoryRelation, HistorySnapshot, ImportContext, MergeBase, NewEvent,
-    NewRevision, Requirement, Resolution, ResolverSelection, TrackedFile, TrustContext,
-    TrustReason, TrustState,
+    DeliveryDecisionKind, EventDetails, ExpiryContext, FilePolicy, GenerationEvidence,
+    HistoryEvent, HistoryEventType, HistoryOutcome, HistoryRelation, HistorySnapshot,
+    ImportContext, MergeBase, NewEvent, NewRevision, Requirement, Resolution, ResolverSelection,
+    TrackedFile, TrustContext, TrustReason, TrustState,
 };
 use crate::{authority, file_delivery, key_tree, private_bridge, signing, transfer};
 use clap::Subcommand;
@@ -101,6 +101,25 @@ pub enum FileCommand {
         slot: Option<String>,
         #[arg(long)]
         signing_key_file: Option<PathBuf>,
+    },
+    /// As a member of a private bridge that reaches from a revision's author
+    /// to the file's scope, approve that revision with the bridge. The
+    /// approval stays in this store (it names the bridge); the file never
+    /// carries it.
+    BridgeApprove {
+        kqtf: PathBuf,
+        /// Revision id or unique prefix (the sole head by default)
+        #[arg(long)]
+        revision: Option<String>,
+        /// The private bridge's uid
+        #[arg(long)]
+        bridge: String,
+        /// Your label: a member of that bridge
+        #[arg(long = "as")]
+        as_label: String,
+        /// Your slot: its encryption key opens your sealed bridge key
+        #[arg(long)]
+        slot: String,
     },
     /// Settle a conflict as its reviewer: keep one side, or supply the merge
     /// you edited; the result is signed as yours. `--reject` refuses a
@@ -458,6 +477,13 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             slot,
             signing_key_file,
         } => finalize(conn, &kqtf, revision, &as_label, slot, signing_key_file),
+        FileCommand::BridgeApprove {
+            kqtf,
+            revision,
+            bridge,
+            as_label,
+            slot,
+        } => bridge_approve(conn, &kqtf, revision, &bridge, &as_label, &slot),
         FileCommand::Resolve {
             kqtf,
             keep,
@@ -554,7 +580,7 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
         FileCommand::List => list(conn),
         FileCommand::Reindex { kqtf, clear } => reindex(conn, &kqtf, clear),
         FileCommand::Status { kqtf } => status(conn, &kqtf),
-        FileCommand::History { kqtf, export } => history(&kqtf, export),
+        FileCommand::History { kqtf, export } => history(conn, &kqtf, export),
         FileCommand::VerifySnapshot { snapshot, against } => verify_snapshot(&snapshot, against),
         FileCommand::Import {
             kqtf,
@@ -666,6 +692,77 @@ impl TrustContext for StoreTrust<'_> {
     fn bridge_evidence(&self, _revision_id: &[u8; 32]) -> BridgeEvidence {
         BridgeEvidence::None
     }
+
+    /// A private bridge's signed approval of this revision, re-verified
+    /// now against the live bridge, from a bridge whose parties reach from
+    /// the author to the scope. Reported only as "satisfied".
+    fn revision_bridge_evidence(
+        &self,
+        revision: &crate::file_history::FileRevision,
+        scope_root: &str,
+    ) -> BridgeEvidence {
+        let Ok(message) = signing::file_bridge_approval_preimage(
+            &revision.file_id,
+            &revision.revision_id,
+            &revision.author_hcp_label,
+            scope_root,
+            revision.topology_generation,
+            &revision.policy_hash,
+        ) else {
+            return BridgeEvidence::None;
+        };
+        let author = revision.author_hcp_label.as_str();
+        let reaches = |parties: &[String]| {
+            parties.iter().any(|a| {
+                parties
+                    .iter()
+                    .any(|b| authority::bridge_connects(a, b, author, scope_root))
+            })
+        };
+        match private_bridge::revision_approved(self.conn, &revision.revision_id, &message, reaches)
+        {
+            Ok(true) => BridgeEvidence::PrivateAuthorized,
+            _ => BridgeEvidence::None,
+        }
+    }
+
+    fn generation_evidence(&self, scope_root: &str, generation: u64) -> GenerationEvidence {
+        let root = scope_root.split('.').next().unwrap_or(scope_root);
+        let tree = key_tree::tree_by_label(self.conn, root).ok().flatten();
+        match tree {
+            _ if generation == 0 => GenerationEvidence::Current,
+            None => GenerationEvidence::Unavailable,
+            Some((_, current)) if u64::from(current) == generation => GenerationEvidence::Current,
+            Some((key_id, _)) => {
+                if key_tree::generation_seen(self.conn, key_id, generation).unwrap_or(false) {
+                    GenerationEvidence::Recorded
+                } else {
+                    GenerationEvidence::Unavailable
+                }
+            }
+        }
+    }
+
+    /// Live bridges this store holds right now: an established tree bridge
+    /// is reported as such; otherwise a live private bridge only as
+    /// "satisfied", never which one. A store that cannot read its bridges
+    /// reports none.
+    fn bridge_between(&self, from: &str, to: &str) -> BridgeEvidence {
+        let joins = |a: &str, b: &str| authority::bridge_connects(a, b, from, to);
+        let tree = key_tree::established_bridge_pairs(self.conn).unwrap_or_default();
+        if tree.iter().any(|(a, b)| joins(a, b)) {
+            return BridgeEvidence::NonPrivateAuthorized;
+        }
+        let rosters = private_bridge::active_rosters(self.conn).unwrap_or_default();
+        let private = rosters
+            .iter()
+            .any(|labels| labels.iter().any(|a| labels.iter().any(|b| joins(a, b))));
+        if private {
+            BridgeEvidence::PrivateAuthorized
+        } else {
+            BridgeEvidence::None
+        }
+    }
 }
 
 /// The 16-byte identity of `label`: the stable one from `transfer enroll`
@@ -732,11 +829,17 @@ fn utc_form(now: &str) -> Result<String> {
     })
 }
 
+/// The scope's current topology generation (0 when this store has no tree
+/// for it), remembered as held so later revisions stamped with it can be
+/// judged after a restructure.
 fn generation_for(conn: &Connection, scope: &str) -> Result<u64> {
     let root = scope.split('.').next().unwrap_or(scope);
-    Ok(key_tree::tree_by_label(conn, root)?
-        .map(|(_, generation)| u64::from(generation))
-        .unwrap_or(0))
+    let Some((key_id, generation)) = key_tree::tree_by_label(conn, root)? else {
+        return Ok(0);
+    };
+    let generation = u64::from(generation);
+    key_tree::note_generation(conn, key_id, generation)?;
+    Ok(generation)
 }
 
 thread_local! {
@@ -1491,10 +1594,22 @@ fn describe(event: &HistoryEvent) -> String {
     .to_string()
 }
 
-fn history(kqtf: &Path, export: Option<PathBuf>) -> Result<()> {
+fn history(conn: &Connection, kqtf: &Path, export: Option<PathBuf>) -> Result<()> {
     let file = load(kqtf)?;
+    let ctx = StoreTrust { conn };
     for event in file.events() {
-        outln!("{}", describe(event));
+        // An actor's signature on the event, if this store's key for that
+        // actor verifies it; otherwise the line is a hash-chained record.
+        let signed = file
+            .event_proofs()
+            .iter()
+            .any(|proof| proof.sequence == event.sequence);
+        let mark = match event_attested(&file, event.sequence, &ctx) {
+            Some(label) => format!(" [signed by {label}]"),
+            None if signed => " [signature not verified in this store]".to_string(),
+            None => String::new(),
+        };
+        outln!("{}{mark}", describe(event));
     }
     if let Some(path) = export {
         env::write_new(&path, &file.history_snapshot().encode()?)?;
@@ -1937,11 +2052,13 @@ fn expire(
         return Err(usage("this file's content was already destroyed"));
     }
     let instant = utc_instant()?;
-    prove_possession(conn, &file, "expire", as_label, &instant, slot, key_file)?;
+    let secret = prove_possession(conn, &file, "expire", as_label, &instant, slot, key_file)?;
+    let start = file.events().len();
     let context = expiry_context(conn, &file, Some(as_label), &instant)?;
     match (at, now) {
         (_, true) => {
             let destroyed = file.destroy_content("expired on request", &context)?;
+            sign_events_since(conn, &mut file, start, as_label, &secret)?;
             save(kqtf, &file)?;
             index_after(conn, &file);
             outln!(
@@ -1957,6 +2074,7 @@ fn expire(
                 ));
             }
             file.schedule_expiry(&at, &context)?;
+            sign_events_since(conn, &mut file, start, as_label, &secret)?;
             save(kqtf, &file)?;
             index_after(conn, &file);
             outln!("{} expires at {at}", file.logical_name);
@@ -1988,7 +2106,8 @@ fn rename(
     }
     require_active(conn, as_label)?;
     let at = utc_instant()?;
-    prove_possession(conn, &file, "rename", as_label, &at, slot, key_file)?;
+    let secret = prove_possession(conn, &file, "rename", as_label, &at, slot, key_file)?;
+    let start = file.events().len();
     let old = std::mem::replace(&mut file.logical_name, new_name.to_string());
     if old == new_name {
         return Err(usage("that is already the file's name"));
@@ -2003,6 +2122,7 @@ fn rename(
         generation,
         EventDetails::new().with("from", &old).with("to", new_name),
     ))?;
+    sign_events_since(conn, &mut file, start, as_label, &secret)?;
     save(kqtf, &file)?;
     index_after(conn, &file);
     outln!("Renamed {old} to {new_name}; the file id and every revision id are unchanged");
@@ -2021,7 +2141,7 @@ fn prove_possession(
     instant: &str,
     slot: Option<String>,
     key_file: Option<PathBuf>,
-) -> Result<()> {
+) -> Result<Zeroizing<[u8; 32]>> {
     let registered = private_bridge::signing_public_for_label(conn, label).map_err(|_| {
         usage(&format!(
             "{label} has no registered signing key on this store"
@@ -2039,9 +2159,32 @@ fn prove_possession(
         .finalize()
         .into();
     let signature = signing::sign(&secret, &challenge);
-    drop(secret);
     signing::verify_signature(&registered, &challenge, &signature)
-        .map_err(|_| usage(&format!("that key is not the registered key of {label}")))
+        .map_err(|_| usage(&format!("that key is not the registered key of {label}")))?;
+    Ok(secret)
+}
+
+/// Sign, as their actor, the events `label` appended from `start` on: the
+/// key was just proven, so the record of what it did is attested too.
+fn sign_events_since(
+    conn: &Connection,
+    file: &mut TrackedFile,
+    start: usize,
+    label: &str,
+    secret: &[u8; 32],
+) -> Result<()> {
+    let identity = identity_for(conn, label)?;
+    let mine: Vec<u64> = file.events()[start..]
+        .iter()
+        .filter(|event| {
+            event.actor_label.as_deref() == Some(label) && event.actor_identity == Some(identity)
+        })
+        .map(|event| event.sequence)
+        .collect();
+    for sequence in mine {
+        file.sign_event(sequence, identity, label, secret)?;
+    }
+    Ok(())
 }
 
 fn verify(conn: &Connection, kqtf: &Path) -> Result<()> {
@@ -2101,6 +2244,61 @@ fn print_changes(old: &str, new: &str) -> Result<()> {
             change.text.trim_end_matches('\n')
         );
     }
+    Ok(())
+}
+
+fn bridge_approve(
+    conn: &Connection,
+    kqtf: &Path,
+    revision: Option<String>,
+    bridge: &str,
+    as_label: &str,
+    slot: &str,
+) -> Result<()> {
+    let mut file = load_live(conn, kqtf, Some(as_label), "bridge-approve")?;
+    require_active(conn, as_label)?;
+    let policy = policy_of(&file)?.clone();
+    let target = pick_revision(&file, revision.as_deref())?;
+    let stored = file
+        .graph()
+        .get(&target)
+        .ok_or(Error::InvalidTrackedFile)?
+        .revision
+        .clone();
+    if policy.requirement_for(&stored.author_hcp_label)
+        != Some(Requirement::AuthorSignBridgeOrOwner)
+    {
+        return Err(usage(
+            "the file's rules do not accept a bridge approval for this revision's author",
+        ));
+    }
+    let message = signing::file_bridge_approval_preimage(
+        &stored.file_id,
+        &stored.revision_id,
+        &stored.author_hcp_label,
+        &policy.scope_root,
+        stored.topology_generation,
+        &stored.policy_hash,
+    )?;
+    let secrets = open_slot_secrets(slot)?;
+    private_bridge::approve_revision(
+        conn,
+        bridge,
+        as_label,
+        &secrets.encryption_secret,
+        &secrets.signing_secret,
+        &target,
+        &message,
+    )
+    .map_err(|err| usage(&format!("the bridge refused to sign: {err}")))?;
+    // What the store now makes of it; the bridge itself is never named.
+    let (identity, at) = (identity_for(conn, as_label)?, utc_instant()?);
+    let generation = generation_for(conn, &policy.scope_root)?;
+    let state = decide(conn, &mut file, target, &at, identity, as_label, generation)?;
+    save(kqtf, &file)?;
+    index_after(conn, &file);
+    outln!("Approved {} through a private bridge", short(&target));
+    outln!("  trust {}", trust_text(state));
     Ok(())
 }
 
@@ -2188,7 +2386,8 @@ fn reject_merge(
     };
     let head = *head;
     let at = utc_instant()?;
-    prove_possession(conn, &file, "reject", as_label, &at, slot, key_file)?;
+    let secret = prove_possession(conn, &file, "reject", as_label, &at, slot, key_file)?;
+    let start = file.events().len();
     let actor = event(
         HistoryEventType::MergeRejected,
         Some(head),
@@ -2206,6 +2405,7 @@ fn reject_merge(
                 short(&head)
             ))
         })?;
+    sign_events_since(conn, &mut file, start, as_label, &secret)?;
     save(kqtf, &file)?;
     index_after(conn, &file);
     outln!("Rejected merge {} as {as_label}", short(&head));

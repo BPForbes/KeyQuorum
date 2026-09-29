@@ -492,3 +492,26 @@ CREATE TABLE IF NOT EXISTS tracked_seen_roots (
     seen_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (file_id, revision_id, history_root, sender_label)
 );
+
+-- Topology generations this store has held for each tree: the one current
+-- when a file command ran, and both sides of every applied restructure. A
+-- tracked revision stamped with a generation this store never held is not
+-- judged against today's topology (see `file_history::policy`).
+CREATE TABLE IF NOT EXISTS tree_generations_seen (
+    key_id     INTEGER NOT NULL REFERENCES keys(id) ON DELETE CASCADE,
+    generation INTEGER NOT NULL CHECK (generation >= 0),
+    seen_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (key_id, generation)
+);
+
+-- Private-bridge approvals of tracked revisions, held only in this store:
+-- the KQBS artifact names the bridge, so it never travels in a `.kqtf`.
+-- `private_bridge::revision_approved` re-verifies each against the live
+-- bridge (same generation, signer still a member) every time it is asked.
+CREATE TABLE IF NOT EXISTS tracked_bridge_approvals (
+    revision_id BLOB NOT NULL CHECK (length(revision_id) = 32),
+    bridge_uid  TEXT NOT NULL,
+    artifact    BLOB NOT NULL,
+    recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (revision_id, bridge_uid)
+);

@@ -3,6 +3,7 @@ use crate::error::Error;
 use sha2::Digest;
 
 mod chain;
+mod event_proof;
 mod expiry;
 mod index;
 mod merge;

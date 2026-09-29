@@ -20,6 +20,7 @@ const FILE_REVISION_DOMAIN: &[u8] = b"KQ-FILE-REVISION-v1";
 const FILE_COUNTERSIGN_DOMAIN: &[u8] = b"KQ-FILE-COUNTERSIGN-v1";
 const FILE_FINALIZE_DOMAIN: &[u8] = b"KQ-FILE-FINALIZE-v1";
 const FILE_HISTORY_EVENT_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-EVENT-v1";
+const FILE_BRIDGE_APPROVAL_DOMAIN: &[u8] = b"KQ-FILE-BRIDGE-APPROVAL-v1";
 
 /// Verifies `signature` over `message` under `public_key`. Uses
 /// `verify_strict` rather than `verify` — it rejects the non-canonical
@@ -146,6 +147,30 @@ pub fn file_finalize_preimage(
     hasher.update(revision_id);
     hasher.update(finalizer);
     hash_len_prefixed(&mut hasher, finalizer_label.as_bytes())?;
+    hasher.update(topology_generation.to_be_bytes());
+    hasher.update(policy_hash);
+    Ok(hasher.finalize().into())
+}
+
+/// What a private bridge signs to approve one tracked revision: the file,
+/// the revision, its author, the scope it is judged under, and the
+/// generation and policy it was made under. Signed with
+/// [`sign_with_bridge`], so the artifact names the bridge and never travels
+/// in the file.
+pub fn file_bridge_approval_preimage(
+    file_id: &[u8; 16],
+    revision_id: &[u8; 32],
+    author_label: &str,
+    scope_root: &str,
+    topology_generation: u64,
+    policy_hash: &[u8; 32],
+) -> Result<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    hasher.update(FILE_BRIDGE_APPROVAL_DOMAIN);
+    hasher.update(file_id);
+    hasher.update(revision_id);
+    hash_len_prefixed(&mut hasher, author_label.as_bytes())?;
+    hash_len_prefixed(&mut hasher, scope_root.as_bytes())?;
     hasher.update(topology_generation.to_be_bytes());
     hasher.update(policy_hash);
     Ok(hasher.finalize().into())

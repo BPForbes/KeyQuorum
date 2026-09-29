@@ -381,13 +381,18 @@ impl TrackedFile {
         &mut self,
         steps: impl FnOnce(&mut Self) -> Result<T>,
     ) -> Result<T> {
-        let (revisions, proofs, events) =
-            (self.revisions.len(), self.proofs.len(), self.events.len());
+        let (revisions, proofs, events, event_proofs) = (
+            self.revisions.len(),
+            self.proofs.len(),
+            self.events.len(),
+            self.event_proofs.len(),
+        );
         let result = steps(self);
         if result.is_err() {
             self.revisions.truncate(revisions);
             self.proofs.truncate(proofs);
             self.events.truncate(events);
+            self.event_proofs.truncate(event_proofs);
         }
         result
     }

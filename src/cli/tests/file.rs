@@ -35,6 +35,13 @@ pub(super) fn org() -> MemoryEnv {
     env
 }
 
+/// A top-level `keyquorum` command against the org store that must succeed.
+fn ok_keyquorum(env: &mut MemoryEnv, args: &str) -> String {
+    let (result, out) = env.keyquorum(&format!("keyquorum {DB} {args}"));
+    assert!(result.is_ok(), "{args}: {result:?}\n{out}");
+    out
+}
+
 pub(super) fn slot(label: &str) -> String {
     let dir = PEOPLE.iter().find(|(_, l)| *l == label).unwrap().0;
     format!("/usb/{dir}={label}")
@@ -638,6 +645,162 @@ fn a_rejected_proposed_merge_is_never_signed_and_the_reviewer_settles_it() {
     let history = ok(&mut env, &format!("history {KQTF}"));
     assert!(history.contains("MergeRejected Denied by M.A"), "{history}");
     assert!(history.contains("resolution=KEEP_LEFT"), "{history}");
+}
+
+#[test]
+fn only_a_bridges_signed_approval_of_the_revision_authorizes_a_cross_branch_edit() {
+    let mut env = org();
+    for (dir, label) in [("m", "M"), ("ms1", "M.S.1"), ("ma", "M.A"), ("mb", "M.B")] {
+        let (result, out) = env.keyquorum(&format!(
+            "keyquorum {DB} device register /usb/{dir} --slot {label} --type encryption"
+        ));
+        assert!(result.is_ok(), "{out}");
+    }
+    // A tree whose sibling leaves M.S and M.A are bound (a live tree link).
+    let (result, out) = env.keyquorum(&format!(
+        "keyquorum {DB} split --label M --leaf M.S=/keys/ms.pub --leaf M.A=/keys/ma.pub \
+         --generate-keys --register"
+    ));
+    assert!(result.is_ok(), "{result:?} {out}");
+    track(&mut env, "M.A", "M.A");
+    edit(&mut env, "totals: 110\n");
+    let out = ok(
+        &mut env,
+        &format!(
+            "checkin {KQTF} --from /work/edited.txt --as M.S.1 --slot {}",
+            slot("M.S.1")
+        ),
+    );
+    // A bridge merely existing between the labels approves nothing.
+    assert!(
+        out.contains("trust PENDING (MissingBridgeOrOwnerApproval)"),
+        "{out}"
+    );
+    let create = |env: &mut MemoryEnv, members: &str, dir: &str| {
+        let out = ok_keyquorum(
+            env,
+            &format!(
+                "bridge private create 1 {members} --supervisor M.S=/keys/ms.pub --self M.S.1 \
+                 --output-dir {dir}"
+            ),
+        );
+        out.split_whitespace()
+            .nth(3)
+            .expect("the bridge uid")
+            .to_string()
+    };
+    // A private bridge from M.S.1 to someone off the scope's line (M.B):
+    // its approval is signed and kept, but does not reach M.A's file.
+    let elsewhere = create(&mut env, "--member M.S.1 --member M.B", "/pb/b");
+    let out = ok(
+        &mut env,
+        &format!(
+            "bridge-approve {KQTF} --bridge {elsewhere} --as M.S.1 --slot {}",
+            slot("M.S.1")
+        ),
+    );
+    assert!(out.contains("trust PENDING"), "{out}");
+    // A private bridge from M.S.1 to M.A does.
+    let reaching = create(&mut env, "--member M.S.1 --member M.A", "/pb/a");
+    let out = ok(
+        &mut env,
+        &format!(
+            "bridge-approve {KQTF} --bridge {reaching} --as M.S.1 --slot {}",
+            slot("M.S.1")
+        ),
+    );
+    assert!(out.contains("trust TRUSTED"), "{out}");
+    let history = ok(&mut env, &format!("history {KQTF}"));
+    assert!(
+        history.contains("reason=AUTHOR_SIGNATURE + BRIDGE_OR_SCOPE_OWNER_APPROVAL"),
+        "{history}"
+    );
+    // The private bridge is never named in the file, nor in its history.
+    let bytes = env.fs.read(Path::new(KQTF)).unwrap();
+    for uid in [&reaching, &elsewhere] {
+        assert!(!history.contains(uid.as_str()), "{history}");
+        assert!(!bytes.windows(uid.len()).any(|w| w == uid.as_bytes()));
+    }
+    // A bridge generation change (a membership rotation) voids the approval
+    // until the bridge approves again: it is live evidence, not stored trust.
+    env.store("/home/org/keyquorum.sqlite")
+        .execute("UPDATE private_bridges SET generation = generation + 1", [])
+        .unwrap();
+    let graph = ok(&mut env, &format!("graph {KQTF}"));
+    assert!(graph.contains("MissingBridgeOrOwnerApproval"), "{graph}");
+}
+
+#[test]
+fn a_restructure_keeps_recorded_generations_judged_and_unknown_ones_pending() {
+    let mut env = org();
+    let (result, out) = env.keyquorum(&format!(
+        "keyquorum {DB} split --label M --leaf M.S=/keys/ms.pub --leaf M.A=/keys/ma.pub \
+         --generate-keys --register"
+    ));
+    assert!(result.is_ok(), "{result:?} {out}");
+    track(&mut env, "M.A", "M.A");
+    // The revision is stamped with the tree's generation, not 0.
+    let generation: i64 = env
+        .store("/home/org/keyquorum.sqlite")
+        .query_row(
+            "SELECT public_generation FROM keys WHERE label = 'M'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(generation > 0);
+    let sql = |env: &mut MemoryEnv, statement: &str| {
+        env.store("/home/org/keyquorum.sqlite")
+            .execute(statement, [])
+            .unwrap();
+    };
+    // A restructure moves the tree on; the revision's generation was held
+    // here when it was made, so it is still judged.
+    sql(
+        &mut env,
+        "UPDATE keys SET public_generation = public_generation + 1 WHERE label = 'M'",
+    );
+    let graph = ok(&mut env, &format!("graph {KQTF}"));
+    assert!(graph.contains("TRUSTED"), "{graph}");
+    // A store that never held that generation does not judge it by today's
+    // topology: it stays pending.
+    sql(&mut env, "DELETE FROM tree_generations_seen");
+    let graph = ok(&mut env, &format!("graph {KQTF}"));
+    assert!(graph.contains("MissingTopologyEvidence"), "{graph}");
+}
+
+#[test]
+fn a_command_that_proves_the_key_signs_its_event_and_history_says_where_it_verifies() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    ok(
+        &mut env,
+        &format!("rename {KQTF} summary.txt --as M.A --slot {}", slot("M.A")),
+    );
+    let history = ok(&mut env, &format!("history {KQTF}"));
+    let renamed = history
+        .lines()
+        .find(|l| l.contains("FileRenamed"))
+        .expect("a rename");
+    assert!(renamed.ends_with("[signed by M.A]"), "{history}");
+    // Events no command signed stay plain hash-chained records.
+    let started = history
+        .lines()
+        .find(|l| l.contains("TrackingStarted"))
+        .unwrap();
+    assert!(!started.contains("[signed"), "{history}");
+    // A store that never met M.A cannot vouch for the signature.
+    let bytes = env.fs.read(Path::new(KQTF)).unwrap();
+    env.fs
+        .write(Path::new("/elsewhere/r.kqtf"), &bytes)
+        .unwrap();
+    let (result, out) =
+        env.keyquorum("keyquorum --db /elsewhere/keyquorum.sqlite file history /elsewhere/r.kqtf");
+    assert!(result.is_ok(), "{out}");
+    assert!(
+        out.contains("FileRenamed") && out.contains("[signature not verified in this store]"),
+        "{out}"
+    );
 }
 
 #[test]

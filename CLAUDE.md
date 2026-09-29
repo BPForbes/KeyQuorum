@@ -242,6 +242,23 @@ redemption is recorded as `redeemer=UNKNOWN_BEARER`, since a token proves no ide
 proof (`ProofKind` 3, container v6, event `REVISION_FINALIZED` = 33) to a revision that is
 already trusted; `policy::is_finalized` and `latest_finalized_ancestor` derive it per store
 (never stored), and `status` shows it.
+The bridge-or-owner rule accepts a private bridge's signed approval of the
+revision itself (`keyquorum file bridge-approve`, `signing::file_bridge_approval_preimage`,
+a KQBS artifact kept only in this store's `tracked_bridge_approvals`, never in the
+`.kqtf`): `StoreTrust::revision_bridge_evidence` asks `private_bridge::revision_approved`,
+which re-verifies it against the live bridge (current generation, signer still a
+member) and accepts it only when the bridge's members reach from the author to the
+scope (`authority::bridge_connects`; supervisors do not count). A bridge merely
+existing between labels (a tree link or a roster) approves nothing; tree links are
+review-path evidence only (`bridge_between`). A revision stamped with a topology
+generation this store never held (`tree_generations_seen`, recorded by every file
+command and on both sides of an applied restructure) is `Pending(MissingTopologyEvidence)`,
+never judged against today's topology; generation 0 means no published topology.
+Container v7 adds optional `EventProof`s after the events (the event's own actor
+signing `signing::file_history_event_preimage`), written only when one exists;
+`rename`, `expire` and `resolve --reject` sign the events they append, and
+`policy::event_attested` / `file history` report a signature only where this store's
+key for that actor verifies it. Unsigned events stay hash-chained, never attested.
 `file_history/expiry.rs` ends a tracked file: an `EXPIRY_SCHEDULED` event
 sets the time, and destruction removes every retained revision's payload at
 once (container v5 lets a payload be absent; v4 still decodes).

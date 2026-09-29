@@ -102,6 +102,22 @@ pub(super) fn verify_structure(file: &TrackedFile) -> Result<[u8; 32]> {
     {
         return Err(Error::InvalidTrackedFile);
     }
+    // An event proof names an existing event, is by that event's own actor,
+    // and appears once per signer. Whether its signature verifies is a
+    // store's question (`policy::event_attested`), as for revision proofs.
+    let mut signed: HashSet<(u64, &str)> = HashSet::new();
+    for proof in &file.event_proofs {
+        let event = usize::try_from(proof.sequence)
+            .ok()
+            .and_then(|index| file.events.get(index));
+        let ok = event.is_some_and(|event| {
+            event.actor_label.as_deref() == Some(proof.signer_label.as_str())
+                && event.actor_identity == Some(proof.signer_identity)
+        }) && signed.insert((proof.sequence, proof.signer_label.as_str()));
+        if !ok {
+            return Err(Error::InvalidTrackedFile);
+        }
+    }
     verify_chain(&file.file_id, &file.events)
 }
 

@@ -7,6 +7,7 @@ use super::codec::{
     push_opt_array, push_str, push_u64, take_fixed, take_opt_array, take_str, take_u64,
 };
 use super::container::TrackedFile;
+use super::event::HistoryEvent;
 use super::policy::{BridgeEvidence, TrustContext};
 use super::revision::FileRevision;
 use crate::error::{Error, Result};
@@ -129,7 +130,86 @@ impl RevisionProof {
     }
 }
 
+/// An event's own actor signing its place in the chain
+/// (`signing::file_history_event_preimage`: the file, the event's revision,
+/// its sequence, the previous hash and its own hash). Optional: only events
+/// whose command already made the actor prove the key carry one. Unsigned
+/// events stay hash-chained and are never read as attested.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventProof {
+    pub sequence: u64,
+    pub signer_identity: [u8; 16],
+    pub signer_label: String,
+    pub signature: [u8; 64],
+}
+
+impl EventProof {
+    pub(super) fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
+        push_u64(out, self.sequence);
+        out.extend_from_slice(&self.signer_identity);
+        push_str(out, &self.signer_label)?;
+        out.extend_from_slice(&self.signature);
+        Ok(())
+    }
+
+    pub(super) fn decode(data: &mut &[u8]) -> Result<Self> {
+        Ok(Self {
+            sequence: take_u64(data)?,
+            signer_identity: take_fixed::<16>(data)?,
+            signer_label: take_str(data)?,
+            signature: take_fixed::<64>(data)?,
+        })
+    }
+}
+
+/// The digest an event proof signs, for the event it names.
+pub(super) fn event_preimage(file_id: &[u8; 16], event: &HistoryEvent) -> [u8; 32] {
+    signing::file_history_event_preimage(
+        file_id,
+        event.revision_id.as_ref(),
+        event.sequence,
+        &event.previous_event_hash,
+        &event.event_hash,
+    )
+}
+
 impl TrackedFile {
+    pub fn event_proofs(&self) -> &[EventProof] {
+        &self.event_proofs
+    }
+
+    /// Sign event `sequence` as its actor, after its hash is final. Refused
+    /// for an event with another actor, or one this signer already signed.
+    pub fn sign_event(
+        &mut self,
+        sequence: u64,
+        signer_identity: [u8; 16],
+        signer_label: &str,
+        secret: &[u8; 32],
+    ) -> Result<()> {
+        let event = usize::try_from(sequence)
+            .ok()
+            .and_then(|index| self.events.get(index))
+            .ok_or(Error::InvalidTrackedFile)?;
+        if event.actor_label.as_deref() != Some(signer_label)
+            || event.actor_identity != Some(signer_identity)
+            || self
+                .event_proofs
+                .iter()
+                .any(|p| p.sequence == sequence && p.signer_label == signer_label)
+        {
+            return Err(Error::InvalidTrackedFile);
+        }
+        let signature = signing::sign(secret, &event_preimage(&self.file_id, event));
+        self.event_proofs.push(EventProof {
+            sequence,
+            signer_identity,
+            signer_label: signer_label.to_string(),
+            signature,
+        });
+        Ok(())
+    }
+
     pub fn proofs_for<'a>(
         &'a self,
         revision_id: &'a [u8; 32],

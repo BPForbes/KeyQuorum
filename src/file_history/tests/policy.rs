@@ -168,6 +168,110 @@ fn bridge_evidence_alone_does_not_replace_the_author_signature() {
     assert_eq!(state(&file, &id, &ctx), Pending(R::MissingContentSignature));
 }
 
+/// A store holding a private bridge's approval, and a tree link that must
+/// not count as one.
+struct PrivateLink(Ctx);
+
+impl TrustContext for PrivateLink {
+    fn signing_public(&self, identity: &[u8; 16], label: &str) -> Option<[u8; 32]> {
+        self.0.signing_public(identity, label)
+    }
+
+    fn bridge_evidence(&self, _: &[u8; 32]) -> BridgeEvidence {
+        BridgeEvidence::None
+    }
+
+    /// Approved only when the bridge (M.S <-> M.A) reaches from the author
+    /// to the scope, as a store holding a signed approval would report it.
+    fn revision_bridge_evidence(&self, revision: &FileRevision, scope: &str) -> BridgeEvidence {
+        if crate::authority::bridge_connects("M.S", "M.A", &revision.author_hcp_label, scope) {
+            BridgeEvidence::PrivateAuthorized
+        } else {
+            BridgeEvidence::None
+        }
+    }
+
+    fn bridge_between(&self, _: &str, _: &str) -> BridgeEvidence {
+        // A link between labels is not an approval of any revision.
+        BridgeEvidence::NonPrivateAuthorized
+    }
+}
+
+#[test]
+fn a_live_bridge_between_the_author_and_the_scope_satisfies_the_cross_branch_rule() {
+    let (mut file, id) = one("M.S.1", 4);
+    file.sign_revision(&id, ident(4), "M.S.1", &secret(4))
+        .unwrap();
+    assert_eq!(
+        state(&file, &id, &Ctx::new()),
+        Pending(R::MissingBridgeOrOwnerApproval)
+    );
+    let bridged = PrivateLink(Ctx::new());
+    assert_eq!(
+        evaluate_revision_trust(&file, &id, &policy(), &bridged).unwrap(),
+        Trusted
+    );
+    // A bridge from another sector does not reach this scope.
+    let mut elsewhere = TrackedFile::new(FILE, "report.txt");
+    let mut far = policy();
+    far.scope_root = "M.B".into();
+    let id = revision_by(&mut elsewhere, vec![], "M.S.1", 4, &far, T1);
+    elsewhere
+        .sign_revision(&id, ident(4), "M.S.1", &secret(4))
+        .unwrap();
+    assert_eq!(
+        evaluate_revision_trust(&elsewhere, &id, &far, &bridged).unwrap(),
+        Pending(R::MissingBridgeOrOwnerApproval)
+    );
+}
+
+/// A store that holds only some topology generations.
+struct Generations(Ctx, Vec<u64>);
+
+impl TrustContext for Generations {
+    fn signing_public(&self, identity: &[u8; 16], label: &str) -> Option<[u8; 32]> {
+        self.0.signing_public(identity, label)
+    }
+
+    fn bridge_evidence(&self, _: &[u8; 32]) -> BridgeEvidence {
+        BridgeEvidence::None
+    }
+
+    fn generation_evidence(&self, _: &str, generation: u64) -> GenerationEvidence {
+        match self.1.as_slice() {
+            [.., current] if *current == generation => GenerationEvidence::Current,
+            held if held.contains(&generation) => GenerationEvidence::Recorded,
+            _ => GenerationEvidence::Unavailable,
+        }
+    }
+}
+
+#[test]
+fn a_revision_from_a_generation_the_store_never_held_is_pending_not_judged_today() {
+    let (mut file, id) = one("M.A", 2);
+    file.sign_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    let judge = |held: Vec<u64>| {
+        evaluate_revision_trust(&file, &id, &policy(), &Generations(Ctx::new(), held)).unwrap()
+    };
+    // GEN is current, or an earlier generation this store held: judged.
+    assert_eq!(judge(vec![GEN]), Trusted);
+    assert_eq!(judge(vec![GEN, GEN + 1]), Trusted);
+    // A generation the store never held (older, or newer than it knows).
+    assert_eq!(judge(vec![GEN + 1]), Pending(R::MissingTopologyEvidence));
+    assert_eq!(judge(vec![GEN - 1]), Pending(R::MissingTopologyEvidence));
+    // Missing evidence is never a reason to deliver: nothing trusted here.
+    let decision = select_shareable_revision(
+        &file,
+        &id,
+        None,
+        &policy(),
+        &Generations(Ctx::new(), vec![GEN + 1]),
+    )
+    .unwrap();
+    assert_eq!(decision.delivered_revision, None);
+}
+
 #[test]
 fn an_unrelated_author_is_denied() {
     let (file, id) = one("X.1", 9);
@@ -772,7 +876,7 @@ fn a_finalization_survives_the_container_round_trip_and_older_versions_refuse_it
     file.finalize_revision(&id, ident(2), "M.A", &secret(2))
         .unwrap();
     let bytes = file.encode().unwrap();
-    assert_eq!(bytes[4], CONTAINER_VERSION);
+    assert_eq!(bytes[4], 6, "a finalization without event proofs is version 6");
     let back = TrackedFile::decode(&bytes).unwrap();
     assert!(finalized(&back, &id, &Ctx::new()));
     // A container claiming to be version 5 cannot carry one.

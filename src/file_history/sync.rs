@@ -94,6 +94,14 @@ impl TrackedFile {
                 None => event.event_type == HistoryEventType::FileRenamed,
             })
             .cloned()
+            .collect::<Vec<_>>();
+        // The kept events are an unchanged prefix, so their proofs still
+        // name the same hashes and travel with them.
+        let event_proofs = self
+            .event_proofs
+            .iter()
+            .filter(|proof| (proof.sequence as usize) < events.len())
+            .cloned()
             .collect();
         let pruned = TrackedFile {
             file_id: self.file_id,
@@ -101,6 +109,7 @@ impl TrackedFile {
             revisions,
             proofs,
             events,
+            event_proofs,
             policy: self.policy.clone(),
         };
         verify_structure(&pruned)?;
