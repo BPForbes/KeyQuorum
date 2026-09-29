@@ -8,6 +8,9 @@
 //! by `transfer enroll` when the store has it; otherwise it is derived from
 //! the label (see [`identity_for`]).
 
+use super::deliver_cmd::{
+    carry, recipient_secrets, registered_encryption_key, sender_keys, Letter, RecipientSecrets,
+};
 use super::env::{self, errln, outln};
 use super::{open_slot_secrets, read_key_array_32, usage};
 use crate::error::{Error, Result};
@@ -18,7 +21,7 @@ use crate::file_history::{
     ImportContext, MergeBase, NewEvent, NewRevision, ResolverSelection, TrackedFile, TrustContext,
     TrustReason, TrustState,
 };
-use crate::{key_tree, private_bridge, transfer};
+use crate::{file_delivery, key_tree, private_bridge, transfer};
 use clap::Subcommand;
 use rand::rngs::OsRng;
 use rand::RngCore;
@@ -183,6 +186,93 @@ pub enum FileCommand {
     },
     /// Verify the history chain and revision graph, and judge every revision
     Verify { kqtf: PathBuf },
+    /// Seal the newest trusted revision to another label as a `.kqpb`
+    /// letter. A newer revision that is not trusted is never included.
+    Share {
+        kqtf: PathBuf,
+        /// Recipient label (its encryption key must be registered here)
+        #[arg(long)]
+        to: String,
+        /// Your label
+        #[arg(long = "as")]
+        as_label: String,
+        /// Your identity slot, container=label (signs the letter)
+        #[arg(long, conflicts_with = "signing_key_file")]
+        slot: Option<String>,
+        /// Your signing private key file, instead of --slot
+        #[arg(long)]
+        signing_key_file: Option<PathBuf>,
+        /// Share up to this revision instead of the sole head
+        #[arg(long)]
+        revision: Option<String>,
+        /// Write the sealed letter to this directory
+        #[arg(long, required_unless_present = "push")]
+        output_dir: Option<PathBuf>,
+        /// Upload the letter to the relay (inbox.push key)
+        #[arg(long)]
+        push: bool,
+        #[arg(long, requires = "push")]
+        url: Option<String>,
+        #[arg(long, requires = "push")]
+        api_key: Option<String>,
+    },
+    /// Open a tracked-file letter addressed to you. The sender is checked
+    /// as the transport; the delivered revision is then judged by the
+    /// file's own policy and accepted only if it is trusted here.
+    Receive {
+        /// The letter (.kqpb)
+        #[arg(long)]
+        letter: PathBuf,
+        /// Your identity slot, container=label
+        #[arg(
+            long = "slot",
+            required_unless_present = "share_file",
+            conflicts_with_all = ["share_file", "signing_key_file"]
+        )]
+        slot: Option<String>,
+        /// Your encryption private key file, instead of --slot
+        #[arg(long, requires = "signing_key_file")]
+        share_file: Option<String>,
+        /// Your signing private key file, with --share-file
+        #[arg(long, requires = "share_file")]
+        signing_key_file: Option<PathBuf>,
+        /// Merge into your existing copy of this file
+        #[arg(long, conflicts_with_all = ["out", "reject"])]
+        into: Option<PathBuf>,
+        /// Write a new container here
+        #[arg(long, required_unless_present_any = ["into", "reject"], conflicts_with = "reject")]
+        out: Option<PathBuf>,
+        /// Refuse the delivery and say so in the acknowledgement
+        #[arg(long)]
+        reject: bool,
+        /// Write the sealed acknowledgement to this directory
+        #[arg(long, required_unless_present = "push_ack")]
+        ack_dir: Option<PathBuf>,
+        /// Upload the acknowledgement to the relay (inbox.push key)
+        #[arg(long)]
+        push_ack: bool,
+        #[arg(long, requires = "push_ack")]
+        url: Option<String>,
+        #[arg(long, requires = "push_ack")]
+        api_key: Option<String>,
+    },
+    /// Record an acknowledgement sealed back to you in your copy's history
+    Ack {
+        kqtf: PathBuf,
+        /// The acknowledgement (.kqpb)
+        #[arg(long)]
+        ack: PathBuf,
+        /// Your identity slot, container=label
+        #[arg(
+            long = "slot",
+            required_unless_present = "share_file",
+            conflicts_with = "share_file"
+        )]
+        slot: Option<String>,
+        /// Your encryption private key file, instead of --slot
+        #[arg(long)]
+        share_file: Option<String>,
+    },
 }
 
 pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
@@ -266,6 +356,51 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             as_label,
         } => import(conn, &kqtf, &from, &as_label),
         FileCommand::Verify { kqtf } => verify(conn, &kqtf),
+        FileCommand::Share {
+            kqtf,
+            to,
+            as_label,
+            slot,
+            signing_key_file,
+            revision,
+            output_dir,
+            push,
+            url,
+            api_key,
+        } => share(
+            conn,
+            &kqtf,
+            &to,
+            &as_label,
+            (slot, signing_key_file),
+            revision,
+            (output_dir, push, url, api_key),
+        ),
+        FileCommand::Receive {
+            letter,
+            slot,
+            share_file,
+            signing_key_file,
+            into,
+            out,
+            reject,
+            ack_dir,
+            push_ack,
+            url,
+            api_key,
+        } => receive(
+            conn,
+            &letter,
+            recipient_secrets(slot, share_file, signing_key_file)?,
+            (into, out, reject),
+            (ack_dir, push_ack, url, api_key),
+        ),
+        FileCommand::Ack {
+            kqtf,
+            ack,
+            slot,
+            share_file,
+        } => record_ack(conn, &kqtf, &ack, share_file.as_deref(), slot.as_deref()),
     }
 }
 
@@ -849,6 +984,273 @@ fn import(conn: &Connection, kqtf: &Path, from: &Path, as_label: &str) -> Result
     if merged.relation == HistoryRelation::Diverged {
         outln!("The history has forked. Run `keyquorum file merge` to join the heads.");
     }
+    Ok(())
+}
+
+type Transport = (Option<PathBuf>, bool, Option<String>, Option<String>);
+
+fn share(
+    conn: &Connection,
+    kqtf: &Path,
+    to: &str,
+    as_label: &str,
+    keys: (Option<String>, Option<PathBuf>),
+    revision: Option<String>,
+    (output_dir, push, url, api_key): Transport,
+) -> Result<()> {
+    require_active(conn, as_label)?;
+    let mut file = load(kqtf)?;
+    let policy = policy_of(&file)?.clone();
+    let candidate = pick_revision(&file, revision.as_deref())?;
+    let decision =
+        select_shareable_revision(&file, &candidate, None, &policy, &StoreTrust { conn })?;
+    let (identity, at) = (identity_for(conn, as_label)?, utc_instant()?);
+    let generation = generation_for(conn, &policy.scope_root)?;
+    let Some(delivered) = decision.delivered_revision else {
+        let mut refused = event(
+            HistoryEventType::ShareAttempted,
+            Some(candidate),
+            &at,
+            identity,
+            as_label,
+            generation,
+            EventDetails::new()
+                .with("to", to)
+                .with("result", "no trusted revision to share"),
+        );
+        refused.outcome = HistoryOutcome::Denied;
+        file.append(refused)?;
+        save(kqtf, &file)?;
+        index_after(conn, &file);
+        return Err(usage("no trusted revision exists to share"));
+    };
+    let extract = file.extract_revision(&delivered)?;
+    let container = extract.encode()?;
+    let (signing_secret, encryption_public) = sender_keys(conn, keys.0, keys.1, as_label)?;
+    let recipient = registered_encryption_key(conn, to)?;
+    let sealed = file_delivery::seal_history_letter(&file_delivery::OutgoingHistory {
+        sender_label: as_label,
+        sender_signing_secret: &signing_secret,
+        sender_encryption_public: &encryption_public,
+        recipient_label: to,
+        recipient_encryption_public: &recipient,
+        file_name: &file.logical_name,
+        file_id: file.file_id,
+        revision_id: delivered,
+        history_root: extract.history_root(),
+        decision: decision.decision.code(),
+        container: &container,
+    })?;
+    // Recorded before the letter leaves, so a failed upload still leaves a
+    // truthful "attempted" entry and the delivery id an ack must match.
+    let delivery = hex::encode(sealed.delivery_id);
+    file.append(event(
+        HistoryEventType::ShareAttempted,
+        Some(delivered),
+        &at,
+        identity,
+        as_label,
+        generation,
+        EventDetails::new()
+            .with("to", to)
+            .with("delivery_id", &delivery)
+            .with("decision", &format!("{:?}", decision.decision))
+            .with("container_hash", &hex::encode(sealed.container_hash)),
+    ))?;
+    save(kqtf, &file)?;
+    index_after(conn, &file);
+    outln!(
+        "Sealed {} revision {} to {to} (delivery {delivery}, {:?})",
+        file.logical_name,
+        short(&delivered),
+        decision.decision
+    );
+    if delivered != candidate {
+        outln!(
+            "Revision {} is not trusted, so it was left out.",
+            short(&candidate)
+        );
+    }
+    let letter = Letter {
+        name: delivery,
+        bytes: sealed.bytes,
+    };
+    carry(conn, &letter, output_dir.as_deref(), push, url, api_key)
+}
+
+fn receive(
+    conn: &Connection,
+    letter_path: &Path,
+    secrets: RecipientSecrets,
+    (into, out, reject): (Option<PathBuf>, Option<PathBuf>, bool),
+    (ack_dir, push_ack, url, api_key): Transport,
+) -> Result<()> {
+    let bytes = env::read(letter_path)?;
+    let letter = file_delivery::open_history_letter(conn, &secrets.encryption, &bytes)?;
+    errln!(
+        "From {} to {}: {} revision {}, sender signature verified",
+        letter.sender_label,
+        letter.recipient_label,
+        letter.file_name,
+        short(&letter.revision_id)
+    );
+    // The letter's header is only a claim about the container.
+    let mut incoming = TrackedFile::decode(&letter.container)
+        .map_err(|_| usage("the delivered container does not verify"))?;
+    if incoming.file_id != letter.file_id
+        || incoming.history_root() != letter.history_root
+        || incoming.graph().get(&letter.revision_id).is_none()
+        || DeliveryDecisionKind::from_code(letter.decision).is_none()
+    {
+        return Err(usage("the letter does not match the container it carries"));
+    }
+    let policy = policy_of(&incoming)?.clone();
+    let state = evaluate_revision_trust(
+        &incoming,
+        &letter.revision_id,
+        &policy,
+        &StoreTrust { conn },
+    )?;
+    let mut accepted = !reject;
+    if accepted && state != TrustState::Trusted {
+        errln!(
+            "Refused: revision {} is {} here.",
+            short(&letter.revision_id),
+            trust_text(state)
+        );
+        accepted = false;
+    }
+    if reject {
+        errln!("Rejected {}", letter.file_name);
+    }
+    if accepted {
+        require_active(conn, &letter.recipient_label)?;
+        let (identity, at) = (identity_for(conn, &letter.recipient_label)?, utc_instant()?);
+        let generation = generation_for(conn, &policy.scope_root)?;
+        let delivered = event(
+            HistoryEventType::ShareDelivered,
+            Some(letter.revision_id),
+            &at,
+            identity,
+            &letter.recipient_label,
+            generation,
+            EventDetails::new()
+                .with("from", &letter.sender_label)
+                .with("delivery_id", &hex::encode(letter.delivery_id))
+                .with("container_hash", &hex::encode(letter.container_hash)),
+        );
+        match (into, out) {
+            (Some(target), _) => {
+                let mut file = load(&target)?;
+                let context = ImportContext {
+                    actor_identity: Some(identity),
+                    actor_label: letter.recipient_label.clone(),
+                    occurred_at: at,
+                    topology_generation: generation,
+                };
+                let merged = file.merge_history(&incoming, &context).map_err(|_| {
+                    usage("that is not another copy of this file (same id and policy)")
+                })?;
+                file.append(delivered)?;
+                save(&target, &file)?;
+                index_after(conn, &file);
+                outln!(
+                    "Merged into {}: {:?}; {} revision(s) and {} proof(s) added",
+                    target.display(),
+                    merged.relation,
+                    merged.revisions_added,
+                    merged.proofs_added
+                );
+            }
+            (None, Some(target)) => {
+                if env::exists(&target) {
+                    return Err(usage("--out already exists; use --into to merge"));
+                }
+                incoming.append(delivered)?;
+                save(&target, &incoming)?;
+                index_after(conn, &incoming);
+                outln!("Saved {} to {}", letter.file_name, target.display());
+            }
+            (None, None) => return Err(usage("pass --into or --out")),
+        }
+    }
+    let ack = Letter {
+        name: format!("{}-ack", hex::encode(letter.delivery_id)),
+        bytes: file_delivery::seal_history_ack(&letter, &secrets.signing, accepted)?,
+    };
+    carry(conn, &ack, ack_dir.as_deref(), push_ack, url, api_key)
+}
+
+fn record_ack(
+    conn: &Connection,
+    kqtf: &Path,
+    ack_path: &Path,
+    share_file: Option<&str>,
+    slot: Option<&str>,
+) -> Result<()> {
+    let secret = super::encryption_secret_from(share_file, slot)?;
+    let ack = file_delivery::open_history_ack(conn, &secret, &env::read(ack_path)?)?;
+    let mut file = load(kqtf)?;
+    let delivery = hex::encode(ack.delivery_id);
+    let has = |event: &HistoryEvent, key: &str| {
+        event
+            .details
+            .entries()
+            .iter()
+            .any(|(k, v)| k == key && *v == delivery)
+    };
+    let sent = file
+        .events()
+        .iter()
+        .find(|e| e.event_type == HistoryEventType::ShareAttempted && has(e, "delivery_id"))
+        .cloned()
+        .filter(|e| {
+            file.file_id == ack.file_id
+                && e.revision_id == Some(ack.revision_id)
+                && e.details
+                    .entries()
+                    .contains(&("container_hash".into(), hex::encode(ack.container_hash)))
+        })
+        .ok_or_else(|| usage("that acknowledgement does not answer any delivery from this file"))?;
+    if file
+        .events()
+        .iter()
+        .any(|e| e.event_type != HistoryEventType::ShareAttempted && has(e, "answers"))
+    {
+        outln!("Delivery {delivery} was already recorded.");
+        return Ok(());
+    }
+    let (Some(identity), Some(sender)) = (sent.actor_identity, sent.actor_label.as_deref()) else {
+        return Err(usage("the original delivery has no recorded sender"));
+    };
+    let policy = policy_of(&file)?.clone();
+    let mut recorded = event(
+        if ack.accepted {
+            HistoryEventType::ShareDelivered
+        } else {
+            HistoryEventType::ShareAttempted
+        },
+        Some(ack.revision_id),
+        &utc_instant()?,
+        identity,
+        sender,
+        generation_for(conn, &policy.scope_root)?,
+        EventDetails::new()
+            .with("answers", &delivery)
+            .with("by", &ack.recipient_label)
+            .with("result", if ack.accepted { "accepted" } else { "rejected" }),
+    );
+    if !ack.accepted {
+        recorded.outcome = HistoryOutcome::Denied;
+    }
+    file.append(recorded)?;
+    save(kqtf, &file)?;
+    index_after(conn, &file);
+    outln!(
+        "Delivery {delivery} {} by {}",
+        if ack.accepted { "accepted" } else { "rejected" },
+        ack.recipient_label
+    );
     Ok(())
 }
 

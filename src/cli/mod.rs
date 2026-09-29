@@ -2383,6 +2383,34 @@ fn relay_in_store(conn: &Connection, command: RelayCommand) -> Result<()> {
                     outln!("Wrote {}", path.display());
                 }
                 let kind = crate::envelope::kind(&bytes)?;
+                if kind == crate::envelope::KIND_FILE_HISTORY
+                    || kind == crate::envelope::KIND_FILE_HISTORY_ACK
+                {
+                    // Tracked-file letters are opened by `file receive` and
+                    // `file ack`, not imported into the store.
+                    if share_sk.is_some() {
+                        outln!(
+                            "Envelope {} is a tracked-file {}; open it with `keyquorum file {}`{}",
+                            item.id,
+                            if kind == crate::envelope::KIND_FILE_HISTORY {
+                                "letter"
+                            } else {
+                                "acknowledgement"
+                            },
+                            if kind == crate::envelope::KIND_FILE_HISTORY {
+                                "receive"
+                            } else {
+                                "ack"
+                            },
+                            if output_dir.is_some() {
+                                ""
+                            } else {
+                                " (pass --output-dir to keep it)"
+                            }
+                        );
+                    }
+                    continue;
+                }
                 if kind == crate::envelope::KIND_FILE_DELIVERY
                     || kind == crate::envelope::KIND_FILE_DELIVERY_ACK
                 {

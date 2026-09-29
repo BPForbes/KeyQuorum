@@ -294,6 +294,28 @@ pub enum DeliveryDecisionKind {
     DeniedNoTrustedRevision,
 }
 
+impl DeliveryDecisionKind {
+    /// The byte a delivery letter carries. Wire format: append-only.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::CurrentTrustedRevision => 1,
+            Self::LastTrustedRevision => 2,
+            Self::RequesterAlreadyCurrent => 3,
+            Self::DeniedNoTrustedRevision => 4,
+        }
+    }
+
+    pub fn from_code(code: u8) -> Option<Self> {
+        Some(match code {
+            1 => Self::CurrentTrustedRevision,
+            2 => Self::LastTrustedRevision,
+            3 => Self::RequesterAlreadyCurrent,
+            4 => Self::DeniedNoTrustedRevision,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeliveryDecision {
     pub candidate_revision: [u8; 32],

@@ -49,6 +49,47 @@ pub struct ImportContext {
 }
 
 impl TrackedFile {
+    /// A copy holding only `revision_id`, its ancestors, their proofs, and
+    /// the events recorded before the first one that mentions any other
+    /// revision. This is what a sender delivers when a newer revision is
+    /// not trusted: the newer revision's content and proofs never leave.
+    /// The events kept are a prefix of the chain, so the copy verifies and
+    /// its root is its own.
+    pub fn extract_revision(&self, revision_id: &[u8; 32]) -> Result<TrackedFile> {
+        verify_structure(self)?;
+        let graph = self.graph();
+        graph.get(revision_id).ok_or(Error::InvalidTrackedFile)?;
+        let keep = |id: &[u8; 32]| graph.is_ancestor_or_self(id, revision_id);
+        let revisions: Vec<_> = self
+            .revisions
+            .iter()
+            .filter(|stored| keep(&stored.revision.revision_id))
+            .cloned()
+            .collect();
+        let proofs = self
+            .proofs
+            .iter()
+            .filter(|proof| keep(&proof.revision_id))
+            .cloned()
+            .collect();
+        let events = self
+            .events
+            .iter()
+            .take_while(|event| event.revision_id.as_ref().is_none_or(keep))
+            .cloned()
+            .collect();
+        let pruned = TrackedFile {
+            file_id: self.file_id,
+            logical_name: self.logical_name.clone(),
+            revisions,
+            proofs,
+            events,
+            policy: self.policy.clone(),
+        };
+        verify_structure(&pruned)?;
+        Ok(pruned)
+    }
+
     /// Import `other`'s revisions and proofs into this file. Refused, with
     /// nothing changed, unless both copies verify, name the same file id,
     /// and carry the same policy. Importing what is already here changes

@@ -274,3 +274,71 @@ fn a_snapshot_is_a_prefix_of_the_history_it_came_from() {
         .history_snapshot()
         .is_prefix_of(&file));
 }
+
+#[test]
+fn an_extract_holds_only_the_revision_and_its_ancestors() {
+    let (mut file, base) = base_copy();
+    let second = child(&mut file, base, T2, "second");
+    file.append(new_event(HistoryEventType::RevisionSigned, Some(second)))
+        .unwrap();
+    let third = child(&mut file, second, "2026-10-03T00:00:00Z", "SECRET third");
+    file.append(new_event(HistoryEventType::RevisionSigned, Some(third)))
+        .unwrap();
+    file.append(new_event(HistoryEventType::TrackingStarted, None))
+        .unwrap();
+
+    let extract = file.extract_revision(&second).unwrap();
+    let ids: Vec<_> = extract
+        .revisions()
+        .iter()
+        .map(|s| s.revision.revision_id)
+        .collect();
+    assert_eq!(ids, vec![base, second]);
+    // Events stop before the first one that mentions the excluded revision,
+    // including the unrelated one recorded after it.
+    assert_eq!(extract.events().len(), 2);
+    assert_eq!(extract.events().last().unwrap().revision_id, Some(second));
+    // Nothing of the newer revision survives, even encoded.
+    let bytes = extract.encode().unwrap();
+    assert!(!bytes.windows(12).any(|w| w == b"SECRET third"));
+    assert_eq!(TrackedFile::decode(&bytes).unwrap(), extract);
+    assert_eq!(extract.policy(), file.policy());
+    // The pruned copy has its own root, which the original never had at
+    // that length.
+    assert_eq!(
+        extract.history_root(),
+        extract.events().last().unwrap().event_hash
+    );
+}
+
+#[test]
+fn an_extract_of_a_missing_revision_or_damaged_file_is_refused() {
+    let (file, _) = base_copy();
+    assert!(file.extract_revision(&[7; 32]).is_err());
+}
+
+#[test]
+fn an_extract_can_be_imported_back_as_identical_or_local_ahead() {
+    let (mut file, base) = base_copy();
+    let second = child(&mut file, base, T2, "second");
+    let extract = file.extract_revision(&base).unwrap();
+    let mut local = file.clone();
+    let merged = local.merge_history(&extract, &context()).unwrap();
+    assert_eq!(merged.relation, HistoryRelation::LocalAhead);
+    assert!(local.graph().get(&second).is_some());
+}
+
+#[test]
+fn decision_codes_round_trip_and_reject_unknown() {
+    use crate::file_history::DeliveryDecisionKind as K;
+    for kind in [
+        K::CurrentTrustedRevision,
+        K::LastTrustedRevision,
+        K::RequesterAlreadyCurrent,
+        K::DeniedNoTrustedRevision,
+    ] {
+        assert_eq!(K::from_code(kind.code()), Some(kind));
+    }
+    assert_eq!(K::from_code(0), None);
+    assert_eq!(K::from_code(5), None);
+}

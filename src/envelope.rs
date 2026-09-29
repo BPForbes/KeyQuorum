@@ -91,6 +91,12 @@ pub const KIND_DEVICE_RELOCATE_ACK: u8 = 12;
 pub const KIND_FILE_DELIVERY: u8 = 13;
 /// Recipient's signed accept/reject of a [`KIND_FILE_DELIVERY`].
 pub const KIND_FILE_DELIVERY_ACK: u8 = 14;
+/// A tracked file's history (`KQTF`) sealed to a recipient label, with the
+/// revision being delivered named in the signed header (`file_delivery`).
+/// Carried by the bridge inbox like any other letter.
+pub const KIND_FILE_HISTORY: u8 = 15;
+/// Recipient's signed accept/reject of a [`KIND_FILE_HISTORY`].
+pub const KIND_FILE_HISTORY_ACK: u8 = 16;
 
 /// Kinds the device mailbox accepts. Every other `KQPB` kind belongs to
 /// the bridge inbox. The two stores do not mix.

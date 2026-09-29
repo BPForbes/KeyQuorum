@@ -904,3 +904,265 @@ fn a_snapshot_exports_verifies_and_matches_its_file() {
     );
     assert!(result.is_err());
 }
+
+// ---- tracked delivery ------------------------------------------------------
+
+fn dir_file(env: &MemoryEnv, dir: &str) -> String {
+    let files = env.fs.list(Path::new(dir)).unwrap_or_default();
+    assert_eq!(files.len(), 1, "{dir}: {files:?}");
+    files[0].display().to_string()
+}
+
+/// M.A tracks `report.txt`; M.B can receive letters in the org store.
+fn delivering() -> MemoryEnv {
+    let mut env = org();
+    let (result, _) = env.keyquorum(&format!(
+        "keyquorum {DB} device register /usb/mb --slot M.B --type encryption"
+    ));
+    assert!(result.is_ok());
+    track(&mut env, "M.A", "M.A");
+    env
+}
+
+fn share_to_mb(env: &mut MemoryEnv, extra: &str) -> (crate::error::Result<()>, String) {
+    run(
+        env,
+        &format!(
+            "share {KQTF} --to M.B --as M.A --slot {} --output-dir /out {extra}",
+            slot("M.A")
+        ),
+    )
+}
+
+fn receive_as_mb(env: &mut MemoryEnv, extra: &str) -> (crate::error::Result<()>, String) {
+    let letter = dir_file(env, "/out");
+    run(
+        env,
+        &format!(
+            "receive --letter {letter} --slot {} --ack-dir /acks {extra}",
+            slot("M.B")
+        ),
+    )
+}
+
+#[test]
+fn a_trusted_revision_is_delivered_accepted_and_acknowledged() {
+    let mut env = delivering();
+    let out = ok(
+        &mut env,
+        &format!(
+            "share {KQTF} --to M.B --as M.A --slot {} --output-dir /out",
+            slot("M.A")
+        ),
+    );
+    assert!(out.contains("CurrentTrustedRevision"), "{out}");
+
+    let letter = dir_file(&env, "/out");
+    let (result, out) = receive_as_mb(&mut env, "--out /work/received.kqtf");
+    assert!(result.is_ok(), "{result:?}\n{out}");
+    assert!(env.fs.exists(Path::new("/work/received.kqtf")));
+    let verify = ok(&mut env, "verify /work/received.kqtf");
+    assert!(verify.contains("TRUSTED"), "{verify}");
+    let history = ok(&mut env, "history /work/received.kqtf");
+    assert!(
+        history.contains("ShareDelivered Success by M.B"),
+        "{history}"
+    );
+
+    // The sender records the answer once, and only against its own delivery.
+    let ack = dir_file(&env, "/acks");
+    let out = ok(
+        &mut env,
+        &format!("ack {KQTF} --ack {ack} --slot {}", slot("M.A")),
+    );
+    assert!(out.contains("accepted by M.B"), "{out}");
+    let history = ok(&mut env, &format!("history {KQTF}"));
+    assert!(history.contains("ShareAttempted"), "{history}");
+    assert!(history.contains("ShareDelivered"), "{history}");
+    let again = ok(
+        &mut env,
+        &format!("ack {KQTF} --ack {ack} --slot {}", slot("M.A")),
+    );
+    assert!(again.contains("already recorded"), "{again}");
+    assert_eq!(
+        ok(&mut env, &format!("history {KQTF}"))
+            .matches("ShareDelivered")
+            .count(),
+        1
+    );
+    // The letter is opaque: the payload is not readable in it.
+    let bytes = env.fs.read(Path::new(&letter)).unwrap();
+    assert!(!bytes.windows(11).any(|w| w == b"totals: 100"));
+}
+
+#[test]
+fn an_untrusted_newer_revision_is_never_sent() {
+    let mut env = delivering();
+    edit(&mut env, "totals: SECRETNEWER\n");
+    ok(
+        &mut env,
+        &format!("checkin {KQTF} --from /work/edited.txt --as M.A --unsigned"),
+    );
+    let out = ok(
+        &mut env,
+        &format!(
+            "share {KQTF} --to M.B --as M.A --slot {} --output-dir /out",
+            slot("M.A")
+        ),
+    );
+    assert!(out.contains("LastTrustedRevision"), "{out}");
+    assert!(out.contains("is not trusted, so it was left out"), "{out}");
+    let (result, out) = receive_as_mb(&mut env, "--out /work/received.kqtf");
+    assert!(result.is_ok(), "{out}");
+    let received = env.fs.read(Path::new("/work/received.kqtf")).unwrap();
+    assert!(!received.windows(9).any(|w| w == b"SECRETNEW"));
+    let checkout = ok(&mut env, "checkout /work/received.kqtf --out /work/got.txt");
+    assert!(checkout.contains("Wrote"), "{checkout}");
+    assert_eq!(
+        env.fs.read(Path::new("/work/got.txt")).unwrap(),
+        b"totals: 100\n"
+    );
+}
+
+#[test]
+fn nothing_trusted_means_nothing_is_sealed_and_the_attempt_is_recorded() {
+    let mut env = delivering();
+    // A descendant's first revision needs its parent's countersignature, so
+    // nothing in this file is trusted yet.
+    ok(
+        &mut env,
+        &format!(
+            "track /work/report.txt --scope M.A --as M.A.1 --slot {} --out /work/none.kqtf",
+            slot("M.A.1")
+        ),
+    );
+    let (result, _) = run(
+        &mut env,
+        &format!(
+            "share /work/none.kqtf --to M.B --as M.A --slot {} --output-dir /out",
+            slot("M.A")
+        ),
+    );
+    assert!(result.is_err());
+    assert!(env
+        .fs
+        .list(Path::new("/out"))
+        .unwrap_or_default()
+        .is_empty());
+    let history = ok(&mut env, "history /work/none.kqtf");
+    assert!(history.contains("ShareAttempted Denied"), "{history}");
+}
+
+#[test]
+fn a_recipient_can_reject_and_the_sender_records_it() {
+    let mut env = delivering();
+    let (result, _) = share_to_mb(&mut env, "");
+    assert!(result.is_ok());
+    let (result, out) = receive_as_mb(&mut env, "--reject");
+    assert!(result.is_ok(), "{out}");
+    assert!(!env.fs.exists(Path::new("/work/received.kqtf")));
+    let ack = dir_file(&env, "/acks");
+    let out = ok(
+        &mut env,
+        &format!("ack {KQTF} --ack {ack} --slot {}", slot("M.A")),
+    );
+    assert!(out.contains("rejected by M.B"), "{out}");
+    let history = ok(&mut env, &format!("history {KQTF}"));
+    assert!(history.contains("Denied"), "{history}");
+    assert_eq!(history.matches("ShareDelivered").count(), 0, "{history}");
+}
+
+#[test]
+fn a_letter_merges_into_an_existing_copy() {
+    let mut env = delivering();
+    let bytes = env.fs.read(Path::new(KQTF)).unwrap();
+    env.fs.write(Path::new("/work/mb.kqtf"), &bytes).unwrap();
+    edit(&mut env, "totals: 200\n");
+    ok(
+        &mut env,
+        &format!(
+            "checkin {KQTF} --from /work/edited.txt --as M.A --slot {}",
+            slot("M.A")
+        ),
+    );
+    let (result, _) = share_to_mb(&mut env, "");
+    assert!(result.is_ok());
+    let (result, out) = receive_as_mb(&mut env, "--into /work/mb.kqtf");
+    assert!(result.is_ok(), "{out}");
+    assert!(out.contains("RemoteAhead"), "{out}");
+    let status = ok(&mut env, "status /work/mb.kqtf");
+    assert!(status.contains("trust TRUSTED"), "{status}");
+    assert!(!status.contains("FORK"), "{status}");
+    // A missing target is refused.
+    let (result, _) = receive_as_mb(&mut env, "--into /work/other-file.kqtf");
+    assert!(result.is_err());
+}
+
+#[test]
+fn only_the_addressed_recipient_can_open_and_a_stale_ack_matches_nothing() {
+    let mut env = delivering();
+    let (result, _) = share_to_mb(&mut env, "");
+    assert!(result.is_ok());
+    let letter = dir_file(&env, "/out");
+    let (result, _) = run(
+        &mut env,
+        &format!(
+            "receive --letter {letter} --slot {} --ack-dir /acks --out /work/x.kqtf",
+            slot("M.A")
+        ),
+    );
+    assert!(result.is_err());
+    assert!(!env.fs.exists(Path::new("/work/x.kqtf")));
+
+    // An acknowledgement from another delivery is not recorded here.
+    let (result, _) = receive_as_mb(&mut env, "--out /work/received.kqtf");
+    assert!(result.is_ok());
+    let bytes = env.fs.read(Path::new(KQTF)).unwrap();
+    env.fs.write(Path::new("/work/twin.kqtf"), &bytes).unwrap();
+    let ack = dir_file(&env, "/acks");
+    let (result, _) = run(
+        &mut env,
+        &format!("ack /work/received.kqtf --ack {ack} --slot {}", slot("M.A")),
+    );
+    assert!(result.is_err(), "the receiver never sent that delivery");
+}
+
+#[test]
+fn a_recipient_that_cannot_trust_the_revision_refuses_it_and_says_so() {
+    let mut env = delivering();
+    // M.B forwards M.A's file. The recipient's store knows a different
+    // signing key for M.A, so the sender is authentic but the revision is not.
+    let b = "--db /home/b/keyquorum.sqlite";
+    env.device("keyquorum-device init /usb/fake").0.unwrap();
+    let (result, _) = env.device("keyquorum-device provision /usb/fake --label M.A");
+    assert!(result.is_ok());
+    for line in [
+        "device register /usb/mb --slot M.B --type signing",
+        "device register /usb/fake --slot M.A --type signing",
+    ] {
+        let (result, _) = env.keyquorum(&format!("keyquorum {b} {line}"));
+        assert!(result.is_ok(), "{line}: {result:?}");
+    }
+    let (result, out) = run(
+        &mut env,
+        &format!(
+            "share {KQTF} --to M.B --as M.B --slot {} --output-dir /out",
+            slot("M.B")
+        ),
+    );
+    assert!(result.is_ok(), "{out}");
+    let letter = dir_file(&env, "/out");
+    let (result, out) = env.keyquorum(&format!(
+        "keyquorum {b} file receive --letter {letter} --slot {} --ack-dir /acks --out /work/r.kqtf",
+        slot("M.B")
+    ));
+    assert!(result.is_ok(), "{out}");
+    assert!(!env.fs.exists(Path::new("/work/r.kqtf")));
+    // The refusal is still answered, so the sender learns of it.
+    let ack = dir_file(&env, "/acks");
+    let out = ok(
+        &mut env,
+        &format!("ack {KQTF} --ack {ack} --slot {}", slot("M.B")),
+    );
+    assert!(out.contains("rejected by M.B"), "{out}");
+}
