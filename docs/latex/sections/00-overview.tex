@@ -39,8 +39,8 @@ This manual documents the \code{keyquorum} and \code{keyquorum-device}
 command-line tools: generating and registering hardware keys, building and
 reconstructing quorum trees, protecting files and credentials, private
 signing bridges, authenticated updates to a live tree, moving identities
-between physical devices, sending files directly to another person, and
-the mailbox relay that carries all of the above between machines that are
+between physical devices, sending files directly to another person, tracked
+files that carry their own signed revision history, and the mailbox relay that carries all of the above between machines that are
 not open at the same time.
 
 \begin{noteBox}
@@ -60,7 +60,9 @@ and \code{transfer copy} / \code{transfer move} carry an active identity to
 a second device that is open at the same time, or through the mailbox as a
 sealed letter when it is not.
 
-Two things remain outside the current scope: persisted private-key custody
+Tracked files (section~\ref{sec:file-history}) are implemented through
+\code{keyquorum file}; that section ends with what their design still
+plans. Two other things remain outside the current scope: persisted private-key custody
 beyond a key file or a \code{keyquorum-device} container (for example an OS
 keychain), and \code{import} of password-vault or locked-file
 \code{export} bundles (the bundle format itself is final; private-bridge

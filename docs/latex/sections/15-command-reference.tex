@@ -200,6 +200,40 @@ command, and is never documented outside the crate's own source.
 \end{tabular}
 \end{center}
 
+\subsection{Tracked files}
+
+See section~\ref{sec:file-history}.
+
+\begin{longtable}{@{}p{0.24\linewidth}p{0.70\linewidth}@{}}
+\toprule
+\textbf{Command} & \textbf{Purpose} \\
+\midrule
+\endhead
+\code{file track} & Start tracking a file: make its first revision, sign it as its author, and write \file{<file>.kqtf}. \flag{--no-auto-merge} sends every fork to a person. \\
+\code{file checkin} & Check in a new revision from a native file (signed with \flag{--slot}, or \flag{--unsigned}). \\
+\code{file sign} & Sign a revision you authored (the current head unless \flag{--revision}). \\
+\code{file countersign} & Countersign a revision the author has signed. \\
+\code{file merge} & Merge two divergent heads automatically when the edits allow it; otherwise record the conflict and who must review it. A merge is a new revision that stays untrusted until it is signed. \\
+\code{file review} & Show what each side of a fork changed, and who reviews a conflict. \flag{--interactive} needs a build with \flag{--features tui}. \\
+\code{file graph} & Show the revisions, their parents and their trust. \\
+\code{file diff} & Show the changed lines between two revisions of text. \\
+\code{file checkout} & Write a revision's native bytes to a new file. \\
+\code{file list} & List the tracked files this store has indexed (a cache; see \code{reindex}). \\
+\code{file reindex} & Rebuild index rows from tracked files. Every file is verified first; if any fails, nothing changes. \flag{--clear} also drops rows for files not named here. \\
+\code{file status} & Show the heads, their trust, and what would be shared. \\
+\code{file history} & List the recorded events; \flag{--export} also writes a \code{KQHS} snapshot. \\
+\code{file verify-snapshot} & Check a history snapshot; with \flag{--against}, that it belongs to a file. \\
+\code{file import} & Bring another copy of the same file's revisions and proofs into this one. A fork is kept as two heads; nothing is overwritten. \\
+\code{file verify} & Verify the history chain and revision graph, and judge every revision. \\
+\code{file expire} & Schedule when this file's content is destroyed, or destroy it now. Every retained revision's content goes at once; the history, the revision graph and every signature stay behind as a tombstone. \\
+\code{file link} & Record what happens at a quorum-protected or password-locked file's gate in this tracked file's history. The gate is unchanged and never depends on it. \\
+\code{file unlink} & Stop recording a gate in this tracked file's history. \\
+\code{file share} & Seal the newest trusted revision to another label as a \file{.kqpb} letter. A newer revision that is not trusted is never included. \\
+\code{file receive} & Open a tracked-file letter addressed to you. The sender is checked as the transport; the delivered revision is then judged by the file's own policy and accepted only if it is trusted here. \\
+\code{file ack} & Record an acknowledgement sealed back to you in your copy's history. \\
+\bottomrule
+\end{longtable}
+
 \subsection{Device transfer}
 
 \begin{center}

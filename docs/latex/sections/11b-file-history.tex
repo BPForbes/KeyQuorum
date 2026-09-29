@@ -1,0 +1,236 @@
+\section{Tracked files and history}
+\label{sec:file-history}
+
+A \emph{tracked file} carries its own provenance. Where \code{deliver}
+sends a native file once, \code{keyquorum file} keeps a \file{.kqtf}
+container that holds every revision of the file, the signatures over them,
+the rules they are judged by, and an append-only, hash-chained history of
+everything that happened to it. The container is the authority: SQLite only
+keeps a cache of it, and a recipient can verify a tracked file without the
+sender's database.
+
+\subsection{What a tracked file holds}
+
+\begin{itemize}
+  \item \textbf{A stable identity.} A random 128-bit \code{file_id} is
+  allocated once, when the file is first tracked, and never changes on
+  rename, move, device transfer or new revisions. The logical file name is
+  display metadata, not identity.
+  \item \textbf{A revision graph.} Each revision records its parent
+  revisions (none for the first, one for an edit, two for a merge), a
+  content commitment bound to the file (so it is not a global fingerprint
+  of the plaintext), the author's label and identity, a UTC time, the
+  topology generation, and the hash of the file's policy. Its 32-byte
+  \code{revision_id} is a domain-separated hash of all of that, so a
+  revision cannot be re-parented or re-attributed without changing its id.
+  Every revision also has a generated label,
+  \code{R<file-name>-<UTC time>-<HCP label>}, and may have a user label;
+  labels are for people, the id is what is signed.
+  \item \textbf{Proofs.} Content signatures by a revision's author, and
+  countersignatures by an approver. They are ordinary Ed25519 signatures
+  over domain-separated preimages (\code{KQ-FILE-REVISION-v1},
+  \code{KQ-FILE-COUNTERSIGN-v1}), made and checked by the same signing code
+  as the rest of KeyQuorum.
+  \item \textbf{A policy.} The HCP scope the file belongs to and what each
+  kind of author needs before a revision is trusted (below).
+  \item \textbf{A history.} Sequenced events, each linked to the hash of
+  the one before; the last hash is the file's \emph{history root}. Changing,
+  removing or reordering any earlier event breaks the chain. Events record
+  outcomes and labels, never passwords, PINs, shares, bearer tokens or
+  private keys.
+\end{itemize}
+
+The container format is \code{KQTF} (currently version 5; version 4 files
+still open). It is not a sealed envelope and does not wrap or modify the
+native file format: \code{file checkout} writes a revision's bytes back out
+as an ordinary file.
+
+\subsection{Trust: who may change a file}
+
+A revision is \emph{trusted} only when its author's content signature
+verifies against the signing key your store has registered for that label
+\emph{and} the file's policy is met. The default policy (\code{file track})
+is, relative to the file's scope:
+
+\begin{center}
+\begin{tabular}{@{}p{0.26\linewidth}p{0.68\linewidth}@{}}
+\toprule
+\textbf{Author} & \textbf{Needs} \\
+\midrule
+The scope owner & Their own signature. \\
+A descendant (e.g.\ \code{M.A.1} in scope \code{M.A}) & Their own signature
+  and a countersignature by their \emph{direct parent} (\code{M.A}). \\
+An ancestor & Their own signature. \\
+Cross-branch & Their own signature and either bridge authorization or a
+  countersignature by the scope owner. \\
+Unrelated & May not create trusted revisions. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A revision is therefore \emph{pending} until its signatures are complete,
+and \emph{denied} if a signature is present but wrong. A newer revision
+never becomes trusted just because it is newer, and time stamps never decide
+anything.
+
+\begin{lstlisting}
+keyquorum file track report.txt --scope M.A --as M.A --slot ./usb=M.A
+keyquorum file checkin report.txt.kqtf --from edited.txt --as M.A.1 --unsigned
+keyquorum file sign report.txt.kqtf --as M.A.1 --slot ./usb=M.A.1
+keyquorum file countersign report.txt.kqtf --as M.A --slot ./usb=M.A
+keyquorum file status report.txt.kqtf
+\end{lstlisting}
+
+\begin{securityBox}
+Your store supplies only public signing keys, and it accepts a key only for
+the identity it knows for that label (the one enrolled by
+\code{transfer enroll}, or else one derived from the label). A container
+cannot bring its own keys. A ghost identity (after a \code{transfer move})
+cannot author or sign anything new; what it signed earlier still verifies.
+\end{securityBox}
+
+\subsection{Sharing falls back to the last trusted revision}
+
+\code{file share} sends the newest \emph{trusted} revision. If the head is
+pending --- say someone checked in an edit without signing it --- the
+letter carries the last trusted revision instead, and the unsigned one never
+leaves your copy: the container in the letter holds only the delivered
+revision and its ancestors. If nothing is trusted yet, nothing is sent and
+the refusal is recorded.
+
+\begin{lstlisting}
+keyquorum file share report.txt.kqtf --to M.B --as M.A --slot ./usb=M.A \
+  --output-dir ./outbox
+keyquorum --db mb.sqlite file receive --letter ./outbox/<id>.kqpb \
+  --slot ./usb=M.B --ack-dir ./acks --out report.txt.kqtf
+keyquorum file ack report.txt.kqtf --ack ./acks/<id>-ack.kqpb --slot ./usb=M.A
+\end{lstlisting}
+
+Letters are \code{KQPB} envelopes of their own kind, carried by the relay
+like any other letter. The sender's signature on the letter is
+\emph{transport} authentication only: the recipient still judges the
+delivered revision by the file's own policy against their own store, and
+refuses it if it is not trusted there. \flag{--into} merges a letter into a
+copy you already hold. Either way the recipient seals back a signed accept
+or reject, and \code{file ack} records it once in the sender's history.
+
+\subsection{Copies, forks and merging}
+
+Two holders of a file can each extend it. \code{file import} brings another
+copy's revisions and proofs into yours: nothing is overwritten, and if both
+sides added revisions the file now has two heads. \code{file merge} then
+tries a conservative automatic merge of UTF-8 text, line by line, against
+the heads' nearest common ancestor:
+
+\begin{center}
+\begin{tabular}{@{}p{0.26\linewidth}p{0.68\linewidth}@{}}
+\toprule
+\textbf{Outcome} & \textbf{Meaning} \\
+\midrule
+\code{FastForward} & One head already contains the other. \\
+\code{AlreadyEquivalent} & Both heads hold the same content. \\
+\code{CleanMerge} & The edits do not touch the same lines; a new
+  two-parent revision is recorded. \\
+\code{RequiresHuman} & The edits overlap differently, or there is no single
+  common ancestor. \\
+\code{PolicyBlocked} & The file's policy turns automatic merging off
+  (\flag{track --no-auto-merge}). \\
+\code{UnsupportedContent} & The content is not UTF-8 text. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A merge revision never inherits its parents' signatures: it starts
+\emph{pending} and has to be signed (and countersigned where the policy
+says so) like any other revision. When a person has to decide,
+\code{file merge} records the conflict and names a reviewer: the most
+recent neutral prior owner of the file, else the most senior eligible
+owner, else (for a tie across sectors) the larger sector, else the nearest
+common senior ancestor. Only owners whose own revisions are trusted
+qualify, the authors of the conflicting edits never review their own
+collision, and if nobody qualifies the conflict is recorded as unresolved
+rather than guessed.
+
+\begin{lstlisting}
+keyquorum file import report.txt.kqtf --from their-copy.kqtf --as M.A
+keyquorum file merge report.txt.kqtf --as M.A
+keyquorum file review report.txt.kqtf
+keyquorum file diff report.txt.kqtf
+keyquorum file graph report.txt.kqtf
+\end{lstlisting}
+
+\code{file review} prints each side's changed lines with who wrote each
+line, the merge outcome and the reviewer. A build with
+\flag{--features tui} adds \flag{review --interactive}: the same view in
+the terminal, with Vim-style keys and mouse hover to see who wrote a line.
+It is a viewer: to resolve a conflict you edit the file, \code{file checkin}
+the result and sign it.
+
+\subsection{History snapshots and the index}
+
+\code{file history} with \flag{--export} writes a \code{KQHS}
+snapshot: the event
+history alone, which verifies on its own. \code{file verify-snapshot}
+with \flag{--against} checks that a snapshot is a point in a file's history --- for
+example, what a partner held when they last answered. A snapshot of an older
+point is still valid; it proves a prefix, not that nothing came after.
+
+The store keeps \code{tracked_files}, \code{tracked_revisions} and
+\code{tracked_history_index} as a cache of metadata (no content, no trust
+decisions). \code{file list} reads it and \code{file reindex} rebuilds it
+from the containers, which remain the authority.
+
+\subsection{Expiry and tombstones}
+
+\code{file expire} lets the scope owner (or one of its ancestors) schedule
+when a tracked file's content ends, or end it now. When the time has passed,
+the next command that needs the content destroys \emph{every} retained
+revision's payload at once and records \code{FILE_EXPIRED} and
+\code{CONTENT_DESTROYED}. What remains is a tombstone: the revision graph,
+signatures and history still verify, no new revision can be added, and each
+later attempt to use the content is recorded as
+\code{EXPIRED_ACCESS_ATTEMPT} and refused. A container that is missing some
+payloads without a recorded destruction, or keeps any after one, fails
+verification.
+
+\begin{lstlisting}
+keyquorum file expire report.txt.kqtf --as M.A --at "2026-12-31 17:00"
+keyquorum file expire report.txt.kqtf --as M.A --now
+\end{lstlisting}
+
+\begin{cautionBox}
+Expiry destroys the content of \emph{this} container. Copies someone
+already holds --- a letter they accepted, a checkout they wrote out --- are
+their own files and are not reached.
+\end{cautionBox}
+
+\subsection{Recording what happens at a gate}
+
+\code{file link} ties a quorum-protected file (\flag{--quorum-file}) or a
+password-locked file (\flag{--locked-file}) to a tracked file. From then on
+the CLI appends what happened at that gate to the tracked file's history:
+each unlock attempt and its outcome (with the labels presented on a quorum
+success), each share link created, redeemed or revoked (the share's id,
+never its token), and the tombstone when the gate's own expiry destroys its
+ciphertext. The gates themselves are unchanged and never read the link;
+recording happens after the gate has answered and cannot change it. An
+unlock that fails before reaching the gate (for example while shares are
+being collected) is not recorded.
+
+\subsection{Not yet implemented}
+
+The design this feature follows goes further than what is built. Today:
+
+\begin{itemize}
+  \item Tracking starts with \code{file track}; it does not start
+  automatically on a file's first signature. There is no separate
+  ``finalized'' state beyond \emph{trusted}.
+  \item Bridge authorization is not consulted when judging a revision: a
+  cross-branch author's revision needs the scope owner's countersignature.
+  \item Resolving a conflict is done by editing, checking in and signing;
+  there is no accept/reject of individual hunks, and \code{review
+  --interactive} only names the commands to run.
+  \item History events are protected by the hash chain, not individually
+  signed.
+  \item Recording at gates is opt-in (\code{file link}) and best effort.
+\end{itemize}

@@ -11,7 +11,7 @@ a file extension.
 \midrule
 \code{KQPB} & \file{.kqpb} & Sealed \code{PACKAGE} envelope: private-bridge
   letters, authenticated updates, device transfer/relocate letters, file
-  delivery letters and acks. \\
+  delivery letters and acks, tracked-file letters and acks. \\
 \code{KQXB} & \file{.kqxb} & Sealed \code{EXPORT_BUNDLE}: a portable
   credential or file export. \\
 \code{KQBS} & \file{.kqbs} & Signature artifact from \code{sign} against a
@@ -22,6 +22,11 @@ a file extension.
   a device id. \\
 \code{KQTX} & --- & Device transfer package, signed by the source device,
   bound to a destination device id. Never stored raw on the mailbox. \\
+\code{KQTF} & \file{.kqtf} & Tracked file: revisions, proofs, policy and
+  hash-chained history (version 5; a payload may be absent after expiry;
+  version 4 still opens). Not a sealed envelope. \\
+\code{KQHS} & \file{.kqhs} & History snapshot: a tracked file's event
+  history alone, verifiable on its own and against its file. \\
 --- & \file{.kqbn} & Eviction notice --- a public routing slip, not a sealed
   envelope. \\
 \bottomrule

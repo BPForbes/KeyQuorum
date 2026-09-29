@@ -1342,3 +1342,8 @@ h1 {
   align-items: center;
   padding: 0.2rem 0;
 }
+
+.tracked-files > select {
+  margin-left: 0.4rem;
+  max-width: 100%;
+}

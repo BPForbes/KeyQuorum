@@ -95,11 +95,57 @@ latest trace is the literal command line that action ran --- the same one
 that could be typed in the Terminal tab. The full log below keeps every
 action for the session, not just the last one.
 
+\paragraph{Tracked files.} The Activity tab is also where tracked files
+live. The \textbf{Tracked files} panel acts as whoever is active, with their
+own store and their own drive's slot; each button runs one real
+\code{keyquorum file} command:
+
+\begin{itemize}
+  \item \textbf{Track and sign} a new file, then \textbf{Check in} edits ---
+  signed with your slot, or unsigned to see a revision stay
+  \emph{pending}.
+  \item Per revision: \textbf{Sign revision} (its author),
+  \textbf{Approve as parent} (the author's direct parent countersigning),
+  \textbf{View} an older revision, and \textbf{Diff} it against its parent.
+  \item \textbf{Share file} with another person. The line above the button
+  says which revision would go --- the head, or the last trusted revision
+  when the head is pending. The recipient \textbf{Accept}s or
+  \textbf{Refuse}s the letter (into their own copy), and the sender
+  \textbf{Record}s \textbf{the answer}.
+  \item When two copies diverge: \textbf{Import copy}, \textbf{Review the
+  fork} (each side's changed lines and the named reviewer) and
+  \textbf{Merge heads}; a clean merge is a new revision that still has to be
+  signed.
+  \item \textbf{Verify history}, \textbf{Export history snapshot} and
+  \textbf{Check} a snapshot against the file.
+  \item \textbf{Schedule expiry} or \textbf{Destroy content now}: the file
+  becomes a tombstone that still verifies.
+  \item \textbf{Link gate}: record unlocks of a quorum file, or of one of
+  your password files, in this file's history.
+\end{itemize}
+
+Whatever a button or a Terminal command writes to a tracked file appears in
+the log at once, right below the action that caused it. History entries can
+be expanded (revision, labels, parents, trust, history root) and filtered
+by \textbf{Tracked File}, \textbf{Revision}, \textbf{Security},
+\textbf{Sharing} and \textbf{Conflict}; a revision graph per file sits
+under the log. Three tracked files are seeded: \file{budget.txt} (an
+unsigned edit, so sharing falls back), \file{forecast.txt} (two edits that
+merged on their own) and \file{memo.txt} (two edits to one line, assigned
+to a reviewer).
+
+\Screenshot{docs/latex/images/lab/activity.png}{The Activity tab's tracked
+files panel: revisions with their trust, what sharing would send, and the
+controls for the selected file.}
+
 \subsection{Terminal}
 
 A real shell on the same lab machine. Every button on every other tab runs
 a command here under the hood; typing it directly works identically,
 including commands no button exposes yet.
+Use full paths in \code{keyquorum} arguments: the lab's shell does not
+expand \code{~} inside them, so \flag{--db ~/keyquorum.sqlite} would open a
+new, empty store rather than your own.
 
 \begin{lstlisting}
 keyquorum-device list /media/alice-usb
