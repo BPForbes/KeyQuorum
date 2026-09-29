@@ -291,4 +291,26 @@ test.describe("desktop lab", () => {
     await panel.getByTestId("tracked-letters").getByRole("button", { name: "Record the answer" }).click();
     await expect(panel.getByTestId("tracked-letters")).toContainText("answer recorded");
   });
+
+  test("a tracked file can be expired from the Activity page, leaving a tombstone", async ({ page }) => {
+    await loadLab(page);
+    await switchUser(page, "Sarah");
+    const panel = page.getByTestId("tracked-files");
+    await panel.getByLabel("New tracked file").fill("brief.txt");
+    await panel.getByLabel("First revision").fill("short-lived");
+    await panel.getByRole("button", { name: "Track and sign" }).click();
+    const card = panel.locator('[data-testid="tracked-file"][data-path="/home/sarah/tracked/brief.txt.kqtf"]');
+    await card.getByLabel("Expires (UTC)").fill("2099-01-01T00:00");
+    await card.getByRole("button", { name: "Schedule expiry" }).click();
+    await expect(card).toContainText("Content is destroyed after 2099-01-01T00:00:00Z");
+    await card.getByRole("button", { name: "Destroy content now" }).click();
+    await expect(card.getByTestId("tracked-tombstone")).toBeVisible();
+    await expect(card.getByLabel("Edit the current revision")).toHaveCount(0);
+    await page.locator('[data-panel="activity"] details.log > summary').click();
+    await page.getByRole("group", { name: "Filter activity" }).getByRole("button", { name: "Security" }).click();
+    await expect(page.locator('[data-panel="activity"] [data-event="ContentDestroyed"]').first()).toBeVisible();
+    // The tombstone still verifies.
+    await card.getByRole("button", { name: "Verify history" }).click();
+    await expect(page.getByTestId("opened-file")).toContainText("Tombstone");
+  });
 });

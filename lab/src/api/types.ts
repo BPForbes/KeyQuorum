@@ -257,6 +257,10 @@ export interface TrackedFileView {
   revisions: TrackedRevisionView[];
   /** The revision `file share` would send from the sole head, if any. */
   shareable: string | null;
+  /** The scheduled expiry (`YYYY-MM-DDTHH:MM:SSZ`), if one was set. */
+  expiresAt: string | null;
+  /** Whether every revision's content was destroyed at expiry. */
+  destroyed: boolean;
 }
 
 export interface TrackedLetterView {

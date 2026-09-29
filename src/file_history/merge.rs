@@ -260,7 +260,7 @@ impl TrackedFile {
     ) -> Result<AutoMerge> {
         use AutoMergeOutcome as O;
         let graph = self.graph();
-        let payload = |id: &[u8; 32]| graph.get(id).map(|stored| stored.payload.as_slice());
+        let payload = |id: &[u8; 32]| graph.get(id).and_then(|stored| stored.content());
         let (Some(left_bytes), Some(right_bytes)) = (payload(left), payload(right)) else {
             return Err(Error::InvalidTrackedFile);
         };

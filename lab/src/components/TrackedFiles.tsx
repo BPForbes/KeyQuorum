@@ -142,6 +142,34 @@ function EditForm({ file, act }: { file: TrackedFileView; act: Act }) {
   );
 }
 
+function ExpiryForm({ file, act }: { file: TrackedFileView; act: Act }) {
+  const id = useId();
+  const [at, setAt] = useState("");
+  return (
+    <form
+      className="tracked-form tracked-share"
+      data-testid="history-expire"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (at) act((client) => client.historyExpire(file.path, at));
+      }}
+    >
+      <label htmlFor={`${id}-at`}>Expires (UTC)</label>
+      <input id={`${id}-at`} type="datetime-local" value={at} onChange={(event) => setAt(event.target.value)} />
+      <button type="submit" className="btn small-btn">
+        Schedule expiry
+      </button>
+      <button
+        type="button"
+        className="btn small-btn"
+        onClick={() => act((client) => client.historyExpire(file.path))}
+      >
+        Destroy content now
+      </button>
+    </form>
+  );
+}
+
 function TrackedFileCard({
   file,
   snapshot,
@@ -171,14 +199,25 @@ function TrackedFileCard({
           scope {file.scope} · {file.historyLen} events · root <code>{short(file.historyRoot)}</code> · {file.path}
         </span>
         {file.forked ? <span className="badge"> forked</span> : null}
+        {file.destroyed ? <span className="badge"> expired</span> : null}
       </p>
+      {file.destroyed ? (
+        <p className="small" data-testid="tracked-tombstone">
+          Expired: the content of every revision was destroyed. The history and signatures remain, and any further
+          attempt to use the content is recorded.
+        </p>
+      ) : file.expiresAt ? (
+        <p className="small muted">Content is destroyed after {file.expiresAt}.</p>
+      ) : null}
       <ol className="tracked-revisions" data-testid="tracked-revisions">
         {file.revisions.map((revision) => (
           <RevisionRow key={revision.id} file={file} revision={revision} me={me} act={act} />
         ))}
       </ol>
       <p className="small" data-testid="tracked-shareable">
-        {file.forked
+        {file.destroyed
+          ? "Nothing can be shared: the content is gone."
+          : file.forked
           ? "Two heads: sharing waits for a merge."
           : file.shareable
             ? heads.includes(file.shareable)
@@ -214,7 +253,12 @@ function TrackedFileCard({
           </>
         ) : null}
       </div>
-      <EditForm key={heads.join()} file={file} act={act} />
+      {file.destroyed ? null : (
+        <>
+          <EditForm key={heads.join()} file={file} act={act} />
+          <ExpiryForm file={file} act={act} />
+        </>
+      )}
       <form
         className="tracked-form tracked-share"
         data-testid="history-share"

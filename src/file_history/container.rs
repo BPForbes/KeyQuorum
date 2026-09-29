@@ -24,7 +24,9 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 
 pub const CONTAINER_MAGIC: &[u8; 4] = b"KQTF";
-pub const CONTAINER_VERSION: u8 = 4;
+/// Version 5 lets a revision's payload be absent (destroyed at expiry).
+/// Version 4 containers, where every payload is present, still decode.
+pub const CONTAINER_VERSION: u8 = 5;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackedFile {
@@ -93,6 +95,9 @@ impl TrackedFile {
     /// records content lineage only; trust is decided elsewhere and no
     /// event is appended here.
     pub fn check_in(&mut self, new: NewRevision, payload: Vec<u8>) -> Result<[u8; 32]> {
+        if self.is_destroyed() {
+            return Err(Error::FileExpired);
+        }
         let parents = &new.parent_revision_ids;
         let graph = self.graph();
         let known = parents.iter().all(|parent| graph.get(parent).is_some());
@@ -108,7 +113,10 @@ impl TrackedFile {
         if self.graph().get(&id).is_some() {
             return Err(Error::InvalidTrackedFile);
         }
-        self.revisions.push(StoredRevision { revision, payload });
+        self.revisions.push(StoredRevision {
+            revision,
+            payload: Some(payload),
+        });
         Ok(id)
     }
 
@@ -189,9 +197,11 @@ impl TrackedFile {
     /// Trailing bytes are rejected.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let mut data = bytes;
-        if take_fixed::<4>(&mut data)? != *CONTAINER_MAGIC
-            || take_fixed::<1>(&mut data)?[0] != CONTAINER_VERSION
-        {
+        if take_fixed::<4>(&mut data)? != *CONTAINER_MAGIC {
+            return Err(Error::InvalidTrackedFile);
+        }
+        let version = take_fixed::<1>(&mut data)?[0];
+        if !(4..=CONTAINER_VERSION).contains(&version) {
             return Err(Error::InvalidTrackedFile);
         }
         let file_id = take_fixed::<16>(&mut data)?;
@@ -205,7 +215,7 @@ impl TrackedFile {
         let revision_count = bad(take_u32(&mut data))?;
         let mut revisions = Vec::new();
         for _ in 0..revision_count {
-            revisions.push(StoredRevision::decode(&mut data)?);
+            revisions.push(StoredRevision::decode(&mut data, version)?);
         }
         let proof_count = bad(take_u32(&mut data))?;
         let mut proofs = Vec::new();

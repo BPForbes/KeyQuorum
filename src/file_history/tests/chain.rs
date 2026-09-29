@@ -1,7 +1,7 @@
 use super::*;
 use crate::error::Error;
 
-const ALL_TYPES: [HistoryEventType; 30] = [
+const ALL_TYPES: [HistoryEventType; 31] = [
     HistoryEventType::TrackingStarted,
     HistoryEventType::EditCheckedIn,
     HistoryEventType::RevisionSigned,
@@ -32,6 +32,7 @@ const ALL_TYPES: [HistoryEventType; 30] = [
     HistoryEventType::ShareLinkCreated,
     HistoryEventType::ShareLinkRedeemed,
     HistoryEventType::ShareLinkRevoked,
+    HistoryEventType::ExpiryScheduled,
 ];
 
 const ALL_OUTCOMES: [HistoryOutcome; 4] = [

@@ -48,11 +48,13 @@ pub struct FileRevision {
     pub policy_hash: [u8; 32],
 }
 
-/// A revision with the native bytes it commits to.
+/// A revision with the native bytes it commits to. `payload` is `None` once
+/// the file has expired and its content was destroyed; the revision itself
+/// (and so the graph and every signature over it) is kept.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredRevision {
     pub revision: FileRevision,
-    pub payload: Vec<u8>,
+    pub payload: Option<Vec<u8>>,
 }
 
 /// Commitment to a payload, bound to the file so it is not a globally
@@ -257,16 +259,45 @@ impl FileRevision {
 }
 
 impl StoredRevision {
+    /// `present(1) payload` or `absent(0)`; version 4 had no flag and
+    /// always carried the payload.
     pub(super) fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         out.extend_from_slice(&self.revision.body()?);
         out.extend_from_slice(&self.revision.revision_id);
-        push_len_prefixed_u32(out, &self.payload)
+        match &self.payload {
+            Some(payload) => {
+                out.push(1);
+                push_len_prefixed_u32(out, payload)
+            }
+            None => {
+                out.push(0);
+                Ok(())
+            }
+        }
     }
 
-    pub(super) fn decode(data: &mut &[u8]) -> Result<Self> {
+    pub(super) fn decode(data: &mut &[u8], version: u8) -> Result<Self> {
         let revision = FileRevision::decode(data)?;
-        let payload = bad(take_len_prefixed_u32(data))?.to_vec();
+        let present = if version < 5 {
+            true
+        } else {
+            match take_fixed::<1>(data)?[0] {
+                0 => false,
+                1 => true,
+                _ => return Err(Error::InvalidTrackedFile),
+            }
+        };
+        let payload = if present {
+            Some(bad(take_len_prefixed_u32(data))?.to_vec())
+        } else {
+            None
+        };
         Ok(Self { revision, payload })
+    }
+
+    /// The native bytes, unless they were destroyed at expiry.
+    pub fn content(&self) -> Option<&[u8]> {
+        self.payload.as_deref()
     }
 }
 

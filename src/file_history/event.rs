@@ -51,6 +51,7 @@ pub enum HistoryEventType {
     ShareLinkCreated = 28,
     ShareLinkRedeemed = 29,
     ShareLinkRevoked = 30,
+    ExpiryScheduled = 31,
 }
 
 impl HistoryEventType {
@@ -74,6 +75,7 @@ impl HistoryEventType {
             | E::FileExpired
             | E::ContentDestroyed
             | E::ExpiredAccessAttempt
+            | E::ExpiryScheduled
             | E::TamperDetected => "security",
             E::ShareAttempted
             | E::ShareDelivered
@@ -123,6 +125,7 @@ impl HistoryEventType {
             28 => Self::ShareLinkCreated,
             29 => Self::ShareLinkRedeemed,
             30 => Self::ShareLinkRevoked,
+            31 => Self::ExpiryScheduled,
             _ => return Err(Error::InvalidTrackedFile),
         })
     }

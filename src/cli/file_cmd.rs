@@ -18,12 +18,12 @@ use super::{open_slot_secrets, read_key_array_32, usage};
 use crate::error::{Error, Result};
 use crate::file_history::{
     diff_text, evaluate_revision_trust, index, select_shareable_revision, verify_tracked_file,
-    AutoMergeOutcome, BridgeEvidence, ChangeKind, DeliveryDecisionKind, EventDetails, FilePolicy,
-    HistoryEvent, HistoryEventType, HistoryOutcome, HistoryRelation, HistorySnapshot,
-    ImportContext, MergeBase, NewEvent, NewRevision, ResolverSelection, TrackedFile, TrustContext,
-    TrustReason, TrustState,
+    AutoMergeOutcome, BridgeEvidence, ChangeKind, DeliveryDecisionKind, EventDetails,
+    ExpiryContext, FilePolicy, HistoryEvent, HistoryEventType, HistoryOutcome, HistoryRelation,
+    HistorySnapshot, ImportContext, MergeBase, NewEvent, NewRevision, ResolverSelection,
+    TrackedFile, TrustContext, TrustReason, TrustState,
 };
-use crate::{file_delivery, key_tree, private_bridge, transfer};
+use crate::{authority, file_delivery, key_tree, private_bridge, transfer};
 use clap::Subcommand;
 use rand::rngs::OsRng;
 use rand::RngCore;
@@ -194,6 +194,21 @@ pub enum FileCommand {
     },
     /// Verify the history chain and revision graph, and judge every revision
     Verify { kqtf: PathBuf },
+    /// Schedule when this file's content is destroyed, or destroy it now.
+    /// Every retained revision's content goes at once; the history, the
+    /// revision graph and every signature stay behind as a tombstone.
+    Expire {
+        kqtf: PathBuf,
+        /// Your label: the file's scope owner or one of its ancestors
+        #[arg(long = "as")]
+        as_label: String,
+        /// UTC expiry as `yyyy-mm-dd hh:mm` or `yyyy-mm-ddThh:mm`
+        #[arg(long, conflicts_with = "now", required_unless_present = "now", value_parser = parse_expiry_arg)]
+        at: Option<String>,
+        /// Destroy the content now
+        #[arg(long)]
+        now: bool,
+    },
     /// Record what happens at a quorum-protected or password-locked file's
     /// gate in this tracked file's history. The gate is unchanged and never
     /// depends on it.
@@ -380,7 +395,7 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             }
         }
         FileCommand::Graph { kqtf } => graph(conn, &kqtf),
-        FileCommand::Diff { kqtf, from, to } => diff(&kqtf, from, to),
+        FileCommand::Diff { kqtf, from, to } => diff(conn, &kqtf, from, to),
         FileCommand::Checkout {
             kqtf,
             out,
@@ -398,6 +413,12 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             as_label,
         } => import(conn, &kqtf, &from, &as_label),
         FileCommand::Verify { kqtf } => verify(conn, &kqtf),
+        FileCommand::Expire {
+            kqtf,
+            as_label,
+            at,
+            now,
+        } => expire(conn, &kqtf, &as_label, at, now),
         FileCommand::Link {
             kqtf,
             quorum_file,
@@ -552,6 +573,56 @@ fn generation_for(conn: &Connection, scope: &str) -> Result<u64> {
 
 pub(super) fn load(path: &Path) -> Result<TrackedFile> {
     TrackedFile::decode(&env::read(path)?)
+}
+
+fn expiry_context(
+    conn: &Connection,
+    file: &TrackedFile,
+    actor: Option<&str>,
+    now: &str,
+) -> Result<ExpiryContext> {
+    let generation = match file.policy() {
+        Some(policy) => Some(generation_for(conn, &policy.scope_root)?),
+        None => None,
+    };
+    Ok(ExpiryContext {
+        actor_identity: actor.map(|label| identity_for(conn, label)).transpose()?,
+        actor_label: actor.map(str::to_string),
+        occurred_at: now.to_string(),
+        topology_generation: generation,
+    })
+}
+
+/// Load a container for a command that needs its content. Like a quorum or
+/// password file, the first touch after a scheduled expiry destroys every
+/// retained payload; from then on each attempt to use the content is
+/// recorded as `EXPIRED_ACCESS_ATTEMPT` and refused. `actor` is recorded
+/// only when the command names one (`--as`); otherwise the attempt is
+/// attributed to no one rather than guessed.
+fn load_live(
+    conn: &Connection,
+    path: &Path,
+    actor: Option<&str>,
+    action: &str,
+) -> Result<TrackedFile> {
+    let mut file = load(path)?;
+    let now = utc_instant()?;
+    let due = !file.is_destroyed() && file.is_expired_at(&now);
+    if !due && !file.is_destroyed() {
+        return Ok(file);
+    }
+    let context = expiry_context(conn, &file, actor, &now)?;
+    if due {
+        let destroyed = file.destroy_content("scheduled expiry passed", &context)?;
+        errln!(
+            "{} expired: the content of {destroyed} revision(s) was destroyed",
+            file.logical_name
+        );
+    }
+    file.record_expired_access(action, &context)?;
+    save(path, &file)?;
+    index_after(conn, &file);
+    Err(Error::FileExpired)
 }
 
 fn policy_of(file: &TrackedFile) -> Result<&FilePolicy> {
@@ -779,7 +850,7 @@ fn checkin(
     unsigned: bool,
     user_label: Option<String>,
 ) -> Result<()> {
-    let mut file = load(kqtf)?;
+    let mut file = load_live(conn, kqtf, Some(as_label), "checkin")?;
     let policy = policy_of(&file)?.clone();
     if !policy.may_author(as_label) {
         return Err(usage("--as is outside the scope of this file"));
@@ -852,7 +923,7 @@ fn sign(
     slot: Option<String>,
     key_file: Option<PathBuf>,
 ) -> Result<()> {
-    let mut file = load(kqtf)?;
+    let mut file = load_live(conn, kqtf, Some(as_label), "sign")?;
     require_active(conn, as_label)?;
     let target = pick_revision(&file, revision.as_deref())?;
     let secret = signing_secret(slot, key_file)?;
@@ -886,7 +957,7 @@ fn countersign(
     slot: Option<String>,
     key_file: Option<PathBuf>,
 ) -> Result<()> {
-    let mut file = load(kqtf)?;
+    let mut file = load_live(conn, kqtf, Some(as_label), "countersign")?;
     require_active(conn, as_label)?;
     let target = pick_revision(&file, revision.as_deref())?;
     let secret = signing_secret(slot, key_file)?;
@@ -926,6 +997,11 @@ fn status(conn: &Connection, kqtf: &Path) -> Result<()> {
     outln!("{} ({})", file.logical_name, hex::encode(file.file_id));
     outln!("  scope        {}", policy.scope_root);
     outln!("  history root {}", hex::encode(file.history_root()));
+    if file.is_destroyed() {
+        outln!("  EXPIRED: content destroyed; history kept as a tombstone");
+    } else if let Some(at) = file.expires_at() {
+        outln!("  expires      {at}");
+    }
     let heads = file.graph().heads();
     if heads.len() > 1 {
         outln!("  FORK: {} heads; neither is overwritten", heads.len());
@@ -1019,7 +1095,7 @@ fn verify_snapshot(snapshot: &Path, against: Option<PathBuf>) -> Result<()> {
 }
 
 fn import(conn: &Connection, kqtf: &Path, from: &Path, as_label: &str) -> Result<()> {
-    let mut file = load(kqtf)?;
+    let mut file = load_live(conn, kqtf, Some(as_label), "import")?;
     let other = load(from)?;
     let policy = policy_of(&file)?.clone();
     if !policy.may_author(as_label) {
@@ -1065,7 +1141,7 @@ fn share(
     (output_dir, push, url, api_key): Transport,
 ) -> Result<()> {
     require_active(conn, as_label)?;
-    let mut file = load(kqtf)?;
+    let mut file = load_live(conn, kqtf, Some(as_label), "share")?;
     let policy = policy_of(&file)?.clone();
     let candidate = pick_revision(&file, revision.as_deref())?;
     let decision =
@@ -1208,7 +1284,7 @@ fn receive(
         );
         match (into, out) {
             (Some(target), _) => {
-                let mut file = load(&target)?;
+                let mut file = load_live(conn, &target, Some(&letter.recipient_label), "receive")?;
                 let context = ImportContext {
                     actor_identity: Some(identity),
                     actor_label: letter.recipient_label.clone(),
@@ -1318,6 +1394,64 @@ fn record_ack(
     Ok(())
 }
 
+fn parse_expiry_arg(value: &str) -> std::result::Result<String, String> {
+    crate::locked_files::parse_expires_utc(&value.replacen('T', " ", 1))
+        .map_err(|err| err.to_string())
+}
+
+/// `2026-10-01 09:30:00` (the form `--at` parses to) as `2026-10-01T09:30:00Z`.
+fn as_instant(value: &str) -> String {
+    format!("{}Z", value.trim().replace(' ', "T"))
+}
+
+fn expire(
+    conn: &Connection,
+    kqtf: &Path,
+    as_label: &str,
+    at: Option<String>,
+    now: bool,
+) -> Result<()> {
+    let mut file = load(kqtf)?;
+    let scope = policy_of(&file)?.scope_root.clone();
+    // Deciding when a file's content ends belongs to whoever owns its scope.
+    if !authority::is_ancestor_or_self(as_label, &scope) {
+        return Err(usage(&format!(
+            "only {scope} or one of its ancestors may expire this file"
+        )));
+    }
+    require_active(conn, as_label)?;
+    if file.is_destroyed() {
+        return Err(usage("this file's content was already destroyed"));
+    }
+    let instant = utc_instant()?;
+    let context = expiry_context(conn, &file, Some(as_label), &instant)?;
+    match (at, now) {
+        (_, true) => {
+            let destroyed = file.destroy_content("expired on request", &context)?;
+            save(kqtf, &file)?;
+            index_after(conn, &file);
+            outln!(
+                "Destroyed the content of {destroyed} revision(s) of {}; its history remains",
+                file.logical_name
+            );
+        }
+        (Some(at), false) => {
+            let at = as_instant(&at);
+            if at <= instant {
+                return Err(usage(
+                    "that time has passed; use --now to destroy the content now",
+                ));
+            }
+            file.schedule_expiry(&at, &context)?;
+            save(kqtf, &file)?;
+            index_after(conn, &file);
+            outln!("{} expires at {at}", file.logical_name);
+        }
+        (None, false) => return Err(usage("pass --at or --now")),
+    }
+    Ok(())
+}
+
 fn verify(conn: &Connection, kqtf: &Path) -> Result<()> {
     let file = load(kqtf)?;
     let root = verify_tracked_file(&file)?;
@@ -1327,6 +1461,12 @@ fn verify(conn: &Connection, kqtf: &Path) -> Result<()> {
         "History and revision graph verify; root {}",
         hex::encode(root)
     );
+    if file.is_destroyed() {
+        outln!(
+            "Tombstone: the content of all {} revision(s) was destroyed at expiry",
+            file.revisions().len()
+        );
+    }
     let mut denied = 0;
     for stored in file.revisions() {
         let id = stored.revision.revision_id;
@@ -1345,7 +1485,10 @@ fn text_of(file: &TrackedFile, id: &[u8; 32]) -> Result<String> {
         .graph()
         .get(id)
         .ok_or_else(|| usage("no such revision"))?;
-    String::from_utf8(stored.payload.clone())
+    let content = stored
+        .content()
+        .ok_or_else(|| usage("that revision's content was destroyed at expiry"))?;
+    String::from_utf8(content.to_vec())
         .map_err(|_| usage("that revision is not UTF-8 text, so there is no line view"))
 }
 
@@ -1370,7 +1513,7 @@ fn print_changes(old: &str, new: &str) -> Result<()> {
 }
 
 fn merge(conn: &Connection, kqtf: &Path, as_label: &str, user_label: Option<String>) -> Result<()> {
-    let mut file = load(kqtf)?;
+    let mut file = load_live(conn, kqtf, Some(as_label), "merge")?;
     let policy = policy_of(&file)?.clone();
     if !policy.may_author(as_label) {
         return Err(usage("--as is outside the scope of this file"));
@@ -1427,7 +1570,7 @@ fn merge(conn: &Connection, kqtf: &Path, as_label: &str, user_label: Option<Stri
 
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
 fn review_interactive(conn: &Connection, kqtf: &Path) -> Result<()> {
-    let file = load(kqtf)?;
+    let file = load_live(conn, kqtf, None, "review")?;
     let policy = policy_of(&file)?.clone();
     let mut view = ReviewView::of(&file)
         .ok_or_else(|| usage("nothing to review: the history does not have exactly two heads"))?;
@@ -1443,7 +1586,7 @@ fn review_interactive(_conn: &Connection, _kqtf: &Path) -> Result<()> {
 }
 
 fn review(conn: &Connection, kqtf: &Path) -> Result<()> {
-    let file = load(kqtf)?;
+    let file = load_live(conn, kqtf, None, "review")?;
     let policy = policy_of(&file)?.clone();
     let heads = file.graph().heads();
     let Some(view) = ReviewView::of(&file) else {
@@ -1551,8 +1694,8 @@ fn graph(conn: &Connection, kqtf: &Path) -> Result<()> {
     Ok(())
 }
 
-fn diff(kqtf: &Path, from: Option<String>, to: Option<String>) -> Result<()> {
-    let file = load(kqtf)?;
+fn diff(conn: &Connection, kqtf: &Path, from: Option<String>, to: Option<String>) -> Result<()> {
+    let file = load_live(conn, kqtf, None, "diff")?;
     let to = pick_revision(&file, to.as_deref())?;
     let from = match from {
         Some(prefix) => Some(pick_revision(&file, Some(&prefix))?),
@@ -1582,7 +1725,7 @@ fn checkout(
     revision: Option<String>,
     shareable: bool,
 ) -> Result<()> {
-    let file = load(kqtf)?;
+    let file = load_live(conn, kqtf, None, "checkout")?;
     let id = if shareable {
         let policy = policy_of(&file)?;
         let head = pick_revision(&file, None)?;
@@ -1596,8 +1739,10 @@ fn checkout(
     let payload = file
         .graph()
         .get(&id)
-        .map(|stored| stored.payload.clone())
-        .ok_or_else(|| usage("no such revision"))?;
+        .ok_or_else(|| usage("no such revision"))?
+        .content()
+        .ok_or_else(|| usage("that revision's content was destroyed at expiry"))?
+        .to_vec();
     env::write_new(out, &payload)?;
     outln!(
         "Wrote {} revision {} to {}",

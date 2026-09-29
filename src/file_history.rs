@@ -15,6 +15,7 @@
 mod codec;
 mod container;
 mod event;
+mod expiry;
 pub mod index;
 mod merge;
 mod policy;
@@ -30,6 +31,7 @@ pub use event::{
     genesis_hash, verify_chain, EventDetails, HistoryEvent, HistoryEventType, HistoryOutcome,
     NewEvent,
 };
+pub use expiry::ExpiryContext;
 pub use merge::{diff_text, AutoMerge, AutoMergeOutcome, ChangeKind, LineChange};
 pub use policy::{
     evaluate_revision_trust, select_shareable_revision, BridgeEvidence, DeliveryDecision,

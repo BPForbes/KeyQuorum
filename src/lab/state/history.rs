@@ -278,8 +278,9 @@ impl LabState {
                             head: heads.contains(&id),
                             trust: state.as_ref().map_or("unknown", trust_word).to_string(),
                             reason,
-                            text: String::from_utf8(stored.payload.clone())
-                                .ok()
+                            text: stored
+                                .content()
+                                .and_then(|bytes| String::from_utf8(bytes.to_vec()).ok())
                                 .filter(|text| text.len() <= TEXT_LIMIT),
                         }
                     })
@@ -310,6 +311,8 @@ impl LabState {
                     history_root: hex::encode(file.history_root()),
                     revisions,
                     shareable,
+                    expires_at: file.expires_at(),
+                    destroyed: file.is_destroyed(),
                 })
             })
             .collect()
@@ -575,6 +578,41 @@ impl LabState {
     /// `keyquorum file review`: the two sides of a fork and who reviews it.
     pub fn history_review(&mut self, path: &str) -> Result<Outcome> {
         self.history_report(path, "review", "history-review", "Review")
+    }
+
+    /// `keyquorum file expire`: schedule when the file's content is
+    /// destroyed (`at` as `yyyy-mm-ddThh:mm`, UTC), or destroy it now.
+    pub fn history_expire(&mut self, path: &str, at: Option<&str>) -> Result<Outcome> {
+        let Some(kqtf) = self.tracked_path(path) else {
+            return Ok(Self::unknown_tracked(path));
+        };
+        let who = self.actor().label.clone();
+        let when = match at.map(str::trim).filter(|a| !a.is_empty()) {
+            Some(at) if at.chars().all(|c| c.is_ascii_digit() || "-:T".contains(c)) => {
+                format!("--at {at}")
+            }
+            Some(_) => {
+                return Ok(Outcome::done(
+                    false,
+                    "Give the time as yyyy-mm-ddThh:mm (UTC)",
+                    vec![],
+                ))
+            }
+            None => "--now".to_string(),
+        };
+        let line = format!(
+            "{} expire {} --as {who} {when}",
+            self.file_line(),
+            quote(&kqtf.display().to_string()),
+        );
+        let name = self.tracked_name(&kqtf);
+        let title = if at.is_some() {
+            format!("Schedule expiry of {name}")
+        } else {
+            format!("Destroy the content of {name}")
+        };
+        let (outcome, _) = self.history_command("history-expire", &title, line);
+        Ok(outcome)
     }
 
     /// `keyquorum file share`: seal the newest trusted revision to another

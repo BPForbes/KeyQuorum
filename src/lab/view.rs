@@ -362,6 +362,10 @@ pub struct TrackedFileView {
     pub revisions: Vec<TrackedRevisionView>,
     /// The revision `file share` would send from the sole head, if any.
     pub shareable: Option<String>,
+    /// The scheduled expiry (`YYYY-MM-DDTHH:MM:SSZ`), if one was set.
+    pub expires_at: Option<String>,
+    /// Whether every revision's content was destroyed at expiry.
+    pub destroyed: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]

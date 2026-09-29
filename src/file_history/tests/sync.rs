@@ -156,7 +156,7 @@ fn an_incoming_copy_that_fails_verification_is_refused() {
     let mut remote = local.clone();
     child(&mut remote, base, T2, "next");
     // Payload no longer matches its commitment.
-    remote.revisions[1].payload = b"tampered".to_vec();
+    remote.revisions[1].payload = Some(b"tampered".to_vec());
     assert!(local.merge_history(&remote, &context()).is_err());
     assert_eq!(local, before);
     // An event that names an unknown revision.
@@ -176,9 +176,9 @@ fn a_remote_that_rewrites_a_shared_revision_is_refused() {
     // does not verify (user label is covered, so touch the payload and
     // commitment together to keep the remote internally valid).
     let stored = &mut remote.revisions[0];
-    stored.payload = b"other base".to_vec();
+    stored.payload = Some(b"other base".to_vec());
     stored.revision.content_commitment =
-        crate::file_history::content_commitment(&FILE, &stored.payload);
+        crate::file_history::content_commitment(&FILE, stored.content().unwrap());
     stored.revision.revision_id = stored.revision.compute_id().unwrap();
     // Its id changed, so it is a different revision and the child is orphaned:
     // the remote no longer verifies, and the import is refused either way.

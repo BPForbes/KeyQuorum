@@ -23,6 +23,8 @@ pub struct MemoryEnv {
     stores: HashMap<PathBuf, Connection>,
     /// Answers for the next prompts, in order; after that, [`PASSPHRASE`].
     pub prompts: std::collections::VecDeque<String>,
+    /// The clock (`yyyy-mm-dd hh:mm`); a fixed default when unset.
+    pub now: Option<String>,
 }
 
 impl Env for MemoryEnv {
@@ -58,7 +60,10 @@ impl Env for MemoryEnv {
     }
 
     fn now_utc(&self) -> Result<String> {
-        Ok("2026-09-27 00:00".into())
+        Ok(self
+            .now
+            .clone()
+            .unwrap_or_else(|| "2026-09-27 00:00".into()))
     }
 
     fn open_db(&mut self, path: &Path) -> Result<Connection> {

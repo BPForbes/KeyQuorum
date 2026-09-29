@@ -168,6 +168,11 @@ export class LabClient {
     return this.call(this.lab.history_review(path));
   }
 
+  /** Schedule expiry at `at` (UTC `yyyy-mm-ddThh:mm`), or destroy the content now when `at` is omitted. */
+  historyExpire(path: string, at?: string): ActionResult {
+    return this.call(this.lab.history_expire(path, at));
+  }
+
   historyShare(path: string, toUser: string): ActionResult {
     return this.call(this.lab.history_share(path, toUser));
   }

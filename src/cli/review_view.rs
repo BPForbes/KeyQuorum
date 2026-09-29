@@ -63,7 +63,7 @@ fn describe(file: &TrackedFile, id: &[u8; 32]) -> String {
 
 fn text(file: &TrackedFile, id: &[u8; 32]) -> Option<String> {
     let stored = file.graph().get(id)?;
-    String::from_utf8(stored.payload.clone()).ok()
+    String::from_utf8(stored.content()?.to_vec()).ok()
 }
 
 /// Which revision on one side wrote each line of its diff from the merge

@@ -198,6 +198,19 @@ the labels presented on success, and, when the TTL destroys the file,
 calls it only after `quorum`, `locked_files` (PIN check included) or `sharing` (file share create, redeem, revoke; the share's id, never its token) has answered; the gates never read the link,
 recording is best-effort and cannot change an outcome, and no share,
 password, PIN or plaintext is ever recorded.
+`file_history/expiry.rs` ends a tracked file: an `EXPIRY_SCHEDULED` event
+sets the time, and destruction removes every retained revision's payload at
+once (container v5 lets a payload be absent; v4 still decodes).
+`verify_structure` makes that all-or-nothing and recorded: a payload may be
+missing only when the chain holds this container's `CONTENT_DESTROYED` (one
+without a `gate` detail; a linked gate's purge names its gate and leaves the
+revisions alone), and then none may remain. The tombstone keeps the graph, proofs and history, verifies, takes no
+new revision, and is neither imported nor extracted. `keyquorum file expire`
+(scope owner or an ancestor) schedules it or destroys now; commands that need
+content load through `load_live`, which destroys on the first touch after the
+time and records each later attempt as `EXPIRED_ACCESS_ATTEMPT`, attributed
+only to a label the command names. Copies already held elsewhere are their own
+files.
 `file_history/sync.rs` imports another copy of the same file (same id and
 policy, and it must verify): revisions and proofs are unioned, a fork stays as
 two heads, and the importer records one `HISTORY_IMPORTED` event in its own

@@ -4,6 +4,7 @@
 
 use super::container::TrackedFile;
 use super::event::verify_chain;
+use super::expiry::destroys_this_content;
 use super::proof::{ProofKind, MAX_PROOFS_PER_SLOT};
 use super::revision::content_commitment;
 use crate::error::{Error, Result};
@@ -18,7 +19,11 @@ use crate::error::{Error, Result};
 /// - each revision's content commitment matches the payload stored with it;
 /// - each proof names a known revision, is well formed for its kind (a
 ///   content proof must come from the revision's author), and a slot (revision, role, signer label) holds no repeated signature and at most `MAX_PROOFS_PER_SLOT` proofs;
-/// - each event's revision (when present) exists.
+/// - each event's revision (when present) exists;
+/// - content is destroyed all at once or not at all: a payload may be
+///   absent only when the chain records this container's `CONTENT_DESTROYED`
+///   (not a linked gate's, which names its `gate`), and once it
+///   does, no payload survives and no revision is added after it.
 pub(super) fn verify_structure(file: &TrackedFile) -> Result<[u8; 32]> {
     let mut seen: Vec<[u8; 32]> = Vec::new();
     for (index, stored) in file.revisions.iter().enumerate() {
@@ -34,7 +39,9 @@ pub(super) fn verify_structure(file: &TrackedFile) -> Result<[u8; 32]> {
                 .enumerate()
                 .all(|(i, parent)| !parents[..i].contains(parent))
             && (index == 0) == parents.is_empty()
-            && revision.content_commitment == content_commitment(&file.file_id, &stored.payload);
+            && stored.payload.as_ref().is_none_or(|payload| {
+                revision.content_commitment == content_commitment(&file.file_id, payload)
+            });
         if !ok {
             return Err(Error::InvalidTrackedFile);
         }
@@ -70,6 +77,12 @@ pub(super) fn verify_structure(file: &TrackedFile) -> Result<[u8; 32]> {
         if !well_formed || duplicate || earlier_in_slot.count() >= MAX_PROOFS_PER_SLOT {
             return Err(Error::InvalidTrackedFile);
         }
+    }
+    let destroyed = file.events.iter().any(destroys_this_content);
+    let any_payload = file.revisions.iter().any(|stored| stored.payload.is_some());
+    let all_payloads = file.revisions.iter().all(|stored| stored.payload.is_some());
+    if (destroyed && any_payload) || (!destroyed && !all_payloads) {
+        return Err(Error::InvalidTrackedFile);
     }
     if file
         .events

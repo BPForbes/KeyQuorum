@@ -1831,3 +1831,43 @@ fn two_people_fork_a_file_by_letter_and_one_of_them_merges_it() {
         assert!(kinds.iter().any(|k| k == kind), "{kind}: {kinds:?}");
     }
 }
+
+#[test]
+fn expiring_a_tracked_file_from_the_gui_leaves_a_tombstone_the_timeline_shows() {
+    let mut state = lab();
+    state.switch_user("sarah").unwrap();
+    ok(state.history_track("notes.txt", "SECRET draft\n"));
+    // Alice, a descendant, may not end Sarah's file.
+    state.switch_user("alice").unwrap();
+    assert!(!state.history_expire(NOTES, None).unwrap().ok);
+    state.switch_user("sarah").unwrap();
+    ok(state.history_expire(NOTES, Some("2099-01-01T00:00")));
+    assert_eq!(
+        tracked(&snap(&state), NOTES).expires_at.as_deref(),
+        Some("2099-01-01T00:00:00Z")
+    );
+    ok(state.history_expire(NOTES, None));
+    let s = snap(&state);
+    let file = tracked(&s, NOTES);
+    assert!(file.destroyed);
+    assert!(file.revisions.iter().all(|r| r.text.is_none()));
+    assert_eq!(s.activity[0].kind, "history-expire");
+    let recorded: Vec<&str> = s.activity[1..3]
+        .iter()
+        .filter_map(|e| e.history.as_ref())
+        .map(|h| h.history_event_type.as_str())
+        .collect();
+    assert_eq!(recorded, ["ContentDestroyed", "FileExpired"]);
+    // Using the content afterwards is refused by the CLI and recorded.
+    let refused = state.history_checkin(NOTES, "more\n", true, None).unwrap();
+    assert!(!refused.ok);
+    assert_eq!(
+        snap(&state).activity[1]
+            .history
+            .as_ref()
+            .unwrap()
+            .history_event_type,
+        "ExpiredAccessAttempt"
+    );
+    assert!(!state.read_text(NOTES).unwrap().contains("SECRET draft"));
+}

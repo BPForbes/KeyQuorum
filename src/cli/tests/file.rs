@@ -1320,3 +1320,137 @@ fn the_printed_review_carries_the_merge_status_the_interactive_one_shows() {
     );
     assert!(out.contains("review M.A (PriorNeutralOwner)"), "{out}");
 }
+
+// ---- expiry ----------------------------------------------------------------
+
+#[test]
+fn a_scheduled_expiry_destroys_every_revision_on_first_touch_and_leaves_a_tombstone() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    edit(&mut env, "totals: SECOND\n");
+    ok(
+        &mut env,
+        &format!(
+            "checkin {KQTF} --from /work/edited.txt --as M.A --slot {}",
+            slot("M.A")
+        ),
+    );
+    let out = ok(
+        &mut env,
+        &format!("expire {KQTF} --as M.A --at 2026-09-28T12:00"),
+    );
+    assert!(out.contains("expires at 2026-09-28T12:00:00Z"), "{out}");
+    assert!(ok(&mut env, &format!("status {KQTF}")).contains("expires      2026-09-28T12:00:00Z"));
+    // Still before the expiry: content is readable.
+    ok(&mut env, &format!("checkout {KQTF} --out /work/before.txt"));
+
+    env.now = Some("2026-09-29 00:00".into());
+    let (result, _) = run(&mut env, &format!("checkout {KQTF} --out /work/after.txt"));
+    assert!(
+        matches!(result, Err(crate::error::Error::FileExpired)),
+        "{result:?}"
+    );
+    assert!(!env.fs.exists(Path::new("/work/after.txt")));
+    let bytes = env.fs.read(Path::new(KQTF)).unwrap();
+    for secret in [&b"totals: 100"[..], b"totals: SECOND"] {
+        assert!(!bytes.windows(secret.len()).any(|w| w == secret));
+    }
+    let history = ok(&mut env, &format!("history {KQTF}"));
+    for kind in [
+        "ExpiryScheduled",
+        "FileExpired",
+        "ContentDestroyed",
+        "ExpiredAccessAttempt",
+    ] {
+        assert_eq!(history.matches(kind).count(), 1, "{kind}\n{history}");
+    }
+    assert!(history.contains("revisions_destroyed=2"), "{history}");
+
+    // The tombstone still verifies, and later attempts are recorded.
+    let verify = ok(&mut env, &format!("verify {KQTF}"));
+    assert!(
+        verify.contains("Tombstone: the content of all 2 revision(s)"),
+        "{verify}"
+    );
+    assert!(ok(&mut env, &format!("status {KQTF}")).contains("EXPIRED"));
+    let (result, _) = run(
+        &mut env,
+        &format!("checkin {KQTF} --from /work/edited.txt --as M.A --unsigned"),
+    );
+    assert!(result.is_err());
+    let history = ok(&mut env, &format!("history {KQTF}"));
+    assert_eq!(
+        history.matches("ExpiredAccessAttempt").count(),
+        2,
+        "{history}"
+    );
+    assert!(
+        history.contains("action=checkin by M.A") || history.contains("by M.A"),
+        "{history}"
+    );
+}
+
+#[test]
+fn only_the_scope_owner_or_an_ancestor_expires_a_file_and_never_into_the_past() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    // A descendant may edit the file but may not end it.
+    let (result, _) = run(&mut env, &format!("expire {KQTF} --as M.A.1 --now"));
+    assert!(result.is_err());
+    let (result, _) = run(
+        &mut env,
+        &format!("expire {KQTF} --as M.A --at 2020-01-01T00:00"),
+    );
+    assert!(result.is_err());
+    assert!(!ok(&mut env, &format!("history {KQTF}")).contains("Expiry"));
+    // The root, an ancestor, may destroy it now.
+    let out = ok(&mut env, &format!("expire {KQTF} --as M --now"));
+    assert!(
+        out.contains("Destroyed the content of 1 revision(s)"),
+        "{out}"
+    );
+    let (result, _) = run(&mut env, &format!("expire {KQTF} --as M --now"));
+    assert!(result.is_err(), "already destroyed");
+}
+
+#[test]
+fn a_tombstone_cannot_be_shared_imported_or_merged_into() {
+    let mut env = org();
+    let (result, _) = env.keyquorum(&format!(
+        "keyquorum {DB} device register /usb/mb --slot M.B --type encryption"
+    ));
+    assert!(result.is_ok());
+    track(&mut env, "M.A", "M.A");
+    let live = env.fs.read(Path::new(KQTF)).unwrap();
+    env.fs.write(Path::new("/work/live.kqtf"), &live).unwrap();
+    ok(&mut env, &format!("expire {KQTF} --as M.A --now"));
+
+    let (result, _) = run(
+        &mut env,
+        &format!(
+            "share {KQTF} --to M.B --as M.A --slot {} --output-dir /out",
+            slot("M.A")
+        ),
+    );
+    assert!(
+        matches!(result, Err(crate::error::Error::FileExpired)),
+        "{result:?}"
+    );
+    assert!(env
+        .fs
+        .list(Path::new("/out"))
+        .unwrap_or_default()
+        .is_empty());
+    // Live content is not imported into the tombstone, nor the tombstone into a live copy.
+    let (result, _) = run(
+        &mut env,
+        &format!("import {KQTF} --from /work/live.kqtf --as M.A"),
+    );
+    assert!(result.is_err());
+    let (result, _) = run(
+        &mut env,
+        &format!("import /work/live.kqtf --from {KQTF} --as M.A"),
+    );
+    assert!(result.is_err());
+    assert!(ok(&mut env, "checkout /work/live.kqtf --out /work/still.txt").contains("Wrote"));
+}

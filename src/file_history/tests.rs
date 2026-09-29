@@ -3,6 +3,7 @@ use crate::error::Error;
 use sha2::Digest;
 
 mod chain;
+mod expiry;
 mod index;
 mod merge;
 mod policy;
@@ -477,7 +478,7 @@ fn decode_rejects_broken_revision_graphs() {
     // Sanity: the untouched file decodes.
     assert!(round(&|_| {}).is_ok());
     // Payload no longer matches its commitment.
-    assert!(round(&|f| f.revisions[1].payload = b"other".to_vec()).is_err());
+    assert!(round(&|f| f.revisions[1].payload = Some(b"other".to_vec())).is_err());
     // A child stored before its parent.
     assert!(round(&|f| f.revisions.swap(0, 1)).is_err());
     // A missing parent.

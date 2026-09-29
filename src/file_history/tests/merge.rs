@@ -154,7 +154,7 @@ fn a_clean_merge_is_a_pending_two_parent_revision() {
     let id = result.merge_revision.unwrap();
     let stored = file.graph().get(&id).unwrap();
     assert_eq!(stored.revision.parent_revision_ids, vec![left, right]);
-    assert_eq!(stored.payload, b"North\n125\nSouth-East\n");
+    assert_eq!(stored.content(), Some(&b"North\n125\nSouth-East\n"[..]));
     assert_eq!(file.graph().heads(), vec![id]);
     // The parents' signatures do not carry over: no proofs, so not trusted.
     assert!(file.proofs().is_empty());
@@ -217,7 +217,7 @@ fn equivalent_heads_collapse_into_one_merge_revision() {
     assert_eq!(result.outcome, AutoMergeOutcome::AlreadyEquivalent);
     let id = result.merge_revision.unwrap();
     assert_eq!(file.graph().heads(), vec![id]);
-    assert_eq!(file.graph().get(&id).unwrap().payload, b"same");
+    assert_eq!(file.graph().get(&id).unwrap().content(), Some(&b"same"[..]));
     assert!(kinds(&file).contains(&HistoryEventType::AutoMergeEquivalent));
 }
 

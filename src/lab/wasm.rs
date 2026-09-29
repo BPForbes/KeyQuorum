@@ -360,6 +360,17 @@ impl KeyQuorumLab {
         to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
     }
 
+    /// `keyquorum file expire`: schedule (`at`, UTC `yyyy-mm-ddThh:mm`) or,
+    /// with no time, destroy the content now.
+    pub fn history_expire(
+        &mut self,
+        path: &str,
+        at: Option<String>,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self.state.history_expire(path, at.as_deref());
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
     /// `keyquorum file share`: seal the newest trusted revision to another person.
     pub fn history_share(
         &mut self,

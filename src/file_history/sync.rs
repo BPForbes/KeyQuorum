@@ -58,6 +58,9 @@ impl TrackedFile {
     /// The events kept are a prefix of the chain, so the copy verifies and
     /// its root is its own.
     pub fn extract_revision(&self, revision_id: &[u8; 32]) -> Result<TrackedFile> {
+        if self.is_destroyed() {
+            return Err(Error::FileExpired);
+        }
         verify_structure(self)?;
         let graph = self.graph();
         graph.get(revision_id).ok_or(Error::InvalidTrackedFile)?;
@@ -103,6 +106,11 @@ impl TrackedFile {
     ) -> Result<HistoryMerge> {
         if self.file_id != other.file_id || self.policy != other.policy {
             return Err(Error::InvalidTrackedFile);
+        }
+        // An expired copy on either side has no content to bring in or to
+        // receive it; its tombstone is not merged with live content.
+        if self.is_destroyed() || other.is_destroyed() {
+            return Err(Error::FileExpired);
         }
         verify_structure(self)?;
         verify_structure(other)?;
