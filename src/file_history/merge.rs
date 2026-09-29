@@ -206,7 +206,7 @@ pub(super) fn merge_text(base: &str, left: &str, right: &str) -> TextMerge {
 impl TrackedFile {
     /// Decide what can be done automatically about heads `left` and `right`
     /// without changing anything. `allowed` is the file policy's switch for
-    /// automatic merging.
+    /// automatic merging of a divergence; it does not stop a fast-forward.
     pub fn plan_auto_merge(
         &self,
         left: &[u8; 32],
@@ -219,13 +219,6 @@ impl TrackedFile {
         let (Some(left_bytes), Some(right_bytes)) = (payload(left), payload(right)) else {
             return Err(Error::InvalidTrackedFile);
         };
-        if !allowed {
-            return Ok(AutoMerge::stop(
-                O::PolicyBlocked,
-                "AUTO_MERGE_DISABLED",
-                None,
-            ));
-        }
         if verify_structure(self).is_err() {
             return Ok(AutoMerge::stop(
                 O::RequiresHuman,
@@ -258,6 +251,15 @@ impl TrackedFile {
                     return Err(Error::InvalidTrackedFile);
                 }
             }
+        }
+        // The policy switch governs merging a real divergence. A fast-forward
+        // (above) merges nothing, so it is never blocked by it.
+        if !allowed {
+            return Ok(AutoMerge::stop(
+                O::PolicyBlocked,
+                "AUTO_MERGE_DISABLED",
+                None,
+            ));
         }
         if left_bytes == right_bytes {
             return Ok(AutoMerge::with_content(
