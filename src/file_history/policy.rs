@@ -108,6 +108,13 @@ pub trait TrustContext {
     /// The Ed25519 signing key registered for this identity and label.
     fn signing_public(&self, identity: &[u8; 16], label: &str) -> Option<[u8; 32]>;
     fn bridge_evidence(&self, revision_id: &[u8; 32]) -> BridgeEvidence;
+
+    /// Whether an authorized bridge connects the branches of `from` and `to`
+    /// (labels). This is about the review path between two branches, not
+    /// about a revision's authorization; the default reports none.
+    fn bridge_between(&self, _from: &str, _to: &str) -> BridgeEvidence {
+        BridgeEvidence::None
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

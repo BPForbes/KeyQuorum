@@ -23,7 +23,7 @@ use super::merge::{AutoMerge, AutoMergeOutcome};
 use super::policy::{
     evaluate_revision_trust, BridgeEvidence, FilePolicy, TrustContext, TrustState,
 };
-use super::revision::NewRevision;
+use super::revision::{HeadRelation, NewRevision};
 use crate::authority;
 use crate::error::{Error, Result};
 
@@ -259,6 +259,14 @@ impl TrackedFile {
                 selection: None,
             });
         }
+        // A conflict exists only between heads that really diverged. A failed
+        // verification or a disabled policy on related heads records nothing.
+        if self.graph().compare(left, right)? != HeadRelation::Diverged {
+            return Ok(Divergence {
+                auto,
+                selection: None,
+            });
+        }
         let selection = self.select_resolver(left, right, policy, ctx)?;
         let event = |kind, details: EventDetails, outcome| NewEvent {
             revision_id: None,
@@ -289,12 +297,16 @@ impl TrackedFile {
                 rule,
                 from,
             } if *rule == SelectionRule::LowestCommonSeniorAncestor => {
-                // A non-private bridge between the branches may say so; a
-                // private one never appears in portable history.
-                if [left, right]
-                    .iter()
-                    .any(|id| ctx.bridge_evidence(id) == BridgeEvidence::NonPrivateAuthorized)
-                {
+                // Only an authorized non-private bridge between the tied
+                // branches is recorded; a private one never appears in
+                // portable history, and revision-level bridge evidence says
+                // nothing about the review path.
+                let bridged = from.iter().enumerate().any(|(i, a)| {
+                    from[i + 1..]
+                        .iter()
+                        .any(|b| ctx.bridge_between(a, b) == BridgeEvidence::NonPrivateAuthorized)
+                });
+                if bridged {
                     self.append(event(
                         HistoryEventType::BridgeUsed,
                         EventDetails::new()

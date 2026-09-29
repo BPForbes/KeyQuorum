@@ -24,6 +24,24 @@ impl TrustContext for Ctx {
     fn bridge_evidence(&self, _: &[u8; 32]) -> BridgeEvidence {
         self.0
     }
+
+    fn bridge_between(&self, _: &str, _: &str) -> BridgeEvidence {
+        self.0
+    }
+}
+
+/// Revision-level bridge evidence only: no bridge is reported between the
+/// tied branches.
+struct RevisionOnly(BridgeEvidence);
+
+impl TrustContext for RevisionOnly {
+    fn signing_public(&self, identity: &[u8; 16], label: &str) -> Option<[u8; 32]> {
+        Ctx(self.0).signing_public(identity, label)
+    }
+
+    fn bridge_evidence(&self, _: &[u8; 32]) -> BridgeEvidence {
+        self.0
+    }
 }
 
 /// Everyone in scope "M" needs only their own signature to be trusted, so
@@ -486,4 +504,58 @@ fn bridge_only_trust_does_not_make_an_owner_or_change_the_reviewer() {
         .unwrap(),
         TrustState::Trusted
     );
+}
+
+#[test]
+fn revision_level_bridge_evidence_alone_never_records_a_bridge_use() {
+    let (mut s, l, r) = escalation_story();
+    s.file
+        .resolve_divergence(
+            &l,
+            &r,
+            true,
+            merge_meta("2026-10-05T00:00:00Z"),
+            &policy(),
+            &RevisionOnly(BridgeEvidence::NonPrivateAuthorized),
+        )
+        .unwrap();
+    assert!(!kinds(&s.file).contains(&HistoryEventType::BridgeUsed));
+    assert_eq!(
+        kinds(&s.file).last(),
+        Some(&HistoryEventType::ConflictReviewEscalated)
+    );
+}
+
+#[test]
+fn related_heads_record_no_conflict_even_when_auto_merge_is_disabled() {
+    let mut s = Story::new();
+    let base = s.rev(&[], "M.A", "line: base\n", true);
+    let next = s.rev(&[base], "M.A", "line: next\n", true);
+    for (a, b) in [(base, next), (next, base), (next, next)] {
+        let before = s.file.events().len();
+        let outcome = s
+            .file
+            .resolve_divergence(
+                &a,
+                &b,
+                false,
+                merge_meta("2026-10-05T00:00:00Z"),
+                &policy(),
+                &Ctx(BridgeEvidence::None),
+            )
+            .unwrap();
+        assert_eq!(outcome.auto.outcome, AutoMergeOutcome::FastForward);
+        assert_eq!(outcome.selection, None);
+        let recorded: Vec<_> = s.file.events()[before..]
+            .iter()
+            .map(|e| e.event_type)
+            .collect();
+        assert_eq!(
+            recorded,
+            vec![
+                HistoryEventType::AutoMergeAttempted,
+                HistoryEventType::AutoMergeFastForward
+            ]
+        );
+    }
 }
