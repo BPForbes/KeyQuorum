@@ -445,21 +445,20 @@ fn bridge_only_trust_does_not_make_an_owner_or_change_the_reviewer() {
     };
     let mut file = TrackedFile::new(FILE, "decision.txt");
     let stamp = |n: u32| format!("2026-10-02T{n:02}:00:00Z");
-    let mut make =
-        |file: &mut TrackedFile, parents: &[[u8; 32]], label: &str, n: u32, sign: bool| {
-            let mut new = new_revision(parents.to_vec(), &stamp(n));
-            new.author_hcp_label = label.to_string();
-            new.author_identity = Some([label_id(label); 16]);
-            new.policy_hash = bridged_policy.policy_hash().unwrap();
-            let id = file
-                .check_in(new, format!("{label}{n}\n").into_bytes())
+    let make = |file: &mut TrackedFile, parents: &[[u8; 32]], label: &str, n: u32, sign: bool| {
+        let mut new = new_revision(parents.to_vec(), &stamp(n));
+        new.author_hcp_label = label.to_string();
+        new.author_identity = Some([label_id(label); 16]);
+        new.policy_hash = bridged_policy.policy_hash().unwrap();
+        let id = file
+            .check_in(new, format!("{label}{n}\n").into_bytes())
+            .unwrap();
+        if sign {
+            file.sign_revision(&id, [label_id(label); 16], label, &[label_id(label); 32])
                 .unwrap();
-            if sign {
-                file.sign_revision(&id, [label_id(label); 16], label, &[label_id(label); 32])
-                    .unwrap();
-            }
-            id
-        };
+        }
+        id
+    };
     // The only shared-history author is itself a conflicting author, so
     // only rule 2 could pick someone; M.S is the sole other candidate.
     let base = make(&mut file, &[], "M.A.2", 1, true);
