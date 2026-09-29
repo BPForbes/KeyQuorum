@@ -75,7 +75,8 @@ function RevisionRow({
   const countersigner = parentOf(revision.author) === me;
   return (
     <li data-testid={`revision-${short(revision.id)}`} data-trust={revision.trust} data-head={revision.head}>
-      <code>{short(revision.id)}</code> {revision.userLabel ?? revision.generatedLabel}{" "}
+      {revision.userLabel ? <strong>{revision.userLabel} </strong> : null}
+      {revision.generatedLabel} <code>{short(revision.id)}</code>{" "}
       <span className="muted small">
         by {revision.author}
         {revision.parents.length ? ` ← ${revision.parents.map(short).join(" + ")}` : " (root)"}

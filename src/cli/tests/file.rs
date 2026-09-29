@@ -479,11 +479,11 @@ fn a_conflicting_fork_is_recorded_and_assigned_to_a_reviewer() {
 
     let review = ok(&mut env, &format!("review {KQTF}"));
     assert!(review.contains("CHANGED LINES (LEFT)"), "{review}");
-    assert!(review.contains("M.A.1 · revision"), "{review}");
+    assert!(review.contains("M.A.1 · Rreport"), "{review}");
     assert!(review.contains("-    1 | totals: 100"), "{review}");
     assert!(review.contains("+    1 | totals: 125"), "{review}");
     assert!(review.contains("CHANGED LINES (RIGHT)"), "{review}");
-    assert!(review.contains("M.S.1 · revision"), "{review}");
+    assert!(review.contains("M.S.1 · Rreport"), "{review}");
     assert!(review.contains("+    1 | totals: 130"), "{review}");
     assert!(
         review.contains("merge  RequiresHuman (OVERLAPPING_EDIT)"),
@@ -1906,6 +1906,48 @@ fn each_changed_line_is_attributed_to_the_revision_that_wrote_it() {
         .iter()
         .all(|l| l.provenance.starts_with("M.S.1")));
     assert!(left.revision.starts_with("M.A.2"));
+}
+
+#[test]
+fn the_review_names_a_user_label_before_the_generated_label_and_hash() {
+    use crate::cli::review_view::ReviewView;
+    use crate::file_history::{NewRevision, TrackedFile};
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    let mut file = TrackedFile::decode(&env.fs.read(Path::new(KQTF)).unwrap()).unwrap();
+    let base = file.graph().heads()[0];
+    let policy_hash = file.policy().unwrap().policy_hash().unwrap();
+    for (label, minute, user) in [("M.A.1", 1, Some("Q4 draft")), ("M.S.1", 2, None)] {
+        file.check_in(
+            NewRevision {
+                parent_revision_ids: vec![base],
+                user_label: user.map(str::to_string),
+                author_identity: Some([minute; 16]),
+                author_hcp_label: label.to_string(),
+                created_at_utc: format!("2026-09-27T00:0{minute}:00Z"),
+                topology_generation: 0,
+                policy_hash,
+            },
+            format!("totals: {minute}\n").into_bytes(),
+        )
+        .unwrap();
+    }
+    let view = ReviewView::of(&file).expect("two heads");
+    let described: Vec<&str> = view.panes.iter().map(|p| p.revision.as_str()).collect();
+    let labelled = described
+        .iter()
+        .find(|d| d.contains("Q4 draft"))
+        .unwrap_or_else(|| panic!("{described:?}"));
+    let user_at = labelled.find("Q4 draft").unwrap();
+    let generated_at = labelled.find("Rreport").unwrap();
+    assert!(user_at < generated_at, "{labelled}");
+    // The other side has no user label and still shows its generated one.
+    assert!(
+        described
+            .iter()
+            .any(|d| !d.contains("Q4 draft") && d.contains("Rreport")),
+        "{described:?}"
+    );
 }
 
 #[test]
