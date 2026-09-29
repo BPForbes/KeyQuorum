@@ -260,3 +260,77 @@ fn a_password_files_expiry_leaves_a_tombstone() {
     assert_eq!(history(&mut env).matches("ExpiredAccessAttempt").count(), 2);
     ok(&mut env, &format!("unlink {KQTF} --locked-file 1"));
 }
+
+#[test]
+fn a_reused_gate_id_is_not_mistaken_for_the_file_that_was_linked() {
+    let mut env = gated();
+    ok(&mut env, &format!("link {KQTF} --quorum-file 1"));
+    env.store("/home/org/keyquorum.sqlite")
+        .execute(
+            "UPDATE files SET expires_at = '2000-01-01 00:00:00' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    let (result, _) = unlock(&mut env, BOTH);
+    assert!(matches!(result, Err(crate::error::Error::FileExpired)));
+    let before = history(&mut env);
+
+    // SQLite hands the freed id to the next file.
+    env.fs
+        .write(Path::new("/work/second.txt"), b"unrelated")
+        .unwrap();
+    let (result, out) = env.keyquorum(&format!(
+        "keyquorum {DB} access quorum --state 0 --source /work/second.txt \
+         --encrypted-path /work/second.kqenc --name second.txt --root Q --threshold 2 \
+         --leaf Q.A=/keys/qa.pub --leaf Q.B=/keys/qb.pub"
+    ));
+    assert!(result.is_ok(), "{out}");
+    let id: i64 = env
+        .store("/home/org/keyquorum.sqlite")
+        .query_row("SELECT id FROM files", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(id, 1, "the id was reused");
+    let (result, out) = unlock(&mut env, BOTH);
+    assert!(result.is_ok(), "{out}");
+    assert_eq!(
+        history(&mut env),
+        before,
+        "the new file wrote into the old history"
+    );
+}
+
+#[test]
+fn a_different_tracked_file_at_the_linked_path_is_never_written_to() {
+    let mut env = gated();
+    ok(&mut env, &format!("link {KQTF} --quorum-file 1"));
+    // Replace the container with another file's history at the same path.
+    env.fs
+        .write(Path::new("/work/other.txt"), b"other")
+        .unwrap();
+    ok(
+        &mut env,
+        &format!(
+            "track /work/other.txt --scope M.A --as M.A --slot {} --out /work/other.kqtf",
+            super::file::slot("M.A")
+        ),
+    );
+    let other = env.fs.read(Path::new("/work/other.kqtf")).unwrap();
+    env.fs.write(Path::new(KQTF), &other).unwrap();
+    let (result, out) = unlock(&mut env, BOTH);
+    assert!(result.is_ok(), "{out}");
+    assert!(!history(&mut env).contains("QuorumUnlockAttempted"));
+}
+
+#[test]
+fn linking_a_copy_moves_the_recording_to_it() {
+    let mut env = gated();
+    ok(&mut env, &format!("link {KQTF} --quorum-file 1"));
+    let bytes = env.fs.read(Path::new(KQTF)).unwrap();
+    env.fs.write(Path::new("/work/copy.kqtf"), &bytes).unwrap();
+    let out = ok(&mut env, "link /work/copy.kqtf --quorum-file 1");
+    assert!(out.contains("now recording to /work/copy.kqtf"), "{out}");
+    let (result, _) = unlock(&mut env, BOTH);
+    assert!(result.is_ok());
+    assert!(ok(&mut env, "history /work/copy.kqtf").contains("QuorumUnlockAttempted"));
+    assert!(!history(&mut env).contains("QuorumUnlockAttempted"));
+}

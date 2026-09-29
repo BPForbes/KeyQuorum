@@ -469,6 +469,9 @@ CREATE TABLE IF NOT EXISTS tracked_gate_links (
     tracked_file_id BLOB NOT NULL,
     gate            TEXT NOT NULL CHECK (gate IN ('quorum', 'password')),
     gate_file_id    INTEGER NOT NULL,
+    -- The gate row's ciphertext path and creation time when linked: what
+    -- tells the linked file from a later one that was given the same id.
+    gate_ref        TEXT NOT NULL,
     kqtf_path       TEXT NOT NULL,
     linked_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE (tracked_file_id, gate, gate_file_id)
