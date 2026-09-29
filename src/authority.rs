@@ -111,10 +111,12 @@ pub enum RevisionAuthority {
     Ancestor {
         depth: usize,
     },
+    /// A different branch. `common_ancestor` is `None` when the two labels
+    /// have no shared root at all (for example `M.A` and `X.1`).
     CrossBranch {
-        common_ancestor: String,
+        common_ancestor: Option<String>,
     },
-    /// No shared root, or an empty label.
+    /// A malformed or empty label: not a place in any hierarchy.
     Unrelated,
 }
 
@@ -135,9 +137,8 @@ pub fn relationship(scope_root: &str, actor: &str) -> RevisionAuthority {
     if let Some(depth) = ancestry_distance(actor, scope_root) {
         return RevisionAuthority::Ancestor { depth };
     }
-    match lowest_common_ancestor(scope_root, actor) {
-        Some(common_ancestor) => RevisionAuthority::CrossBranch { common_ancestor },
-        None => RevisionAuthority::Unrelated,
+    RevisionAuthority::CrossBranch {
+        common_ancestor: lowest_common_ancestor(scope_root, actor),
     }
 }
 

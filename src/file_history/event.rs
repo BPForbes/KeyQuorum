@@ -54,6 +54,8 @@ pub enum HistoryEventType {
     ExpiryScheduled = 31,
     FileRenamed = 32,
     RevisionFinalized = 33,
+    ConflictResolved = 34,
+    MergeRejected = 35,
 }
 
 impl HistoryEventType {
@@ -90,6 +92,8 @@ impl HistoryEventType {
             | E::HistoryForkDetected
             | E::ContentConflictDetected
             | E::ConflictReviewAssigned
+            | E::ConflictResolved
+            | E::MergeRejected
             | E::ConflictReviewEscalated
             | E::BridgeUsed
             | E::ConflictUnresolved => "conflict",
@@ -131,6 +135,8 @@ impl HistoryEventType {
             31 => Self::ExpiryScheduled,
             32 => Self::FileRenamed,
             33 => Self::RevisionFinalized,
+            34 => Self::ConflictResolved,
+            35 => Self::MergeRejected,
             _ => return Err(Error::InvalidTrackedFile),
         })
     }
@@ -205,6 +211,7 @@ pub const SAFE_DETAIL_KEYS: &[&str] = &[
     "revision_b",
     "revisions_added",
     "revisions_destroyed",
+    "resolution",
     "right",
     "scope",
     "selection_rule",

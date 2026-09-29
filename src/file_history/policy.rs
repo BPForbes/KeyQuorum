@@ -197,14 +197,21 @@ impl FilePolicy {
     }
 
     /// The rule that applies to an author relative to the scope, or `None`
-    /// for an unrelated one.
+    /// for one outside the scope's hierarchy: a malformed label, or another
+    /// branch with no common ancestor at all (no bridge or owner can connect
+    /// it, so the cross-branch rule never applies to it).
     pub fn requirement_for(&self, author_label: &str) -> Option<Requirement> {
         match authority::relationship(&self.scope_root, author_label) {
             RevisionAuthority::ScopeOwner => Some(self.scope_owner),
             RevisionAuthority::Descendant { .. } => Some(self.descendants),
             RevisionAuthority::Ancestor { .. } => Some(self.ancestors),
-            RevisionAuthority::CrossBranch { .. } => Some(self.cross_branch),
-            RevisionAuthority::Unrelated => None,
+            RevisionAuthority::CrossBranch {
+                common_ancestor: Some(_),
+            } => Some(self.cross_branch),
+            RevisionAuthority::CrossBranch {
+                common_ancestor: None,
+            }
+            | RevisionAuthority::Unrelated => None,
         }
     }
 }
@@ -421,6 +428,38 @@ pub struct DeliveryDecision {
     /// `None` when nothing trusted exists to deliver.
     pub delivered_revision: Option<[u8; 32]>,
     pub decision: DeliveryDecisionKind,
+    /// [`proof_descriptor`] of the delivered revision, as this store held
+    /// it when deciding: the letter's signed header binds it, and the
+    /// receiver recomputes it from the container it opened.
+    pub content_proof: Option<[u8; 32]>,
+}
+
+/// A digest of the proofs a container holds for `revision`, in container
+/// order: kind, signer identity and label, the backed signature hash, the
+/// generation, the policy hash and the signature. It names exactly which
+/// proofs travelled; it decides no trust (the receiver still judges every
+/// proof against its own keys).
+pub fn proof_descriptor(file: &TrackedFile, revision: &[u8; 32]) -> Result<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"KQ-FILE-PROOF-DESCRIPTOR-v1");
+    hasher.update(revision);
+    for proof in file.proofs().iter().filter(|p| &p.revision_id == revision) {
+        hasher.update([proof.kind as u8]);
+        hasher.update(proof.signer_identity);
+        crate::envelope::hash_len_prefixed(&mut hasher, proof.signer_label.as_bytes())?;
+        match &proof.author_signature_hash {
+            Some(hash) => {
+                hasher.update([1]);
+                hasher.update(hash);
+            }
+            None => hasher.update([0]),
+        }
+        hasher.update(proof.topology_generation.to_be_bytes());
+        hasher.update(proof.policy_hash);
+        hasher.update(proof.signature);
+    }
+    Ok(hasher.finalize().into())
 }
 
 /// The head the file is at: its only head, or `None` when the history has
@@ -568,9 +607,13 @@ pub fn select_shareable_revision(
         (Some(id), Some(held)) if id == *held => DeliveryDecisionKind::RequesterAlreadyCurrent,
         _ => kind,
     };
+    let content_proof = delivered
+        .map(|id| proof_descriptor(file, &id))
+        .transpose()?;
     Ok(DeliveryDecision {
         candidate_revision: *candidate,
         delivered_revision: delivered,
         decision: kind,
+        content_proof,
     })
 }

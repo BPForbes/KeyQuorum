@@ -274,8 +274,11 @@ fn guidance(command: &str) -> Option<&'static str> {
     Some(match command {
         "sign" => "not available here: run `keyquorum file sign` as the author",
         "countersign" => "not available here: run `keyquorum file countersign` as the supervisor",
-        "accept" | "reject" => {
-            "not available here: resolve by editing the file, `file checkin`, then `file merge`"
+        "accept" => {
+            "not available here: as the reviewer, run `keyquorum file resolve --keep left|right` or `--from FILE`"
+        }
+        "reject" => {
+            "not available here: as the reviewer, run `keyquorum file resolve --reject` on a proposed merge"
         }
         "finalize" => {
             "not available here: once the revision is trusted, run `keyquorum file finalize` as the scope owner"

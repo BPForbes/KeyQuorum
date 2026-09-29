@@ -155,6 +155,11 @@ label to own the key that opened it (`deliver_cmd::require_recipient_key`). That
 the revision by the file's own policy (`keyquorum file receive`) and
 answers with a signed accept or reject. Receipt is idempotent by delivery id:
 receiving the same letter again (`--into` or the same `--out`) records nothing new and only reseals the answer.
+The letter's signed header also binds `content_proof`, the
+`policy::proof_descriptor` of the delivered revision (every proof the
+container holds for it, in order), which `select_shareable_revision` returns
+in `DeliveryDecision` and `file receive` recomputes from the container,
+refusing a mismatch. It names the proofs that travelled; it decides no trust.
 `src/file_history.rs` owns the tracked-file container (`KQTF`, its own
 magic and version, not a sealed envelope) and the hash-chained event history
 that travels with it; SQLite may only index it. It frames and chains events
@@ -176,7 +181,19 @@ winning line.
 could not settle (prior neutral owner, then seniority, sector size, common
 ancestor), from owners whose revisions are trusted under policy; conflicting
 authors never review their own collision, a private bridge is never named
-in history, and nothing is guessed when no one qualifies.
+in history, and nothing is guessed when no one qualifies. `resolve_conflict`
+settles the open conflict (`open_conflict`: two diverged heads that need a
+person, or a sole head that is a rejected proposed merge) with a new revision
+by the reviewer: `KeepLeft`, `KeepRight` or `Edited` content, recorded as
+`CONFLICT_RESOLVED` (34). Only the selected reviewer or an ancestor of theirs
+may decide (`may_decide`); when no reviewer qualifies, the scope owner or an
+ancestor does; a conflicting author never does. `reject_merge` records
+`MERGE_REJECTED` (35) against an untrusted proposed merge at the head; the
+revision stays, `file sign` refuses it, and the resolution builds on it.
+`keyquorum file resolve --keep left|right | --from FILE | --reject` is the
+command: it signs the result as the reviewer's content signature, and the
+normal trust policy judges it. `file merge` opens the interactive review
+when a person must decide and the terminal is interactive (`Env::interactive`).
 `src/cli/file_cmd.rs` is the `keyquorum file` command layer over `file_history`
 (track, checkin, sign, countersign, rename, merge, review, graph, diff,
 checkout, status, history, verify). Signing a native file with `--scope` is
@@ -202,7 +219,8 @@ and no dependencies; `keyquorum file review` prints from the same
 `ReviewView`. `src/cli/review_tui.rs` (feature `tui`, `ratatui`, native-only,
 refused by `build.rs` on wasm32) only draws it and reads keys and the mouse.
 It decides no trust and edits no history: `:sign`, `:accept`, `:reject` and
-`:finalize` answer with the CLI command to run.
+`:finalize` answer with the CLI command to run (`file resolve` for accept
+and reject).
 `src/cli/gate_link.rs` ties a quorum-protected or password-locked file to a
 tracked `.kqtf` (`keyquorum file link --quorum-file|--locked-file`, table `tracked_gate_links`, deliberately without a
 foreign key to the gate so a purged gate keeps its link) and appends what

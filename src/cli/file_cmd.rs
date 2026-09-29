@@ -19,11 +19,12 @@ use super::{open_slot_secrets, read_key_array_32, usage};
 use crate::error::{Error, Result};
 use crate::file_history::{
     current_revision, diff_text, evaluate_revision_trust, index, is_finalized,
-    latest_finalized_ancestor, latest_trusted_revision, select_shareable_revision,
-    verify_tracked_file, AutoMergeOutcome, BridgeEvidence, ChangeKind, DeliveryDecisionKind,
-    EventDetails, ExpiryContext, FilePolicy, HistoryEvent, HistoryEventType, HistoryOutcome,
-    HistoryRelation, HistorySnapshot, ImportContext, MergeBase, NewEvent, NewRevision, Requirement,
-    ResolverSelection, TrackedFile, TrustContext, TrustReason, TrustState,
+    latest_finalized_ancestor, latest_trusted_revision, proof_descriptor,
+    select_shareable_revision, verify_tracked_file, AutoMergeOutcome, BridgeEvidence, ChangeKind,
+    DeliveryDecisionKind, EventDetails, ExpiryContext, FilePolicy, HistoryEvent, HistoryEventType,
+    HistoryOutcome, HistoryRelation, HistorySnapshot, ImportContext, MergeBase, NewEvent,
+    NewRevision, Requirement, Resolution, ResolverSelection, TrackedFile, TrustContext,
+    TrustReason, TrustState,
 };
 use crate::{authority, file_delivery, key_tree, private_bridge, signing, transfer};
 use clap::Subcommand;
@@ -101,6 +102,31 @@ pub enum FileCommand {
         #[arg(long)]
         signing_key_file: Option<PathBuf>,
     },
+    /// Settle a conflict as its reviewer: keep one side, or supply the merge
+    /// you edited; the result is signed as yours. `--reject` refuses a
+    /// proposed merge instead.
+    Resolve {
+        kqtf: PathBuf,
+        /// Keep one conflicting side as it is: `left` or `right`
+        #[arg(long, value_parser = ["left", "right"], conflicts_with_all = ["from", "reject"])]
+        keep: Option<String>,
+        /// Your edited merge result (a native file)
+        #[arg(long, conflicts_with = "reject")]
+        from: Option<PathBuf>,
+        /// Refuse the proposed merge at the head
+        #[arg(long)]
+        reject: bool,
+        /// Your label: the assigned reviewer, or an ancestor of theirs
+        #[arg(long = "as")]
+        as_label: String,
+        #[arg(long, conflicts_with = "signing_key_file")]
+        slot: Option<String>,
+        #[arg(long)]
+        signing_key_file: Option<PathBuf>,
+        /// A name for the resolved revision
+        #[arg(long)]
+        label: Option<String>,
+    },
     /// Check in a new revision from a native file
     Checkin {
         /// The tracked file (.kqtf)
@@ -134,7 +160,8 @@ pub enum FileCommand {
         slot: Option<String>,
         #[arg(long)]
         signing_key_file: Option<PathBuf>,
-        /// HCP scope of a newly tracked file (only with a native file)
+        /// HCP scope of a newly tracked file (only with a native file;
+        /// defaults to your own label)
         #[arg(long)]
         scope: Option<String>,
     },
@@ -431,6 +458,29 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             slot,
             signing_key_file,
         } => finalize(conn, &kqtf, revision, &as_label, slot, signing_key_file),
+        FileCommand::Resolve {
+            kqtf,
+            keep,
+            from,
+            reject,
+            as_label,
+            slot,
+            signing_key_file,
+            label,
+        } => {
+            let keys = (slot, signing_key_file);
+            if reject {
+                reject_merge(conn, &kqtf, &as_label, keys)
+            } else {
+                let resolution = match (keep.as_deref(), from) {
+                    (Some("left"), None) => Resolution::KeepLeft,
+                    (Some("right"), None) => Resolution::KeepRight,
+                    (None, Some(path)) => Resolution::Edited(env::read(&path)?),
+                    _ => return Err(usage("pass --keep left|right, --from FILE, or --reject")),
+                };
+                resolve(conn, &kqtf, resolution, &as_label, keys, label)
+            }
+        }
         FileCommand::Checkin {
             kqtf,
             from,
@@ -1132,7 +1182,13 @@ fn is_container(path: &Path) -> bool {
 /// The first content signature over a native file starts tracking it: the
 /// same steps as `file track`, so the file gets its stable id, revision R1,
 /// a signature, and the `TRACKING_STARTED` and `REVISION_SIGNED` events.
-/// Legacy files that are never signed this way stay untracked.
+/// The scope defaults to the signer's own label (a scope owner's own
+/// signature is trusted), so ordinary signing activates tracking; the first
+/// revision must be trusted or nothing is written. Legacy files that are
+/// never signed stay untracked. A copy of the same bytes at another path is
+/// its own file: signing it starts a separate lineage with its own id, since
+/// content commitments are bound to the file id and a copy's later history
+/// is not this file's.
 fn activate_on_first_signature(
     conn: &Connection,
     native: &Path,
@@ -1145,11 +1201,7 @@ fn activate_on_first_signature(
     if revision.is_some() {
         return Err(usage("a file that is not tracked has no revisions to pick"));
     }
-    let Some(scope) = scope else {
-        return Err(usage(
-            "this file is not tracked yet; pass --scope <label> to sign it and start tracking",
-        ));
-    };
+    let scope = scope.unwrap_or_else(|| as_label.to_string());
     let mut container = native.as_os_str().to_owned();
     container.push(".kqtf");
     let container = PathBuf::from(container);
@@ -1184,6 +1236,7 @@ fn sign(
     let mut file = load_live(conn, kqtf, Some(as_label), "sign")?;
     require_active(conn, as_label)?;
     let target = pick_revision(&file, revision.as_deref())?;
+    refuse_if_rejected(&file, &target)?;
     let secret = signing_secret(slot, key_file)?;
     let (identity, at) = (identity_for(conn, as_label)?, utc_instant()?);
     let generation = generation_for(conn, &policy_of(&file)?.scope_root)?;
@@ -1204,6 +1257,17 @@ fn sign(
     index_after(conn, &file);
     outln!("Signed {} as {as_label}", short(&target));
     outln!("  trust {}", trust_text(state));
+    Ok(())
+}
+
+/// A reviewer refused this proposed merge; it is never signed into trust.
+fn refuse_if_rejected(file: &TrackedFile, revision: &[u8; 32]) -> Result<()> {
+    if file.is_rejected(revision) {
+        return Err(usage(&format!(
+            "revision {} was rejected by its reviewer; resolve the conflict with `file resolve`",
+            short(revision)
+        )));
+    }
     Ok(())
 }
 
@@ -1549,6 +1613,13 @@ fn share(
         return Err(usage(message));
     };
     let extract = file.extract_revision(&delivered)?;
+    // The extract must carry exactly the proofs the decision relied on.
+    let content_proof = proof_descriptor(&extract, &delivered)?;
+    if Some(content_proof) != decision.content_proof {
+        return Err(usage(
+            "the extract does not carry the proofs the decision relied on",
+        ));
+    }
     let container = extract.encode()?;
     let (signing_secret, encryption_public) = sender_keys(conn, keys.0, keys.1, as_label)?;
     let recipient = registered_encryption_key(conn, to)?;
@@ -1563,6 +1634,7 @@ fn share(
         revision_id: delivered,
         history_root: extract.history_root(),
         decision: decision.decision.code(),
+        content_proof,
         container: &container,
     })?;
     // Recorded before the letter leaves, so a failed upload still leaves a
@@ -1631,6 +1703,7 @@ fn receive(
         || incoming.graph().get(&letter.revision_id).is_none()
         || incoming.graph().heads() != [letter.revision_id]
         || DeliveryDecisionKind::from_code(letter.decision).is_none()
+        || proof_descriptor(&incoming, &letter.revision_id)? != letter.content_proof
     {
         return Err(usage("the letter does not match the container it carries"));
     }
@@ -2020,6 +2093,115 @@ fn print_changes(old: &str, new: &str) -> Result<()> {
     Ok(())
 }
 
+fn resolve(
+    conn: &Connection,
+    kqtf: &Path,
+    resolution: Resolution,
+    as_label: &str,
+    (slot, key_file): (Option<String>, Option<PathBuf>),
+    user_label: Option<String>,
+) -> Result<()> {
+    let mut file = load_live(conn, kqtf, Some(as_label), "resolve")?;
+    let policy = policy_of(&file)?.clone();
+    require_active(conn, as_label)?;
+    let ctx = StoreTrust { conn };
+    let Some(conflict) = file.open_conflict(policy.auto_merge)? else {
+        return Err(usage(
+            "nothing to resolve: no conflict waits for a person (see `file review`)",
+        ));
+    };
+    if !file.may_decide(&conflict.left, &conflict.right, as_label, &policy, &ctx)? {
+        return Err(usage(&format!(
+            "{as_label} is not the reviewer of this conflict (see `file review`); \
+             a conflicting author never resolves their own collision"
+        )));
+    }
+    let secret = signing_secret(slot, key_file)?;
+    let (identity, at) = (identity_for(conn, as_label)?, utc_instant()?);
+    let generation = generation_for(conn, &policy.scope_root)?;
+    let new = NewRevision {
+        parent_revision_ids: Vec::new(),
+        user_label,
+        author_identity: Some(identity),
+        author_hcp_label: as_label.to_string(),
+        created_at_utc: revision_instant()?,
+        topology_generation: generation,
+        policy_hash: policy.policy_hash()?,
+    };
+    let id = file
+        .resolve_conflict(resolution, new, &policy, &ctx)
+        .map_err(|err| match err {
+            Error::FileExpired => usage("that side's content was destroyed at expiry"),
+            _ => usage("the conflict could not be resolved as asked"),
+        })?;
+    // The reviewer's decision is their content signature on the result.
+    file.sign_revision(&id, identity, as_label, &secret)?;
+    file.append(event(
+        HistoryEventType::RevisionSigned,
+        Some(id),
+        &at,
+        identity,
+        as_label,
+        generation,
+        EventDetails::new(),
+    ))?;
+    let state = decide(conn, &mut file, id, &at, identity, as_label, generation)?;
+    refuse_if_denied(state, as_label)?;
+    save(kqtf, &file)?;
+    index_after(conn, &file);
+    outln!(
+        "Resolved {} and {} as {} (revision {})",
+        short(&conflict.left),
+        short(&conflict.right),
+        as_label,
+        short(&id)
+    );
+    outln!("  trust {}", trust_text(state));
+    Ok(())
+}
+
+fn reject_merge(
+    conn: &Connection,
+    kqtf: &Path,
+    as_label: &str,
+    (slot, key_file): (Option<String>, Option<PathBuf>),
+) -> Result<()> {
+    let mut file = load_live(conn, kqtf, Some(as_label), "reject")?;
+    let policy = policy_of(&file)?.clone();
+    require_active(conn, as_label)?;
+    let heads = file.graph().heads();
+    let [head] = heads.as_slice() else {
+        return Err(usage(
+            "nothing to reject: the history has no single proposed merge",
+        ));
+    };
+    let head = *head;
+    let at = utc_instant()?;
+    prove_possession(conn, &file, "reject", as_label, &at, slot, key_file)?;
+    let actor = event(
+        HistoryEventType::MergeRejected,
+        Some(head),
+        &at,
+        identity_for(conn, as_label)?,
+        as_label,
+        generation_for(conn, &policy.scope_root)?,
+        EventDetails::new(),
+    );
+    file.reject_merge(&head, actor, &policy, &StoreTrust { conn })
+        .map_err(|_| {
+            usage(&format!(
+                "{as_label} cannot reject {}: only an untrusted merge at the head, \
+                 by its reviewer or the scope owner",
+                short(&head)
+            ))
+        })?;
+    save(kqtf, &file)?;
+    index_after(conn, &file);
+    outln!("Rejected merge {} as {as_label}", short(&head));
+    outln!("  resolve it with `keyquorum file resolve --keep left|right` or `--from FILE`");
+    Ok(())
+}
+
 fn merge(conn: &Connection, kqtf: &Path, as_label: &str, user_label: Option<String>) -> Result<()> {
     let mut file = load_live(conn, kqtf, Some(as_label), "merge")?;
     let policy = policy_of(&file)?.clone();
@@ -2065,15 +2247,28 @@ fn merge(conn: &Connection, kqtf: &Path, as_label: &str, user_label: Option<Stri
         _ => match result.selection {
             Some(ResolverSelection::Assigned { reviewer, rule, .. }) => {
                 outln!("  a person must resolve this; review assigned to {reviewer} ({rule:?})");
+                outln!("  the reviewer runs `keyquorum file resolve --keep left|right` or `--from FILE`");
+                return open_review_if_interactive(conn, kqtf);
             }
             Some(ResolverSelection::Unresolved) => {
                 outln!("  a person must resolve this, but no authorized reviewer exists;");
                 outln!("  an explicit root or admin decision is required");
+                return open_review_if_interactive(conn, kqtf);
             }
             None => outln!("  nothing to merge: one head already contains the other"),
         },
     }
     Ok(())
+}
+
+/// At a terminal, a merge that stopped for a person opens the review there
+/// and then; scripts, tests and builds without `tui` keep the printed form.
+fn open_review_if_interactive(conn: &Connection, kqtf: &Path) -> Result<()> {
+    if cfg!(all(feature = "tui", not(target_arch = "wasm32"))) && env::interactive() {
+        review_interactive(conn, kqtf)
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]

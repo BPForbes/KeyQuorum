@@ -146,6 +146,7 @@ fn history_from(alice: &Party, david: &Party) -> SealedHistoryLetter {
         revision_id: [4; 32],
         history_root: [5; 32],
         decision: 2,
+        content_proof: [6; 32],
         container: CONTAINER,
     })
     .unwrap()
@@ -195,6 +196,7 @@ fn a_tracked_letter_round_trips_through_the_inbox_and_back_as_an_ack() {
     assert_eq!(letter.revision_id, [4; 32]);
     assert_eq!(letter.history_root, [5; 32]);
     assert_eq!(letter.decision, 2);
+    assert_eq!(letter.content_proof, [6; 32]);
     assert_eq!(letter.container, CONTAINER);
     assert_eq!(letter.container_hash, sealed.container_hash);
 
@@ -251,6 +253,7 @@ fn a_letter_signed_by_someone_else_or_an_unregistered_label_is_refused() {
         revision_id: [4; 32],
         history_root: [5; 32],
         decision: 2,
+        content_proof: [6; 32],
         container: CONTAINER,
     })
     .unwrap();
@@ -272,13 +275,15 @@ fn every_signed_header_field_and_the_container_are_bound() {
     let sealed = history_from(&alice, &david);
     // Plaintext layout for these labels and name: delivery id 0..16, sender
     // 16..23, recipient 23..28, return key 28..60, name 60..70, then the
-    // file id, revision id, history root, the decision and the container.
+    // file id, revision id, history root, the decision, the proof
+    // descriptor and the container.
     let header = [
         ("file id", 70),
         ("revision id", 86),
         ("history root", 118),
         ("decision", 150),
-        ("container", 155),
+        ("proof descriptor", 151),
+        ("container", 187),
         ("return key", 30),
         ("delivery id", 0),
     ];

@@ -489,6 +489,158 @@ fn a_conflicting_fork_is_recorded_and_assigned_to_a_reviewer() {
 }
 
 #[test]
+fn the_assigned_reviewer_resolves_a_conflict_and_signs_the_result() {
+    let mut env = org();
+    forked(&mut env, "totals: 100\n", "totals: 125\n", "totals: 130\n");
+    ok(&mut env, &format!("merge {KQTF} --as M.A"));
+
+    // The conflicting authors and a stranger may not decide it.
+    for who in ["M.A.1", "M.S.1", "M.B"] {
+        let (result, _) = run(
+            &mut env,
+            &format!(
+                "resolve {KQTF} --keep right --as {who} --slot {}",
+                slot(who)
+            ),
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not the reviewer"), "{who}: {err}");
+    }
+    // The assigned reviewer keeps the right side; the result is theirs,
+    // signed, and trusted under the file's rules.
+    let out = ok(
+        &mut env,
+        &format!(
+            "resolve {KQTF} --keep right --as M.A --slot {}",
+            slot("M.A")
+        ),
+    );
+    assert!(out.contains("trust TRUSTED"), "{out}");
+    let graph = ok(&mut env, &format!("graph {KQTF}"));
+    assert!(!graph.contains("FORK"), "{graph}");
+    ok(
+        &mut env,
+        &format!("checkout {KQTF} --out /work/resolved.txt"),
+    );
+    assert_eq!(
+        env.fs.read(Path::new("/work/resolved.txt")).unwrap(),
+        b"totals: 130\n"
+    );
+    let history = ok(&mut env, &format!("history {KQTF}"));
+    let line = history
+        .lines()
+        .find(|l| l.contains("ConflictResolved"))
+        .expect("a recorded resolution");
+    assert!(
+        line.contains("by M.A") && line.contains("resolution=KEEP_RIGHT"),
+        "{history}"
+    );
+    // Nothing is left to resolve.
+    let (result, _) = run(
+        &mut env,
+        &format!("resolve {KQTF} --keep left --as M.A --slot {}", slot("M.A")),
+    );
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("nothing to resolve"));
+}
+
+#[test]
+fn a_reviewer_can_supply_an_edited_result_and_a_wrong_key_is_refused() {
+    let mut env = org();
+    forked(&mut env, "totals: 100\n", "totals: 125\n", "totals: 130\n");
+    ok(&mut env, &format!("merge {KQTF} --as M.A"));
+    env.fs
+        .write(Path::new("/work/decided.txt"), b"totals: 128\n")
+        .unwrap();
+    // Another label's key is not M.A's: nothing is written.
+    let before = env.fs.read(Path::new(KQTF)).unwrap();
+    let (result, _) = run(
+        &mut env,
+        &format!(
+            "resolve {KQTF} --from /work/decided.txt --as M.A --slot {}",
+            slot("M.B")
+        ),
+    );
+    assert!(result.is_err());
+    assert_eq!(env.fs.read(Path::new(KQTF)).unwrap(), before);
+    let out = ok(
+        &mut env,
+        &format!(
+            "resolve {KQTF} --from /work/decided.txt --as M.A --slot {}",
+            slot("M.A")
+        ),
+    );
+    assert!(out.contains("trust TRUSTED"), "{out}");
+    ok(
+        &mut env,
+        &format!("checkout {KQTF} --out /work/resolved.txt"),
+    );
+    assert_eq!(
+        env.fs.read(Path::new("/work/resolved.txt")).unwrap(),
+        b"totals: 128\n"
+    );
+    assert!(ok(&mut env, &format!("history {KQTF}")).contains("resolution=EDITED"));
+}
+
+#[test]
+fn a_rejected_proposed_merge_is_never_signed_and_the_reviewer_settles_it() {
+    let mut env = org();
+    forked(
+        &mut env,
+        "north\n100\nsouth\n",
+        "north\n125\nsouth\n",
+        "north\n100\nsouth-east\n",
+    );
+    // M.A.1 proposes the clean merge.
+    let out = ok(&mut env, &format!("merge {KQTF} --as M.A.1"));
+    assert!(out.contains("CleanMerge"), "{out}");
+    // A conflicting author may not reject it; the scope owner may.
+    let (result, _) = run(
+        &mut env,
+        &format!(
+            "resolve {KQTF} --reject --as M.S.1 --slot {}",
+            slot("M.S.1")
+        ),
+    );
+    assert!(result.is_err());
+    let out = ok(
+        &mut env,
+        &format!("resolve {KQTF} --reject --as M.A --slot {}", slot("M.A")),
+    );
+    assert!(out.contains("Rejected merge"), "{out}");
+    // Rejected once is enough, and its author can no longer sign it.
+    let (result, _) = run(
+        &mut env,
+        &format!("resolve {KQTF} --reject --as M.A --slot {}", slot("M.A")),
+    );
+    assert!(result.is_err());
+    let (result, _) = run(
+        &mut env,
+        &format!("sign {KQTF} --as M.A.1 --slot {}", slot("M.A.1")),
+    );
+    assert!(result.unwrap_err().to_string().contains("rejected"));
+    // The reviewer settles it on top of the rejected proposal.
+    let out = ok(
+        &mut env,
+        &format!("resolve {KQTF} --keep left --as M.A --slot {}", slot("M.A")),
+    );
+    assert!(out.contains("trust TRUSTED"), "{out}");
+    ok(
+        &mut env,
+        &format!("checkout {KQTF} --out /work/resolved.txt"),
+    );
+    assert_eq!(
+        env.fs.read(Path::new("/work/resolved.txt")).unwrap(),
+        b"north\n125\nsouth\n"
+    );
+    let history = ok(&mut env, &format!("history {KQTF}"));
+    assert!(history.contains("MergeRejected Denied by M.A"), "{history}");
+    assert!(history.contains("resolution=KEEP_LEFT"), "{history}");
+}
+
+#[test]
 fn merge_and_review_need_a_fork() {
     let mut env = org();
     track(&mut env, "M.A", "M.A");
@@ -1641,22 +1793,15 @@ fn a_new_container_never_replaces_one_that_appeared_meanwhile() {
 #[test]
 fn the_first_content_signature_starts_tracking_and_never_a_second_identity() {
     let mut env = org();
-    // Not tracked, and no scope to track it under.
-    let (result, _) = run(
+    // An ordinary signature starts tracking: with no --scope, the signer's
+    // own label is the scope, so their own signature makes R1 trusted.
+    let out = ok(
         &mut env,
         &format!("sign /work/report.txt --as M.A --slot {}", slot("M.A")),
     );
-    assert!(result.unwrap_err().to_string().contains("--scope"));
-    assert!(!env.fs.exists(Path::new("/work/report.txt.kqtf")));
-
-    let out = ok(
-        &mut env,
-        &format!(
-            "sign /work/report.txt --scope M.A --as M.A --slot {}",
-            slot("M.A")
-        ),
-    );
     assert!(out.contains("Tracking report.txt as "), "{out}");
+    let policy = ok(&mut env, &format!("policy {KQTF}"));
+    assert!(policy.contains("M.A"), "{policy}");
     let history = ok(&mut env, &format!("history {KQTF}"));
     assert!(history.contains("TrackingStarted"), "{history}");
     assert!(history.contains("RevisionSigned"), "{history}");
@@ -1688,6 +1833,21 @@ fn the_first_content_signature_starts_tracking_and_never_a_second_identity() {
         &format!("sign {KQTF} --scope M.A --as M.A --slot {}", slot("M.A")),
     );
     assert!(result.is_err());
+
+    // A copy of the same bytes at another path is its own file: signing it
+    // starts a separate lineage with a different id.
+    let bytes = env.fs.read(Path::new("/work/report.txt")).unwrap();
+    env.fs.write(Path::new("/work/copy.txt"), &bytes).unwrap();
+    ok(
+        &mut env,
+        &format!("sign /work/copy.txt --as M.A --slot {}", slot("M.A")),
+    );
+    let copy_id = ok(&mut env, "status /work/copy.txt.kqtf")
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+    assert_ne!(copy_id, id);
 }
 
 #[test]
@@ -1914,6 +2074,7 @@ fn a_letter_must_name_the_label_whose_key_opened_it() {
             revision_id: head,
             history_root: file.history_root(),
             decision: 1,
+            content_proof: crate::file_history::proof_descriptor(&file, &head)?,
             container: &container,
         })?;
         crate::cli::env::create_dir_all(Path::new("/out"))?;
@@ -1924,6 +2085,58 @@ fn a_letter_must_name_the_label_whose_key_opened_it() {
     let message = result.unwrap_err().to_string();
     assert!(
         message.contains("matching the key that opened it"),
+        "{message}"
+    );
+    assert!(!env.fs.exists(Path::new("/work/received.kqtf")));
+}
+
+#[test]
+fn a_letter_whose_proof_descriptor_does_not_match_its_container_is_refused() {
+    use crate::file_delivery::{seal_history_letter, OutgoingHistory};
+    use crate::file_history::{proof_descriptor, TrackedFile};
+    let mut env = delivering();
+    let mb_public = crate::keys::active_keys_for(
+        env.store("/home/org/keyquorum.sqlite"),
+        "M.B",
+        crate::keys::KeyType::Encryption,
+    )
+    .unwrap()[0]
+        .public_key
+        .clone();
+    let mb_public: [u8; 32] = mb_public.try_into().unwrap();
+    let container = env.fs.read(Path::new(KQTF)).unwrap();
+    let file = TrackedFile::decode(&container).unwrap();
+    let head = file.graph().heads()[0];
+    // The sender signs a descriptor naming no proofs, while the container
+    // carries the author's signature: the header and payload disagree.
+    let bare = TrackedFile::new(file.file_id, &file.logical_name);
+    let wrong = proof_descriptor(&bare, &head).unwrap();
+    assert_ne!(wrong, proof_descriptor(&file, &head).unwrap());
+    let (result, _) = env.run(|| {
+        let secrets = crate::cli::open_slot_secrets(&slot("M.A"))?;
+        let sender_public = crate::keys::encryption_public_from_secret(&secrets.encryption_secret);
+        let letter = seal_history_letter(&OutgoingHistory {
+            sender_label: "M.A",
+            sender_signing_secret: &secrets.signing_secret,
+            sender_encryption_public: &sender_public,
+            recipient_label: "M.B",
+            recipient_encryption_public: &mb_public,
+            file_name: &file.logical_name,
+            file_id: file.file_id,
+            revision_id: head,
+            history_root: file.history_root(),
+            decision: 1,
+            content_proof: wrong,
+            container: &container,
+        })?;
+        crate::cli::env::create_dir_all(Path::new("/out"))?;
+        crate::cli::env::write(Path::new("/out/mismatch.kqpb"), &letter.bytes)
+    });
+    assert!(result.is_ok(), "{result:?}");
+    let (result, _) = receive_as_mb(&mut env, "--out /work/received.kqtf");
+    let message = result.unwrap_err().to_string();
+    assert!(
+        message.contains("does not match the container"),
         "{message}"
     );
     assert!(!env.fs.exists(Path::new("/work/received.kqtf")));

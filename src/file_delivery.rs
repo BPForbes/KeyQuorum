@@ -18,8 +18,9 @@
 //!
 //! A tracked file travels the same way as [`envelope::KIND_FILE_HISTORY`]:
 //! the sealed payload is a `KQTF` container, and the signed header names the
-//! file id, the revision being delivered, the container's history root and
-//! the sender's delivery decision. That signature is *transport*
+//! file id, the revision being delivered, the container's history root,
+//! the sender's delivery decision and the delivered revision's proof
+//! descriptor (which the receiver recomputes from the container). That signature is *transport*
 //! authentication only. Whether the delivered revision is trusted is decided
 //! by the receiver from the container's own proofs and policy, never by the
 //! letter. Its acknowledgement is [`envelope::KIND_FILE_HISTORY_ACK`].
@@ -279,6 +280,8 @@ pub struct OutgoingHistory<'a> {
     pub history_root: [u8; 32],
     /// The sender's delivery decision, as `file_history` codes it.
     pub decision: u8,
+    /// `file_history::proof_descriptor` of the delivered revision.
+    pub content_proof: [u8; 32],
     pub container: &'a [u8],
 }
 
@@ -300,6 +303,9 @@ pub struct HistoryLetter {
     pub revision_id: [u8; 32],
     pub history_root: [u8; 32],
     pub decision: u8,
+    /// The proof descriptor the sender signed; the receiver recomputes it
+    /// from `container` before relying on the letter.
+    pub content_proof: [u8; 32],
     pub container: Vec<u8>,
     pub container_hash: [u8; 32],
 }
@@ -330,6 +336,7 @@ pub fn seal_history_letter(outgoing: &OutgoingHistory<'_>) -> Result<SealedHisto
         revision_id: &outgoing.revision_id,
         history_root: &outgoing.history_root,
         decision: outgoing.decision,
+        content_proof: &outgoing.content_proof,
         container_hash: &container_hash,
     })?;
     let signature = signing::sign(outgoing.sender_signing_secret, &preimage);
@@ -344,6 +351,7 @@ pub fn seal_history_letter(outgoing: &OutgoingHistory<'_>) -> Result<SealedHisto
     plain.extend_from_slice(&outgoing.revision_id);
     plain.extend_from_slice(&outgoing.history_root);
     plain.push(outgoing.decision);
+    plain.extend_from_slice(&outgoing.content_proof);
     push_len_prefixed_u32(&mut plain, outgoing.container)?;
     plain.extend_from_slice(&signature);
     let bytes = envelope::seal(
@@ -380,6 +388,7 @@ pub fn open_history_letter(
     let revision_id: [u8; 32] = take_array(&mut data)?;
     let history_root: [u8; 32] = take_array(&mut data)?;
     let decision = take_u8(&mut data)?;
+    let content_proof: [u8; 32] = take_array(&mut data)?;
     let container = take_len_prefixed_u32(&mut data)?.to_vec();
     let signature: [u8; 64] = take_array(&mut data)?;
     if !data.is_empty() {
@@ -397,6 +406,7 @@ pub fn open_history_letter(
         revision_id: &revision_id,
         history_root: &history_root,
         decision,
+        content_proof: &content_proof,
         container_hash: &container_hash,
     })?;
     let sender_key = private_bridge::signing_public_for_label(conn, &sender_label)?;
@@ -411,6 +421,7 @@ pub fn open_history_letter(
         revision_id,
         history_root,
         decision,
+        content_proof,
         container,
         container_hash,
     })
@@ -502,6 +513,7 @@ struct HistoryHeader<'a> {
     revision_id: &'a [u8; 32],
     history_root: &'a [u8; 32],
     decision: u8,
+    content_proof: &'a [u8; 32],
     container_hash: &'a [u8; 32],
 }
 
@@ -518,6 +530,7 @@ fn history_letter_preimage(header: &HistoryHeader<'_>) -> Result<[u8; 32]> {
     hasher.update(header.revision_id);
     hasher.update(header.history_root);
     hasher.update([header.decision]);
+    hasher.update(header.content_proof);
     hasher.update(header.container_hash);
     Ok(hasher.finalize().into())
 }

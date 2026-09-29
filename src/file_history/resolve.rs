@@ -348,3 +348,237 @@ impl TrackedFile {
         })
     }
 }
+
+/// How a reviewer settles a conflict the automatic merge left for a person.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Resolution {
+    /// Take the first conflicting head's content as it is.
+    KeepLeft,
+    /// Take the second conflicting head's content as it is.
+    KeepRight,
+    /// Content the reviewer wrote (the merge result, edited).
+    Edited(Vec<u8>),
+}
+
+impl Resolution {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::KeepLeft => "KEEP_LEFT",
+            Self::KeepRight => "KEEP_RIGHT",
+            Self::Edited(_) => "EDITED",
+        }
+    }
+}
+
+/// The conflict a reviewer is being asked to settle: the two diverged heads,
+/// and the revision a resolution builds on (both heads, or a rejected
+/// proposed merge of them).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenConflict {
+    pub left: [u8; 32],
+    pub right: [u8; 32],
+    pub parents: Vec<[u8; 32]>,
+}
+
+impl TrackedFile {
+    /// Whether this container records `revision` as rejected by a reviewer.
+    pub fn is_rejected(&self, revision: &[u8; 32]) -> bool {
+        self.events().iter().any(|event| {
+            event.event_type == HistoryEventType::MergeRejected
+                && event.revision_id.as_ref() == Some(revision)
+        })
+    }
+
+    /// The conflict open on this file: two diverged heads the automatic
+    /// merge cannot settle, or a sole head that is a rejected proposed merge
+    /// of two heads. `None` when nothing waits for a person.
+    pub fn open_conflict(&self, allowed: bool) -> Result<Option<OpenConflict>> {
+        let graph = self.graph();
+        match graph.heads().as_slice() {
+            [left, right] => {
+                if graph.compare(left, right)? != HeadRelation::Diverged {
+                    return Ok(None);
+                }
+                let plan = self.plan_auto_merge(left, right, allowed)?;
+                Ok(needs_person(plan.outcome).then(|| OpenConflict {
+                    left: *left,
+                    right: *right,
+                    parents: vec![*left, *right],
+                }))
+            }
+            [head] if self.is_rejected(head) => {
+                let stored = graph.get(head).ok_or(Error::InvalidTrackedFile)?;
+                match stored.revision.parent_revision_ids.as_slice() {
+                    [left, right] => Ok(Some(OpenConflict {
+                        left: *left,
+                        right: *right,
+                        parents: vec![*head],
+                    })),
+                    _ => Ok(None),
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Whether `label` may decide the conflict between `left` and `right`:
+    /// the reviewer the rules select, or an ancestor of that reviewer; when
+    /// no reviewer qualifies, the scope owner or an ancestor (the explicit
+    /// root decision). A conflicting author never decides their own
+    /// collision.
+    pub fn may_decide(
+        &self,
+        left: &[u8; 32],
+        right: &[u8; 32],
+        label: &str,
+        policy: &FilePolicy,
+        ctx: &dyn TrustContext,
+    ) -> Result<bool> {
+        let graph = self.graph();
+        for id in [left, right] {
+            let author = &graph
+                .get(id)
+                .ok_or(Error::InvalidTrackedFile)?
+                .revision
+                .author_hcp_label;
+            if author == label {
+                return Ok(false);
+            }
+        }
+        Ok(match self.select_resolver(left, right, policy, ctx)? {
+            ResolverSelection::Assigned { reviewer, .. } => {
+                authority::is_ancestor_or_self(label, &reviewer)
+            }
+            ResolverSelection::Unresolved => {
+                authority::is_ancestor_or_self(label, &policy.scope_root)
+            }
+        })
+    }
+
+    /// Settle the open conflict with a new revision whose content is the
+    /// chosen head's or the reviewer's own. It has no proofs: the caller
+    /// signs it, and the normal trust policy judges it like any revision.
+    /// `new` supplies the reviewer as author; its parents are replaced.
+    /// Records `CONFLICT_RESOLVED`. Either everything is recorded or nothing.
+    pub fn resolve_conflict(
+        &mut self,
+        resolution: Resolution,
+        new: NewRevision,
+        policy: &FilePolicy,
+        ctx: &dyn TrustContext,
+    ) -> Result<[u8; 32]> {
+        self.atomically(|file| file.resolve_conflict_steps(resolution, new, policy, ctx))
+    }
+
+    fn resolve_conflict_steps(
+        &mut self,
+        resolution: Resolution,
+        mut new: NewRevision,
+        policy: &FilePolicy,
+        ctx: &dyn TrustContext,
+    ) -> Result<[u8; 32]> {
+        let conflict = self
+            .open_conflict(policy.auto_merge)?
+            .ok_or(Error::InvalidTrackedFile)?;
+        let reviewer = new.author_hcp_label.clone();
+        if !self.may_decide(&conflict.left, &conflict.right, &reviewer, policy, ctx)? {
+            return Err(Error::InvalidTrackedFile);
+        }
+        let content_of = |id: &[u8; 32]| {
+            self.graph()
+                .get(id)
+                .and_then(|stored| stored.payload.clone())
+                .ok_or(Error::FileExpired)
+        };
+        let content = match &resolution {
+            Resolution::KeepLeft => content_of(&conflict.left)?,
+            Resolution::KeepRight => content_of(&conflict.right)?,
+            Resolution::Edited(bytes) => bytes.clone(),
+        };
+        let (identity, at, generation) = (
+            new.author_identity,
+            super::revision::whole_seconds(&new.created_at_utc),
+            new.topology_generation,
+        );
+        new.parent_revision_ids = conflict.parents.clone();
+        let id = self.check_in(new, content)?;
+        self.append(NewEvent {
+            revision_id: Some(id),
+            occurred_at: at,
+            actor_identity: identity,
+            actor_label: Some(reviewer.clone()),
+            topology_generation: Some(generation),
+            event_type: HistoryEventType::ConflictResolved,
+            outcome: HistoryOutcome::Success,
+            details: EventDetails::new()
+                .with("revision_a", &hex::encode(conflict.left))
+                .with("revision_b", &hex::encode(conflict.right))
+                .with("resolution", resolution.name())
+                .with("reviewer", &reviewer)
+                .with("trust_state", "PENDING"),
+        })?;
+        Ok(id)
+    }
+
+    /// A reviewer refuses a proposed merge: the sole head, joining two
+    /// revisions, and not trusted. The revision stays (nothing is rewritten);
+    /// `MERGE_REJECTED` names it, and a resolution then builds on it.
+    pub fn reject_merge(
+        &mut self,
+        merge: &[u8; 32],
+        actor: NewEvent,
+        policy: &FilePolicy,
+        ctx: &dyn TrustContext,
+    ) -> Result<()> {
+        let graph = self.graph();
+        let heads = graph.heads();
+        let stored = graph.get(merge).ok_or(Error::InvalidTrackedFile)?;
+        let [left, right] = stored.revision.parent_revision_ids.as_slice() else {
+            return Err(Error::InvalidTrackedFile);
+        };
+        let (left, right) = (*left, *right);
+        if heads != [*merge]
+            || self.is_rejected(merge)
+            || evaluate_revision_trust(self, merge, policy, ctx)? == TrustState::Trusted
+        {
+            return Err(Error::InvalidTrackedFile);
+        }
+        let label = actor.actor_label.clone().ok_or(Error::InvalidTrackedFile)?;
+        let owner = authority::is_ancestor_or_self(&label, &policy.scope_root)
+            && !self.authored(&left, &label)?
+            && !self.authored(&right, &label)?;
+        if !owner && !self.may_decide(&left, &right, &label, policy, ctx)? {
+            return Err(Error::InvalidTrackedFile);
+        }
+        self.append(NewEvent {
+            revision_id: Some(*merge),
+            event_type: HistoryEventType::MergeRejected,
+            outcome: HistoryOutcome::Denied,
+            details: EventDetails::new()
+                .with("revision_a", &hex::encode(left))
+                .with("revision_b", &hex::encode(right))
+                .with("reviewer", &label),
+            ..actor
+        })?;
+        Ok(())
+    }
+
+    fn authored(&self, id: &[u8; 32], label: &str) -> Result<bool> {
+        Ok(self
+            .graph()
+            .get(id)
+            .ok_or(Error::InvalidTrackedFile)?
+            .revision
+            .author_hcp_label
+            == label)
+    }
+}
+
+fn needs_person(outcome: AutoMergeOutcome) -> bool {
+    matches!(
+        outcome,
+        AutoMergeOutcome::RequiresHuman
+            | AutoMergeOutcome::UnsupportedContent
+            | AutoMergeOutcome::PolicyBlocked
+    )
+}

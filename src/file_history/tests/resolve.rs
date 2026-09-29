@@ -560,3 +560,81 @@ fn related_heads_record_no_conflict_even_when_auto_merge_is_disabled() {
         );
     }
 }
+
+fn reviewer_meta(label: &str, at: &str) -> NewRevision {
+    let mut new = merge_meta(at);
+    new.author_hcp_label = label.to_string();
+    new.author_identity = Some([label_id(label); 16]);
+    new
+}
+
+#[test]
+fn only_the_assigned_reviewer_or_an_ancestor_settles_a_conflict() {
+    let mut s = Story::new();
+    let base = s.rev(&[], "M.A", "line: base\n", true);
+    let (l, r) = s.conflict(base, "M.A.2", "M.S.1");
+    let ctx = Ctx(BridgeEvidence::None);
+    let open = s.file.open_conflict(true).unwrap().unwrap();
+    assert_eq!((open.left, open.right), (l, r));
+    for who in ["M.A.2", "M.S.1", "M.S", "M.A.1"] {
+        assert!(
+            !s.file.may_decide(&l, &r, who, &policy(), &ctx).unwrap(),
+            "{who}"
+        );
+        let before = s.file.clone();
+        assert!(s
+            .file
+            .resolve_conflict(
+                Resolution::KeepLeft,
+                reviewer_meta(who, "2026-10-05T00:00:00Z"),
+                &policy(),
+                &ctx
+            )
+            .is_err());
+        assert_eq!(s.file, before, "a refused resolution records nothing");
+    }
+    // M.A was assigned; M, its ancestor, may decide too.
+    assert!(s.file.may_decide(&l, &r, "M", &policy(), &ctx).unwrap());
+    let id = s
+        .file
+        .resolve_conflict(
+            Resolution::Edited(b"line: both\n".to_vec()),
+            reviewer_meta("M.A", "2026-10-05T00:00:00Z"),
+            &policy(),
+            &ctx,
+        )
+        .unwrap();
+    let stored = s.file.graph().get(&id).unwrap().clone();
+    assert_eq!(stored.revision.parent_revision_ids, vec![l, r]);
+    assert_eq!(stored.payload.as_deref(), Some(&b"line: both\n"[..]));
+    // Unsigned, it is pending like any revision: the decision is not trust.
+    assert!(matches!(
+        evaluate_revision_trust(&s.file, &id, &policy(), &ctx).unwrap(),
+        TrustState::Pending(_)
+    ));
+    assert_eq!(
+        kinds(&s.file).last(),
+        Some(&HistoryEventType::ConflictResolved)
+    );
+    assert_eq!(s.file.open_conflict(true).unwrap(), None);
+}
+
+#[test]
+fn with_no_qualified_reviewer_the_scope_root_decides() {
+    let mut s = Story::new();
+    let base = s.rev(&[], "M.A.2", "line: base\n", true);
+    let (l, r) = s.conflict(base, "M.A.2", "M.S.1");
+    let ctx = Ctx(BridgeEvidence::None);
+    assert_eq!(s.pick(&l, &r), ResolverSelection::Unresolved);
+    assert!(!s.file.may_decide(&l, &r, "M.S", &policy(), &ctx).unwrap());
+    assert!(s.file.may_decide(&l, &r, "M", &policy(), &ctx).unwrap());
+    s.file
+        .resolve_conflict(
+            Resolution::KeepRight,
+            reviewer_meta("M", "2026-10-05T00:00:00Z"),
+            &policy(),
+            &ctx,
+        )
+        .unwrap();
+    assert_eq!(s.file.graph().heads().len(), 1);
+}

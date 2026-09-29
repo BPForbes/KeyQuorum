@@ -175,6 +175,22 @@ fn an_unrelated_author_is_denied() {
 }
 
 #[test]
+fn a_branch_with_no_common_ancestor_never_gets_the_cross_branch_rule() {
+    // Even when cross-branch authors need only their own signature, an author
+    // under another root entirely (`CrossBranch { common_ancestor: None }`)
+    // has no hierarchy that could connect them to the scope.
+    let mut open = policy();
+    open.cross_branch = Requirement::AuthorSign;
+    assert_eq!(open.requirement_for("M.S.1"), Some(Requirement::AuthorSign));
+    assert_eq!(open.requirement_for("X.1"), None);
+    assert!(!open.may_author("X.1"));
+    let mut file = TrackedFile::new(FILE, "report.txt");
+    let id = revision_by(&mut file, vec![], "X.1", 9, &open, T1);
+    let verdict = evaluate_revision_trust(&file, &id, &open, &Ctx::new()).unwrap();
+    assert_eq!(verdict, Denied(R::UnrelatedActor));
+}
+
+#[test]
 fn a_forbidden_role_is_denied() {
     let mut strict = policy();
     strict.descendants = Requirement::Forbidden;
@@ -763,6 +779,51 @@ fn a_finalization_survives_the_container_round_trip_and_older_versions_refuse_it
     let mut old = bytes.clone();
     old[4] = 5;
     assert!(TrackedFile::decode(&old).is_err());
+}
+
+#[test]
+fn current_and_trusted_views_are_derived_per_store_and_a_fork_has_no_current_head() {
+    let mut file = TrackedFile::new(FILE, "report.txt");
+    let base = revision_by(&mut file, vec![], "M.A", 2, &policy(), T1);
+    file.sign_revision(&base, ident(2), "M.A", &secret(2))
+        .unwrap();
+    // M signs its own newer revision; M.A.1's descendant edit stays pending.
+    let by_root = revision_by(&mut file, vec![base], "M", 1, &policy(), T2);
+    file.sign_revision(&by_root, ident(1), "M", &secret(1))
+        .unwrap();
+    let full = Ctx::new();
+    let mut no_root = Ctx::new();
+    no_root.keys.retain(|(_, label)| *label != "M");
+    // One head: it is current in every store; which revision is trusted
+    // depends on the keys the store holds.
+    assert_eq!(current_revision(&file), Some(by_root));
+    assert_eq!(
+        latest_trusted_revision(&file, &policy(), &full),
+        Some(by_root)
+    );
+    assert_eq!(
+        latest_trusted_revision(&file, &policy(), &no_root),
+        Some(base)
+    );
+    // A fork has no current head, and nothing picks a winner for it.
+    let side = revision_by(
+        &mut file,
+        vec![base],
+        "M.A",
+        2,
+        &policy(),
+        "2026-10-02T15:00:00Z",
+    );
+    file.sign_revision(&side, ident(2), "M.A", &secret(2))
+        .unwrap();
+    assert_eq!(current_revision(&file), None);
+    // The trusted view is still just the most recently stored trusted
+    // revision, a display value: sharing picks from a head's own ancestry.
+    assert_eq!(latest_trusted_revision(&file, &policy(), &full), Some(side));
+    let decision = select_shareable_revision(&file, &by_root, None, &policy(), &no_root).unwrap();
+    assert_eq!(decision.delivered_revision, Some(base));
+    // Nothing about either view is stored: the bytes are the same for both.
+    assert_eq!(TrackedFile::decode(&file.encode().unwrap()).unwrap(), file);
 }
 
 #[test]

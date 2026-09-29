@@ -51,6 +51,12 @@ pub trait Env: Any {
     fn open_db(&mut self, path: &Path) -> Result<Connection>;
     /// Hand a store opened by [`Env::open_db`] back when the command ends.
     fn close_db(&mut self, path: &Path, conn: Connection);
+    /// Whether a person is at a terminal (standard input and output both
+    /// attached), so a command may open an interactive view. Tests and the
+    /// lab are never interactive.
+    fn interactive(&self) -> bool {
+        false
+    }
 }
 
 /// The real process: terminal, `std::fs`, and SQLite files on disk.
@@ -146,6 +152,12 @@ impl Env for NativeEnv {
 
     fn close_db(&mut self, _path: &Path, conn: Connection) {
         drop(conn);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn interactive(&self) -> bool {
+        use std::io::IsTerminal;
+        std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
     }
 }
 
@@ -274,6 +286,10 @@ pub fn confirm_passphrase(first_prompt: &str, second_prompt: &str) -> Result<Str
 }
 
 /// `std::env::var` for the current environment.
+pub fn interactive() -> bool {
+    with(|env| env.interactive())
+}
+
 pub fn var(name: &str) -> std::result::Result<String, std::env::VarError> {
     with(|env| env.var(name)).ok_or(std::env::VarError::NotPresent)
 }

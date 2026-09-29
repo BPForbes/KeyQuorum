@@ -82,10 +82,18 @@ fn relationship_classifies_against_scope() {
     assert_eq!(
         relationship("M.A", "M.S.1"),
         RevisionAuthority::CrossBranch {
-            common_ancestor: "M".into()
+            common_ancestor: Some("M".into())
         }
     );
-    assert_eq!(relationship("M.A", "X.1"), RevisionAuthority::Unrelated);
+    // Distinct roots are another branch with no common ancestor (the
+    // design's `CrossBranch { common_ancestor: None }`); only a malformed
+    // or empty label is unrelated.
+    assert_eq!(
+        relationship("M.A", "X.1"),
+        RevisionAuthority::CrossBranch {
+            common_ancestor: None
+        }
+    );
     assert_eq!(relationship("M.A", ""), RevisionAuthority::Unrelated);
 }
 
@@ -136,7 +144,7 @@ fn well_formed_relationships_are_unchanged() {
     assert_eq!(
         relationship("M.A", "M.B"),
         RevisionAuthority::CrossBranch {
-            common_ancestor: "M".to_string()
+            common_ancestor: Some("M".to_string())
         }
     );
     assert_eq!(ancestry_distance("M", "M.A.1"), Some(2));
