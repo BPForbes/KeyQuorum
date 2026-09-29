@@ -436,6 +436,8 @@ The design this feature follows goes further than what is built. Today:
   held each label in each generation. Signing keys come from today's
   registry, so if a label is later given to someone else, that label's old
   revisions read as denied instead of keeping their meaning.
+  \item A cross-branch rule needs a bridge's approval \emph{or} the scope
+  owner's countersignature; there is no rule that needs both.
   \item The history records the rule a cross-branch revision met, not whether
   a bridge or the scope owner met it.
   \item Conflicts are settled a whole revision at a time (\flag{--keep} or
