@@ -1,7 +1,7 @@
 use super::*;
 use crate::error::Error;
 
-const ALL_TYPES: [HistoryEventType; 22] = [
+const ALL_TYPES: [HistoryEventType; 23] = [
     HistoryEventType::TrackingStarted,
     HistoryEventType::EditCheckedIn,
     HistoryEventType::RevisionSigned,
@@ -24,6 +24,7 @@ const ALL_TYPES: [HistoryEventType; 22] = [
     HistoryEventType::ConflictReviewEscalated,
     HistoryEventType::BridgeUsed,
     HistoryEventType::ConflictUnresolved,
+    HistoryEventType::HistoryImported,
 ];
 
 const ALL_OUTCOMES: [HistoryOutcome; 4] = [
@@ -43,7 +44,7 @@ fn every_declared_code_round_trips_and_stays_stable() {
     }
     let decoded = TrackedFile::decode(&file.encode().unwrap()).unwrap();
     assert_eq!(decoded, file);
-    // Wire codes are fixed: 1..=22 for types and 1..=4 for outcomes.
+    // Wire codes are fixed: 1..=23 for types and 1..=4 for outcomes.
     for (index, kind) in ALL_TYPES.iter().enumerate() {
         assert_eq!(*kind as u8, index as u8 + 1);
     }

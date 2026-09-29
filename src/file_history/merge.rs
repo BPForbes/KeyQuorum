@@ -374,17 +374,19 @@ impl TrackedFile {
         self.atomically(|file| file.auto_merge_steps(left, right, allowed, new))
     }
 
-    /// Run a multi-step change and put back the revisions and events as they
-    /// were if any step fails, so a half-recorded merge is never left behind.
-    /// Proofs are not touched by the steps that use this.
+    /// Run a multi-step change and put back the revisions, proofs and events
+    /// as they were if any step fails, so a half-recorded change is never
+    /// left behind.
     pub(super) fn atomically<T>(
         &mut self,
         steps: impl FnOnce(&mut Self) -> Result<T>,
     ) -> Result<T> {
-        let (revisions, events) = (self.revisions.len(), self.events.len());
+        let (revisions, proofs, events) =
+            (self.revisions.len(), self.proofs.len(), self.events.len());
         let result = steps(self);
         if result.is_err() {
             self.revisions.truncate(revisions);
+            self.proofs.truncate(proofs);
             self.events.truncate(events);
         }
         result

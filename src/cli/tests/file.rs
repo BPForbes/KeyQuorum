@@ -712,3 +712,195 @@ fn review_still_names_the_reviewer_when_a_diff_is_too_large() {
     let out = ok(&mut env, &format!("merge {KQTF} --as M.A"));
     assert!(out.contains("UnsupportedContent (TOO_LARGE)"), "{out}");
 }
+
+// ---- import and snapshots --------------------------------------------------
+
+const COPY: &str = "/work/copy.kqtf";
+
+/// Track a three-line file as M.A and give a second holder a copy of it.
+fn two_copies(env: &mut MemoryEnv) {
+    env.fs
+        .write(Path::new("/work/report.txt"), b"a\nb\nc\n")
+        .unwrap();
+    track(env, "M.A", "M.A");
+    let bytes = env.fs.read(Path::new(KQTF)).unwrap();
+    env.fs.write(Path::new(COPY), &bytes).unwrap();
+}
+
+fn checkin_unsigned(env: &mut MemoryEnv, container: &str, text: &str) {
+    edit(env, text);
+    ok(
+        env,
+        &format!("checkin {container} --from /work/edited.txt --as M.A --unsigned"),
+    );
+}
+
+#[test]
+fn diverged_copies_import_merge_and_converge() {
+    let mut env = org();
+    two_copies(&mut env);
+    checkin_unsigned(&mut env, KQTF, "A\nb\nc\n");
+    checkin_unsigned(&mut env, COPY, "a\nb\nC\n");
+
+    let out = ok(&mut env, &format!("import {KQTF} --from {COPY} --as M.A"));
+    assert!(
+        out.contains("Imported: Diverged; 1 revision(s) and 0 proof(s) added"),
+        "{out}"
+    );
+    assert!(out.contains("The history has forked"), "{out}");
+    assert!(ok(&mut env, &format!("graph {KQTF}")).contains("FORK: 2 heads"));
+    let history = ok(&mut env, &format!("history {KQTF}"));
+    assert!(history.contains("HistoryImported"), "{history}");
+    assert!(history.contains("relation=Diverged"), "{history}");
+    assert!(
+        ok(&mut env, "list").contains("heads 2"),
+        "the index follows an import"
+    );
+
+    let out = ok(&mut env, &format!("merge {KQTF} --as M.A"));
+    assert!(out.contains("CleanMerge"), "{out}");
+    ok(&mut env, &format!("checkout {KQTF} --out /work/merged.txt"));
+    assert_eq!(
+        env.fs.read(Path::new("/work/merged.txt")).unwrap(),
+        b"A\nb\nC\n"
+    );
+    let out = ok(
+        &mut env,
+        &format!("sign {KQTF} --as M.A --slot {}", slot("M.A")),
+    );
+    assert!(out.contains("trust TRUSTED"), "{out}");
+}
+
+#[test]
+fn a_copy_that_is_ahead_fast_forwards() {
+    let mut env = org();
+    two_copies(&mut env);
+    checkin_unsigned(&mut env, COPY, "a\nB\nc\n");
+    let out = ok(&mut env, &format!("import {KQTF} --from {COPY} --as M.A"));
+    assert!(
+        out.contains("Imported: RemoteAhead; 1 revision(s)"),
+        "{out}"
+    );
+    assert!(!out.contains("forked"), "{out}");
+    ok(&mut env, &format!("checkout {KQTF} --out /work/head.txt"));
+    assert_eq!(
+        env.fs.read(Path::new("/work/head.txt")).unwrap(),
+        b"a\nB\nc\n"
+    );
+}
+
+#[test]
+fn importing_what_is_already_here_does_nothing() {
+    let mut env = org();
+    two_copies(&mut env);
+    let before = env.fs.read(Path::new(KQTF)).unwrap();
+    let out = ok(&mut env, &format!("import {KQTF} --from {COPY} --as M.A"));
+    assert!(out.contains("Nothing new to import (Identical)"), "{out}");
+    assert_eq!(env.fs.read(Path::new(KQTF)).unwrap(), before);
+    // A copy that is behind is a no-op too.
+    checkin_unsigned(&mut env, KQTF, "x\nb\nc\n");
+    let ahead = env.fs.read(Path::new(KQTF)).unwrap();
+    let out = ok(&mut env, &format!("import {KQTF} --from {COPY} --as M.A"));
+    assert!(out.contains("(LocalAhead)"), "{out}");
+    assert_eq!(env.fs.read(Path::new(KQTF)).unwrap(), ahead);
+}
+
+#[test]
+fn import_refuses_other_files_bad_copies_and_bad_authors() {
+    let mut env = org();
+    two_copies(&mut env);
+    let before = env.fs.read(Path::new(KQTF)).unwrap();
+    // A different tracked file is not a copy of this one.
+    env.fs.write(Path::new("/work/other.txt"), b"x\n").unwrap();
+    ok(
+        &mut env,
+        &format!(
+            "track /work/other.txt --scope M.A --as M.A --slot {}",
+            slot("M.A")
+        ),
+    );
+    let (result, _) = run(
+        &mut env,
+        &format!("import {KQTF} --from /work/other.txt.kqtf --as M.A"),
+    );
+    assert!(result.unwrap_err().to_string().contains("not another copy"));
+    // A copy that fails verification.
+    let mut bytes = env.fs.read(Path::new(COPY)).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    env.fs.write(Path::new("/work/bad.kqtf"), &bytes).unwrap();
+    let (result, _) = run(
+        &mut env,
+        &format!("import {KQTF} --from /work/bad.kqtf --as M.A"),
+    );
+    assert!(result.is_err());
+    // An importer outside the file's scope.
+    let (result, _) = run(&mut env, &format!("import {KQTF} --from {COPY} --as X.1"));
+    assert!(result.is_err());
+    assert_eq!(env.fs.read(Path::new(KQTF)).unwrap(), before);
+}
+
+#[test]
+fn a_snapshot_exports_verifies_and_matches_its_file() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    let out = ok(
+        &mut env,
+        &format!("history {KQTF} --export /work/snap.kqhs"),
+    );
+    assert_eq!(out.lines().count(), 3, "the listing is unchanged: {out}");
+    assert!(env.fs.exists(Path::new("/work/snap.kqhs")));
+
+    let out = ok(&mut env, "verify-snapshot /work/snap.kqhs");
+    assert!(out.starts_with("Snapshot verifies: file "), "{out}");
+    assert!(out.contains("3 event(s)"), "{out}");
+    let out = ok(
+        &mut env,
+        &format!("verify-snapshot /work/snap.kqhs --against {KQTF}"),
+    );
+    assert!(
+        out.contains("It is a point in the history of report.txt"),
+        "{out}"
+    );
+
+    // The file moves on; the earlier snapshot is still a point in its history.
+    edit(&mut env, "totals: 125\n");
+    ok(
+        &mut env,
+        &format!("checkin {KQTF} --from /work/edited.txt --as M.A --unsigned"),
+    );
+    ok(
+        &mut env,
+        &format!("verify-snapshot /work/snap.kqhs --against {KQTF}"),
+    );
+
+    // It is not a point in some other file's history, and a damaged snapshot
+    // does not verify.
+    env.fs.write(Path::new("/work/other.txt"), b"x\n").unwrap();
+    ok(
+        &mut env,
+        &format!(
+            "track /work/other.txt --scope M.A --as M.A --slot {}",
+            slot("M.A")
+        ),
+    );
+    let (result, _) = run(
+        &mut env,
+        "verify-snapshot /work/snap.kqhs --against /work/other.txt.kqtf",
+    );
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("not a point in the history"));
+    let mut bytes = env.fs.read(Path::new("/work/snap.kqhs")).unwrap();
+    bytes[10] ^= 1;
+    env.fs.write(Path::new("/work/bad.kqhs"), &bytes).unwrap();
+    let (result, _) = run(&mut env, "verify-snapshot /work/bad.kqhs");
+    assert!(result.is_err());
+    // Exporting never overwrites.
+    let (result, _) = run(
+        &mut env,
+        &format!("history {KQTF} --export /work/snap.kqhs"),
+    );
+    assert!(result.is_err());
+}

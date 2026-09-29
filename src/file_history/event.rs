@@ -43,6 +43,7 @@ pub enum HistoryEventType {
     ConflictReviewEscalated = 20,
     BridgeUsed = 21,
     ConflictUnresolved = 22,
+    HistoryImported = 23,
 }
 
 impl HistoryEventType {
@@ -70,6 +71,7 @@ impl HistoryEventType {
             20 => Self::ConflictReviewEscalated,
             21 => Self::BridgeUsed,
             22 => Self::ConflictUnresolved,
+            23 => Self::HistoryImported,
             _ => return Err(Error::InvalidTrackedFile),
         })
     }

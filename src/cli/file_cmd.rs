@@ -14,8 +14,9 @@ use crate::error::{Error, Result};
 use crate::file_history::{
     diff_text, evaluate_revision_trust, index, select_shareable_revision, verify_tracked_file,
     AutoMergeOutcome, BridgeEvidence, ChangeKind, DeliveryDecisionKind, EventDetails, FilePolicy,
-    HistoryEvent, HistoryEventType, HistoryOutcome, MergeBase, NewEvent, NewRevision,
-    ResolverSelection, TrackedFile, TrustContext, TrustReason, TrustState,
+    HistoryEvent, HistoryEventType, HistoryOutcome, HistoryRelation, HistorySnapshot,
+    ImportContext, MergeBase, NewEvent, NewRevision, ResolverSelection, TrackedFile, TrustContext,
+    TrustReason, TrustState,
 };
 use crate::{key_tree, private_bridge, transfer};
 use clap::Subcommand;
@@ -156,7 +157,30 @@ pub enum FileCommand {
     /// Show the heads, their trust, and what would be shared
     Status { kqtf: PathBuf },
     /// List the recorded events
-    History { kqtf: PathBuf },
+    History {
+        kqtf: PathBuf,
+        /// Also write the event history as a portable snapshot (KQHS)
+        #[arg(long)]
+        export: Option<PathBuf>,
+    },
+    /// Check a history snapshot; with --against, that it belongs to a file
+    VerifySnapshot {
+        snapshot: PathBuf,
+        /// A tracked file the snapshot must be a point in the history of
+        #[arg(long)]
+        against: Option<PathBuf>,
+    },
+    /// Bring another copy of the same file's revisions and proofs into this
+    /// one. A fork is kept as two heads; nothing is overwritten.
+    Import {
+        kqtf: PathBuf,
+        /// The other copy (.kqtf)
+        #[arg(long)]
+        from: PathBuf,
+        /// Your label (recorded as the importer)
+        #[arg(long = "as")]
+        as_label: String,
+    },
     /// Verify the history chain and revision graph, and judge every revision
     Verify { kqtf: PathBuf },
 }
@@ -234,7 +258,13 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
         FileCommand::List => list(conn),
         FileCommand::Reindex { kqtf, clear } => reindex(conn, &kqtf, clear),
         FileCommand::Status { kqtf } => status(conn, &kqtf),
-        FileCommand::History { kqtf } => history(&kqtf),
+        FileCommand::History { kqtf, export } => history(&kqtf, export),
+        FileCommand::VerifySnapshot { snapshot, against } => verify_snapshot(&snapshot, against),
+        FileCommand::Import {
+            kqtf,
+            from,
+            as_label,
+        } => import(conn, &kqtf, &from, &as_label),
         FileCommand::Verify { kqtf } => verify(conn, &kqtf),
     }
 }
@@ -749,10 +779,75 @@ fn describe(event: &HistoryEvent) -> String {
     .to_string()
 }
 
-fn history(kqtf: &Path) -> Result<()> {
+fn history(kqtf: &Path, export: Option<PathBuf>) -> Result<()> {
     let file = load(kqtf)?;
     for event in file.events() {
         outln!("{}", describe(event));
+    }
+    if let Some(path) = export {
+        env::write_new(&path, &file.history_snapshot().encode()?)?;
+        errln!(
+            "Wrote a snapshot of {} event(s), root {}, to {}",
+            file.events().len(),
+            hex::encode(&file.history_root()[..6]),
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn verify_snapshot(snapshot: &Path, against: Option<PathBuf>) -> Result<()> {
+    let snapshot = HistorySnapshot::decode(&env::read(snapshot)?)?;
+    outln!(
+        "Snapshot verifies: file {}, {} event(s), root {}",
+        hex::encode(snapshot.file_id),
+        snapshot.events.len(),
+        hex::encode(&snapshot.history_root[..6])
+    );
+    if let Some(path) = against {
+        let file = load(&path)?;
+        if !snapshot.is_prefix_of(&file) {
+            return Err(usage(&format!(
+                "the snapshot is not a point in the history of {}",
+                path.display()
+            )));
+        }
+        outln!("It is a point in the history of {}", file.logical_name);
+    }
+    Ok(())
+}
+
+fn import(conn: &Connection, kqtf: &Path, from: &Path, as_label: &str) -> Result<()> {
+    let mut file = load(kqtf)?;
+    let other = load(from)?;
+    let policy = policy_of(&file)?.clone();
+    if !policy.may_author(as_label) {
+        return Err(usage("--as is outside the scope of this file"));
+    }
+    require_active(conn, as_label)?;
+    let context = ImportContext {
+        actor_identity: Some(identity_for(conn, as_label)?),
+        actor_label: as_label.to_string(),
+        occurred_at: utc_instant()?,
+        topology_generation: generation_for(conn, &policy.scope_root)?,
+    };
+    let merged = file.merge_history(&other, &context).map_err(|_| {
+        usage("that is not another copy of this file (same id and policy, and it must verify)")
+    })?;
+    if merged.revisions_added == 0 && merged.proofs_added == 0 {
+        outln!("Nothing new to import ({:?}).", merged.relation);
+        return Ok(());
+    }
+    save(kqtf, &file)?;
+    index_after(conn, &file);
+    outln!(
+        "Imported: {:?}; {} revision(s) and {} proof(s) added",
+        merged.relation,
+        merged.revisions_added,
+        merged.proofs_added
+    );
+    if merged.relation == HistoryRelation::Diverged {
+        outln!("The history has forked. Run `keyquorum file merge` to join the heads.");
     }
     Ok(())
 }

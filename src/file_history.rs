@@ -21,6 +21,8 @@ mod policy;
 mod proof;
 mod resolve;
 mod revision;
+mod snapshot;
+mod sync;
 mod verify;
 
 pub use container::{TrackedFile, CONTAINER_MAGIC, CONTAINER_VERSION};
@@ -39,6 +41,8 @@ pub use revision::{
     content_commitment, generated_label, FileRevision, HeadRelation, MergeBase, NewRevision,
     RevisionGraph, StoredRevision,
 };
+pub use snapshot::{HistorySnapshot, SNAPSHOT_MAGIC, SNAPSHOT_VERSION};
+pub use sync::{HistoryMerge, HistoryRelation, ImportContext};
 pub use verify::verify_tracked_file;
 
 #[cfg(test)]

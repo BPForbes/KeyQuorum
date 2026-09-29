@@ -169,6 +169,12 @@ label). Containers are replaced by writing a sibling and renaming.
 `tracked_history_index` as a rebuildable cache over `.kqtf` files: metadata
 only, no payload and no trust state, and `file reindex` restores it from the
 containers, which remain the authority.
+`file_history/sync.rs` imports another copy of the same file (same id and
+policy, and it must verify): revisions and proofs are unioned, a fork stays as
+two heads, and the importer records one `HISTORY_IMPORTED` event in its own
+chain; two diverged event chains are never joined. `file_history/snapshot.rs`
+is `KQHS`, a verifiable event-history snapshot (its own magic, not a sealed
+envelope) that can be checked as a point in a file's history.
 
 `src/lab/` (feature `lab`) is KeyQuorum Lab, the public browser
 demonstration published from `lab/` to GitHub Pages and embedded by

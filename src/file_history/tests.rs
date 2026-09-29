@@ -7,6 +7,7 @@ mod index;
 mod merge;
 mod policy;
 mod resolve;
+mod sync;
 
 const FILE: [u8; 16] = [7; 16];
 
