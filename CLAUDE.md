@@ -170,7 +170,8 @@ helpers (`open_kind`, `take_head`, `take_signature`, `verify_signed_by`), and
 Freshness is never assumed: `file_delivery::freshness` compares a letter's
 revision and signed history root with `tracked_seen_roots` (what this store
 accepted before for that file) and says `FIRST`, `REPLAYED`, `NEWER` (its
-history holds everything accepted before, and more) or `NOT_NEWER`; `file
+event chain passes through every root accepted before, `TrackedFile::passes_through`,
+and it holds those revisions and adds one) or `NOT_NEWER`; `file
 receive` prints it and records it on `SHARE_DELIVERED`, then records the
 accepted root. That table is store state, not a cache over `.kqtf` files.
 `src/file_history.rs` owns the tracked-file container (`KQTF`, its own
