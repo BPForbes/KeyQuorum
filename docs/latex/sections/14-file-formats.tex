@@ -23,8 +23,9 @@ a file extension.
 \code{KQTX} & --- & Device transfer package, signed by the source device,
   bound to a destination device id. Never stored raw on the mailbox. \\
 \code{KQTF} & \file{.kqtf} & Tracked file: revisions, proofs, policy and
-  hash-chained history (version 5; a payload may be absent after expiry;
-  version 4 still opens). Not a sealed envelope. \\
+  hash-chained history (version 7: version 5 lets a payload be absent after
+  expiry, 6 adds finalization proofs, 7 optional event signatures, each
+  written only when present; versions 4 to 6 still open). Not a sealed envelope. \\
 \code{KQHS} & \file{.kqhs} & History snapshot: a tracked file's event
   history alone, verifiable on its own and against its file. \\
 --- & \file{.kqbn} & Eviction notice --- a public routing slip, not a sealed

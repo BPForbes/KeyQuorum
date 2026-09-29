@@ -212,15 +212,15 @@ See section~\ref{sec:file-history}.
 \code{file track} & Start tracking a file: make its first revision, sign it as its author, and write \file{<file>.kqtf}. \flag{--no-auto-merge} sends every fork to a person. \flag{--owner-rule}, \flag{--descendants-rule}, \flag{--ancestors-rule} and \flag{--cross-branch-rule} set what each role must present (\code{forbidden}, \code{author}, \code{author+parent}, or for cross-branch \code{author+bridge-or-owner}); rules that cannot be met are refused. \\
 \code{file policy} & Show the rules a tracked file's revisions are judged by and the policy hash every revision carries. \\
 \code{file checkin} & Check in a new revision from a native file (signed with \flag{--slot}, or \flag{--unsigned}). \\
-\code{file sign} & Sign a revision you authored (the current head unless \flag{--revision}). Given a native file that is not tracked, together with \flag{--scope}, this first content signature starts tracking it, exactly as \code{file track} does. \\
+\code{file sign} & Sign a revision you authored (the current head unless \flag{--revision}). Given a native file that is not tracked, this first content signature starts tracking it, exactly as \code{file track} does; the scope is your own label unless \flag{--scope} names another. \\
 \code{file rename} & Change the name a tracked file is shown under. The scope owner or an ancestor proves the label with \flag{--slot}; the file id and every revision id stay the same and the old and new names are recorded. \\
 \code{file countersign} & Countersign a revision the author has signed. \\
-\code{file finalize} & Finalize a trusted revision (scope owner or an ancestor, by slot). \\
+\code{file finalize} & Mark a trusted revision final (scope owner or an ancestor, by slot). Trust itself is unchanged, and each store decides finality from its own keys. \\
 \code{file send-history} & Seal this file's event history (a KQHS snapshot, no content) to a label, its root signed by you. \\
 \code{file open-history} & Open a history snapshot letter and compare it with your copy (\code{--against}). \\
 \code{file bridge-approve} & As a member of a private bridge that reaches from the author to the scope, approve a revision with the bridge (kept in this store only). \\
 \code{file resolve} & As a conflict's reviewer, keep one side (\code{--keep left|right}) or supply the edited result (\code{--from}), signed as yours; \code{--reject} refuses a proposed merge. \\
-\code{file merge} & Merge two divergent heads automatically when the edits allow it; otherwise record the conflict and who must review it. A merge is a new revision that stays untrusted until it is signed. \\
+\code{file merge} & Merge two divergent heads automatically when the edits allow it; otherwise record the conflict and who must review it, and on a \flag{--features tui} build in an interactive terminal open the review. A merge is a new revision that stays untrusted until it is signed. \\
 \code{file review} & Show what each side of a fork changed, and who reviews a conflict. \flag{--interactive} needs a build with \flag{--features tui}. \\
 \code{file graph} & Show the revisions, their parents and their trust. \\
 \code{file diff} & Show the changed lines between two revisions of text. \\
@@ -236,7 +236,7 @@ See section~\ref{sec:file-history}.
 \code{file link} & Record what happens at a quorum-protected or password-locked file's gate in this tracked file's history. The gate is unchanged and never depends on it. \\
 \code{file unlink} & Stop recording a gate in this tracked file's history. \\
 \code{file share} & Seal the head (or \flag{--revision}) to another label as a \file{.kqpb} letter, or its most recently stored trusted ancestor when it is not trusted. Trusted work on another branch is never substituted, and nothing is sent when no ancestor is trusted. \\
-\code{file receive} & Open a tracked-file letter addressed to you. The sender is checked as the transport; the delivered revision is then judged by the file's own policy and accepted only if it is trusted here. \\
+\code{file receive} & Open a tracked-file letter addressed to you. The sender is checked as the transport; the delivered revision is then judged by the file's own policy and accepted only if it is trusted here. Prints and records how the history compares with what this store accepted before (\code{FIRST}, \code{REPLAYED}, \code{NEWER}, \code{NOT_NEWER}); receiving the same letter again records nothing new. \\
 \code{file ack} & Record an acknowledgement sealed back to you in your copy's history. \\
 \bottomrule
 \end{longtable}

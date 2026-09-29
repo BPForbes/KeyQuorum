@@ -26,31 +26,37 @@ sender's database.
   Every revision also has a generated label,
   \code{R<file-name>-<UTC time>-<HCP label>}, and may have a user label;
   labels are for people, the id is what is signed.
-  \item \textbf{Proofs.} Content signatures by a revision's author, and
-  countersignatures by an approver. They are ordinary Ed25519 signatures
-  over domain-separated preimages (\code{KQ-FILE-REVISION-v1},
-  \code{KQ-FILE-COUNTERSIGN-v1}), made and checked by the same signing code
-  as the rest of KeyQuorum.
+  \item \textbf{Proofs.} Content signatures by a revision's author,
+  countersignatures by an approver, and finalizations by the scope owner or
+  an ancestor. They are ordinary Ed25519 signatures over domain-separated
+  preimages (\code{KQ-FILE-REVISION-v1}, \code{KQ-FILE-COUNTERSIGN-v1} and
+  \code{KQ-FILE-FINALIZE-v1}), made and checked by the same signing code as the
+  rest of KeyQuorum.
   \item \textbf{A policy.} The HCP scope the file belongs to and what each
   kind of author needs before a revision is trusted (below).
   \item \textbf{A history.} Sequenced events, each linked to the hash of
   the one before; the last hash is the file's \emph{history root}. Changing,
   removing or reordering any earlier event breaks the chain. Events record
   outcomes and labels, never passwords, PINs, shares, bearer tokens or
-  private keys.
+  private keys. Every detail an event may carry comes from a fixed list of
+  safe keys; anything else is refused before it is written. Some events are
+  also signed by the person who caused them (below).
 \end{itemize}
 
-The container format is \code{KQTF} (currently version 5; version 4 files
-still open). It is not a sealed envelope and does not wrap or modify the
+The container format is \code{KQTF}, currently version 7. Version 6 added
+finalization proofs and version 7 optional event signatures; each is written
+only when a file has one, so most files stay at an older version, and
+versions 4 to 6 still open. It is not a sealed envelope and does not wrap or modify the
 native file format: \code{file checkout} writes a revision's bytes back out
 as an ordinary file.
 
 \subsubsection*{When tracking starts, and what stays the same}
 
 Signing a native file that has no container yet is the first content
-signature: \code{file sign report.txt --scope M.A --as M.A --slot ...}
-allocates the file id, records revision R1, signs it and writes
-\file{report.txt.kqtf}, the same steps as \code{file track}. Files nobody
+signature: \code{file sign report.txt --as M.A --slot ...} allocates the
+file id, records revision R1, signs it and writes
+\file{report.txt.kqtf}, the same steps as \code{file track}. The file's
+scope is the signer's own label unless \flag{--scope} names another. Files nobody
 signs this way stay untracked. Tracking begins at the first \emph{trusted}
 signature: if the first revision would still wait for a countersignature (a
 descendant signing alone), nothing is written and the command says who can
@@ -69,7 +75,7 @@ Copying or moving the \file{.kqtf} file changes nothing either.
 the format.
 
 \code{file status} also prints two ids that can differ, because a newer
-edit is not a newer trusted version:
+edit is not a newer trusted version (and says when a revision is final):
 
 \begin{itemize}
   \item \code{current_revision_id}: the sole head, or none when the history
@@ -102,8 +108,8 @@ The scope owner & Their own signature. \\
 A descendant (e.g.\ \code{M.A.1} in scope \code{M.A}) & Their own signature
   and a countersignature by their \emph{direct parent} (\code{M.A}). \\
 An ancestor & Their own signature. \\
-Cross-branch & Their own signature and either bridge authorization or a
-  countersignature by the scope owner. \\
+Cross-branch & Their own signature and either a private bridge's approval
+  of that revision or a countersignature by the scope owner. \\
 Unrelated & May not create trusted revisions. \\
 \bottomrule
 \end{tabular}
@@ -113,6 +119,12 @@ A revision is therefore \emph{pending} until its signatures are complete,
 and \emph{denied} if a signature is present but wrong. A newer revision
 never becomes trusted just because it is newer, and time stamps never decide
 anything.
+
+Each revision also records the topology generation (the version of the
+published key tree) it was made under. Your store judges it only under a
+generation it has held; a revision from a generation your store never saw is
+left \emph{pending} (\code{MissingTopologyEvidence}) rather than judged
+against today's tree. Generation 0 means no published tree.
 
 The rules are chosen when the file is tracked and are fixed for its life.
 Each role has its own option, which takes \code{forbidden}, \code{author}
@@ -147,6 +159,40 @@ keyquorum file sign report.txt.kqtf --as M.A.1 --slot ./usb=M.A.1
 keyquorum file countersign report.txt.kqtf --as M.A --slot ./usb=M.A
 keyquorum file status report.txt.kqtf
 \end{lstlisting}
+
+\subsubsection*{Bridge approval}
+
+A cross-branch author can be approved through a private bridge instead of by
+the scope owner. A member of a live private bridge whose members reach from
+the author to the file's scope signs an approval of that exact revision:
+
+\begin{lstlisting}
+keyquorum file bridge-approve report.txt.kqtf --bridge <uid> --as M.S.1 \
+  --slot ./usb=M.S.1
+\end{lstlisting}
+
+The approval is kept only in the approving store and never written into the
+\file{.kqtf}, so the file never names the bridge or its members. Each time a
+revision is judged it is checked again: the bridge must still be live at the
+same generation and the signer still a member. A bridge's supervisors do not
+count, and a bridge merely existing between two labels approves nothing. A
+recipient whose store holds no such approval sees the revision as pending
+until the scope owner countersigns it. The history records only the rule
+that was met, not which approval met it.
+
+\subsubsection*{Finalization}
+
+Trusted is not final. The scope owner or one of its ancestors can mark a
+trusted revision final:
+
+\begin{lstlisting}
+keyquorum file finalize report.txt.kqtf --as M.A --slot ./usb=M.A
+\end{lstlisting}
+
+This adds a signed finalization proof and a \code{REVISION_FINALIZED} event.
+Like trust, finality is worked out by each store from its own keys; a store
+without the finalizer's key does not see the revision as final. A merge of
+two final revisions is a new revision and starts neither trusted nor final.
 
 \begin{securityBox}
 Your store supplies only public signing keys, and it accepts a key only for
@@ -185,11 +231,37 @@ delivered revision by the file's own policy against their own store, and
 refuses it if it is not trusted there. The recipient's store must also hold the encryption key that
 opened the letter under the recipient label the letter names, so a letter
 sealed to one person cannot credit the delivery to another; \code{deliver
-open} makes the same check. A rename made before sharing travels with the
+open} makes the same check. The signed letter also names every proof it
+carries for the delivered revision, and \code{file receive} refuses a letter
+whose container does not match. A rename made before sharing travels with the
 letter, and so does any later history that does not concern a revision
 outside the delivered one. \flag{--into} merges a letter into a
 copy you already hold. Either way the recipient seals back a signed accept
 or reject, and \code{file ack} records it once in the sender's history.
+Receiving the same letter again records nothing new; it only seals the
+answer again.
+
+\code{file receive} also says how the delivered history compares with what
+your store accepted before for that file: \code{FIRST}, \code{REPLAYED} (the
+same revision and history again), \code{NEWER} (its history passes through
+every history root you accepted before, holds those revisions and adds one)
+or \code{NOT_NEWER} (an older copy, another branch, or the same revisions on
+a rewritten history). It is recorded on the delivery. \code{NOT_NEWER} is a
+warning, not a refusal: a trusted older revision is still accepted.
+
+\code{file send-history} seals a file's event history alone (a \code{KQHS}
+snapshot, no content) to another label, with its root and event count signed
+by you. \code{file open-history} checks the signature and the snapshot and,
+with \flag{--against}, compares it with your copy: \code{SAME},
+\code{LOCAL_AHEAD}, \code{REMOTE_AHEAD} or \code{DIVERGED}. It is not
+answered.
+
+\begin{lstlisting}
+keyquorum file send-history report.txt.kqtf --to M.B --as M.A \
+  --slot ./usb=M.A --output-dir ./outbox
+keyquorum --db mb.sqlite file open-history --letter ./outbox/<id>.kqpb \
+  --slot ./usb=M.B --against report.txt.kqtf
+\end{lstlisting}
 
 \subsection{Copies, forks and merging}
 
@@ -226,7 +298,24 @@ owner, else (for a tie across sectors) the larger sector, else the nearest
 common senior ancestor. Only owners whose own revisions are trusted
 qualify, the authors of the conflicting edits never review their own
 collision, and if nobody qualifies the conflict is recorded as unresolved
-rather than guessed.
+rather than guessed; then the scope owner or one of its ancestors decides.
+
+The reviewer, or one of their ancestors, settles the conflict with
+\code{file resolve}: keep one side as it is (\flag{--keep left} or
+\flag{--keep right}) or supply an edited result (\flag{--from}). The result
+is a new two-parent revision signed as the reviewer's own content and
+recorded as \code{CONFLICT_RESOLVED}; the file's rules then judge it like any
+other revision. \flag{--reject} instead refuses an untrusted proposed merge
+at the head (\code{MERGE_REJECTED}): the proposal stays in the history,
+\code{file sign} refuses it, and the resolution builds on it. A conflicting
+author can never decide.
+
+\begin{lstlisting}
+keyquorum file resolve report.txt.kqtf --keep left --as M.A --slot ./usb=M.A
+keyquorum file resolve report.txt.kqtf --from merged.txt --as M.A \
+  --slot ./usb=M.A
+keyquorum file resolve report.txt.kqtf --reject --as M.A --slot ./usb=M.A
+\end{lstlisting}
 
 \begin{lstlisting}
 keyquorum file import report.txt.kqtf --from their-copy.kqtf --as M.A
@@ -237,11 +326,14 @@ keyquorum file graph report.txt.kqtf
 \end{lstlisting}
 
 \code{file review} prints each side's changed lines with who wrote each
-line, the merge outcome and the reviewer. A build with
-\flag{--features tui} adds \flag{review --interactive}: the same view in
-the terminal, with Vim-style keys and mouse hover to see who wrote a line.
-It is a viewer: to resolve a conflict you edit the file, \code{file checkin}
-the result and sign it.
+line, the merge outcome and the reviewer. Revisions are shown by their user
+label first, when they have one, then the generated label and the short id.
+A build with \flag{--features tui} adds \flag{review --interactive}: the same
+view in the terminal, with Vim-style keys and mouse hover to see who wrote a
+line. On such a build, \code{file merge} opens it by itself when a person
+has to decide and the terminal is interactive. It is a viewer: its
+\code{:sign}, \code{:accept}, \code{:reject} and \code{:finalize} commands
+name the CLI command to run (\code{file resolve} for accept and reject).
 
 \begin{cautionBox}
 Commands replace a container under an exclusive \file{<name>.kqtf.lock}, and
@@ -293,6 +385,18 @@ already holds --- a letter they accepted, a checkout they wrote out --- are
 their own files and are not reached.
 \end{cautionBox}
 
+\subsection{Signed events}
+
+The hash chain shows that no earlier event was changed, removed or
+reordered. Commands that already prove you hold your key --- \code{file
+rename}, \code{file expire} and \code{file resolve --reject} --- also sign
+the events they append (over \code{KQ-FILE-HISTORY-EVENT-v1}). \code{file history} marks such an event
+\code{[signed by ...]} where your store's key for that person verifies it,
+and \code{[signature not verified in this store]} where it does not. Other
+events are protected by the chain alone and are never shown as signed. An
+event signature says who recorded the event; it decides nothing about
+whether a revision is trusted.
+
 \subsection{Recording what happens at a gate}
 
 \code{file link} ties a quorum-protected file (\flag{--quorum-file}) or a
@@ -306,20 +410,41 @@ recording happens after the gate has answered and cannot change it. An
 unlock that fails before reaching the gate (for example while shares are
 being collected) is not recorded.
 
+What is recorded is limited to what is safe to keep:
+
+\begin{itemize}
+  \item \textbf{Quorum unlocks:} counts and policy words only --- shares
+  presented, threshold, distinct devices, minimum devices, custody mode,
+  approval mode and parent approvals --- never a share or key.
+  \item \textbf{PIN checks:} only the outcome (\code{asked},
+  \code{verified}, \code{mismatch}, \code{locked} or \code{failed}); nothing
+  when no PIN applies. Never the PIN, its hash or the attempt count.
+  \item \textbf{Share links:} the share's id, never its token. A redemption
+  is recorded as \code{redeemer=UNKNOWN_BEARER}, because holding a token
+  proves nothing about who is holding it.
+\end{itemize}
+
 \subsection{Not yet implemented}
 
 The design this feature follows goes further than what is built. Today:
 
 \begin{itemize}
-  \item Tracking starts with \code{file track} or the first \code{file
-  sign --scope} of a native file; nothing tracks a file on its own. There is
-  no separate ``finalized'' state beyond \emph{trusted}.
-  \item Bridge authorization is not consulted when judging a revision: a
-  cross-branch author's revision needs the scope owner's countersignature.
-  \item Resolving a conflict is done by editing, checking in and signing;
-  there is no accept/reject of individual hunks, and \code{review
-  --interactive} only names the commands to run.
-  \item History events are protected by the hash chain, not individually
-  signed.
+  \item Tracking starts with \code{file track} or the first \code{file sign}
+  of a native file; nothing tracks a file on its own, and there is no way
+  to request a file, so no request is ever recorded.
+  \item A store keeps which topology generations it has held, but not who
+  held each label in each generation. Signing keys come from today's
+  registry, so if a label is later given to someone else, that label's old
+  revisions read as denied instead of keeping their meaning.
+  \item The history records the rule a cross-branch revision met, not whether
+  a bridge or the scope owner met it.
+  \item Conflicts are settled a whole revision at a time (\flag{--keep} or
+  \flag{--from}), not hunk by hunk. The interactive review has no search,
+  folding of unchanged lines or in-place editing, and \code{file merge}
+  does not open it for a clean merge waiting to be signed.
+  \item Checkouts, signature checks and exports are not recorded as events,
+  and tampering is refused when a file is opened rather than recorded in it.
+  \item Tracked files cannot yet be carried in a \code{KQXB} export bundle;
+  history snapshots travel as letters instead.
   \item Recording at gates is opt-in (\code{file link}) and best effort.
 \end{itemize}

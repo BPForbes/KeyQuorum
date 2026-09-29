@@ -106,7 +106,12 @@ own store and their own drive's slot; each button runs one real
   \emph{pending}.
   \item Per revision: \textbf{Sign revision} (its author),
   \textbf{Approve as parent} (the author's direct parent countersigning),
+  \textbf{Finalize} (the scope owner or an ancestor, once it is trusted),
   \textbf{View} an older revision, and \textbf{Diff} it against its parent.
+  Each revision shows its user label first, when it has one, then its
+  generated label and short id.
+  \item \textbf{Rename file}: change the name shown; the file id and every
+  revision id stay the same.
   \item \textbf{Share file} with another person. The line above the button
   says which revision would go --- the head, or the last trusted revision
   when the head is pending. The recipient \textbf{Accept}s or
@@ -115,13 +120,14 @@ own store and their own drive's slot; each button runs one real
   \item When two copies diverge: \textbf{Import copy}, \textbf{Review the
   fork} (each side's changed lines and the named reviewer) and
   \textbf{Merge heads}; a clean merge is a new revision that still has to be
-  signed.
+  signed. There is no button to settle a conflict: the reviewer runs
+  \code{keyquorum file resolve} in the Terminal.
   \item \textbf{Verify history}, \textbf{Export history snapshot} and
   \textbf{Check} a snapshot against the file.
   \item \textbf{Schedule expiry} or \textbf{Destroy content now}: the file
   becomes a tombstone that still verifies.
   \item \textbf{Link gate}: record unlocks of a quorum file, or of one of
-  your password files, in this file's history.
+  your password files, in this file's history; \textbf{Unlink} stops it.
 \end{itemize}
 
 Whatever a button or a Terminal command writes to a tracked file appears in
