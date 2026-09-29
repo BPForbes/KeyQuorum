@@ -16,6 +16,7 @@
 
 use super::container::TrackedFile;
 use super::event::{EventDetails, HistoryEventType, HistoryOutcome, NewEvent};
+use super::proof::MAX_PROOFS_PER_SLOT;
 use super::verify::verify_structure;
 use crate::error::{Error, Result};
 
@@ -102,14 +103,16 @@ impl TrackedFile {
                 }
             }
         }
+        // Competing proofs for a slot are all kept (up to the slot cap):
+        // an unverified import must not displace or block a valid one.
         let mut proofs_added = 0;
         for proof in &other.proofs {
-            let known = self.proofs.iter().any(|mine| {
-                mine.revision_id == proof.revision_id
-                    && mine.kind == proof.kind
-                    && mine.signer_label == proof.signer_label
-            });
-            if !known {
+            let in_slot = self.proofs.iter().filter(|p| p.same_slot(proof)).count();
+            let known = self
+                .proofs
+                .iter()
+                .any(|p| p.same_slot(proof) && p.signature == proof.signature);
+            if !known && in_slot < MAX_PROOFS_PER_SLOT {
                 self.proofs.push(proof.clone());
                 proofs_added += 1;
             }

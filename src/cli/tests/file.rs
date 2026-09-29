@@ -904,3 +904,28 @@ fn a_snapshot_exports_verifies_and_matches_its_file() {
     );
     assert!(result.is_err());
 }
+
+#[test]
+fn an_imported_forged_signature_does_not_stop_the_author_signing() {
+    use crate::file_history::TrackedFile;
+    let mut env = org();
+    two_copies(&mut env);
+    checkin_unsigned(&mut env, COPY, "a\nB\nc\n");
+    // Someone signs the shared unsigned revision with an arbitrary secret.
+    let mut copy = TrackedFile::decode(&env.fs.read(Path::new(COPY)).unwrap()).unwrap();
+    let head = copy.graph().heads()[0];
+    let author = copy.graph().get(&head).unwrap().revision.author_identity;
+    copy.sign_revision(&head, author.unwrap(), "M.A", &[99; 32])
+        .unwrap();
+    env.fs
+        .write(Path::new(COPY), &copy.encode().unwrap())
+        .unwrap();
+
+    let out = ok(&mut env, &format!("import {KQTF} --from {COPY} --as M.A"));
+    assert!(out.contains("1 proof(s) added"), "{out}");
+    let out = ok(
+        &mut env,
+        &format!("sign {KQTF} --as M.A --slot {}", slot("M.A")),
+    );
+    assert!(out.contains("trust TRUSTED"), "{out}");
+}
