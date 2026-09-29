@@ -216,6 +216,7 @@ pub const SAFE_DETAIL_KEYS: &[&str] = &[
     "right",
     "scope",
     "selection_rule",
+    "satisfied_by",
     "share",
     "shares",
     "state",

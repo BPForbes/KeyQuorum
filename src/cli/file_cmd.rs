@@ -1131,6 +1131,12 @@ fn decide(
 ) -> Result<TrustState> {
     let policy = policy_of(file)?.clone();
     let state = evaluate_revision_trust(file, &revision, &policy, &StoreTrust { conn })?;
+    let mut details = EventDetails::new()
+        .with("result", &trust_text(state))
+        .with("reason", &decision_reason(&policy, file, &revision, state));
+    if let Some(satisfied_by) = approval_satisfaction(conn, &policy, file, &revision, state) {
+        details = details.with("satisfied_by", satisfied_by);
+    }
     let mut recorded = event(
         HistoryEventType::PolicyDecision,
         Some(revision),
@@ -1138,15 +1144,45 @@ fn decide(
         identity,
         label,
         generation,
-        EventDetails::new()
-            .with("result", &trust_text(state))
-            .with("reason", &decision_reason(&policy, file, &revision, state)),
+        details,
     );
     if matches!(state, TrustState::Denied(_)) {
         recorded.outcome = HistoryOutcome::Denied;
     }
     file.append(recorded)?;
     Ok(state)
+}
+
+/// Which privacy-safe cross-branch alternative made a trusted decision.
+///
+/// This deliberately records no bridge id, generation, signer or roster.
+/// For the OR rule, valid live bridge evidence wins this description; if it
+/// is absent, a trusted result necessarily came from the scope owner. The AND
+/// rule can only be trusted when both checks succeeded.
+fn approval_satisfaction(
+    conn: &Connection,
+    policy: &FilePolicy,
+    file: &TrackedFile,
+    revision_id: &[u8; 32],
+    state: TrustState,
+) -> Option<&'static str> {
+    if state != TrustState::Trusted {
+        return None;
+    }
+    let revision = &file.graph().get(revision_id)?.revision;
+    match policy.requirement_for(&revision.author_hcp_label)? {
+        Requirement::AuthorSignBridgeOrOwner => {
+            if (StoreTrust { conn }).revision_bridge_evidence(revision, &policy.scope_root)
+                != BridgeEvidence::None
+            {
+                Some("BRIDGE")
+            } else {
+                Some("SCOPE_OWNER")
+            }
+        }
+        Requirement::AuthorSignBridgeAndOwner => Some("BRIDGE_AND_SCOPE_OWNER"),
+        _ => None,
+    }
 }
 
 /// The design's wording for why the policy decided as it did.

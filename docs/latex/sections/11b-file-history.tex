@@ -178,8 +178,11 @@ revision is judged it is checked again: the bridge must still be live at the
 same generation and the signer still a member. A bridge's supervisors do not
 count, and a bridge merely existing between two labels approves nothing. A
 recipient whose store holds no such approval sees the revision as pending
-until the scope owner countersigns it. The history records only the rule
-that was met, not which approval met it.
+until the scope owner countersigns it. A trusted cross-branch policy decision
+records the privacy-safe alternative that satisfied it as
+\code{satisfied_by=BRIDGE}, \code{SCOPE_OWNER}, or
+\code{BRIDGE_AND_SCOPE_OWNER}. It never records a bridge id, generation,
+signer, member, or roster.
 
 With the stricter \code{author+bridge+owner} rule, the scope owner's
 countersignature does not replace the bridge approval. The receiving store
@@ -430,8 +433,6 @@ What is recorded is limited to what is safe to keep:
   is recorded as \code{redeemer=UNKNOWN_BEARER}, because holding a token
   proves nothing about who is holding it.
 \end{itemize}
-
-\subsection{Not yet implemented}
 
 The design this feature follows goes further than what is built. Today:
 

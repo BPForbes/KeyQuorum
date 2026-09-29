@@ -715,6 +715,7 @@ fn only_a_bridges_signed_approval_of_the_revision_authorizes_a_cross_branch_edit
         history.contains("reason=AUTHOR_SIGNATURE + BRIDGE_OR_SCOPE_OWNER_APPROVAL"),
         "{history}"
     );
+    assert!(history.contains("satisfied_by=BRIDGE"), "{history}");
     // The private bridge is never named in the file, nor in its history.
     let bytes = env.fs.read(Path::new(KQTF)).unwrap();
     for uid in [&reaching, &elsewhere] {
@@ -728,6 +729,29 @@ fn only_a_bridges_signed_approval_of_the_revision_authorizes_a_cross_branch_edit
         .unwrap();
     let graph = ok(&mut env, &format!("graph {KQTF}"));
     assert!(graph.contains("MissingBridgeOrOwnerApproval"), "{graph}");
+}
+
+#[test]
+fn cross_branch_policy_history_names_scope_owner_without_exposing_bridge_details() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    edit(&mut env, "totals: 115\n");
+    let out = ok(
+        &mut env,
+        &format!(
+            "checkin {KQTF} --from /work/edited.txt --as M.S.1 --slot {}",
+            slot("M.S.1")
+        ),
+    );
+    assert!(out.contains("MissingBridgeOrOwnerApproval"), "{out}");
+
+    ok(
+        &mut env,
+        &format!("countersign {KQTF} --as M.A --slot {}", slot("M.A")),
+    );
+    let history = ok(&mut env, &format!("history {KQTF}"));
+    assert!(history.contains("satisfied_by=SCOPE_OWNER"), "{history}");
+    assert!(!history.contains("bridge_id="), "{history}");
 }
 
 #[test]

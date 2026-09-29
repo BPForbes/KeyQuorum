@@ -262,6 +262,9 @@ review-path evidence only (`bridge_between`).
 The stricter `author+bridge+owner` cross-branch rule requires that same live,
 revision-specific bridge approval and a countersignature by the file scope owner;
 neither approval can substitute for the other.
+A trusted cross-branch `POLICY_DECISION` records only `satisfied_by=BRIDGE`,
+`SCOPE_OWNER`, or `BRIDGE_AND_SCOPE_OWNER`; it never names a bridge id,
+generation, signer, member, or roster.
 A revision stamped with a topology generation this store never held (`tree_generations_seen`, recorded by every file
 command and on both sides of an applied restructure) is `Pending(MissingTopologyEvidence)`,
 never judged against today's topology; generation 0 means no published topology.
