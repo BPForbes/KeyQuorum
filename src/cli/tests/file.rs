@@ -51,10 +51,14 @@ fn ok(env: &mut MemoryEnv, args: &str) -> String {
 }
 
 fn track(env: &mut MemoryEnv, scope: &str, label: &str) -> String {
+    track_with(env, scope, label, "")
+}
+
+fn track_with(env: &mut MemoryEnv, scope: &str, label: &str, extra: &str) -> String {
     ok(
         env,
         &format!(
-            "track /work/report.txt --scope {scope} --as {label} --slot {}",
+            "track /work/report.txt --scope {scope} --as {label} --slot {} {extra}",
             slot(label)
         ),
     )
@@ -358,11 +362,15 @@ const KQTF: &str = "/work/report.txt.kqtf";
 /// Track `base` as M.A (signed, trusted), then add two children of it by
 /// M.A.1 and M.S.1, giving a forked container.
 fn forked(env: &mut MemoryEnv, base: &str, left: &str, right: &str) {
+    forked_with(env, base, left, right, "");
+}
+
+fn forked_with(env: &mut MemoryEnv, base: &str, left: &str, right: &str, extra: &str) {
     use crate::file_history::{NewRevision, TrackedFile};
     env.fs
         .write(Path::new("/work/report.txt"), base.as_bytes())
         .unwrap();
-    track(env, "M.A", "M.A");
+    track_with(env, "M.A", "M.A", extra);
     let mut file = TrackedFile::decode(&env.fs.read(Path::new(KQTF)).unwrap()).unwrap();
     let base_id = file.graph().heads()[0];
     let policy_hash = file.policy().unwrap().policy_hash().unwrap();
@@ -636,4 +644,71 @@ fn a_forked_file_is_indexed_with_both_heads() {
     forked(&mut env, "a\nb\n", "A\nb\n", "a\nB\n");
     ok(&mut env, &format!("reindex {KQTF}"));
     assert!(ok(&mut env, "list").contains("heads 2"));
+}
+
+#[test]
+fn a_file_that_disables_auto_merge_sends_every_fork_to_a_person() {
+    let mut env = org();
+    // These edits would merge cleanly under the default policy.
+    forked_with(
+        &mut env,
+        "north\n100\nsouth\n",
+        "north\n125\nsouth\n",
+        "north\n100\nsouth-east\n",
+        "--no-auto-merge",
+    );
+    let out = ok(&mut env, &format!("merge {KQTF} --as M.A"));
+    assert!(out.contains("PolicyBlocked (AUTO_MERGE_DISABLED)"), "{out}");
+    assert!(out.contains("review assigned to M.A"), "{out}");
+    let graph = ok(&mut env, &format!("graph {KQTF}"));
+    assert!(
+        graph.contains("FORK: 2 heads"),
+        "no revision was made: {graph}"
+    );
+    let review = ok(&mut env, &format!("review {KQTF}"));
+    assert!(
+        review.contains("merge  PolicyBlocked (AUTO_MERGE_DISABLED)"),
+        "{review}"
+    );
+    assert!(
+        review.contains("review M.A (PriorNeutralOwner)"),
+        "{review}"
+    );
+    let history = ok(&mut env, &format!("history {KQTF}"));
+    assert!(history.contains("AutoMergeBlocked"), "{history}");
+    assert!(history.contains("ConflictReviewAssigned"), "{history}");
+    // The default policy still merges the same edits.
+    let mut env = org();
+    forked(
+        &mut env,
+        "north\n100\nsouth\n",
+        "north\n125\nsouth\n",
+        "north\n100\nsouth-east\n",
+    );
+    assert!(ok(&mut env, &format!("merge {KQTF} --as M.A")).contains("CleanMerge"));
+}
+
+#[test]
+fn review_still_names_the_reviewer_when_a_diff_is_too_large() {
+    let mut env = org();
+    let lines = |word: &str| -> String { (0..3000).map(|i| format!("{word} {i}\n")).collect() };
+    forked(&mut env, &lines("base"), &lines("left"), &lines("right"));
+    let review = ok(&mut env, &format!("review {KQTF}"));
+    assert_eq!(
+        review
+            .matches("(too large to compare: no line view)")
+            .count(),
+        2,
+        "{review}"
+    );
+    assert!(
+        review.contains("merge  UnsupportedContent (TOO_LARGE)"),
+        "{review}"
+    );
+    assert!(
+        review.contains("review M.A (PriorNeutralOwner)"),
+        "{review}"
+    );
+    let out = ok(&mut env, &format!("merge {KQTF} --as M.A"));
+    assert!(out.contains("UnsupportedContent (TOO_LARGE)"), "{out}");
 }

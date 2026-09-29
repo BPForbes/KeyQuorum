@@ -54,6 +54,10 @@ pub enum FileCommand {
         /// Where to write the container (defaults to `<file>.kqtf`)
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Never merge divergent heads automatically; a fork always goes to
+        /// a person, however clean the merge would be
+        #[arg(long)]
+        no_auto_merge: bool,
     },
     /// Check in a new revision from a native file
     Checkin {
@@ -168,6 +172,7 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             label,
             name,
             out,
+            no_auto_merge,
         } => track(
             conn,
             &path,
@@ -178,6 +183,7 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             label,
             name,
             out,
+            no_auto_merge,
         ),
         FileCommand::Checkin {
             kqtf,
@@ -450,8 +456,10 @@ fn track(
     user_label: Option<String>,
     name: Option<String>,
     out: Option<PathBuf>,
+    no_auto_merge: bool,
 ) -> Result<()> {
-    let policy = FilePolicy::standard(scope);
+    let mut policy = FilePolicy::standard(scope);
+    policy.auto_merge = !no_auto_merge;
     if !policy.may_author(as_label) {
         return Err(usage("--as is outside the scope of this file"));
     }
@@ -843,7 +851,7 @@ fn merge(conn: &Connection, kqtf: &Path, as_label: &str, user_label: Option<Stri
         policy_hash: policy.policy_hash()?,
     };
     let ctx = StoreTrust { conn };
-    let result = file.resolve_divergence(&left, &right, true, new, &policy, &ctx)?;
+    let result = file.resolve_divergence(&left, &right, policy.auto_merge, new, &policy, &ctx)?;
     save(kqtf, &file)?;
     index_after(conn, &file);
     outln!(
@@ -894,13 +902,19 @@ fn review(conn: &Connection, kqtf: &Path) -> Result<()> {
         outln!("  {}", who(&file, id));
         match base {
             Some(base) => match (text_of(&file, &base), text_of(&file, id)) {
-                (Ok(old), Ok(new)) => print_changes(&old, &new)?,
+                (Ok(old), Ok(new)) => {
+                    // Too large to compare is not a reason to stop reviewing:
+                    // the status and reviewer below still matter.
+                    if print_changes(&old, &new).is_err() {
+                        outln!("  (too large to compare: no line view)");
+                    }
+                }
                 _ => outln!("  (not UTF-8 text: no line view)"),
             },
             None => outln!("  (no single common ancestor: no line view)"),
         }
     }
-    let plan = file.plan_auto_merge(left, right, true)?;
+    let plan = file.plan_auto_merge(left, right, policy.auto_merge)?;
     outln!("");
     outln!("MERGE");
     if let Some(base) = base {
