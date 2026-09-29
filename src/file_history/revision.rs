@@ -398,6 +398,21 @@ impl<'a> RevisionGraph<'a> {
         false
     }
 
+    /// `id` and every revision reachable from it through parent links, built
+    /// in one pass. Use it when many revisions are tested against the same
+    /// descendant, instead of calling [`RevisionGraph::is_ancestor_or_self`]
+    /// once per revision. Unknown ids give an empty set.
+    pub fn ancestor_set(&self, id: &[u8; 32]) -> HashSet<[u8; 32]> {
+        let index = self.index_of();
+        let marked = self.mark_ancestors(&index, id);
+        self.revisions
+            .iter()
+            .zip(marked)
+            .filter(|(_, marked)| *marked)
+            .map(|(stored, _)| stored.revision.revision_id)
+            .collect()
+    }
+
     /// Marks, by storage index, `id` and everything reachable from it.
     fn mark_ancestors(&self, index: &HashMap<[u8; 32], usize>, id: &[u8; 32]) -> Vec<bool> {
         let mut marked = vec![false; self.revisions.len()];

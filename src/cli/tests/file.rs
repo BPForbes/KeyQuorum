@@ -1887,3 +1887,29 @@ fn a_countersignature_records_the_relationship_and_the_decision_its_reason() {
         "{history}"
     );
 }
+
+#[test]
+fn signing_a_native_file_starts_tracking_only_when_the_first_revision_is_trusted() {
+    let mut env = org();
+    // A descendant's first revision would wait for its parent, so signing
+    // does not start tracking; nothing is written.
+    let (result, _) = run(
+        &mut env,
+        &format!(
+            "sign /work/report.txt --scope M.A --as M.A.1 --slot {}",
+            slot("M.A.1")
+        ),
+    );
+    let message = result.unwrap_err().to_string();
+    assert!(message.contains("not trusted"), "{message}");
+    assert!(!env.fs.exists(Path::new(KQTF)));
+    // The scope owner's signature alone is enough.
+    ok(
+        &mut env,
+        &format!(
+            "sign /work/report.txt --scope M.A --as M.A --slot {}",
+            slot("M.A")
+        ),
+    );
+    assert!(env.fs.exists(Path::new(KQTF)));
+}

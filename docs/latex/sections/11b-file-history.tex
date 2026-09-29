@@ -73,6 +73,12 @@ edit is not a newer trusted version:
 
 Both are worked out on demand from the store's keys and are never stored in
 the container, which carries no trust state.
+They are views relative to the store that shows them, not claims the
+container makes, so a copy of the file judged with other keys can show a
+different trusted revision. On a fork there is no single current revision, and
+the trusted one is only the most recently stored trusted revision across
+both branches: a display value, never a branch winner and never the revision a
+share would send.
 
 \subsection{Trust: who may change a file}
 

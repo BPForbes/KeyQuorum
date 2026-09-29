@@ -647,3 +647,41 @@ fn a_different_user_label_or_millisecond_is_a_different_revision() {
     assert_ne!(plain_label, later);
     assert_eq!(plain_label, "Rsales-report-20261001T090000.000Z-M.A");
 }
+
+#[test]
+fn an_ancestor_set_agrees_with_asking_about_each_revision() {
+    let mut file = tracked_file();
+    let base = file
+        .check_in(new_revision(vec![], T1), b"base".to_vec())
+        .unwrap();
+    let left = file
+        .check_in(
+            new_revision(vec![base], "2026-10-01T09:01:00.000Z"),
+            b"l".to_vec(),
+        )
+        .unwrap();
+    let right = file
+        .check_in(
+            new_revision(vec![base], "2026-10-01T09:02:00.000Z"),
+            b"r".to_vec(),
+        )
+        .unwrap();
+    let merged = file
+        .check_in(
+            new_revision(vec![left, right], "2026-10-01T09:03:00.000Z"),
+            b"m".to_vec(),
+        )
+        .unwrap();
+    let graph = file.graph();
+    for target in [base, left, right, merged, [9; 32]] {
+        let set = graph.ancestor_set(&target);
+        for candidate in [base, left, right, merged] {
+            assert_eq!(
+                set.contains(&candidate),
+                graph.is_ancestor_or_self(&candidate, &target)
+            );
+        }
+    }
+    assert_eq!(graph.ancestor_set(&merged).len(), 4);
+    assert!(graph.ancestor_set(&[9; 32]).is_empty());
+}

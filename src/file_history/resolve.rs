@@ -141,11 +141,12 @@ impl TrackedFile {
 
         // Rule 1: the most recent trusted author in the shared history who
         // is not one of the conflicting authors.
-        if let Some((_, label)) = trusted.iter().rev().find(|(id, label)| {
-            graph.is_ancestor_or_self(id, left)
-                && graph.is_ancestor_or_self(id, right)
-                && eligible(label)
-        }) {
+        let (of_left, of_right) = (graph.ancestor_set(left), graph.ancestor_set(right));
+        if let Some((_, label)) = trusted
+            .iter()
+            .rev()
+            .find(|(id, label)| of_left.contains(*id) && of_right.contains(*id) && eligible(label))
+        {
             return Ok(ResolverSelection::Assigned {
                 reviewer: label.to_string(),
                 rule: SelectionRule::PriorNeutralOwner,

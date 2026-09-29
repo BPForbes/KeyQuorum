@@ -403,6 +403,7 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
                 name,
                 out,
                 policy,
+                false,
             )
         }
         FileCommand::Policy { kqtf } => show_policy(&kqtf),
@@ -933,6 +934,7 @@ fn track(
     name: Option<String>,
     out: Option<PathBuf>,
     policy: FilePolicy,
+    require_trusted: bool,
 ) -> Result<()> {
     let scope = policy.scope_root.as_str();
     if !policy.may_author(as_label) {
@@ -1001,6 +1003,16 @@ fn track(
         conn, &mut file, revision, &at, identity, as_label, generation,
     )?;
     refuse_if_denied(state, as_label)?;
+    // Tracking that starts by signing a native file begins at the first
+    // *trusted* content signature: a first revision still waiting on a
+    // countersignature has nothing to be tracked under yet. An explicit
+    // `file track` may begin with a pending revision.
+    if require_trusted && state != TrustState::Trusted {
+        return Err(usage(&format!(
+            "the first revision is not trusted under this file's rules ({}); have the scope owner or an author whose signature alone is enough start tracking",
+            trust_text(state)
+        )));
+    }
     env::write_new(&out, &file.encode()?)?;
     index_after(conn, &file);
     let stored = file.graph().get(&revision).expect("just checked in");
@@ -1133,6 +1145,7 @@ fn activate_on_first_signature(
         None,
         Some(container),
         FilePolicy::standard(&scope),
+        true,
     )
 }
 

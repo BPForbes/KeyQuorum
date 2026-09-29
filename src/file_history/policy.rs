@@ -465,14 +465,15 @@ pub fn select_shareable_revision(
             DeliveryDecisionKind::CurrentTrustedRevision,
         )
     } else {
+        // The most recently stored trusted ancestor, not "nearest": in a
+        // merge DAG several ancestors are equally near.
+        let ancestors = graph.ancestor_set(candidate);
         let fallback = file
             .revisions
             .iter()
             .rev()
             .map(|stored| stored.revision.revision_id)
-            .find(|id| {
-                id != candidate && graph.is_ancestor_or_self(id, candidate) && is_trusted(id)
-            });
+            .find(|id| id != candidate && ancestors.contains(id) && is_trusted(id));
         match fallback {
             Some(id) => (Some(id), DeliveryDecisionKind::LastTrustedRevision),
             None => (None, DeliveryDecisionKind::DeniedNoTrustedRevision),

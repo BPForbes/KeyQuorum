@@ -64,7 +64,8 @@ impl TrackedFile {
         verify_structure(self)?;
         let graph = self.graph();
         graph.get(revision_id).ok_or(Error::InvalidTrackedFile)?;
-        let keep = |id: &[u8; 32]| graph.is_ancestor_or_self(id, revision_id);
+        let kept = graph.ancestor_set(revision_id);
+        let keep = |id: &[u8; 32]| kept.contains(id);
         let revisions: Vec<_> = self
             .revisions
             .iter()
