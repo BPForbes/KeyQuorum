@@ -472,8 +472,8 @@ fn gate_target(quorum_file: Option<i64>, locked_file: Option<i64>) -> Result<(Ga
 
 /// The store as the source of signing keys. A key counts only for the
 /// identity this store knows for that label.
-struct StoreTrust<'a> {
-    conn: &'a Connection,
+pub(crate) struct StoreTrust<'a> {
+    pub(crate) conn: &'a Connection,
 }
 
 impl TrustContext for StoreTrust<'_> {

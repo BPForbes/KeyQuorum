@@ -186,6 +186,39 @@ pub struct ActivityView {
     pub title: String,
     pub trace: Vec<TraceStep>,
     pub command: Option<String>,
+    /// Set only on entries drawn from a tracked file's history
+    /// (`kind == "history"`); every other entry serializes exactly as before.
+    #[serde(flatten)]
+    pub history: Option<HistoryFields>,
+}
+
+/// What a tracked-file history event adds to an activity entry. Read from
+/// the `.kqtf` container, never computed by the lab.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryFields {
+    pub file_id: String,
+    pub file_name: String,
+    pub history_event_type: String,
+    /// `file`, `revision`, `security`, `sharing` or `conflict`.
+    pub history_category: String,
+    /// The event's own hash: the history root as of this event.
+    pub history_root: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generated_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_label: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub parent_revision_ids: Vec<String>,
+    /// `needs-human`, `assigned`, `escalated` or `unresolved`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_state: Option<String>,
+    /// The revision's trust under the file's policy now: `trusted`,
+    /// `pending` or `denied`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finalization_state: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]

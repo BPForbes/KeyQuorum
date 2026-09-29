@@ -1028,6 +1028,63 @@ h1 {
   color: var(--text-subtle);
 }
 
+.log .chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.5rem 0;
+}
+
+.history-entry > summary {
+  cursor: pointer;
+}
+
+.history-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.25rem 1rem;
+  margin: 0.5rem 0;
+}
+
+.history-facts div {
+  min-width: 0;
+}
+
+.history-facts dt {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.history-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+}
+
+.revision-graph {
+  margin-top: 1rem;
+}
+
+.revision-graph ol {
+  list-style: none;
+  margin: 0.25rem 0 0.75rem;
+  padding-left: 0.5rem;
+  border-left: 2px solid var(--border);
+}
+
+.revision-graph li {
+  padding: 0.15rem 0;
+  border-bottom: 0;
+}
+
 .terminal-output {
   height: 16rem;
   font-size: 0.85rem;

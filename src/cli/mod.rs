@@ -31,7 +31,7 @@ mod deliver_cmd;
 mod device_cmd;
 pub mod device_tool;
 pub mod env;
-mod file_cmd;
+pub(crate) mod file_cmd;
 mod gate_link;
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
 mod review_tui;

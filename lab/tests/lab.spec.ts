@@ -216,4 +216,38 @@ test.describe("desktop lab", () => {
     await input.press("Enter");
     await expect(page.getByTestId("terminal-output")).toContainText("M.S.1 <-> M.A.1");
   });
+
+  test("the activity log shows three tracked-file stories, filterable and expandable", async ({ page }) => {
+    await loadLab(page);
+    await page.locator('[data-panel="activity"] details.log > summary').click();
+    const panel = page.locator('[data-panel="activity"]');
+    const entries = panel.getByTestId("history-entry");
+    await expect(entries.first()).toBeVisible();
+
+    // Filters narrow the log to their own events.
+    const filter = (name: string) => panel.getByRole("group", { name: "Filter activity" }).getByRole("button", { name });
+    await filter("Conflict").click();
+    await expect(entries.first()).toBeVisible();
+    for (const event of await entries.evaluateAll((nodes) => nodes.map((n) => n.getAttribute("data-event")))) {
+      expect(["AutoMergeRequiresHuman", "HistoryForkDetected", "ContentConflictDetected", "ConflictReviewAssigned", "ConflictUnresolved", "AutoMergeBlocked", "ConflictReviewEscalated", "BridgeUsed"]).toContain(event);
+    }
+    await expect(panel.locator('[data-event="ConflictReviewAssigned"]')).toHaveCount(1);
+    await filter("Sharing").click();
+    await expect(panel.locator('[data-event="ShareAttempted"]')).toHaveCount(1);
+    await expect(panel.locator('[data-event="AutoMergeClean"]')).toHaveCount(0);
+    await filter("Security").click();
+    await expect(panel.getByText("Nothing under Security yet.")).toBeVisible();
+
+    // An entry expands to its revision, label, parents and trust; the graph
+    // lists the revisions with what they descend from.
+    await filter("Revision").click();
+    const merge = panel.locator('[data-event="AutoMergeClean"]');
+    await merge.locator("summary").click();
+    await expect(merge).toContainText("Generated label");
+    await expect(merge).toContainText("Parents");
+    await expect(merge).toContainText("pending");
+    await expect(panel.getByTestId("revision-graph")).toContainText("forecast.txt");
+    await filter("All").click();
+    await expect(panel.getByTestId("revision-graph")).toContainText("budget.txt");
+  });
 });

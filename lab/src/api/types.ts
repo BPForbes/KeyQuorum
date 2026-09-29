@@ -111,7 +111,26 @@ export interface ActivityView {
   title: string;
   trace: TraceStep[];
   command: string | null;
+  /**
+   * The fields below are present only on entries read back from a tracked
+   * file's history (`kind === "history"`); every other entry omits them.
+   */
+  fileId?: string;
+  fileName?: string;
+  historyEventType?: string;
+  historyCategory?: HistoryCategory;
+  /** The event's own hash: the file's history root as of this event. */
+  historyRoot?: string;
+  revisionId?: string;
+  generatedLabel?: string;
+  userLabel?: string;
+  parentRevisionIds?: string[];
+  reviewState?: "needs-human" | "assigned" | "escalated" | "unresolved";
+  /** The revision's trust under the file's policy: trusted, pending or denied. */
+  finalizationState?: "trusted" | "pending" | "denied";
 }
+
+export type HistoryCategory = "file" | "revision" | "security" | "sharing" | "conflict";
 
 export interface AccessView {
   fileId: string;

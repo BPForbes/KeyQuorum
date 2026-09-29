@@ -14,9 +14,13 @@ use super::drives::{DriveBay, MockDrive};
 use super::seed::{self, Expiry, Protection};
 use super::view::*;
 use super::vm::{quote, CommandRun, LabVm, ORG_DB};
+use crate::cli::file_cmd::StoreTrust;
 use crate::device::{self, CustodyMode, UnlockApproval};
 use crate::envelope;
 use crate::error::{Error, Result};
+use crate::file_history::{
+    evaluate_revision_trust, HistoryEventType, HistoryOutcome, TrackedFile, TrustState,
+};
 use crate::key_tree::{self, KeyQuorumTree, TreeNodeSummary};
 use crate::keys;
 use crate::private_bridge::{is_ancestor_or_self, parent_node_label};
@@ -31,6 +35,7 @@ use std::path::{Path, PathBuf};
 const ACTIVITY_LIMIT: usize = 80;
 const SRV: &str = "/srv/keyquorum";
 const ARCHIVE: &str = "/srv/archive";
+const TRACKED_DIR: &str = "/srv/keyquorum/tracked";
 
 struct LabUser {
     id: String,
@@ -521,6 +526,10 @@ impl LabState {
             }
         }
 
+        // Tracked files with a history, made by real `keyquorum file`
+        // commands while every drive is still connected.
+        commands.set(commands.get() + self.seed_tracked()?);
+
         for drive in seed::DRIVES {
             if !drive.inserted {
                 if let Some(mock) = self.vm_mut().bay.get_mut(drive.id) {
@@ -529,6 +538,203 @@ impl LabState {
             }
         }
         Ok(commands.get())
+    }
+
+    /// Three tracked files, each ending somewhere different: a newer
+    /// unsigned edit that shares the last trusted revision, two edits by
+    /// Alice and Bob that auto-merge, and two edits to one line that go to
+    /// a person (Sarah, who wrote the trusted base). Every
+    /// step is a real `keyquorum file` command; the history is then read
+    /// back from the containers into the activity log.
+    fn seed_tracked(&mut self) -> Result<usize> {
+        let count = std::cell::Cell::new(0usize);
+        let run = |state: &mut Self, line: String| -> Result<CommandRun> {
+            count.set(count.get() + 1);
+            state.checked(&line)
+        };
+        let mount = |label: &str| -> Result<String> {
+            seed::DRIVES
+                .iter()
+                .find(|drive| drive.slots.contains(&label))
+                .map(|drive| format!("{}={label}", drive.mount))
+                .ok_or(Error::NodeNotFound)
+        };
+        let sarah = mount("M.S")?;
+        let dir = TRACKED_DIR;
+        let file = |name: &str| format!("{dir}/{name}.kqtf");
+        let edit = |state: &mut Self, name: &str, text: &str| -> Result<String> {
+            let path = format!("{dir}/{name}");
+            state.write_file(Path::new(&path), text.as_bytes())?;
+            Ok(path)
+        };
+        let db = format!("keyquorum --db {ORG_DB} file");
+
+        // 1. A newer edit nobody has signed: sharing falls back.
+        let source = edit(self, "budget.txt", "Q4 budget: 120000\n")?;
+        run(
+            self,
+            format!(
+                "{db} track {source} --scope M.S --as M.S --slot {sarah} --label \"Q4 baseline\""
+            ),
+        )?;
+        let later = edit(self, "budget-edit.txt", "Q4 budget: 125000\n")?;
+        run(
+            self,
+            format!(
+                "{db} checkin {} --from {later} --as M.S --unsigned --label \"Late edit, unsigned\"",
+                file("budget.txt")
+            ),
+        )?;
+        run(
+            self,
+            format!(
+                "{db} share {} --to M --as M.S --slot {sarah} --output-dir {dir}/outbox",
+                file("budget.txt")
+            ),
+        )?;
+
+        // 2 and 3. Two people edit their own copy, then bring them together.
+        for (name, base, alice_text, bob_text, label) in [
+            (
+                "forecast.txt",
+                "north 10\nsouth 20\neast 30\n",
+                "north 10\nsouth 20\neast 35\n",
+                "north 12\nsouth 20\neast 30\n",
+                "Merged forecast",
+            ),
+            (
+                "memo.txt",
+                "Owner: TBD\nBudget: 100\n",
+                "Owner: TBD\nBudget: 110\n",
+                "Owner: TBD\nBudget: 90\n",
+                "Merged memo",
+            ),
+        ] {
+            let source = edit(self, name, base)?;
+            run(
+                self,
+                format!("{db} track {source} --scope M.S --as M.S --slot {sarah}"),
+            )?;
+            let original = file(name);
+            let copy = format!("{dir}/{name}.bob.kqtf");
+            let bytes = self.vm().read(Path::new(&original))?;
+            self.write_file(Path::new(&copy), &bytes)?;
+            let a = edit(self, &format!("{name}.alice"), alice_text)?;
+            let b = edit(self, &format!("{name}.bob"), bob_text)?;
+            run(
+                self,
+                format!("{db} checkin {original} --from {a} --as M.S.1 --unsigned"),
+            )?;
+            run(
+                self,
+                format!("{db} checkin {copy} --from {b} --as M.S.2 --unsigned"),
+            )?;
+            run(
+                self,
+                format!("{db} import {original} --from {copy} --as M.S"),
+            )?;
+            run(
+                self,
+                format!("{db} merge {original} --as M.S --label \"{label}\""),
+            )?;
+        }
+
+        for name in ["budget.txt", "forecast.txt", "memo.txt"] {
+            self.import_history(&file(name))?;
+        }
+        Ok(count.get())
+    }
+
+    /// Read one tracked file's events back into the activity log, oldest
+    /// first, so the newest sits on top like everything else. Read-only:
+    /// nothing is judged here beyond asking `file_history` what each
+    /// revision's trust is now.
+    fn import_history(&mut self, path: &str) -> Result<()> {
+        let bytes = self.vm().read(Path::new(path))?;
+        let file = TrackedFile::decode(&bytes)?;
+        let entries: Vec<ActivityView> = {
+            let ctx = StoreTrust { conn: self.org() };
+            let policy = file.policy().cloned();
+            file.events()
+                .iter()
+                .map(|event| {
+                    let revision = event
+                        .revision_id
+                        .and_then(|id| file.graph().get(&id).map(|stored| (id, &stored.revision)));
+                    let finalization =
+                        event
+                            .revision_id
+                            .zip(policy.as_ref())
+                            .and_then(|(id, policy)| {
+                                evaluate_revision_trust(&file, &id, policy, &ctx).ok()
+                            });
+                    let review = match event.event_type {
+                        HistoryEventType::AutoMergeRequiresHuman
+                        | HistoryEventType::ContentConflictDetected => Some("needs-human"),
+                        HistoryEventType::ConflictReviewAssigned => Some("assigned"),
+                        HistoryEventType::ConflictReviewEscalated => Some("escalated"),
+                        HistoryEventType::ConflictUnresolved => Some("unresolved"),
+                        _ => None,
+                    };
+                    ActivityView {
+                        seq: 0,
+                        actor: event
+                            .actor_label
+                            .clone()
+                            .unwrap_or_else(|| "system".to_string()),
+                        kind: "history".to_string(),
+                        outcome: match event.outcome {
+                            HistoryOutcome::Success => "granted",
+                            HistoryOutcome::Failure | HistoryOutcome::Denied => "denied",
+                            HistoryOutcome::Info => "info",
+                        }
+                        .to_string(),
+                        title: format!(
+                            "{} · {}",
+                            humanize(&format!("{:?}", event.event_type)),
+                            file.logical_name
+                        ),
+                        trace: event
+                            .details
+                            .entries()
+                            .iter()
+                            .map(|(key, value)| TraceStep::info(format!("{key}: {value}")))
+                            .collect(),
+                        command: Some(format!("keyquorum file history {path}")),
+                        history: Some(HistoryFields {
+                            file_id: hex::encode(file.file_id),
+                            file_name: file.logical_name.clone(),
+                            history_event_type: format!("{:?}", event.event_type),
+                            history_category: history_category(event.event_type).to_string(),
+                            history_root: hex::encode(event.event_hash),
+                            revision_id: event.revision_id.map(hex::encode),
+                            generated_label: revision.map(|(_, r)| r.generated_label.clone()),
+                            user_label: revision.and_then(|(_, r)| r.user_label.clone()),
+                            parent_revision_ids: revision
+                                .map(|(_, r)| {
+                                    r.parent_revision_ids.iter().map(hex::encode).collect()
+                                })
+                                .unwrap_or_default(),
+                            review_state: review.map(str::to_string),
+                            finalization_state: finalization.map(|state| {
+                                match state {
+                                    TrustState::Trusted => "trusted",
+                                    TrustState::Pending(_) => "pending",
+                                    TrustState::Denied(_) => "denied",
+                                }
+                                .to_string()
+                            }),
+                        }),
+                    }
+                })
+                .collect()
+        };
+        for mut entry in entries {
+            entry.seq = self.next_seq;
+            self.next_seq += 1;
+            self.activity.push(entry);
+        }
+        Ok(())
     }
 
     /// Lock (or publish) one seeded file the way an administrator would.
@@ -2968,6 +3174,7 @@ impl LabState {
             title: title.to_string(),
             trace,
             command,
+            history: None,
         });
         self.next_seq += 1;
         if self.activity.len() > ACTIVITY_LIMIT {
@@ -3475,3 +3682,52 @@ const ORG_TREE_SPEC: &str = r#"{
   ]
 }
 "#;
+
+/// `AutoMergeRequiresHuman` as "Auto merge requires human".
+fn humanize(name: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if c.is_uppercase() && i > 0 {
+            out.push(' ');
+            out.extend(c.to_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The Activity filter a history event belongs under.
+fn history_category(kind: HistoryEventType) -> &'static str {
+    use HistoryEventType as E;
+    match kind {
+        E::TrackingStarted | E::HistoryImported | E::GateLinked => "file",
+        E::EditCheckedIn
+        | E::RevisionSigned
+        | E::CountersignatureAdded
+        | E::PolicyDecision
+        | E::AutoMergeAttempted
+        | E::AutoMergeFastForward
+        | E::AutoMergeEquivalent
+        | E::AutoMergeClean => "revision",
+        E::QuorumUnlockAttempted
+        | E::PasswordUnlockAttempted
+        | E::FileExpired
+        | E::ContentDestroyed
+        | E::ExpiredAccessAttempt
+        | E::TamperDetected => "security",
+        E::ShareAttempted
+        | E::ShareDelivered
+        | E::ShareLinkCreated
+        | E::ShareLinkRedeemed
+        | E::ShareLinkRevoked => "sharing",
+        E::AutoMergeBlocked
+        | E::AutoMergeRequiresHuman
+        | E::HistoryForkDetected
+        | E::ContentConflictDetected
+        | E::ConflictReviewAssigned
+        | E::ConflictReviewEscalated
+        | E::BridgeUsed
+        | E::ConflictUnresolved => "conflict",
+    }
+}

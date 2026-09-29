@@ -533,7 +533,12 @@ fn reset_restores_the_seeded_state() {
     assert_eq!(fresh.active_user.id, "alice");
     assert_eq!(connected(&state), ["alice", "sarah"]);
     assert!(fresh.sent.is_empty() && fresh.inbox.is_empty());
-    assert_eq!(fresh.activity.len(), 1);
+    // The newest entry is the seed itself; the tracked files' history sits
+    // beneath it, and nothing else has happened yet.
+    assert_eq!(fresh.activity[0].title, "Lab seeded");
+    assert!(fresh.activity[1..]
+        .iter()
+        .all(|entry| entry.kind == "history"));
     let bob_drive = fresh.drives.iter().find(|d| d.id == "bob").unwrap();
     assert_eq!(
         bob_drive
@@ -1473,4 +1478,155 @@ fn countersign_rejects_the_wrong_passphrase() {
         .unwrap();
     assert!(!outcome.ok);
     assert!(!snap(&state).pending_restructures.is_empty());
+}
+
+fn history(state: &LabState) -> Vec<crate::lab::view::ActivityView> {
+    snap(state)
+        .activity
+        .into_iter()
+        .filter(|entry| entry.kind == "history")
+        .collect()
+}
+
+fn events_of(entries: &[crate::lab::view::ActivityView], file: &str) -> Vec<String> {
+    // Newest first, as the snapshot orders them; read oldest first.
+    entries
+        .iter()
+        .rev()
+        .filter_map(|e| e.history.as_ref())
+        .filter(|h| h.file_name == file)
+        .map(|h| h.history_event_type.clone())
+        .collect()
+}
+
+#[test]
+fn the_seeded_tracked_files_tell_three_different_stories_from_real_commands() {
+    let state = lab();
+    let entries = history(&state);
+
+    // 1. An unsigned newer edit: sharing falls back to the last trusted revision.
+    let budget = events_of(&entries, "budget.txt");
+    for kind in [
+        "TrackingStarted",
+        "RevisionSigned",
+        "EditCheckedIn",
+        "ShareAttempted",
+    ] {
+        assert!(budget.iter().any(|k| k == kind), "{kind}: {budget:?}");
+    }
+    let share = entries
+        .iter()
+        .find(|e| {
+            e.history.as_ref().is_some_and(|h| {
+                h.file_name == "budget.txt" && h.history_event_type == "ShareAttempted"
+            })
+        })
+        .unwrap();
+    assert!(share
+        .trace
+        .iter()
+        .any(|step| step.text.contains("LastTrustedRevision")));
+    assert_eq!(share.outcome, "granted");
+
+    // 2. Non-overlapping edits merge on their own.
+    let forecast = events_of(&entries, "forecast.txt");
+    assert!(
+        forecast.iter().any(|k| k == "HistoryImported"),
+        "{forecast:?}"
+    );
+    assert!(
+        forecast.iter().any(|k| k == "AutoMergeClean"),
+        "{forecast:?}"
+    );
+    assert!(!forecast.iter().any(|k| k == "AutoMergeRequiresHuman"));
+
+    // 3. Two edits to one line stop for a person, who is named.
+    let memo = events_of(&entries, "memo.txt");
+    for kind in [
+        "AutoMergeRequiresHuman",
+        "ContentConflictDetected",
+        "ConflictReviewAssigned",
+    ] {
+        assert!(memo.iter().any(|k| k == kind), "{kind}: {memo:?}");
+    }
+    assert!(!memo.iter().any(|k| k == "AutoMergeClean"));
+    let assigned = entries
+        .iter()
+        .find(|e| {
+            e.history
+                .as_ref()
+                .is_some_and(|h| h.history_event_type == "ConflictReviewAssigned")
+        })
+        .unwrap();
+    assert_eq!(
+        assigned.history.as_ref().unwrap().review_state.as_deref(),
+        Some("assigned")
+    );
+    assert_eq!(
+        assigned.history.as_ref().unwrap().history_category,
+        "conflict"
+    );
+}
+
+#[test]
+fn history_entries_carry_the_containers_own_facts() {
+    let state = lab();
+    let entries = history(&state);
+    let signed = entries
+        .iter()
+        .rev()
+        .find(|e| {
+            e.history
+                .as_ref()
+                .is_some_and(|h| h.history_event_type == "RevisionSigned")
+        })
+        .unwrap();
+    let h = signed.history.as_ref().unwrap();
+    assert_eq!(h.file_id.len(), 32);
+    assert_eq!(h.history_root.len(), 64);
+    assert_eq!(h.revision_id.as_deref().map(str::len), Some(64));
+    assert!(h
+        .generated_label
+        .as_deref()
+        .is_some_and(|l| l.starts_with('R')));
+    assert_eq!(h.finalization_state.as_deref(), Some("trusted"));
+    assert_eq!(h.history_category, "revision");
+    // The unsigned late edit is pending, and a merge revision names both parents.
+    let pending = entries.iter().any(|e| {
+        e.history.as_ref().is_some_and(|h| {
+            h.history_event_type == "EditCheckedIn"
+                && h.finalization_state.as_deref() == Some("pending")
+        })
+    });
+    assert!(pending);
+    let merged = entries
+        .iter()
+        .filter_map(|e| e.history.as_ref())
+        .any(|h| h.history_event_type == "AutoMergeClean" && h.parent_revision_ids.len() == 2);
+    assert!(merged);
+    // Every history entry names the command that shows the same history.
+    assert!(entries.iter().all(|e| e
+        .command
+        .as_deref()
+        .is_some_and(|c| c.starts_with("keyquorum file history "))));
+}
+
+#[test]
+fn only_history_entries_carry_history_fields_when_serialized() {
+    let state = lab();
+    let json = serde_json::to_value(snap(&state)).unwrap();
+    let activity = json["activity"].as_array().unwrap();
+    let seeded = &activity[0];
+    assert_eq!(seeded["kind"], "reset");
+    assert!(seeded.get("fileId").is_none() && seeded.get("historyEventType").is_none());
+    let event = activity.iter().find(|e| e["kind"] == "history").unwrap();
+    for key in [
+        "fileId",
+        "fileName",
+        "historyEventType",
+        "historyCategory",
+        "historyRoot",
+    ] {
+        assert!(event.get(key).is_some(), "{key}: {event}");
+    }
 }

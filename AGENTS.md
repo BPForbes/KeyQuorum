@@ -252,6 +252,17 @@ genuinely reports `Possession::Ghost` for that label, not a UI-only flag. She st
 share the moment anyone presents it. `RequirementNode.ghost` (`view.rs`)
 is how the frontend marks it.
 
+`LabState::seed_tracked` also builds three tracked files with real `keyquorum
+file` commands (`track`, `checkin --unsigned`, `share`, `import`, `merge`) while
+every drive is connected: an unsigned newer edit whose sharing falls back to the
+last trusted revision, two edits that auto-merge, and two edits to one line that
+go to a named reviewer. `import_history` reads each container's events back into
+`ActivityView` (`kind == "history"`) with the optional history fields
+(`fileId`, `revisionId`, `generatedLabel`, `historyRoot`, `finalizationState`,
+`reviewState`, ...). Those fields come from the container and from
+`file_history`'s own trust evaluation, never from lab-side rules, and entries
+without a history serialize exactly as before.
+
 ## Setup / build / test
 
 - Build (customer CLI): `cargo build --release` (no mailbox host subcommand)
