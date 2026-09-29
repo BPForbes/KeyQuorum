@@ -806,8 +806,11 @@ impl LabState {
     /// `keyquorum file import`: bring another followed copy of the same file
     /// into this one. A fork is kept as two heads.
     pub fn history_import(&mut self, path: &str, from: &str) -> Result<Outcome> {
-        let (Some(kqtf), Some(other)) = (self.tracked_path(path), self.tracked_path(from)) else {
+        let Some(kqtf) = self.tracked_path(path) else {
             return Ok(Self::unknown_tracked(path));
+        };
+        let Some(other) = self.tracked_path(from) else {
+            return Ok(Self::unknown_tracked(from));
         };
         let who = self.actor().label.clone();
         let line = format!(

@@ -1146,6 +1146,7 @@ fn a_recipient_that_cannot_trust_the_revision_refuses_it_and_says_so() {
     assert!(result.is_ok());
     for line in [
         "device register /usb/mb --slot M.B --type signing",
+        "device register /usb/mb --slot M.B --type encryption",
         "device register /usb/fake --slot M.A --type signing",
     ] {
         let (result, _) = env.keyquorum(&format!("keyquorum {b} {line}"));
@@ -1387,8 +1388,12 @@ fn a_scheduled_expiry_destroys_every_revision_on_first_touch_and_leaves_a_tombst
         2,
         "{history}"
     );
+    let attempt = history
+        .lines()
+        .rfind(|line| line.contains("ExpiredAccessAttempt"))
+        .expect("a recorded attempt");
     assert!(
-        history.contains("action=checkin by M.A") || history.contains("by M.A"),
+        attempt.contains("by M.A") && attempt.contains("checkin"),
         "{history}"
     );
 }
@@ -1725,4 +1730,51 @@ fn renaming_keeps_the_file_and_revision_identity_and_is_recorded() {
         moved.lines().next().unwrap().split_once(' ').unwrap().1,
         after.lines().next().unwrap().split_once(' ').unwrap().1
     );
+}
+
+#[test]
+fn a_letter_must_name_the_label_whose_key_opened_it() {
+    use crate::file_delivery::{seal_history_letter, OutgoingHistory};
+    use crate::file_history::TrackedFile;
+    let mut env = delivering();
+    let mb_public = crate::keys::active_keys_for(
+        env.store("/home/org/keyquorum.sqlite"),
+        "M.B",
+        crate::keys::KeyType::Encryption,
+    )
+    .unwrap()[0]
+        .public_key
+        .clone();
+    let mb_public: [u8; 32] = mb_public.try_into().unwrap();
+    let container = env.fs.read(Path::new(KQTF)).unwrap();
+    let file = TrackedFile::decode(&container).unwrap();
+    let head = file.graph().heads()[0];
+    let (result, _) = env.run(|| {
+        let secrets = crate::cli::open_slot_secrets(&slot("M.A"))?;
+        let sender_public = crate::keys::encryption_public_from_secret(&secrets.encryption_secret);
+        // Sealed to M.B's key, but claiming to be for M.
+        let letter = seal_history_letter(&OutgoingHistory {
+            sender_label: "M.A",
+            sender_signing_secret: &secrets.signing_secret,
+            sender_encryption_public: &sender_public,
+            recipient_label: "M",
+            recipient_encryption_public: &mb_public,
+            file_name: &file.logical_name,
+            file_id: file.file_id,
+            revision_id: head,
+            history_root: file.history_root(),
+            decision: 1,
+            container: &container,
+        })?;
+        crate::cli::env::create_dir_all(Path::new("/out"))?;
+        crate::cli::env::write(Path::new("/out/forged.kqpb"), &letter.bytes)
+    });
+    assert!(result.is_ok(), "{result:?}");
+    let (result, _) = receive_as_mb(&mut env, "--out /work/received.kqtf");
+    let message = result.unwrap_err().to_string();
+    assert!(
+        message.contains("matching the key that opened it"),
+        "{message}"
+    );
+    assert!(!env.fs.exists(Path::new("/work/received.kqtf")));
 }

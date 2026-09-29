@@ -229,7 +229,7 @@ See section~\ref{sec:file-history}.
 \code{file expire} & Schedule when this file's content is destroyed, or destroy it now; needs \flag{--slot} to prove you hold the owner label. Every retained revision's content goes at once; the history, the revision graph and every signature stay behind as a tombstone. \\
 \code{file link} & Record what happens at a quorum-protected or password-locked file's gate in this tracked file's history. The gate is unchanged and never depends on it. \\
 \code{file unlink} & Stop recording a gate in this tracked file's history. \\
-\code{file share} & Seal the newest trusted revision to another label as a \file{.kqpb} letter. A newer revision that is not trusted is never included. \\
+\code{file share} & Seal the head (or \flag{--revision}) to another label as a \file{.kqpb} letter, or its nearest trusted ancestor when it is not trusted. Trusted work on another branch is never substituted, and nothing is sent when no ancestor is trusted. \\
 \code{file receive} & Open a tracked-file letter addressed to you. The sender is checked as the transport; the delivered revision is then judged by the file's own policy and accepted only if it is trusted here. \\
 \code{file ack} & Record an acknowledgement sealed back to you in your copy's history. \\
 \bottomrule

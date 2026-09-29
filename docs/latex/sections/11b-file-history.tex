@@ -120,12 +120,13 @@ cannot author or sign anything new; what it signed earlier still verifies.
 
 \subsection{Sharing falls back to the last trusted revision}
 
-\code{file share} sends the newest \emph{trusted} revision. If the head is
-pending --- say someone checked in an edit without signing it --- the
-letter carries the last trusted revision instead, and the unsigned one never
-leaves your copy: the container in the letter holds only the delivered
-revision and its ancestors. If nothing is trusted yet, nothing is sent and
-the refusal is recorded.
+\code{file share} sends the head (or the revision named with
+\flag{--revision}) when it is \emph{trusted}. If it is not --- say someone
+checked in an edit without signing it --- the letter carries its nearest
+trusted \emph{ancestor} instead. Trusted work on another branch is never
+substituted, and the unsigned revision never leaves your copy: the container
+in the letter holds only the delivered revision and its ancestors. If no
+ancestor is trusted, nothing is sent and the refusal is recorded.
 
 \begin{lstlisting}
 keyquorum file share report.txt.kqtf --to M.B --as M.A --slot ./usb=M.A \
@@ -139,7 +140,9 @@ Letters are \code{KQPB} envelopes of their own kind, carried by the relay
 like any other letter. The sender's signature on the letter is
 \emph{transport} authentication only: the recipient still judges the
 delivered revision by the file's own policy against their own store, and
-refuses it if it is not trusted there. \flag{--into} merges a letter into a
+refuses it if it is not trusted there. The recipient's store must also hold the encryption key that
+opened the letter under the recipient label the letter names, so a letter
+sealed to one person cannot credit the delivery to another. \flag{--into} merges a letter into a
 copy you already hold. Either way the recipient seals back a signed accept
 or reject, and \code{file ack} records it once in the sender's history.
 

@@ -225,7 +225,7 @@ pub(super) fn merge_text(base: &str, left: &str, right: &str) -> TextMerge {
         .map(|h| (h, true))
         .chain(right_hunks.into_iter().map(|h| (h, false)))
         .collect();
-    all.sort_by(|x, y| (x.0.start, x.0.end, !x.1).cmp(&(y.0.start, y.0.end, !y.1)));
+    all.sort_by_key(|(hunk, is_left)| (hunk.start, hunk.end, !*is_left));
 
     let mut out = String::new();
     let mut position = 0;
@@ -276,7 +276,7 @@ impl TrackedFile {
                 return Ok(AutoMerge::with_content(
                     O::FastForward,
                     "ANCESTOR_HEAD",
-                    Some(*right).filter(|_| left != right),
+                    (left != right).then_some(*right),
                     left_bytes.to_vec(),
                 ));
             }

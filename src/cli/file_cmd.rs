@@ -1402,6 +1402,22 @@ fn receive(
 ) -> Result<()> {
     let bytes = env::read(letter_path)?;
     let letter = file_delivery::open_history_letter(conn, &secrets.encryption, &bytes)?;
+    // The recipient label is the sender's claim; it must name the key that
+    // opened the letter, or the delivery would be credited to someone else.
+    let opened_with = crate::keys::encryption_public_from_secret(&secrets.encryption);
+    let owns_key = crate::keys::active_keys_for(
+        conn,
+        &letter.recipient_label,
+        crate::keys::KeyType::Encryption,
+    )?
+    .iter()
+    .any(|key| key.public_key.as_slice() == opened_with.as_slice());
+    if !owns_key {
+        return Err(usage(&format!(
+            "the letter names {} as recipient, but this store has no encryption key for that label matching the key that opened it",
+            letter.recipient_label
+        )));
+    }
     // The letter's header is only a claim about the container.
     let mut incoming = TrackedFile::decode(&letter.container)
         .map_err(|_| usage("the delivered container does not verify"))?;

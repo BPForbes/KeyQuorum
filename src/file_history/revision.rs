@@ -345,15 +345,15 @@ impl<'a> RevisionGraph<'a> {
     /// Revisions no other revision names as a parent, in storage order.
     /// More than one head means the history has forked.
     pub fn heads(&self) -> Vec<[u8; 32]> {
+        let parents: HashSet<&[u8; 32]> = self
+            .revisions
+            .iter()
+            .flat_map(|stored| stored.revision.parent_revision_ids.iter())
+            .collect();
         self.revisions
             .iter()
             .map(|stored| stored.revision.revision_id)
-            .filter(|id| {
-                !self
-                    .revisions
-                    .iter()
-                    .any(|other| other.revision.parent_revision_ids.contains(id))
-            })
+            .filter(|id| !parents.contains(id))
             .collect()
     }
 
