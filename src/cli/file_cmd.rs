@@ -12,9 +12,10 @@ use super::env::{self, errln, outln};
 use super::{open_slot_secrets, read_key_array_32, usage};
 use crate::error::{Error, Result};
 use crate::file_history::{
-    evaluate_revision_trust, select_shareable_revision, verify_tracked_file, BridgeEvidence,
-    DeliveryDecisionKind, EventDetails, FilePolicy, HistoryEvent, HistoryEventType, HistoryOutcome,
-    NewEvent, NewRevision, TrackedFile, TrustContext, TrustReason, TrustState,
+    diff_text, evaluate_revision_trust, select_shareable_revision, verify_tracked_file,
+    AutoMergeOutcome, BridgeEvidence, ChangeKind, DeliveryDecisionKind, EventDetails, FilePolicy,
+    HistoryEvent, HistoryEventType, HistoryOutcome, MergeBase, NewEvent, NewRevision,
+    ResolverSelection, TrackedFile, TrustContext, TrustReason, TrustState,
 };
 use crate::{key_tree, private_bridge, transfer};
 use clap::Subcommand;
@@ -99,6 +100,44 @@ pub enum FileCommand {
         #[arg(long)]
         signing_key_file: Option<PathBuf>,
     },
+    /// Merge two divergent heads automatically when the edits allow it;
+    /// otherwise record the conflict and who must review it. A merge is a
+    /// new revision that stays untrusted until it is signed.
+    Merge {
+        kqtf: PathBuf,
+        /// Your label (the merge's author)
+        #[arg(long = "as")]
+        as_label: String,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Show what each side of a fork changed, and who reviews a conflict
+    Review { kqtf: PathBuf },
+    /// Show the revisions, their parents and their trust
+    Graph { kqtf: PathBuf },
+    /// Show the changed lines between two revisions of text
+    Diff {
+        kqtf: PathBuf,
+        /// Revision id or unique prefix (default: the first parent of --to)
+        #[arg(long)]
+        from: Option<String>,
+        /// Revision id or unique prefix (default: the sole head)
+        #[arg(long)]
+        to: Option<String>,
+    },
+    /// Write a revision's native bytes to a new file
+    Checkout {
+        kqtf: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        /// Revision id or unique prefix (default: the sole head)
+        #[arg(long)]
+        revision: Option<String>,
+        /// The revision that would be shared: the head if trusted, else the
+        /// last trusted one
+        #[arg(long, conflicts_with = "revision")]
+        shareable: bool,
+    },
     /// Show the heads, their trust, and what would be shared
     Status { kqtf: PathBuf },
     /// List the recorded events
@@ -161,6 +200,20 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             slot,
             signing_key_file,
         } => countersign(conn, &kqtf, revision, &as_label, slot, signing_key_file),
+        FileCommand::Merge {
+            kqtf,
+            as_label,
+            label,
+        } => merge(conn, &kqtf, &as_label, label),
+        FileCommand::Review { kqtf } => review(conn, &kqtf),
+        FileCommand::Graph { kqtf } => graph(conn, &kqtf),
+        FileCommand::Diff { kqtf, from, to } => diff(&kqtf, from, to),
+        FileCommand::Checkout {
+            kqtf,
+            out,
+            revision,
+            shareable,
+        } => checkout(conn, &kqtf, &out, revision, shareable),
         FileCommand::Status { kqtf } => status(conn, &kqtf),
         FileCommand::History { kqtf } => history(&kqtf),
         FileCommand::Verify { kqtf } => verify(conn, &kqtf),
@@ -698,5 +751,252 @@ fn verify(conn: &Connection, kqtf: &Path) -> Result<()> {
     if denied > 0 {
         return Err(Error::InvalidTrackedFile);
     }
+    Ok(())
+}
+
+fn who(file: &TrackedFile, id: &[u8; 32]) -> String {
+    file.graph()
+        .get(id)
+        .map(|stored| {
+            let revision = &stored.revision;
+            format!(
+                "{} · revision {} ({}) · {}",
+                revision.author_hcp_label,
+                short(id),
+                revision.generated_label,
+                revision.created_at_utc
+            )
+        })
+        .unwrap_or_default()
+}
+
+fn text_of(file: &TrackedFile, id: &[u8; 32]) -> Result<String> {
+    let stored = file
+        .graph()
+        .get(id)
+        .ok_or_else(|| usage("no such revision"))?;
+    String::from_utf8(stored.payload.clone())
+        .map_err(|_| usage("that revision is not UTF-8 text, so there is no line view"))
+}
+
+fn print_changes(old: &str, new: &str) -> Result<()> {
+    let changes =
+        diff_text(old, new).ok_or_else(|| usage("the revisions are too large to compare"))?;
+    if changes.is_empty() {
+        outln!("  (no changed lines)");
+    }
+    for change in changes {
+        let mark = match change.kind {
+            ChangeKind::Removed => '-',
+            ChangeKind::Added => '+',
+        };
+        outln!(
+            "  {mark} {:>4} | {}",
+            change.line,
+            change.text.trim_end_matches('\n')
+        );
+    }
+    Ok(())
+}
+
+fn merge(conn: &Connection, kqtf: &Path, as_label: &str, user_label: Option<String>) -> Result<()> {
+    let mut file = load(kqtf)?;
+    let policy = policy_of(&file)?.clone();
+    if !policy.may_author(as_label) {
+        return Err(usage("--as is outside the scope of this file"));
+    }
+    require_active(conn, as_label)?;
+    let heads = file.graph().heads();
+    let [left, right] = heads.as_slice() else {
+        return Err(usage(&format!(
+            "nothing to merge: the history has {} head(s); a merge joins exactly two",
+            heads.len()
+        )));
+    };
+    let (left, right) = (*left, *right);
+    let (identity, at) = (identity_for(conn, as_label)?, utc_instant()?);
+    let generation = generation_for(conn, &policy.scope_root)?;
+    let new = NewRevision {
+        parent_revision_ids: Vec::new(),
+        user_label,
+        author_identity: Some(identity),
+        author_hcp_label: as_label.to_string(),
+        created_at_utc: at,
+        topology_generation: generation,
+        policy_hash: policy.policy_hash()?,
+    };
+    let ctx = StoreTrust { conn };
+    let result = file.resolve_divergence(&left, &right, true, new, &policy, &ctx)?;
+    save(kqtf, &file)?;
+    outln!(
+        "Automatic merge: {:?} ({})",
+        result.auto.outcome,
+        result.auto.reason
+    );
+    match (result.auto.outcome, result.auto.merge_revision) {
+        (AutoMergeOutcome::CleanMerge | AutoMergeOutcome::AlreadyEquivalent, Some(id)) => {
+            let state = evaluate_revision_trust(&file, &id, &policy, &ctx)?;
+            outln!("  merged revision {}", short(&id));
+            outln!("  trust {}", trust_text(state));
+            outln!("Review the result, then sign it with `keyquorum file sign`.");
+        }
+        _ => match result.selection {
+            Some(ResolverSelection::Assigned { reviewer, rule, .. }) => {
+                outln!("  a person must resolve this; review assigned to {reviewer} ({rule:?})");
+            }
+            Some(ResolverSelection::Unresolved) => {
+                outln!("  a person must resolve this, but no authorized reviewer exists;");
+                outln!("  an explicit root or admin decision is required");
+            }
+            None => outln!("  nothing to merge: one head already contains the other"),
+        },
+    }
+    Ok(())
+}
+
+fn review(conn: &Connection, kqtf: &Path) -> Result<()> {
+    let file = load(kqtf)?;
+    let policy = policy_of(&file)?.clone();
+    let heads = file.graph().heads();
+    let [left, right] = heads.as_slice() else {
+        outln!(
+            "Nothing to review: the history has {} head(s).",
+            heads.len()
+        );
+        return Ok(());
+    };
+    let base = match file.graph().merge_base(left, right) {
+        MergeBase::Unique(id) => Some(id),
+        _ => None,
+    };
+    outln!("{} — merge review", file.logical_name);
+    for (side, id) in [("LEFT", left), ("RIGHT", right)] {
+        outln!("");
+        outln!("CHANGED LINES ({side})");
+        outln!("  {}", who(&file, id));
+        match base {
+            Some(base) => match (text_of(&file, &base), text_of(&file, id)) {
+                (Ok(old), Ok(new)) => print_changes(&old, &new)?,
+                _ => outln!("  (not UTF-8 text: no line view)"),
+            },
+            None => outln!("  (no single common ancestor: no line view)"),
+        }
+    }
+    let plan = file.plan_auto_merge(left, right, true)?;
+    outln!("");
+    outln!("MERGE");
+    if let Some(base) = base {
+        outln!("  base   {}", short(&base));
+    }
+    outln!("  left   {}", short(left));
+    outln!("  right  {}", short(right));
+    outln!("STATUS");
+    outln!("  merge  {:?} ({})", plan.outcome, plan.reason);
+    if !matches!(
+        plan.outcome,
+        AutoMergeOutcome::CleanMerge | AutoMergeOutcome::AlreadyEquivalent
+    ) {
+        let selection = file.select_resolver(left, right, &policy, &StoreTrust { conn })?;
+        match selection {
+            ResolverSelection::Assigned { reviewer, rule, .. } => {
+                outln!("  review {reviewer} ({rule:?})")
+            }
+            ResolverSelection::Unresolved => outln!("  review UNRESOLVED (no authorized reviewer)"),
+        }
+    } else {
+        outln!("  review the result, then `keyquorum file merge` and `file sign`");
+    }
+    Ok(())
+}
+
+fn graph(conn: &Connection, kqtf: &Path) -> Result<()> {
+    let file = load(kqtf)?;
+    let policy = policy_of(&file)?;
+    let ctx = StoreTrust { conn };
+    let heads = file.graph().heads();
+    for stored in file.revisions() {
+        let revision = &stored.revision;
+        let id = revision.revision_id;
+        let mark = if heads.contains(&id) { "*" } else { " " };
+        let parents = if revision.parent_revision_ids.is_empty() {
+            "root".to_string()
+        } else {
+            revision
+                .parent_revision_ids
+                .iter()
+                .map(short)
+                .collect::<Vec<_>>()
+                .join(" + ")
+        };
+        outln!("{mark} {} {}", short(&id), revision.generated_label);
+        if let Some(user) = &revision.user_label {
+            outln!("    {user}");
+        }
+        outln!(
+            "    by {} · parents {parents} · {}",
+            revision.author_hcp_label,
+            trust_text(evaluate_revision_trust(&file, &id, policy, &ctx)?)
+        );
+    }
+    if heads.len() > 1 {
+        outln!("FORK: {} heads (*); none is overwritten", heads.len());
+    }
+    Ok(())
+}
+
+fn diff(kqtf: &Path, from: Option<String>, to: Option<String>) -> Result<()> {
+    let file = load(kqtf)?;
+    let to = pick_revision(&file, to.as_deref())?;
+    let from = match from {
+        Some(prefix) => Some(pick_revision(&file, Some(&prefix))?),
+        None => file
+            .graph()
+            .get(&to)
+            .and_then(|stored| stored.revision.parent_revision_ids.first().copied()),
+    };
+    let old = match &from {
+        Some(id) => text_of(&file, id)?,
+        None => String::new(),
+    };
+    let new = text_of(&file, &to)?;
+    outln!(
+        "{} → {}",
+        from.map(|id| short(&id))
+            .unwrap_or_else(|| "(empty)".into()),
+        short(&to)
+    );
+    print_changes(&old, &new)
+}
+
+fn checkout(
+    conn: &Connection,
+    kqtf: &Path,
+    out: &Path,
+    revision: Option<String>,
+    shareable: bool,
+) -> Result<()> {
+    let file = load(kqtf)?;
+    let id = if shareable {
+        let policy = policy_of(&file)?;
+        let head = pick_revision(&file, None)?;
+        let decision = select_shareable_revision(&file, &head, None, policy, &StoreTrust { conn })?;
+        decision
+            .delivered_revision
+            .ok_or_else(|| usage("no trusted revision exists to share"))?
+    } else {
+        pick_revision(&file, revision.as_deref())?
+    };
+    let payload = file
+        .graph()
+        .get(&id)
+        .map(|stored| stored.payload.clone())
+        .ok_or_else(|| usage("no such revision"))?;
+    env::write_new(out, &payload)?;
+    outln!(
+        "Wrote {} revision {} to {}",
+        file.logical_name,
+        short(&id),
+        out.display()
+    );
     Ok(())
 }

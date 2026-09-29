@@ -350,3 +350,205 @@ fn a_ghost_identity_cannot_author_or_sign_anything_new() {
     );
     assert!(out.contains("Checked in"), "{out}");
 }
+
+// ---- merge, review, graph, diff, checkout ---------------------------------
+
+const KQTF: &str = "/work/report.txt.kqtf";
+
+/// Track `base` as M.A (signed, trusted), then add two children of it by
+/// M.A.1 and M.S.1, giving a forked container.
+fn forked(env: &mut MemoryEnv, base: &str, left: &str, right: &str) {
+    use crate::file_history::{NewRevision, TrackedFile};
+    env.fs
+        .write(Path::new("/work/report.txt"), base.as_bytes())
+        .unwrap();
+    track(env, "M.A", "M.A");
+    let mut file = TrackedFile::decode(&env.fs.read(Path::new(KQTF)).unwrap()).unwrap();
+    let base_id = file.graph().heads()[0];
+    let policy_hash = file.policy().unwrap().policy_hash().unwrap();
+    for (label, minute, text) in [("M.A.1", 1, left), ("M.S.1", 2, right)] {
+        file.check_in(
+            NewRevision {
+                parent_revision_ids: vec![base_id],
+                user_label: None,
+                author_identity: Some([minute; 16]),
+                author_hcp_label: label.to_string(),
+                created_at_utc: format!("2026-09-27T00:0{minute}:00Z"),
+                topology_generation: 0,
+                policy_hash,
+            },
+            text.as_bytes().to_vec(),
+        )
+        .unwrap();
+    }
+    env.fs
+        .write(Path::new(KQTF), &file.encode().unwrap())
+        .unwrap();
+}
+
+#[test]
+fn a_clean_fork_merges_into_a_pending_revision_that_the_author_can_sign() {
+    let mut env = org();
+    forked(
+        &mut env,
+        "north\n100\nsouth\n",
+        "north\n125\nsouth\n",
+        "north\n100\nsouth-east\n",
+    );
+    let graph = ok(&mut env, &format!("graph {KQTF}"));
+    assert!(graph.contains("FORK: 2 heads"), "{graph}");
+
+    let out = ok(&mut env, &format!("merge {KQTF} --as M.A"));
+    assert!(
+        out.contains("Automatic merge: CleanMerge (THREE_WAY_TEXT)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("trust PENDING (MissingContentSignature)"),
+        "{out}"
+    );
+
+    let graph = ok(&mut env, &format!("graph {KQTF}"));
+    assert!(!graph.contains("FORK"), "{graph}");
+    assert!(graph.contains(" + "), "a two-parent revision: {graph}");
+    let status = ok(&mut env, &format!("status {KQTF}"));
+    assert!(
+        status.contains("would share the last trusted revision"),
+        "{status}"
+    );
+
+    // The merge carries both edits.
+    let merged = ok(&mut env, &format!("checkout {KQTF} --out /work/merged.txt"));
+    assert!(merged.contains("Wrote report.txt revision"), "{merged}");
+    assert_eq!(
+        env.fs.read(Path::new("/work/merged.txt")).unwrap(),
+        b"north\n125\nsouth-east\n"
+    );
+
+    let out = ok(
+        &mut env,
+        &format!("sign {KQTF} --as M.A --slot {}", slot("M.A")),
+    );
+    assert!(out.contains("trust TRUSTED"), "{out}");
+    let history = ok(&mut env, &format!("history {KQTF}"));
+    assert!(history.contains("AutoMergeAttempted"));
+    assert!(history.contains("AutoMergeClean"));
+    assert!(history.contains("trust_state=PENDING"));
+}
+
+#[test]
+fn a_conflicting_fork_is_recorded_and_assigned_to_a_reviewer() {
+    let mut env = org();
+    forked(&mut env, "totals: 100\n", "totals: 125\n", "totals: 130\n");
+    let out = ok(&mut env, &format!("merge {KQTF} --as M.A"));
+    assert!(out.contains("RequiresHuman (OVERLAPPING_EDIT)"), "{out}");
+    assert!(
+        out.contains("review assigned to M.A (PriorNeutralOwner)"),
+        "{out}"
+    );
+    // Both heads remain; nothing was overwritten.
+    let graph = ok(&mut env, &format!("graph {KQTF}"));
+    assert!(graph.contains("FORK: 2 heads"), "{graph}");
+    let history = ok(&mut env, &format!("history {KQTF}"));
+    for kind in [
+        "AutoMergeRequiresHuman",
+        "HistoryForkDetected",
+        "ContentConflictDetected",
+        "ConflictReviewAssigned",
+    ] {
+        assert!(history.contains(kind), "{kind}: {history}");
+    }
+    // A second attempt does not pretend to resolve it.
+    let again = ok(&mut env, &format!("merge {KQTF} --as M.A"));
+    assert!(again.contains("RequiresHuman"), "{again}");
+
+    let review = ok(&mut env, &format!("review {KQTF}"));
+    assert!(review.contains("CHANGED LINES (LEFT)"), "{review}");
+    assert!(review.contains("M.A.1 · revision"), "{review}");
+    assert!(review.contains("-    1 | totals: 100"), "{review}");
+    assert!(review.contains("+    1 | totals: 125"), "{review}");
+    assert!(review.contains("CHANGED LINES (RIGHT)"), "{review}");
+    assert!(review.contains("M.S.1 · revision"), "{review}");
+    assert!(review.contains("+    1 | totals: 130"), "{review}");
+    assert!(
+        review.contains("merge  RequiresHuman (OVERLAPPING_EDIT)"),
+        "{review}"
+    );
+    assert!(
+        review.contains("review M.A (PriorNeutralOwner)"),
+        "{review}"
+    );
+}
+
+#[test]
+fn merge_and_review_need_a_fork() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    let (result, _) = run(&mut env, &format!("merge {KQTF} --as M.A"));
+    assert!(result.unwrap_err().to_string().contains("nothing to merge"));
+    let review = ok(&mut env, &format!("review {KQTF}"));
+    assert!(review.contains("Nothing to review"), "{review}");
+    // An author outside the scope may not merge either.
+    let (result, _) = run(&mut env, &format!("merge {KQTF} --as X.1"));
+    assert!(result.is_err());
+}
+
+#[test]
+fn diff_shows_removed_then_added_lines() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    edit(&mut env, "totals: 125\n");
+    ok(
+        &mut env,
+        &format!("checkin {KQTF} --from /work/edited.txt --as M.A --unsigned"),
+    );
+    let out = ok(&mut env, &format!("diff {KQTF}"));
+    assert!(out.contains("-    1 | totals: 100"), "{out}");
+    assert!(out.contains("+    1 | totals: 125"), "{out}");
+    // Against the empty text for the root revision.
+    let root = ok(&mut env, &format!("verify {KQTF}"));
+    let first = root
+        .lines()
+        .nth(1)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
+    let out = ok(&mut env, &format!("diff {KQTF} --to {first}"));
+    assert!(out.contains("(empty) →"), "{out}");
+    assert!(out.contains("+    1 | totals: 100"), "{out}");
+}
+
+#[test]
+fn checkout_writes_the_shareable_revision_and_never_overwrites() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    edit(&mut env, "totals: 125\n");
+    ok(
+        &mut env,
+        &format!("checkin {KQTF} --from /work/edited.txt --as M.A --unsigned"),
+    );
+    // The head is unsigned, so the shareable revision is the trusted first one.
+    ok(
+        &mut env,
+        &format!("checkout {KQTF} --shareable --out /work/shared.txt"),
+    );
+    assert_eq!(
+        env.fs.read(Path::new("/work/shared.txt")).unwrap(),
+        b"totals: 100\n"
+    );
+    ok(&mut env, &format!("checkout {KQTF} --out /work/head.txt"));
+    assert_eq!(
+        env.fs.read(Path::new("/work/head.txt")).unwrap(),
+        b"totals: 125\n"
+    );
+    let (result, _) = run(&mut env, &format!("checkout {KQTF} --out /work/head.txt"));
+    assert!(result.is_err(), "refuses to overwrite");
+    // A forked history has no single head to check out by default.
+    let mut env = org();
+    forked(&mut env, "a\n", "b\n", "c\n");
+    let (result, _) = run(&mut env, &format!("checkout {KQTF} --out /work/x.txt"));
+    assert!(result.unwrap_err().to_string().contains("forked"));
+    assert!(!env.fs.exists(Path::new("/work/x.txt")));
+}

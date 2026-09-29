@@ -156,6 +156,51 @@ fn overlaps(a: &Hunk, b: &Hunk) -> bool {
         || (a.is_insertion() && b.is_insertion() && a.start == b.start)
 }
 
+/// Whether a line was taken out of the old text or put into the new one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChangeKind {
+    Removed,
+    Added,
+}
+
+/// One changed line. `line` is 1-based: a position in the old text for a
+/// removed line and in the new text for an added one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineChange {
+    pub kind: ChangeKind,
+    pub line: usize,
+    pub text: String,
+}
+
+/// The lines that differ between `old` and `new`, in order, removals before
+/// the additions that replace them. Text keeps its line endings. `None`
+/// when the inputs are too large to compare.
+pub fn diff_text(old: &str, new: &str) -> Option<Vec<LineChange>> {
+    let old_lines: Vec<&str> = old.split_inclusive('\n').collect();
+    let new_lines: Vec<&str> = new.split_inclusive('\n').collect();
+    let mut out = Vec::new();
+    let mut shift: isize = 0;
+    for hunk in hunks(&old_lines, &new_lines)? {
+        for (offset, text) in old_lines[hunk.start..hunk.end].iter().enumerate() {
+            out.push(LineChange {
+                kind: ChangeKind::Removed,
+                line: hunk.start + offset + 1,
+                text: text.to_string(),
+            });
+        }
+        let new_start = (hunk.start as isize + shift) as usize;
+        for (offset, text) in hunk.lines.iter().enumerate() {
+            out.push(LineChange {
+                kind: ChangeKind::Added,
+                line: new_start + offset + 1,
+                text: text.to_string(),
+            });
+        }
+        shift += hunk.lines.len() as isize - (hunk.end - hunk.start) as isize;
+    }
+    Some(out)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum TextMerge {
     Clean(String),

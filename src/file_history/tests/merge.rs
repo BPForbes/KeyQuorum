@@ -1,6 +1,7 @@
 use super::super::merge::{merge_text, TextMerge};
 use super::*;
 use crate::error::Error;
+use crate::file_history::{diff_text, ChangeKind};
 
 fn merged(base: &str, left: &str, right: &str) -> Option<String> {
     match merge_text(base, left, right) {
@@ -423,4 +424,46 @@ fn a_disabled_policy_blocks_a_divergence_but_not_a_fast_forward() {
     let (same, _, sl, sr) = fork(b"base", b"same", b"same");
     let blocked = same.plan_auto_merge(&sl, &sr, false).unwrap();
     assert_eq!(blocked.outcome, AutoMergeOutcome::PolicyBlocked);
+}
+
+fn changes(old: &str, new: &str) -> Vec<(ChangeKind, usize, String)> {
+    diff_text(old, new)
+        .unwrap()
+        .into_iter()
+        .map(|c| (c.kind, c.line, c.text))
+        .collect()
+}
+
+#[test]
+fn diff_reports_removed_then_added_lines_with_their_positions() {
+    use ChangeKind::{Added, Removed};
+    assert_eq!(changes("a\nb\nc\n", "a\nb\nc\n"), vec![]);
+    assert_eq!(
+        changes("a\nb\nc\n", "a\nB\nc\n"),
+        vec![(Removed, 2, "b\n".into()), (Added, 2, "B\n".into())]
+    );
+    // Positions track the shift caused by earlier hunks.
+    assert_eq!(
+        changes("a\nb\nc\nd\n", "x\ny\na\nb\nc\nD\n"),
+        vec![
+            (Added, 1, "x\n".into()),
+            (Added, 2, "y\n".into()),
+            (Removed, 4, "d\n".into()),
+            (Added, 6, "D\n".into()),
+        ]
+    );
+    assert_eq!(changes("", "a\n"), vec![(Added, 1, "a\n".into())]);
+    assert_eq!(changes("a\n", ""), vec![(Removed, 1, "a\n".into())]);
+    // A changed last line without a newline is a change to that line.
+    assert_eq!(
+        changes("a\nb", "a\nb\n"),
+        vec![(Removed, 2, "b".into()), (Added, 2, "b\n".into())]
+    );
+}
+
+#[test]
+fn diff_gives_up_on_oversized_inputs() {
+    let old: String = (0..3000).map(|i| format!("old {i}\n")).collect();
+    let new: String = (0..3000).map(|i| format!("new {i}\n")).collect();
+    assert_eq!(diff_text(&old, &new), None);
 }
