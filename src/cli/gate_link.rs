@@ -241,10 +241,25 @@ pub(super) fn record_unlock(
     failure: Option<&Error>,
     presented: &[String],
 ) {
+    record_unlock_with(gate, conn, id, failure, presented, &[]);
+}
+
+/// `record_unlock` plus extra safe detail pairs (such as the PIN outcome).
+pub(super) fn record_unlock_with(
+    gate: Gate,
+    conn: &Connection,
+    id: i64,
+    failure: Option<&Error>,
+    presented: &[String],
+    extra: &[(&str, String)],
+) {
     if matches!(failure, Some(Error::FileExpired)) {
         return record_expiry(gate, conn, id);
     }
     let mut details = gate_details(gate, id);
+    for (key, value) in extra {
+        details = details.with(key, value);
+    }
     let kind = match failure {
         None => {
             details = details.with("result", "success");
@@ -364,4 +379,43 @@ pub(super) fn record_share(
         file_id,
         vec![info(kind, outcome, details)],
     );
+}
+
+/// Where a PIN check stood when an attempt ended, as history records it.
+/// Only the outcome is kept: never the PIN, its hash, or the attempt count.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum PinStep {
+    /// The resource has no PIN that applies to this attempt.
+    NotRequired,
+    /// A PIN was needed and the check was reached but not answered.
+    Asked,
+    Verified,
+    Mismatch,
+    Locked,
+    /// Any other refusal (storage error and the like).
+    Failed,
+}
+
+impl PinStep {
+    pub(super) fn from_result(result: &Result<()>) -> PinStep {
+        match result {
+            Ok(()) => PinStep::Verified,
+            Err(Error::PinMismatch) => PinStep::Mismatch,
+            Err(Error::PinLocked) => PinStep::Locked,
+            Err(_) => PinStep::Failed,
+        }
+    }
+
+    /// The detail pair to append, or none when no PIN applied.
+    pub(super) fn detail(self) -> Vec<(&'static str, String)> {
+        let word = match self {
+            PinStep::NotRequired => return Vec::new(),
+            PinStep::Asked => "asked",
+            PinStep::Verified => "verified",
+            PinStep::Mismatch => "mismatch",
+            PinStep::Locked => "locked",
+            PinStep::Failed => "failed",
+        };
+        vec![("pin", word.to_string())]
+    }
 }

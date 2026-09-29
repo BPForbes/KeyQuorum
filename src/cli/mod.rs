@@ -1876,16 +1876,21 @@ fn run_access_password(conn: &Connection, args: AccessPasswordArgs) -> Result<()
         1 => {
             let id = require(args.id, "id")?;
             gate_link::note_if_gone(Gate::Password, conn, id);
+            let mut pin_step = gate_link::PinStep::NotRequired;
             let attempt = (|| -> Result<Vec<u8>> {
                 locked_files::purge_if_expired_in(&mut env::EnvStorage, conn, id)?;
-                if pin::verification_required(conn, ResourceType::LockedFile, id)? {
-                    let pin_value = prompt_secret("PIN: ")?;
-                    pin::verify_pin(conn, ResourceType::LockedFile, id, &pin_value)?;
-                }
+                check_pin(conn, ResourceType::LockedFile, id, &mut pin_step)?;
                 let password = prompt_secret("Unlock password: ")?;
                 locked_files::unlock_file_in(&mut env::EnvStorage, conn, id, &password)
             })();
-            gate_link::record_unlock(Gate::Password, conn, id, attempt.as_ref().err(), &[]);
+            gate_link::record_unlock_with(
+                Gate::Password,
+                conn,
+                id,
+                attempt.as_ref().err(),
+                &[],
+                &pin_step.detail(),
+            );
             let plaintext = attempt?;
             match args.output {
                 Some(path) => env::write_new(&path, &plaintext)?,
@@ -2628,15 +2633,17 @@ fn run_share(conn: &Connection, command: ShareCommand) -> Result<()> {
             let token = prompt_secret("File share token: ")?;
             // Read before anything can purge the file and its share rows.
             let known = gate_link::share_of_token(conn, &token);
+            let mut pin_step = gate_link::PinStep::NotRequired;
             let attempt = (|| -> Result<i64> {
                 sharing::purge_expired_file_share_in(&mut env::EnvStorage, conn, &token)?;
                 let share_id = sharing::file_share_id_for_token(conn, &token)?;
-                if pin::verification_required(conn, ResourceType::FileShare, share_id)? {
-                    let pin_value = prompt_secret("PIN: ")?;
-                    pin::verify_pin(conn, ResourceType::FileShare, share_id, &pin_value)?;
-                }
+                check_pin(conn, ResourceType::FileShare, share_id, &mut pin_step)?;
                 sharing::redeem_file_share_in(&mut env::EnvStorage, conn, &token)
             })();
+            // A share link is a bearer credential: whoever holds the token
+            // redeems it, and nothing here proves who that is.
+            let mut redeem_details = vec![("redeemer", "UNKNOWN_BEARER".to_string())];
+            redeem_details.extend(pin_step.detail());
             if let Some((share_id, file_id)) = known {
                 match attempt.as_ref().err() {
                     Some(Error::FileExpired) => {
@@ -2648,7 +2655,7 @@ fn run_share(conn: &Connection, command: ShareCommand) -> Result<()> {
                         HistoryEventType::ShareLinkRedeemed,
                         failure,
                         share_id,
-                        &[],
+                        &redeem_details,
                     ),
                 }
             }
@@ -2677,6 +2684,24 @@ fn run_share(conn: &Connection, command: ShareCommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Ask for the PIN when the resource needs one, tracking how far the check
+/// got so the gate's history can say so (the outcome only, never the PIN).
+fn check_pin(
+    conn: &Connection,
+    resource: ResourceType,
+    id: i64,
+    step: &mut gate_link::PinStep,
+) -> Result<()> {
+    if !pin::verification_required(conn, resource, id)? {
+        return Ok(());
+    }
+    *step = gate_link::PinStep::Asked;
+    let pin_value = prompt_secret("PIN: ")?;
+    let result = pin::verify_pin(conn, resource, id, &pin_value);
+    *step = gate_link::PinStep::from_result(&result);
+    result
 }
 
 fn run_pin(conn: &Connection, command: PinCommand) -> Result<()> {

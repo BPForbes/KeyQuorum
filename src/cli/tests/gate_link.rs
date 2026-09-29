@@ -413,6 +413,64 @@ fn share_create_redeem_and_revoke_are_recorded_without_the_token() {
         .lines()
         .any(|l| l.contains("ShareLinkRedeemed") && l.contains("Failure")));
     assert!(!text.contains(&token), "the bearer token reached history");
+    // Nothing proves who held the token, so history says exactly that.
+    assert!(
+        text.lines()
+            .filter(|l| l.contains("ShareLinkRedeemed"))
+            .all(|l| l.contains("redeemer=UNKNOWN_BEARER")),
+        "{text}"
+    );
+    assert!(
+        !text
+            .lines()
+            .any(|l| l.contains("ShareLinkCreated") && l.contains("redeemer=")),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_pin_check_at_the_password_gate_records_only_its_outcome() {
+    let mut env = org();
+    env.fs.write(Path::new("/work/secret.txt"), SECRET).unwrap();
+    // The lock password is asked first, then the PIN to set.
+    env.prompts
+        .push_back(super::memory_env::PASSPHRASE.to_string());
+    env.prompts.push_back("4321".to_string());
+    let (result, out) = env.keyquorum(&format!(
+        "keyquorum {DB} access password --state 0 --source /work/secret.txt \
+         --encrypted-path /work/secret.kqenc --pin"
+    ));
+    assert!(result.is_ok(), "{out}");
+    track(&mut env, "M.A", "M.A");
+    ok(&mut env, &format!("link {KQTF} --locked-file 1"));
+
+    // A wrong PIN, then the right one.
+    env.prompts.push_back("0000".to_string());
+    let (result, _) = unlock_password(&mut env);
+    assert!(result.is_err());
+    env.prompts.push_back("4321".to_string());
+    let (result, out) = unlock_password(&mut env);
+    assert!(result.is_ok(), "{out}");
+
+    let text = history(&mut env);
+    let attempts: Vec<&str> = text
+        .lines()
+        .filter(|l| l.contains("PasswordUnlockAttempted"))
+        .collect();
+    assert_eq!(attempts.len(), 2, "{text}");
+    assert!(attempts[0].contains("pin=mismatch"), "{text}");
+    assert!(attempts[1].contains("pin=verified"), "{text}");
+    assert!(!text.contains("4321"), "{text}");
+}
+
+#[test]
+fn an_unlock_with_no_pin_records_no_pin_detail() {
+    let mut env = password_gated();
+    ok(&mut env, &format!("link {KQTF} --locked-file 1"));
+    let (result, out) = unlock_password(&mut env);
+    assert!(result.is_ok(), "{out}");
+    let text = history(&mut env);
+    assert!(!text.contains("pin="), "{text}");
 }
 
 #[test]
