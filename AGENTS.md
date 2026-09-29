@@ -252,17 +252,25 @@ genuinely reports `Possession::Ghost` for that label, not a UI-only flag. She st
 share the moment anyone presents it. `RequirementNode.ghost` (`view.rs`)
 is how the frontend marks it.
 
-`LabState::seed_tracked` also builds three tracked files with real `keyquorum
-file` commands (`track`, `checkin --unsigned`, `share`, `import`, `merge`) while
-every drive is connected: an unsigned newer edit whose sharing falls back to the
-last trusted revision, two edits that auto-merge, and two edits to one line that
-go to a named reviewer. `import_history` reads each container's events back into
-`ActivityView` (`kind == "history"`) with the optional history fields
-(`fileId`, `revisionId`, `generatedLabel`, `historyRoot`, `finalizationState`,
-...). Those fields come from the container and from
-`file_history` (trust evaluation, `HistoryEventType::category`), never from lab-side
-interpretation of what an event means, and entries
-without a history serialize exactly as before.
+`src/lab/state/history.rs` is the lab's tracked-file layer. `LabState::seed_tracked`
+builds three tracked files with real `keyquorum file` commands in Sarah's own
+store while every drive is connected: an unsigned newer edit whose sharing falls
+back to the last trusted revision, two edits that auto-merge, and two edits to
+one line that go to a named reviewer. The lab follows a registry of containers
+(those seeded, those the Activity page's buttons create, and any `.kqtf` a
+terminal command names) and `LabState::log` re-reads them before it records each
+action, appending unseen events as `ActivityView` entries (`kind == "history"`,
+with `fileId`, `revisionId`, `generatedLabel`, `historyRoot`,
+`finalizationState`, ...) beneath the action's own entry, which stays newest
+because tutorial gates read `activity[0]`. The Activity page's tracked-file
+buttons (track, check in signed or unsigned, sign, countersign, merge, review,
+verify, share, receive or refuse, record the answer) each run one `keyquorum
+file` command as the active person against their own store with their own slot;
+letters and acknowledgements pass through `/srv/keyquorum/tracked/letters` and
+`acks`. `Snapshot::tracked_files` judges revisions with that store's
+`StoreTrust`; the lab adds no gate or rule of its own, event categories come
+from `HistoryEventType::category`, and entries without a history serialize
+exactly as before. The terminal does not expand `~` inside command arguments.
 
 ## Setup / build / test
 

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Act } from "../App";
+import { TrackedFiles } from "./TrackedFiles";
 import type { ActionResult, ActivityView, HistoryCategory, Snapshot, TraceStep } from "../api/types";
 
 const MARK: Record<TraceStep["status"], [string, string]> = {
@@ -137,6 +138,7 @@ export function ActivityPanel({ snapshot, last, act }: { snapshot: Snapshot; las
       ) : (
         <p className="empty">Actions and the checks behind them appear here.</p>
       )}
+      <TrackedFiles snapshot={snapshot} act={act} />
       <details className="log" onToggle={(event) => {
         if (event.currentTarget.open) act((client) => client.noteUi("activity-expand", "Expanded the full activity log"));
       }}>
@@ -148,7 +150,10 @@ export function ActivityPanel({ snapshot, last, act }: { snapshot: Snapshot; las
               type="button"
               className="chip"
               aria-pressed={filter === option.id}
-              onClick={() => setFilter(option.id)}
+              onClick={() => {
+                setFilter(option.id);
+                act((client) => client.noteUi("history-filter", `Showed ${option.label} activity`));
+              }}
             >
               {option.label}
             </button>

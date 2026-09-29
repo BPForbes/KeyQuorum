@@ -250,4 +250,45 @@ test.describe("desktop lab", () => {
     await filter("All").click();
     await expect(panel.getByTestId("revision-graph")).toContainText("budget.txt");
   });
+
+  test("tracked files can be made, edited, signed, verified and handed over from the Activity page", async ({ page }) => {
+    await loadLab(page);
+    await switchUser(page, "Sarah");
+    const panel = page.getByTestId("tracked-files");
+    await panel.getByLabel("New tracked file").fill("plan.txt");
+    await panel.getByLabel("First revision").fill("a\nb");
+    await panel.getByRole("button", { name: "Track and sign" }).click();
+    const card = panel.locator('[data-testid="tracked-file"][data-path="/home/sarah/tracked/plan.txt.kqtf"]');
+    await expect(card.locator('li[data-trust="trusted"]')).toHaveCount(1);
+
+    // An unsigned edit is pending, and the timeline shows it at once.
+    await card.getByLabel("Edit the current revision").fill("a\nB");
+    await card.getByLabel("Sign this edit with my slot").uncheck();
+    await card.getByRole("button", { name: "Check in" }).click();
+    await expect(card.locator('li[data-trust="pending"]')).toHaveCount(1);
+    await page.locator('[data-panel="activity"] details.log > summary').click();
+    await expect(page.locator('[data-panel="activity"] [data-event="EditCheckedIn"]').first()).toBeVisible();
+
+    // Verify opens the CLI's own report.
+    await card.getByRole("button", { name: "Verify history" }).click();
+    await expect(page.getByTestId("opened-file")).toContainText("History and revision graph verify");
+    await page.getByRole("button", { name: "Close" }).click();
+
+    await card.locator('li[data-trust="pending"]').getByRole("button", { name: "Sign revision" }).click();
+    await expect(card.locator('li[data-trust="pending"]')).toHaveCount(0);
+
+    // Hand the file to Alice; she accepts it into her own copy.
+    await card.getByLabel("Share with").selectOption("alice");
+    await card.getByRole("button", { name: "Share file" }).click();
+    await expect(panel.getByTestId("tracked-letters")).toContainText("waiting");
+    await switchUser(page, "Alice");
+    await panel.getByTestId("tracked-letters").getByRole("button", { name: "Accept plan.txt" }).click();
+    await expect(panel.getByTestId("tracked-letters")).toContainText("accepted");
+    await expect(panel.getByTestId("tracked-select")).toContainText("/home/alice/tracked/plan.txt.kqtf");
+
+    // Back as Sarah, record Alice's answer.
+    await switchUser(page, "Sarah");
+    await panel.getByTestId("tracked-letters").getByRole("button", { name: "Record the answer" }).click();
+    await expect(panel.getByTestId("tracked-letters")).toContainText("answer recorded");
+  });
 });

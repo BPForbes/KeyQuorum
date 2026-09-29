@@ -338,6 +338,63 @@ pub struct Snapshot {
     pub signatures: Vec<SignatureView>,
     /// Tree restructure proposals still waiting on their countersigner.
     pub pending_restructures: Vec<RestructureProposalView>,
+    /// Tracked files the activity log follows, judged by the active
+    /// person's store.
+    pub tracked_files: Vec<TrackedFileView>,
+    /// Tracked-file letters handed between people.
+    pub tracked_letters: Vec<TrackedLetterView>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackedFileView {
+    pub path: String,
+    pub name: String,
+    pub file_id: String,
+    pub scope: String,
+    /// The lab user whose home holds the container; `None` for shared ones.
+    pub owner: Option<String>,
+    pub auto_merge: bool,
+    pub forked: bool,
+    pub history_len: usize,
+    pub history_root: String,
+    /// Oldest first.
+    pub revisions: Vec<TrackedRevisionView>,
+    /// The revision `file share` would send from the sole head, if any.
+    pub shareable: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackedRevisionView {
+    pub id: String,
+    pub generated_label: String,
+    pub user_label: Option<String>,
+    pub author: String,
+    pub created_at: String,
+    pub parents: Vec<String>,
+    pub head: bool,
+    /// `trusted`, `pending` or `denied`, from `file_history`.
+    pub trust: String,
+    pub reason: Option<String>,
+    /// The revision's text, when it is UTF-8 and small enough to edit here.
+    pub text: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackedLetterView {
+    pub id: i64,
+    pub file_name: String,
+    pub from: String,
+    pub from_name: String,
+    pub from_label: String,
+    pub to: String,
+    pub to_name: String,
+    pub to_label: String,
+    /// `waiting`, `accepted` or `rejected`.
+    pub status: String,
+    pub ack_recorded: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]

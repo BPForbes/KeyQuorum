@@ -294,6 +294,98 @@ impl KeyQuorumLab {
         to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
     }
 
+    /// `keyquorum file track`: start tracking a new file as the active person.
+    pub fn history_track(
+        &mut self,
+        name: &str,
+        text: &str,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self.state.history_track(name, text);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum file checkin`, signed with the active person's slot or not.
+    pub fn history_checkin(
+        &mut self,
+        path: &str,
+        text: &str,
+        signed: bool,
+        label: Option<String>,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self
+            .state
+            .history_checkin(path, text, signed, label.as_deref());
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum file sign` for a revision (the sole head when `None`).
+    pub fn history_sign(
+        &mut self,
+        path: &str,
+        revision: Option<String>,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self.state.history_sign(path, revision.as_deref());
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum file countersign` for a revision (the sole head when `None`).
+    pub fn history_countersign(
+        &mut self,
+        path: &str,
+        revision: Option<String>,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self.state.history_countersign(path, revision.as_deref());
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum file merge`: join a forked history's two heads.
+    pub fn history_merge(
+        &mut self,
+        path: &str,
+        label: Option<String>,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self.state.history_merge(path, label.as_deref());
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum file verify`, shown like an opened file.
+    pub fn history_verify(&mut self, path: &str) -> std::result::Result<String, JsError> {
+        let outcome = self.state.history_verify(path);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum file review`, shown like an opened file.
+    pub fn history_review(&mut self, path: &str) -> std::result::Result<String, JsError> {
+        let outcome = self.state.history_review(path);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum file share`: seal the newest trusted revision to another person.
+    pub fn history_share(
+        &mut self,
+        path: &str,
+        to_user: &str,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self.state.history_share(path, to_user);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum file receive` of a letter, accepting or refusing it.
+    pub fn history_receive(
+        &mut self,
+        letter_id: i32,
+        accept: bool,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self.state.history_receive(i64::from(letter_id), accept);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum file ack`: record a letter's answer in the sender's copy.
+    pub fn history_ack(&mut self, letter_id: i32) -> std::result::Result<String, JsError> {
+        let outcome = self.state.history_ack(i64::from(letter_id));
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
     /// One terminal line against the same state the GUI uses.
     pub fn run_command(&mut self, line: &str) -> std::result::Result<String, JsError> {
         if line.trim() == "reset" {

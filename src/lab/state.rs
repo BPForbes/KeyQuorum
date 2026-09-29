@@ -14,11 +14,9 @@ use super::drives::{DriveBay, MockDrive};
 use super::seed::{self, Expiry, Protection};
 use super::view::*;
 use super::vm::{quote, CommandRun, LabVm, ORG_DB};
-use crate::cli::file_cmd::StoreTrust;
 use crate::device::{self, CustodyMode, UnlockApproval};
 use crate::envelope;
 use crate::error::{Error, Result};
-use crate::file_history::{evaluate_revision_trust, HistoryOutcome, TrackedFile, TrustState};
 use crate::key_tree::{self, KeyQuorumTree, TreeNodeSummary};
 use crate::keys;
 use crate::private_bridge::{is_ancestor_or_self, parent_node_label};
@@ -30,10 +28,14 @@ use rusqlite::Connection;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+mod history;
+
 const ACTIVITY_LIMIT: usize = 80;
 const SRV: &str = "/srv/keyquorum";
 const ARCHIVE: &str = "/srv/archive";
 const TRACKED_DIR: &str = "/srv/keyquorum/tracked";
+/// The store the seeded tracked files are made with: their author's own.
+const SEED_TRACKER_STORE: &str = "/home/sarah/keyquorum.sqlite";
 
 struct LabUser {
     id: String,
@@ -210,6 +212,11 @@ pub struct LabState {
     file_shares: Vec<FileShare>,
     signatures: Vec<SignedFile>,
     next_signature_id: i64,
+    /// Tracked-file containers whose history the activity log follows.
+    tracked: Vec<history::Tracked>,
+    /// Tracked-file letters handed between people in the lab.
+    letters: Vec<history::TrackedLetter>,
+    next_letter_id: i64,
 }
 
 impl LabState {
@@ -255,6 +262,9 @@ impl LabState {
             file_shares: Vec::new(),
             signatures: Vec::new(),
             next_signature_id: 1,
+            tracked: Vec::new(),
+            letters: Vec::new(),
+            next_letter_id: 1,
         };
         let commands = state.provision()?;
         let home = state.actor().home();
@@ -565,7 +575,7 @@ impl LabState {
             state.write_file(Path::new(&path), text.as_bytes())?;
             Ok(path)
         };
-        let db = format!("keyquorum --db {ORG_DB} file");
+        let db = format!("keyquorum --db {} file", SEED_TRACKER_STORE);
 
         // 1. A newer edit nobody has signed: sharing falls back.
         let source = edit(self, "budget.txt", "Q4 budget: 120000\n")?;
@@ -638,92 +648,10 @@ impl LabState {
         }
 
         for name in ["budget.txt", "forecast.txt", "memo.txt"] {
-            self.import_history(&file(name))?;
+            self.register_tracked(Path::new(&file(name)));
         }
+        self.sync_history();
         Ok(count.get())
-    }
-
-    /// Read one tracked file's events back into the activity log, oldest
-    /// first, so the newest sits on top like everything else. Read-only:
-    /// nothing is judged here beyond asking `file_history` what each
-    /// revision's trust is now.
-    fn import_history(&mut self, path: &str) -> Result<()> {
-        let bytes = self.vm().read(Path::new(path))?;
-        let file = TrackedFile::decode(&bytes)?;
-        let entries: Vec<ActivityView> = {
-            let ctx = StoreTrust { conn: self.org() };
-            let policy = file.policy().cloned();
-            file.events()
-                .iter()
-                .map(|event| {
-                    let revision = event
-                        .revision_id
-                        .and_then(|id| file.graph().get(&id).map(|stored| (id, &stored.revision)));
-                    let finalization =
-                        event
-                            .revision_id
-                            .zip(policy.as_ref())
-                            .and_then(|(id, policy)| {
-                                evaluate_revision_trust(&file, &id, policy, &ctx).ok()
-                            });
-                    ActivityView {
-                        seq: 0,
-                        actor: event
-                            .actor_label
-                            .clone()
-                            .unwrap_or_else(|| "system".to_string()),
-                        kind: "history".to_string(),
-                        outcome: match event.outcome {
-                            HistoryOutcome::Success => "granted",
-                            HistoryOutcome::Failure | HistoryOutcome::Denied => "denied",
-                            HistoryOutcome::Info => "info",
-                        }
-                        .to_string(),
-                        title: format!(
-                            "{} · {}",
-                            humanize(&format!("{:?}", event.event_type)),
-                            file.logical_name
-                        ),
-                        trace: event
-                            .details
-                            .entries()
-                            .iter()
-                            .map(|(key, value)| TraceStep::info(format!("{key}: {value}")))
-                            .collect(),
-                        command: Some(format!("keyquorum file history {path}")),
-                        history: Some(HistoryFields {
-                            file_id: hex::encode(file.file_id),
-                            file_name: file.logical_name.clone(),
-                            history_event_type: format!("{:?}", event.event_type),
-                            history_category: event.event_type.category().to_string(),
-                            history_root: hex::encode(event.event_hash),
-                            revision_id: event.revision_id.map(hex::encode),
-                            generated_label: revision.map(|(_, r)| r.generated_label.clone()),
-                            user_label: revision.and_then(|(_, r)| r.user_label.clone()),
-                            parent_revision_ids: revision
-                                .map(|(_, r)| {
-                                    r.parent_revision_ids.iter().map(hex::encode).collect()
-                                })
-                                .unwrap_or_default(),
-                            finalization_state: finalization.map(|state| {
-                                match state {
-                                    TrustState::Trusted => "trusted",
-                                    TrustState::Pending(_) => "pending",
-                                    TrustState::Denied(_) => "denied",
-                                }
-                                .to_string()
-                            }),
-                        }),
-                    }
-                })
-                .collect()
-        };
-        for mut entry in entries {
-            entry.seq = self.next_seq;
-            self.next_seq += 1;
-            self.activity.push(entry);
-        }
-        Ok(())
     }
 
     /// Lock (or publish) one seeded file the way an administrator would.
@@ -3154,6 +3082,12 @@ impl LabState {
         trace: Vec<TraceStep>,
         command: Option<String>,
     ) {
+        // History the action just wrote goes in first, so the action's own
+        // entry stays the newest one (tutorial gates read `activity[0]`).
+        if let Some(line) = &command {
+            self.register_from_command(line);
+        }
+        self.sync_history();
         let actor = self.actor();
         self.activity.push(ActivityView {
             seq: self.next_seq,
@@ -3461,6 +3395,8 @@ impl LabState {
             file_shares: self.file_share_views(),
             signatures: self.signature_views(),
             pending_restructures: self.pending_restructure_views()?,
+            tracked_files: self.tracked_views(),
+            tracked_letters: self.letter_views(),
         })
     }
 
@@ -3671,17 +3607,3 @@ const ORG_TREE_SPEC: &str = r#"{
   ]
 }
 "#;
-
-/// `AutoMergeRequiresHuman` as "Auto merge requires human".
-fn humanize(name: &str) -> String {
-    let mut out = String::new();
-    for (i, c) in name.chars().enumerate() {
-        if c.is_uppercase() && i > 0 {
-            out.push(' ');
-            out.extend(c.to_lowercase());
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}

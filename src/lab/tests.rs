@@ -1634,3 +1634,200 @@ fn only_history_entries_carry_history_fields_when_serialized() {
         assert!(event.get(key).is_some(), "{key}: {event}");
     }
 }
+
+// ---- tracked files from the GUI --------------------------------------------
+
+fn tracked<'a>(snapshot: &'a Snapshot, path: &str) -> &'a crate::lab::view::TrackedFileView {
+    snapshot
+        .tracked_files
+        .iter()
+        .find(|file| file.path == path)
+        .unwrap_or_else(|| panic!("{path} is not tracked"))
+}
+
+fn ok(outcome: crate::error::Result<super::Outcome>) -> super::Outcome {
+    let outcome = outcome.expect("action runs");
+    assert!(outcome.ok, "{}\n{}", outcome.message, said(&outcome));
+    outcome
+}
+
+const NOTES: &str = "/home/sarah/tracked/notes.txt.kqtf";
+
+#[test]
+fn a_file_tracked_edited_shared_and_signed_from_the_gui_shows_up_live() {
+    let mut state = lab();
+    state.switch_user("sarah").unwrap();
+    ok(state.history_track("notes.txt", "draft 1\n"));
+    let s = snap(&state);
+    // The action's own entry is newest, the history it wrote right below.
+    assert_eq!(s.activity[0].kind, "history-track");
+    let started = s.activity[1].history.as_ref().unwrap();
+    assert_eq!(started.history_event_type, "PolicyDecision");
+    let file = tracked(&s, NOTES);
+    assert_eq!(file.owner.as_deref(), Some("sarah"));
+    assert_eq!(file.revisions.len(), 1);
+    assert_eq!(file.revisions[0].trust, "trusted");
+    assert_eq!(file.revisions[0].text.as_deref(), Some("draft 1\n"));
+
+    ok(state.history_checkin(NOTES, "draft 2\n", false, Some("Unsigned edit")));
+    let s = snap(&state);
+    assert_eq!(s.activity[0].kind, "history-checkin");
+    let file = tracked(&s, NOTES);
+    let head = file.revisions.last().unwrap();
+    assert_eq!(head.trust, "pending");
+    assert_eq!(head.user_label.as_deref(), Some("Unsigned edit"));
+    assert_eq!(
+        file.shareable.as_deref(),
+        Some(file.revisions[0].id.as_str())
+    );
+
+    // Sharing now sends the last trusted revision, not the unsigned one.
+    let shared = ok(state.history_share(NOTES, "morgan"));
+    assert!(
+        said(&shared).contains("LastTrustedRevision"),
+        "{}",
+        said(&shared)
+    );
+    assert_eq!(snap(&state).tracked_letters.len(), 1);
+
+    ok(state.history_sign(NOTES, None));
+    let s = snap(&state);
+    assert_eq!(s.activity[0].kind, "history-sign");
+    let file = tracked(&s, NOTES);
+    assert!(file.revisions.iter().all(|r| r.trust == "trusted"));
+    assert_eq!(
+        file.shareable.as_deref(),
+        Some(file.revisions[1].id.as_str())
+    );
+    let verified = ok(state.history_verify(NOTES));
+    assert!(verified
+        .opened
+        .unwrap()
+        .text
+        .contains("History and revision graph verify"));
+}
+
+#[test]
+fn the_cli_decides_and_the_lab_reports_a_refusal() {
+    let mut state = lab();
+    // Alice may not sign Sarah's revision; the CLI refuses and history says so.
+    state.switch_user("sarah").unwrap();
+    ok(state.history_track("notes.txt", "draft 1\n"));
+    ok(state.history_checkin(NOTES, "draft 2\n", false, None));
+    state.switch_user("alice").unwrap();
+    let refused = state.history_sign(NOTES, None).unwrap();
+    assert!(!refused.ok);
+    assert_eq!(snap(&state).activity[0].outcome, "denied");
+    // Without the actor's drive, nothing is signed either.
+    state.switch_user("sarah").unwrap();
+    state.set_drive("sarah", false).unwrap();
+    assert!(!state.history_sign(NOTES, None).unwrap().ok);
+    assert_eq!(tracked(&snap(&state), NOTES).revisions[1].trust, "pending");
+    // An unknown path is not a tracked file.
+    assert!(!state.history_verify("/etc/passwd").unwrap().ok);
+}
+
+#[test]
+fn terminal_commands_on_a_tracked_file_reach_the_timeline() {
+    let mut state = lab();
+    state.switch_user("sarah").unwrap();
+    let budget = "/srv/keyquorum/tracked/budget.txt.kqtf";
+    let revisions = tracked(&snap(&state), budget).revisions.len();
+    let (outcome, _) = terminal::run(
+        &mut state,
+        &format!(
+            "keyquorum --db /home/sarah/keyquorum.sqlite file checkin {budget} \
+             --from /srv/keyquorum/tracked/forecast.txt.alice --as M.S --unsigned"
+        ),
+    )
+    .unwrap();
+    assert!(outcome.ok, "{}", said(&outcome));
+    let s = snap(&state);
+    // The command's own entry is newest; the events it wrote sit below it.
+    assert_eq!(s.activity[0].kind, "command");
+    let checked_in = s.activity[1].history.as_ref().unwrap();
+    assert_eq!(checked_in.history_event_type, "PolicyDecision");
+    assert_eq!(
+        s.activity[2].history.as_ref().unwrap().history_event_type,
+        "EditCheckedIn"
+    );
+    assert_eq!(tracked(&s, budget).revisions.len(), revisions + 1);
+
+    // A container first named on the command line is followed from then on.
+    let (outcome, _) = terminal::run(
+        &mut state,
+        "keyquorum --db /home/sarah/keyquorum.sqlite file track /srv/keyquorum/tracked/memo.txt.bob \
+         --scope M.S --as M.S --slot /media/sarah-usb=M.S --out /home/sarah/memo-copy.kqtf",
+    )
+    .unwrap();
+    assert!(outcome.ok, "{}", said(&outcome));
+    assert!(snap(&state)
+        .tracked_files
+        .iter()
+        .any(|f| f.path == "/home/sarah/memo-copy.kqtf"));
+}
+
+#[test]
+fn two_people_fork_a_file_by_letter_and_one_of_them_merges_it() {
+    let mut state = lab();
+    state.switch_user("sarah").unwrap();
+    ok(state.history_track("notes.txt", "a\nb\nc\n"));
+    ok(state.history_share(NOTES, "alice"));
+
+    // Alice keeps her own copy.
+    state.switch_user("alice").unwrap();
+    let letter = snap(&state).tracked_letters[0].id;
+    ok(state.history_receive(letter, true));
+    let copy = "/home/alice/tracked/notes.txt.kqtf";
+    assert!(snap(&state).tracked_files.iter().any(|f| f.path == copy));
+    assert_eq!(snap(&state).tracked_letters[0].status, "accepted");
+    // Alice's signed edit still needs Sarah, her direct parent.
+    ok(state.history_checkin(copy, "a\nb\nC\n", true, None));
+    assert_eq!(tracked(&snap(&state), copy).revisions[1].trust, "pending");
+
+    // Sarah records Alice's answer, countersigns Alice's edit, and edits her own copy.
+    state.switch_user("sarah").unwrap();
+    ok(state.history_ack(letter));
+    assert!(snap(&state).tracked_letters[0].ack_recorded);
+    ok(state.history_countersign(copy, None));
+    assert_eq!(tracked(&snap(&state), copy).revisions[1].trust, "trusted");
+    ok(state.history_checkin(NOTES, "A\nb\nc\n", true, None));
+
+    // Alice sends hers back; Sarah's copy now has two heads.
+    state.switch_user("alice").unwrap();
+    ok(state.history_share(copy, "sarah"));
+    state.switch_user("sarah").unwrap();
+    let back = snap(&state).tracked_letters[1].id;
+    ok(state.history_receive(back, true));
+    assert!(tracked(&snap(&state), NOTES).forked);
+    let review = ok(state.history_review(NOTES));
+    assert!(review.opened.unwrap().text.contains("CHANGED LINES (LEFT)"));
+
+    // Edits on different lines merge on their own; Sarah signs the result.
+    ok(state.history_merge(NOTES, Some("Both edits")));
+    let file = tracked(&snap(&state), NOTES).clone();
+    assert!(!file.forked);
+    let merged = file.revisions.last().unwrap();
+    assert_eq!(merged.parents.len(), 2);
+    assert_eq!(merged.text.as_deref(), Some("A\nb\nC\n"));
+    assert_eq!(merged.trust, "pending");
+    ok(state.history_sign(NOTES, None));
+    assert_eq!(
+        tracked(&snap(&state), NOTES)
+            .revisions
+            .last()
+            .unwrap()
+            .trust,
+        "trusted"
+    );
+    let kinds: Vec<String> = snap(&state)
+        .activity
+        .iter()
+        .filter_map(|e| e.history.as_ref())
+        .filter(|h| h.file_name == "notes.txt")
+        .map(|h| h.history_event_type.clone())
+        .collect();
+    for kind in ["HistoryImported", "AutoMergeClean", "ShareDelivered"] {
+        assert!(kinds.iter().any(|k| k == kind), "{kind}: {kinds:?}");
+    }
+}

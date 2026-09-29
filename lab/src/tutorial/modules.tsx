@@ -919,4 +919,88 @@ export const TUTORIALS: TutorialModule[] = [
       },
     ],
   },
+  {
+    id: "tracked-file-history",
+    category: "files",
+    title: "Tracked files: history, trust & fallback",
+    summary: "Track a file, check in an unsigned edit, watch sharing fall back to the last trusted revision, then sign it.",
+    steps: [
+      {
+        title: "Tracked files live on the Activity page",
+        body: (
+          <p>
+            A tracked file carries its own signed, hash-chained history. You're acting as <strong>Sarah</strong> (M.S)
+            with her drive inserted. Every button here runs a real <code>keyquorum file</code> command with her slot.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="tracked-files"]', '[data-panel="activity"]'],
+        ensure: composeEnsures(ensureActiveUser("sarah"), ensureDrivesConnected("sarah")),
+      },
+      {
+        title: "Try it: track a new file",
+        body: (
+          <p>
+            Type a name (for example <code>notes.txt</code>) and some text under <strong>New tracked file</strong>,
+            then press <strong>Track and sign</strong>. The first revision is signed by Sarah, so it is trusted.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="history-track"]'],
+        ensure: composeEnsures(ensureActiveUser("sarah"), ensureDrivesConnected("sarah")),
+        requiredKind: "history-track",
+        isDone: (_snapshot, latest) => latest?.outcome === "granted",
+      },
+      {
+        title: "Try it: check in an unsigned edit",
+        body: (
+          <p>
+            Change the text under <strong>Edit the current revision</strong>, <em>untick</em>{" "}
+            <strong>Sign this edit with my slot</strong>, and press <strong>Check in</strong>. The new revision is
+            recorded, but nobody has vouched for it yet.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="history-checkin"]'],
+        requiredKind: "history-checkin",
+        isDone: (_snapshot, latest) => latest?.outcome === "granted" && latest.title.includes("unsigned"),
+      },
+      {
+        title: "Sharing falls back",
+        body: (
+          <p>
+            The newest revision is <strong>pending</strong>, so sharing would send the last trusted one instead. An
+            unsigned edit never leaves Sarah's copy — the line below says which revision would go.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="tracked-shareable"]'],
+      },
+      {
+        title: "Try it: sign the edit",
+        body: (
+          <p>
+            Press <strong>Sign revision</strong> next to the pending revision. It becomes trusted, and sharing now sends it.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="tracked-revisions"] li[data-trust="pending"]', '[data-testid="tracked-revisions"]'],
+        requiredKind: "history-sign",
+        isDone: (_snapshot, latest) => latest?.outcome === "granted",
+      },
+      {
+        title: "Try it: read the timeline",
+        body: (
+          <p>
+            Open <strong>Full activity log</strong> below and pick the <strong>Revision</strong> filter. Every check-in,
+            signature and policy decision you just made is there, read back from the file's own history.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-panel="activity"] details.log'],
+        requiredKind: "history-filter",
+        isDone: (_snapshot, latest) => latest?.title === "Showed Revision activity",
+      },
+    ],
+  },
 ];

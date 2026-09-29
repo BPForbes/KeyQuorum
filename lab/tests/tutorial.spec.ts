@@ -14,7 +14,7 @@ test.describe("guided tutorials", () => {
 
     for (const [heading, workflowCount] of [
       ["Identities & drives", 5],
-      ["Files & unlocking", 5],
+      ["Files & unlocking", 6],
       ["Mailbox: sending & receiving", 3],
     ] as const) {
       const category = page.getByRole("region", { name: heading });
@@ -320,6 +320,50 @@ test.describe("guided tutorials", () => {
     });
     await page.getByRole("button", { name: /^Sent/ }).click();
     await page.getByTestId("mailbox-refresh").click();
+    await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible({ timeout: 3_000 });
+  });
+
+  test("the tracked-file module walks track, unsigned edit, fallback, sign and the timeline", async ({ page }) => {
+    await loadLab(page);
+    await page.getByRole("button", { name: "Tutorials & Documentation" }).click();
+    await page
+      .getByRole("listitem")
+      .filter({ hasText: "Tracked files: history, trust & fallback" })
+      .getByRole("button", { name: "Start" })
+      .click();
+
+    await expect(page.getByRole("heading", { name: "Tracked files live on the Activity page" })).toBeVisible();
+    // The module put the lab where its steps can run: Sarah, with her drive in.
+    await expect(page.getByTestId("active-user-name")).toHaveText("Sarah");
+    await page.getByRole("button", { name: "Next" }).click();
+
+    const panel = page.getByTestId("tracked-files");
+    await expect(page.getByRole("heading", { name: "Try it: track a new file" })).toBeVisible();
+    await expect(page.getByText("Waiting for you to try it…")).toBeVisible();
+    await panel.getByLabel("New tracked file").fill("notes.txt");
+    await panel.getByLabel("First revision").fill("draft 1");
+    await panel.getByRole("button", { name: "Track and sign" }).click();
+
+    await expect(page.getByRole("heading", { name: "Try it: check in an unsigned edit" })).toBeVisible({ timeout: 3_000 });
+    // A signed check-in does not satisfy the unsigned step.
+    await panel.getByLabel("Edit the current revision").fill("draft 2");
+    await panel.getByRole("button", { name: "Check in" }).click();
+    await expect(page.getByRole("heading", { name: "Try it: check in an unsigned edit" })).toBeVisible();
+    await panel.getByLabel("Edit the current revision").fill("draft 3");
+    await panel.getByLabel("Sign this edit with my slot").uncheck();
+    await panel.getByRole("button", { name: "Check in" }).click();
+
+    await expect(page.getByRole("heading", { name: "Sharing falls back" })).toBeVisible({ timeout: 3_000 });
+    await expect(panel.getByTestId("tracked-shareable")).toContainText("the last trusted revision");
+    await page.getByRole("button", { name: "Next" }).click();
+
+    await expect(page.getByRole("heading", { name: "Try it: sign the edit" })).toBeVisible();
+    await panel.locator('li[data-trust="pending"]').getByRole("button", { name: "Sign revision" }).click();
+
+    await expect(page.getByRole("heading", { name: "Try it: read the timeline" })).toBeVisible({ timeout: 3_000 });
+    await expect(panel.locator('li[data-trust="pending"]')).toHaveCount(0);
+    await page.locator('[data-panel="activity"] details.log > summary').click();
+    await page.getByRole("group", { name: "Filter activity" }).getByRole("button", { name: "Revision" }).click();
     await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible({ timeout: 3_000 });
   });
 });

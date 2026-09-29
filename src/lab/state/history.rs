@@ -1,0 +1,740 @@
+//! Tracked files in the lab: a registry of `.kqtf` containers whose
+//! history the activity log follows, and the GUI actions that work on them.
+//! Every action is one real `keyquorum file` command run as the active
+//! person against their own store, with their own slot; the lab decides
+//! nothing about trust, merging, reviewers or delivery. After any command
+//! (a button or a terminal line), the containers are re-read and events the
+//! log has not seen yet are appended, so the timeline stays live.
+
+use super::*;
+use crate::cli::file_cmd::StoreTrust;
+use crate::file_history::{
+    evaluate_revision_trust, select_shareable_revision, DeliveryDecisionKind, HistoryOutcome,
+    TrackedFile, TrustState,
+};
+
+/// Where tracked-file letters and acknowledgements are handed over: a
+/// shared folder standing in for the relay or a USB stick.
+const LETTERS_DIR: &str = "/srv/keyquorum/tracked/letters";
+const ACKS_DIR: &str = "/srv/keyquorum/tracked/acks";
+/// How much of a revision's text the snapshot carries for the edit box.
+const TEXT_LIMIT: usize = 4096;
+
+pub(in crate::lab) struct Tracked {
+    path: PathBuf,
+    /// Hash of the newest event already in the activity log.
+    last: Option<[u8; 32]>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LetterStatus {
+    Waiting,
+    Accepted,
+    Rejected,
+}
+
+pub(in crate::lab) struct TrackedLetter {
+    id: i64,
+    file_name: String,
+    from_user: String,
+    to_user: String,
+    /// The sender's container, where their acknowledgement is recorded.
+    sender_kqtf: PathBuf,
+    letter: PathBuf,
+    ack: Option<PathBuf>,
+    status: LetterStatus,
+    ack_recorded: bool,
+}
+
+/// `AutoMergeRequiresHuman` as "Auto merge requires human".
+fn humanize(name: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if c.is_uppercase() && i > 0 {
+            out.push(' ');
+            out.extend(c.to_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn trust_word(state: &TrustState) -> &'static str {
+    match state {
+        TrustState::Trusted => "trusted",
+        TrustState::Pending(_) => "pending",
+        TrustState::Denied(_) => "denied",
+    }
+}
+
+/// The paths a `keyquorum file` line names as containers: every `.kqtf`
+/// argument, plus the `<file>.kqtf` that `file track <file>` writes when no
+/// `--out` is given.
+fn named_containers(line: &str) -> Vec<String> {
+    let words: Vec<&str> = line
+        .split_whitespace()
+        .map(|w| w.trim_matches('"').trim_matches('\''))
+        .collect();
+    let mut paths: Vec<String> = words
+        .iter()
+        .filter(|w| w.ends_with(".kqtf"))
+        .map(|w| w.to_string())
+        .collect();
+    if let Some(at) = words.windows(2).position(|w| w == ["file", "track"]) {
+        let has_out = words.contains(&"--out");
+        if let Some(source) = words.get(at + 2).filter(|w| !w.starts_with('-')) {
+            if !has_out {
+                paths.push(format!("{source}.kqtf"));
+            }
+        }
+    }
+    paths
+}
+
+impl LabState {
+    /// The active person's own store, where every slot's public keys are
+    /// registered: the one their `keyquorum file` commands run against.
+    fn own_store(&self) -> String {
+        self.actor().store()
+    }
+
+    fn trust_store(&self) -> &Connection {
+        self.vm()
+            .store(&self.own_store())
+            .unwrap_or_else(|| self.org())
+    }
+
+    /// Start following a container. Unknown or unreadable paths are ignored.
+    pub(super) fn register_tracked(&mut self, path: &Path) -> bool {
+        let path = self.vm().resolve(path);
+        if self.tracked.iter().any(|t| t.path == path) {
+            return true;
+        }
+        let readable = self
+            .vm()
+            .read(&path)
+            .ok()
+            .and_then(|bytes| TrackedFile::decode(&bytes).ok())
+            .is_some();
+        if readable {
+            self.tracked.push(Tracked { path, last: None });
+        }
+        readable
+    }
+
+    /// Follow any container a command line names.
+    pub(super) fn register_from_command(&mut self, line: &str) {
+        if !line.contains(" file ") {
+            return;
+        }
+        // Resolved exactly as the command itself resolved them.
+        for path in named_containers(line) {
+            self.register_tracked(Path::new(&path));
+        }
+    }
+
+    /// Append every event the log has not seen yet, from every followed
+    /// container. A container rewritten from scratch (its last seen event is
+    /// gone) is read again from the start.
+    pub(super) fn sync_history(&mut self) {
+        let mut entries = Vec::new();
+        for index in 0..self.tracked.len() {
+            let path = self.tracked[index].path.clone();
+            let Some(file) = self
+                .vm()
+                .read(&path)
+                .ok()
+                .and_then(|bytes| TrackedFile::decode(&bytes).ok())
+            else {
+                continue;
+            };
+            let start = match self.tracked[index].last {
+                None => 0,
+                Some(last) => file
+                    .events()
+                    .iter()
+                    .position(|e| e.event_hash == last)
+                    .map_or(0, |i| i + 1),
+            };
+            if start >= file.events().len() {
+                continue;
+            }
+            entries.extend(self.history_entries(&path, &file, start));
+            self.tracked[index].last = file.events().last().map(|e| e.event_hash);
+        }
+        for mut entry in entries {
+            entry.seq = self.next_seq;
+            self.next_seq += 1;
+            self.activity.push(entry);
+        }
+    }
+
+    /// One activity entry per event from `start` on. `finalization_state` is
+    /// the revision's trust as judged when the event was read in.
+    fn history_entries(&self, path: &Path, file: &TrackedFile, start: usize) -> Vec<ActivityView> {
+        let ctx = StoreTrust {
+            conn: self.trust_store(),
+        };
+        let policy = file.policy().cloned();
+        file.events()[start..]
+            .iter()
+            .map(|event| {
+                let revision = event
+                    .revision_id
+                    .and_then(|id| file.graph().get(&id).map(|stored| &stored.revision));
+                let finalization = event
+                    .revision_id
+                    .zip(policy.as_ref())
+                    .and_then(|(id, policy)| evaluate_revision_trust(file, &id, policy, &ctx).ok());
+                ActivityView {
+                    seq: 0,
+                    actor: event
+                        .actor_label
+                        .clone()
+                        .unwrap_or_else(|| "system".to_string()),
+                    kind: "history".to_string(),
+                    outcome: match event.outcome {
+                        HistoryOutcome::Success => "granted",
+                        HistoryOutcome::Failure | HistoryOutcome::Denied => "denied",
+                        HistoryOutcome::Info => "info",
+                    }
+                    .to_string(),
+                    title: format!(
+                        "{} · {}",
+                        humanize(&format!("{:?}", event.event_type)),
+                        file.logical_name
+                    ),
+                    trace: event
+                        .details
+                        .entries()
+                        .iter()
+                        .map(|(key, value)| TraceStep::info(format!("{key}: {value}")))
+                        .collect(),
+                    command: Some(format!("keyquorum file history {}", path.display())),
+                    history: Some(HistoryFields {
+                        file_id: hex::encode(file.file_id),
+                        file_name: file.logical_name.clone(),
+                        history_event_type: format!("{:?}", event.event_type),
+                        history_category: event.event_type.category().to_string(),
+                        history_root: hex::encode(event.event_hash),
+                        revision_id: event.revision_id.map(hex::encode),
+                        generated_label: revision.map(|r| r.generated_label.clone()),
+                        user_label: revision.and_then(|r| r.user_label.clone()),
+                        parent_revision_ids: revision
+                            .map(|r| r.parent_revision_ids.iter().map(hex::encode).collect())
+                            .unwrap_or_default(),
+                        finalization_state: finalization
+                            .as_ref()
+                            .map(|state| trust_word(state).to_string()),
+                    }),
+                }
+            })
+            .collect()
+    }
+
+    /// Every followed container as the active person's store judges it now.
+    pub(super) fn tracked_views(&self) -> Vec<TrackedFileView> {
+        let ctx = StoreTrust {
+            conn: self.trust_store(),
+        };
+        let homes: Vec<(PathBuf, String)> = self
+            .users
+            .iter()
+            .map(|user| (user.home(), user.id.clone()))
+            .collect();
+        self.tracked
+            .iter()
+            .filter_map(|tracked| {
+                let bytes = self.vm().read(&tracked.path).ok()?;
+                let file = TrackedFile::decode(&bytes).ok()?;
+                let policy = file.policy()?.clone();
+                let graph = file.graph();
+                let heads = graph.heads();
+                let revisions = file
+                    .revisions()
+                    .iter()
+                    .map(|stored| {
+                        let revision = &stored.revision;
+                        let id = revision.revision_id;
+                        let state = evaluate_revision_trust(&file, &id, &policy, &ctx).ok();
+                        let reason = match &state {
+                            Some(TrustState::Pending(r)) | Some(TrustState::Denied(r)) => {
+                                Some(format!("{r:?}"))
+                            }
+                            _ => None,
+                        };
+                        TrackedRevisionView {
+                            id: hex::encode(id),
+                            generated_label: revision.generated_label.clone(),
+                            user_label: revision.user_label.clone(),
+                            author: revision.author_hcp_label.clone(),
+                            created_at: revision.created_at_utc.clone(),
+                            parents: revision
+                                .parent_revision_ids
+                                .iter()
+                                .map(hex::encode)
+                                .collect(),
+                            head: heads.contains(&id),
+                            trust: state.as_ref().map_or("unknown", trust_word).to_string(),
+                            reason,
+                            text: String::from_utf8(stored.payload.clone())
+                                .ok()
+                                .filter(|text| text.len() <= TEXT_LIMIT),
+                        }
+                    })
+                    .collect();
+                let shareable = match heads.as_slice() {
+                    [head] => select_shareable_revision(&file, head, None, &policy, &ctx)
+                        .ok()
+                        .and_then(|decision| {
+                            (decision.decision != DeliveryDecisionKind::DeniedNoTrustedRevision)
+                                .then(|| decision.delivered_revision.map(hex::encode))
+                                .flatten()
+                        }),
+                    _ => None,
+                };
+                let owner = homes
+                    .iter()
+                    .find(|(home, _)| tracked.path.starts_with(home))
+                    .map(|(_, id)| id.clone());
+                Some(TrackedFileView {
+                    path: tracked.path.display().to_string(),
+                    name: file.logical_name.clone(),
+                    file_id: hex::encode(file.file_id),
+                    scope: policy.scope_root.clone(),
+                    owner,
+                    auto_merge: policy.auto_merge,
+                    forked: heads.len() > 1,
+                    history_len: file.events().len(),
+                    history_root: hex::encode(file.history_root()),
+                    revisions,
+                    shareable,
+                })
+            })
+            .collect()
+    }
+
+    pub(super) fn letter_views(&self) -> Vec<TrackedLetterView> {
+        let name = |id: &str| {
+            self.users
+                .iter()
+                .find(|user| user.id == id)
+                .map(|user| (user.name.clone(), user.label.clone()))
+                .unwrap_or_default()
+        };
+        self.letters
+            .iter()
+            .map(|letter| {
+                let (from_name, from_label) = name(&letter.from_user);
+                let (to_name, to_label) = name(&letter.to_user);
+                TrackedLetterView {
+                    id: letter.id,
+                    file_name: letter.file_name.clone(),
+                    from: letter.from_user.clone(),
+                    from_name,
+                    from_label,
+                    to: letter.to_user.clone(),
+                    to_name,
+                    to_label,
+                    status: match letter.status {
+                        LetterStatus::Waiting => "waiting",
+                        LetterStatus::Accepted => "accepted",
+                        LetterStatus::Rejected => "rejected",
+                    }
+                    .to_string(),
+                    ack_recorded: letter.ack_recorded,
+                }
+            })
+            .collect()
+    }
+
+    fn tracked_path(&self, path: &str) -> Option<PathBuf> {
+        let path = self.vm().resolve(Path::new(path));
+        self.tracked.iter().any(|t| t.path == path).then_some(path)
+    }
+
+    fn file_line(&self) -> String {
+        format!("keyquorum --db {} file", self.own_store())
+    }
+
+    /// Run one `keyquorum file` line as an activity of `kind`.
+    fn history_command(&mut self, kind: &str, title: &str, line: String) -> (Outcome, CommandRun) {
+        let run = self.run(&line);
+        let trace = transcript(&run, true);
+        let message = match run.error() {
+            Some(error) => format!("{title}: {error}"),
+            None => run
+                .stdout_text()
+                .lines()
+                .next()
+                .map_or_else(|| title.to_string(), str::to_string),
+        };
+        self.log(
+            kind,
+            if run.ok { "granted" } else { "denied" },
+            title,
+            trace.clone(),
+            Some(line),
+        );
+        (Outcome::done(run.ok, message, trace), run)
+    }
+
+    fn no_slot(&self) -> Outcome {
+        Outcome::done(
+            false,
+            format!("{} has no slot on any drive", self.actor().label),
+            vec![],
+        )
+    }
+
+    fn unknown_tracked(path: &str) -> Outcome {
+        Outcome::done(false, format!("{path} is not a tracked file here"), vec![])
+    }
+
+    /// `keyquorum file track`: a new tracked file scoped to the active
+    /// person, signed with their slot, in their home.
+    pub fn history_track(&mut self, name: &str, text: &str) -> Result<Outcome> {
+        let name = name.trim();
+        if name.is_empty() || name.contains('/') || name.starts_with('.') {
+            return Ok(Outcome::done(false, "Give the file a plain name", vec![]));
+        }
+        let Some(slot) = self.own_slot_arg() else {
+            return Ok(self.no_slot());
+        };
+        let label = self.actor().label.clone();
+        let dir = self.actor().home().join("tracked");
+        let source = dir.join(name);
+        let out = dir.join(format!("{name}.kqtf"));
+        self.write_file(&source, text.as_bytes())?;
+        let line = format!(
+            "{} track {} --scope {label} --as {label} --slot {slot} --out {}",
+            self.file_line(),
+            quote(&source.display().to_string()),
+            quote(&out.display().to_string()),
+        );
+        let (outcome, _) = self.history_command("history-track", &format!("Track {name}"), line);
+        Ok(outcome)
+    }
+
+    /// `keyquorum file checkin`: a new revision of the file's sole head,
+    /// signed by the active person or left unsigned.
+    pub fn history_checkin(
+        &mut self,
+        path: &str,
+        text: &str,
+        signed: bool,
+        label: Option<&str>,
+    ) -> Result<Outcome> {
+        let Some(kqtf) = self.tracked_path(path) else {
+            return Ok(Self::unknown_tracked(path));
+        };
+        let who = self.actor().label.clone();
+        let edit = self.actor().home().join("tracked").join(".edit");
+        self.write_file(&edit, text.as_bytes())?;
+        let mut line = format!(
+            "{} checkin {} --from {} --as {who}",
+            self.file_line(),
+            quote(&kqtf.display().to_string()),
+            quote(&edit.display().to_string()),
+        );
+        if signed {
+            let Some(slot) = self.own_slot_arg() else {
+                return Ok(self.no_slot());
+            };
+            line.push_str(&format!(" --slot {slot}"));
+        } else {
+            line.push_str(" --unsigned");
+        }
+        if let Some(label) = label.map(str::trim).filter(|l| !l.is_empty()) {
+            line.push_str(&format!(" --label {}", quote(label)));
+        }
+        let name = self.tracked_name(&kqtf);
+        let title = if signed {
+            format!("Check in a signed edit to {name}")
+        } else {
+            format!("Check in an unsigned edit to {name}")
+        };
+        let (outcome, _) = self.history_command("history-checkin", &title, line);
+        Ok(outcome)
+    }
+
+    fn tracked_name(&self, kqtf: &Path) -> String {
+        self.vm()
+            .read(kqtf)
+            .ok()
+            .and_then(|bytes| TrackedFile::decode(&bytes).ok())
+            .map(|file| file.logical_name)
+            .unwrap_or_else(|| kqtf.display().to_string())
+    }
+
+    fn revision_arg(revision: Option<&str>) -> String {
+        revision
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .map(|r| format!(" --revision {r}"))
+            .unwrap_or_default()
+    }
+
+    /// `keyquorum file sign`: sign a revision the active person authored.
+    pub fn history_sign(&mut self, path: &str, revision: Option<&str>) -> Result<Outcome> {
+        self.signing_command(path, revision, "sign", "history-sign", "Sign")
+    }
+
+    /// `keyquorum file countersign`: approve a descendant's revision as its
+    /// author's direct parent.
+    pub fn history_countersign(&mut self, path: &str, revision: Option<&str>) -> Result<Outcome> {
+        self.signing_command(
+            path,
+            revision,
+            "countersign",
+            "history-countersign",
+            "Countersign",
+        )
+    }
+
+    fn signing_command(
+        &mut self,
+        path: &str,
+        revision: Option<&str>,
+        verb: &str,
+        kind: &str,
+        title: &str,
+    ) -> Result<Outcome> {
+        let Some(kqtf) = self.tracked_path(path) else {
+            return Ok(Self::unknown_tracked(path));
+        };
+        let Some(slot) = self.own_slot_arg() else {
+            return Ok(self.no_slot());
+        };
+        let who = self.actor().label.clone();
+        let line = format!(
+            "{} {verb} {}{} --as {who} --slot {slot}",
+            self.file_line(),
+            quote(&kqtf.display().to_string()),
+            Self::revision_arg(revision),
+        );
+        let name = self.tracked_name(&kqtf);
+        let (outcome, _) = self.history_command(kind, &format!("{title} {name}"), line);
+        Ok(outcome)
+    }
+
+    /// `keyquorum file merge`: join two heads, automatically when the merge
+    /// is clean, else record the conflict and who reviews it.
+    pub fn history_merge(&mut self, path: &str, label: Option<&str>) -> Result<Outcome> {
+        let Some(kqtf) = self.tracked_path(path) else {
+            return Ok(Self::unknown_tracked(path));
+        };
+        let who = self.actor().label.clone();
+        let mut line = format!(
+            "{} merge {} --as {who}",
+            self.file_line(),
+            quote(&kqtf.display().to_string()),
+        );
+        if let Some(label) = label.map(str::trim).filter(|l| !l.is_empty()) {
+            line.push_str(&format!(" --label {}", quote(label)));
+        }
+        let name = self.tracked_name(&kqtf);
+        let (outcome, _) = self.history_command("history-merge", &format!("Merge {name}"), line);
+        Ok(outcome)
+    }
+
+    /// A read-only command whose output opens like a file.
+    fn history_report(
+        &mut self,
+        path: &str,
+        verb: &str,
+        kind: &str,
+        title: &str,
+    ) -> Result<Outcome> {
+        let Some(kqtf) = self.tracked_path(path) else {
+            return Ok(Self::unknown_tracked(path));
+        };
+        let line = format!(
+            "{} {verb} {}",
+            self.file_line(),
+            quote(&kqtf.display().to_string()),
+        );
+        let name = self.tracked_name(&kqtf);
+        let title = format!("{title} {name}");
+        let (mut outcome, run) = self.history_command(kind, &title, line);
+        if run.ok {
+            outcome.opened = Some(OpenedFile {
+                name: title,
+                text: run.stdout_text(),
+            });
+        }
+        Ok(outcome)
+    }
+
+    /// `keyquorum file verify`: check the chain and graph, judge every revision.
+    pub fn history_verify(&mut self, path: &str) -> Result<Outcome> {
+        self.history_report(path, "verify", "history-verify", "Verify")
+    }
+
+    /// `keyquorum file review`: the two sides of a fork and who reviews it.
+    pub fn history_review(&mut self, path: &str) -> Result<Outcome> {
+        self.history_report(path, "review", "history-review", "Review")
+    }
+
+    /// `keyquorum file share`: seal the newest trusted revision to another
+    /// person. The letter is left in the shared letters folder for them.
+    pub fn history_share(&mut self, path: &str, to_user: &str) -> Result<Outcome> {
+        let Some(kqtf) = self.tracked_path(path) else {
+            return Ok(Self::unknown_tracked(path));
+        };
+        let Some(to) = self.user_index(to_user) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No lab user {to_user}"),
+                vec![],
+            ));
+        };
+        let Some(slot) = self.own_slot_arg() else {
+            return Ok(self.no_slot());
+        };
+        let (to_id, to_label, to_name) = {
+            let user = &self.users[to];
+            (user.id.clone(), user.label.clone(), user.name.clone())
+        };
+        let who = self.actor().label.clone();
+        let line = format!(
+            "{} share {} --to {to_label} --as {who} --slot {slot} --output-dir {LETTERS_DIR}",
+            self.file_line(),
+            quote(&kqtf.display().to_string()),
+        );
+        let name = self.tracked_name(&kqtf);
+        let (outcome, run) = self.history_command(
+            "history-share",
+            &format!("Share {name} with {to_name}"),
+            line,
+        );
+        if let Some(letter) = written_path(&run) {
+            let id = self.next_letter_id;
+            self.next_letter_id += 1;
+            self.letters.push(TrackedLetter {
+                id,
+                file_name: name,
+                from_user: self.actor().id.clone(),
+                to_user: to_id,
+                sender_kqtf: kqtf,
+                letter,
+                ack: None,
+                status: LetterStatus::Waiting,
+                ack_recorded: false,
+            });
+        }
+        Ok(outcome)
+    }
+
+    /// `keyquorum file receive`: open a letter as the active person, merge it
+    /// into their copy of that file if they follow one, else keep it as a
+    /// new copy in their home; `accept = false` refuses it. Either way a
+    /// signed answer goes back to the sender.
+    pub fn history_receive(&mut self, letter_id: i64, accept: bool) -> Result<Outcome> {
+        let Some(index) = self.letters.iter().position(|l| l.id == letter_id) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No letter {letter_id}"),
+                vec![],
+            ));
+        };
+        let Some(slot) = self.own_slot_arg() else {
+            return Ok(self.no_slot());
+        };
+        let (letter, file_name) = {
+            let letter = &self.letters[index];
+            (letter.letter.clone(), letter.file_name.clone())
+        };
+        let home = self.actor().home();
+        let mut line = format!(
+            "{} receive --letter {} --slot {slot} --ack-dir {ACKS_DIR}",
+            self.file_line(),
+            quote(&letter.display().to_string()),
+        );
+        if accept {
+            let file_id = self
+                .tracked_views()
+                .into_iter()
+                .find(|view| view.name == file_name && Path::new(&view.path).starts_with(&home))
+                .map(|view| view.path);
+            match file_id {
+                Some(existing) => line.push_str(&format!(" --into {}", quote(&existing))),
+                None => {
+                    let out = home.join("tracked").join(format!("{file_name}.kqtf"));
+                    line.push_str(&format!(" --out {}", quote(&out.display().to_string())));
+                }
+            }
+        } else {
+            line.push_str(" --reject");
+        }
+        let title = if accept {
+            format!("Receive {file_name}")
+        } else {
+            format!("Refuse {file_name}")
+        };
+        let (outcome, run) = self.history_command("history-receive", &title, line);
+        if run.ok {
+            // The receiver may still refuse a revision it cannot trust; the
+            // answer it wrote says which.
+            let accepted = accept && !run.stderr.contains("Refused");
+            let letter = &mut self.letters[index];
+            letter.ack = written_path(&run);
+            letter.status = if accepted {
+                LetterStatus::Accepted
+            } else {
+                LetterStatus::Rejected
+            };
+        }
+        Ok(outcome)
+    }
+
+    /// `keyquorum file ack`: record the recipient's answer in the sender's
+    /// own copy.
+    pub fn history_ack(&mut self, letter_id: i64) -> Result<Outcome> {
+        let Some(index) = self.letters.iter().position(|l| l.id == letter_id) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No letter {letter_id}"),
+                vec![],
+            ));
+        };
+        let Some(ack) = self.letters[index].ack.clone() else {
+            return Ok(Outcome::done(
+                false,
+                "That letter has not been answered yet",
+                vec![],
+            ));
+        };
+        let Some(slot) = self.own_slot_arg() else {
+            return Ok(self.no_slot());
+        };
+        let (kqtf, name) = {
+            let letter = &self.letters[index];
+            (letter.sender_kqtf.clone(), letter.file_name.clone())
+        };
+        let line = format!(
+            "{} ack {} --ack {} --slot {slot}",
+            self.file_line(),
+            quote(&kqtf.display().to_string()),
+            quote(&ack.display().to_string()),
+        );
+        let (outcome, run) = self.history_command(
+            "history-ack",
+            &format!("Record the answer for {name}"),
+            line,
+        );
+        if run.ok {
+            self.letters[index].ack_recorded = true;
+        }
+        Ok(outcome)
+    }
+}
+
+/// The file a command reported writing (`Wrote <path>`).
+fn written_path(run: &CommandRun) -> Option<PathBuf> {
+    run.stdout_text()
+        .lines()
+        .find_map(|line| line.strip_prefix("Wrote "))
+        .map(|path| PathBuf::from(path.trim()))
+}

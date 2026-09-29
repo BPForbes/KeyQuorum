@@ -222,6 +222,54 @@ export interface Snapshot {
   fileShares: FileShareView[];
   signatures: SignatureView[];
   pendingRestructures: RestructureProposalView[];
+  /** Tracked files the activity log follows, judged by the active person's store. */
+  trackedFiles: TrackedFileView[];
+  /** Tracked-file letters handed between people. */
+  trackedLetters: TrackedLetterView[];
+}
+
+export interface TrackedRevisionView {
+  id: string;
+  generatedLabel: string;
+  userLabel: string | null;
+  author: string;
+  createdAt: string;
+  parents: string[];
+  head: boolean;
+  trust: "trusted" | "pending" | "denied" | "unknown";
+  reason: string | null;
+  /** The revision's text, when it is UTF-8 and small enough to edit here. */
+  text: string | null;
+}
+
+export interface TrackedFileView {
+  path: string;
+  name: string;
+  fileId: string;
+  scope: string;
+  /** The lab user whose home holds the container; null for shared ones. */
+  owner: string | null;
+  autoMerge: boolean;
+  forked: boolean;
+  historyLen: number;
+  historyRoot: string;
+  /** Oldest first. */
+  revisions: TrackedRevisionView[];
+  /** The revision `file share` would send from the sole head, if any. */
+  shareable: string | null;
+}
+
+export interface TrackedLetterView {
+  id: number;
+  fileName: string;
+  from: string;
+  fromName: string;
+  fromLabel: string;
+  to: string;
+  toName: string;
+  toLabel: string;
+  status: "waiting" | "accepted" | "rejected";
+  ackRecorded: boolean;
 }
 
 export interface OpenedFile {

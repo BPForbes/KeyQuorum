@@ -139,4 +139,44 @@ export class LabClient {
   countersignRestructure(passphrase: string): ActionResult {
     return this.call(this.lab.countersign_restructure(passphrase));
   }
+
+  historyTrack(name: string, text: string): ActionResult {
+    return this.call(this.lab.history_track(name, text));
+  }
+
+  historyCheckin(path: string, text: string, signed: boolean, label?: string): ActionResult {
+    return this.call(this.lab.history_checkin(path, text, signed, label));
+  }
+
+  historySign(path: string, revision?: string): ActionResult {
+    return this.call(this.lab.history_sign(path, revision));
+  }
+
+  historyCountersign(path: string, revision?: string): ActionResult {
+    return this.call(this.lab.history_countersign(path, revision));
+  }
+
+  historyMerge(path: string, label?: string): ActionResult {
+    return this.call(this.lab.history_merge(path, label));
+  }
+
+  historyVerify(path: string): ActionResult {
+    return this.call(this.lab.history_verify(path));
+  }
+
+  historyReview(path: string): ActionResult {
+    return this.call(this.lab.history_review(path));
+  }
+
+  historyShare(path: string, toUser: string): ActionResult {
+    return this.call(this.lab.history_share(path, toUser));
+  }
+
+  historyReceive(letterId: number, accept: boolean): ActionResult {
+    return this.call(this.lab.history_receive(letterId, accept));
+  }
+
+  historyAck(letterId: number): ActionResult {
+    return this.call(this.lab.history_ack(letterId));
+  }
 }

@@ -1269,3 +1269,76 @@ h1 {
   gap: 0.4rem;
   margin-top: 0.5rem;
 }
+
+.tracked-files {
+  margin: 1rem 0;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+.tracked-files h3 {
+  margin: 0 0 0.25rem;
+}
+
+.tracked-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0.5rem 0;
+}
+
+.tracked-share {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.tracked-card {
+  margin-top: 0.5rem;
+  min-width: 0;
+}
+
+.tracked-card code,
+.tracked-card .muted {
+  overflow-wrap: anywhere;
+}
+
+.tracked-revisions {
+  list-style: none;
+  margin: 0.25rem 0;
+  padding-left: 0.5rem;
+  border-left: 2px solid var(--border);
+}
+
+.tracked-revisions li {
+  padding: 0.2rem 0;
+}
+
+.tracked-revisions li[data-trust="pending"] .badge {
+  border-color: var(--warn, var(--border));
+}
+
+.tracked-revisions li[data-trust="denied"] .badge {
+  border-color: var(--error);
+}
+
+.tracked-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.tracked-letters ul {
+  list-style: none;
+  padding: 0;
+}
+
+.tracked-letters li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  padding: 0.2rem 0;
+}
