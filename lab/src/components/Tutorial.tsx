@@ -202,6 +202,7 @@ export function Tutorial({
       ["identities", "Identities & drives", "People, keys, organization policy, and physical custody."],
       ["files", "Files & unlocking", "Protection schemes, access decisions, portability, and evidence."],
       ["mailbox", "Mailbox: sending & receiving", "Delivery decisions and the protocols carried by sealed letters."],
+      ["history", "File history", "Tracked files: revisions, trust, hand-offs, merges, and expiry."],
     ] as const;
     return (
       <Modal title="Tutorials & Documentation" onClose={onPickerClose} labelledBy="tutorial-picker-heading">

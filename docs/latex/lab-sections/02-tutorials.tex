@@ -80,10 +80,6 @@ category itself.
   recipient-sealed export bundles with bearer share links.
   \item \textbf{Signatures, properties \& expiry} --- sign and verify
   through a bridge, inspect properties, and observe destructive expiry.
-  \item \textbf{Tracked files: history, trust \& fallback} --- as Sarah,
-  track a new file, check in an unsigned edit, see sharing fall back to the
-  last trusted revision, sign the edit, and read the result in the
-  activity log's Revision filter.
 \end{itemize}
 
 \subsubsection{Mailbox: sending \& receiving}
@@ -96,6 +92,30 @@ category itself.
   explicitly refresh a sender's acknowledgement state.
   \item \textbf{Updates \& device letters} --- see which higher-level
   workflows use sealed letters and where their controls actually live.
+\end{itemize}
+
+\subsubsection{File history}
+
+Four short parts on the Activity tab's \textbf{Tracked files} panel. Each
+one sets up who is active and which drives are in, so they can be taken in
+any order.
+
+\begin{itemize}
+  \item \textbf{1 $\cdot$ Track, sign \& fall back} --- as Sarah, track a
+  new file, check in an unsigned edit, see sharing fall back to the last
+  trusted revision, sign the edit, and read the result in the activity
+  log's Revision filter.
+  \item \textbf{2 $\cdot$ Hand a file over} --- share \file{budget.txt} with
+  Alice, switch to her and accept the letter into her own copy, then switch
+  back and record her signed answer in Sarah's history.
+  \item \textbf{3 $\cdot$ Merges \& conflicts} --- sign the merge of
+  \file{forecast.txt} that happened on its own, then review \file{memo.txt},
+  whose same-line edits could not merge, and see the reviewer its history
+  names.
+  \item \textbf{4 $\cdot$ Gate links \& expiry} --- as Alice, track a file,
+  link \file{architecture.md}'s quorum gate to it, open that file and find the
+  unlock in the Security filter, then destroy the tracked file's content and
+  verify the tombstone.
 \end{itemize}
 
 Finishing a module's last step opens a short completion notice; from

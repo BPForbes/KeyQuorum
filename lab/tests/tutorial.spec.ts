@@ -14,8 +14,9 @@ test.describe("guided tutorials", () => {
 
     for (const [heading, workflowCount] of [
       ["Identities & drives", 5],
-      ["Files & unlocking", 6],
+      ["Files & unlocking", 5],
       ["Mailbox: sending & receiving", 3],
+      ["File history", 4],
     ] as const) {
       const category = page.getByRole("region", { name: heading });
       await expect(category).toBeVisible();
@@ -328,7 +329,7 @@ test.describe("guided tutorials", () => {
     await page.getByRole("button", { name: "Tutorials & Documentation" }).click();
     await page
       .getByRole("listitem")
-      .filter({ hasText: "Tracked files: history, trust & fallback" })
+      .filter({ hasText: "1 · Track, sign & fall back" })
       .getByRole("button", { name: "Start" })
       .click();
 
@@ -364,6 +365,113 @@ test.describe("guided tutorials", () => {
     await expect(panel.locator('li[data-trust="pending"]')).toHaveCount(0);
     await page.locator('[data-panel="activity"] details.log > summary').click();
     await page.getByRole("group", { name: "Filter activity" }).getByRole("button", { name: "Revision" }).click();
+    await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible({ timeout: 3_000 });
+  });
+
+  async function startModule(page: Page, title: string) {
+    await page.getByRole("button", { name: "Tutorials & Documentation" }).click();
+    await page.getByRole("listitem").filter({ hasText: title }).getByRole("button", { name: "Start" }).click();
+  }
+
+  test("history part 2 hands a file to Alice and records her answer", async ({ page }) => {
+    await loadLab(page);
+    await startModule(page, "2 · Hand a file over");
+    const panel = page.getByTestId("tracked-files");
+    await expect(page.getByRole("heading", { name: "Pick the file to hand over" })).toBeVisible();
+    await expect(page.getByTestId("active-user-name")).toHaveText("Sarah");
+    await panel.getByTestId("tracked-select").selectOption({ label: "budget.txt — /srv/keyquorum/tracked/budget.txt.kqtf" });
+    await page.getByRole("button", { name: "Next" }).click();
+
+    await expect(page.getByRole("heading", { name: "Try it: share it with Alice" })).toBeVisible();
+    const card = panel.getByTestId("tracked-file");
+    // Sharing with someone else does not satisfy this step.
+    await card.getByLabel("Share with").selectOption("morgan");
+    await card.getByRole("button", { name: "Share file" }).click();
+    await expect(page.getByRole("heading", { name: "Try it: share it with Alice" })).toBeVisible();
+    await card.getByLabel("Share with").selectOption("alice");
+    await card.getByRole("button", { name: "Share file" }).click();
+
+    await expect(page.getByRole("heading", { name: "Try it: become Alice" })).toBeVisible({ timeout: 3_000 });
+    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /Alice/ }).click();
+    await expect(page.getByRole("heading", { name: "Try it: accept the letter" })).toBeVisible({ timeout: 3_000 });
+    await panel.getByTestId("tracked-letters").locator('li[data-status="waiting"]').getByRole("button", { name: "Accept budget.txt" }).click();
+
+    await expect(page.getByRole("heading", { name: "Try it: back to Sarah" })).toBeVisible({ timeout: 3_000 });
+    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /Sarah/ }).click();
+    await expect(page.getByRole("heading", { name: "Try it: record the answer" })).toBeVisible({ timeout: 3_000 });
+    await panel.getByTestId("tracked-letters").getByRole("button", { name: "Record the answer" }).click();
+
+    await expect(page.getByRole("heading", { name: "The hand-off is in the history" })).toBeVisible({ timeout: 3_000 });
+    await page.getByRole("button", { name: "Finish" }).click();
+    await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible();
+  });
+
+  test("history part 3 signs a merge and reviews a conflict", async ({ page }) => {
+    await loadLab(page);
+    await startModule(page, "3 · Merges & conflicts");
+    const panel = page.getByTestId("tracked-files");
+    await expect(page.getByRole("heading", { name: "A merge that happened on its own" })).toBeVisible();
+    await panel.getByTestId("tracked-select").selectOption({ label: "forecast.txt — /srv/keyquorum/tracked/forecast.txt.kqtf" });
+    await page.getByRole("button", { name: "Next" }).click();
+
+    await expect(page.getByRole("heading", { name: "Try it: see what the merge changed" })).toBeVisible();
+    const card = panel.getByTestId("tracked-file");
+    await card.locator("li[data-trust]").last().getByRole("button", { name: /^Diff revision/ }).click();
+    await page.getByRole("button", { name: "Close" }).click();
+
+    await expect(page.getByRole("heading", { name: "Try it: sign the merge" })).toBeVisible({ timeout: 3_000 });
+    await card.locator('li[data-trust="pending"]').getByRole("button", { name: "Sign revision" }).click();
+
+    await expect(page.getByRole("heading", { name: "Try it: review a conflict" })).toBeVisible({ timeout: 3_000 });
+    // Reviewing a file with no fork is not this step: verify forecast.txt instead and stay put.
+    await card.getByRole("button", { name: "Verify history" }).click();
+    await page.getByRole("button", { name: "Close" }).click();
+    await expect(page.getByRole("heading", { name: "Try it: review a conflict" })).toBeVisible();
+    await panel.getByTestId("tracked-select").selectOption({ label: "memo.txt — /srv/keyquorum/tracked/memo.txt.kqtf" });
+    await panel.getByTestId("tracked-file").getByRole("button", { name: "Review the fork" }).click();
+    await expect(page.getByTestId("opened-file")).toContainText("review M.S");
+    await page.getByRole("button", { name: "Close" }).click();
+
+    await expect(page.getByRole("heading", { name: "A person decides" })).toBeVisible({ timeout: 3_000 });
+    await page.getByRole("button", { name: "Finish" }).click();
+    await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible();
+  });
+
+  test("history part 4 links a gate, records an unlock, and expires the file", async ({ page }) => {
+    await loadLab(page);
+    await startModule(page, "4 · Gate links & expiry");
+    const panel = page.getByTestId("tracked-files");
+    await expect(page.getByRole("heading", { name: "Try it: track a file" })).toBeVisible();
+    await expect(page.getByTestId("active-user-name")).toHaveText("Alice");
+    await panel.getByLabel("New tracked file").fill("gate-notes.txt");
+    await panel.getByLabel("First revision").fill("watching the gate");
+    await panel.getByRole("button", { name: "Track and sign" }).click();
+
+    await expect(page.getByRole("heading", { name: "Try it: link a gate" })).toBeVisible({ timeout: 3_000 });
+    const card = panel.locator('[data-testid="tracked-file"][data-path="/home/alice/tracked/gate-notes.txt.kqtf"]');
+    await card.getByLabel("Record unlocks of").selectOption({ label: "architecture.md (quorum)" });
+    await card.getByRole("button", { name: "Link gate" }).click();
+
+    await expect(page.getByRole("heading", { name: "Try it: open the linked file" })).toBeVisible({ timeout: 3_000 });
+    await page.getByRole("button", { name: /^engineering\b/ }).click();
+    await page.locator('[data-testid^="file-row-"]', { hasText: "architecture.md" }).first().dblclick();
+    await page.getByRole("button", { name: "Close" }).click();
+
+    await expect(page.getByRole("heading", { name: "Try it: find the unlock in the history" })).toBeVisible({ timeout: 3_000 });
+    await page.locator('[data-panel="activity"] details.log > summary').click();
+    // A different filter is not this step.
+    await page.getByRole("group", { name: "Filter activity" }).getByRole("button", { name: "Sharing" }).click();
+    await expect(page.getByRole("heading", { name: "Try it: find the unlock in the history" })).toBeVisible();
+    await page.getByRole("group", { name: "Filter activity" }).getByRole("button", { name: "Security" }).click();
+    await expect(page.locator('[data-panel="activity"] [data-event="QuorumUnlockAttempted"]').first()).toBeVisible();
+
+    await expect(page.getByRole("heading", { name: "Try it: end the file" })).toBeVisible({ timeout: 3_000 });
+    await card.getByRole("button", { name: "Destroy content now" }).click();
+
+    await expect(page.getByRole("heading", { name: "Try it: verify the tombstone" })).toBeVisible({ timeout: 3_000 });
+    await card.getByRole("button", { name: "Verify history" }).click();
+    await expect(page.getByTestId("opened-file")).toContainText("Tombstone");
+    await page.getByRole("button", { name: "Close" }).click();
     await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible({ timeout: 3_000 });
   });
 });

@@ -56,7 +56,7 @@ export interface TutorialStep {
 
 export interface TutorialModule {
   id: string;
-  category: "identities" | "files" | "mailbox";
+  category: "identities" | "files" | "mailbox" | "history";
   title: string;
   summary: string;
   steps: TutorialStep[];
@@ -921,8 +921,8 @@ export const TUTORIALS: TutorialModule[] = [
   },
   {
     id: "tracked-file-history",
-    category: "files",
-    title: "Tracked files: history, trust & fallback",
+    category: "history",
+    title: "1 · Track, sign & fall back",
     summary: "Track a file, check in an unsigned edit, watch sharing fall back to the last trusted revision, then sign it.",
     steps: [
       {
@@ -1000,6 +1000,256 @@ export const TUTORIALS: TutorialModule[] = [
         target: () => ['[data-panel="activity"] details.log'],
         requiredKind: "history-filter",
         isDone: (_snapshot, latest) => latest?.title === "Showed Revision activity",
+      },
+    ],
+  },
+  {
+    id: "history-hand-off",
+    category: "history",
+    title: "2 · Hand a file over",
+    summary: "Share a tracked file with Alice, accept it as her, then record her signed answer back in Sarah's history.",
+    steps: [
+      {
+        title: "Pick the file to hand over",
+        body: (
+          <p>
+            You're Sarah. In <strong>Tracked files</strong>, pick <code>budget.txt</code>. Its newest edit was never
+            signed, so the line under the revisions says which revision would actually be sent.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="tracked-select"]', '[data-testid="tracked-files"]'],
+        ensure: composeEnsures(ensureActiveUser("sarah"), ensureDrivesConnected("sarah", "alice")),
+      },
+      {
+        title: "Try it: share it with Alice",
+        body: (
+          <p>
+            Under <strong>Share with</strong>, choose <strong>Alice</strong> and press <strong>Share file</strong>. The
+            letter is sealed to Alice's key and signed by Sarah; only the trusted revision goes in it.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="history-share"]'],
+        ensure: composeEnsures(ensureActiveUser("sarah"), ensureDrivesConnected("sarah", "alice")),
+        requiredKind: "history-share",
+        isDone: (_snapshot, latest) => latest?.outcome === "granted" && latest.title.endsWith("with Alice"),
+        remember: (snapshot) => ({ letterId: snapshot.trackedLetters[snapshot.trackedLetters.length - 1]?.id }),
+      },
+      {
+        title: "Try it: become Alice",
+        body: (
+          <p>
+            Click <strong>Alice</strong>&rsquo;s chip in the Active user bar. Only her key can open a letter sealed to
+            her.
+          </p>
+        ),
+        target: () => ['[aria-label="Switch user"]'],
+        requiredKind: "user",
+        isDone: (snapshot) => snapshot.activeUser.id === "alice",
+      },
+      {
+        title: "Try it: accept the letter",
+        body: (
+          <p>
+            Under <strong>Tracked-file letters</strong>, press <strong>Accept budget.txt</strong>. Alice's store checks
+            Sarah's signature, then judges the revision by the file's own policy before keeping a copy.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="tracked-letters"]', '[data-testid="tracked-files"]'],
+        requiredKind: "history-receive",
+        isDone: (snapshot, latest, memory) =>
+          latest?.outcome === "granted" &&
+          snapshot.trackedLetters.find((letter) => letter.id === memory.letterId)?.status === "accepted",
+      },
+      {
+        title: "Try it: back to Sarah",
+        body: <p>Switch back to <strong>Sarah</strong>. Alice's signed answer is waiting for her.</p>,
+        target: () => ['[aria-label="Switch user"]'],
+        requiredKind: "user",
+        isDone: (snapshot) => snapshot.activeUser.id === "sarah",
+      },
+      {
+        title: "Try it: record the answer",
+        body: (
+          <p>
+            Press <strong>Record the answer</strong> on the letter. Sarah's copy checks Alice's signature and that the
+            answer is for this delivery, then records it once.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="tracked-letters"]'],
+        requiredKind: "history-ack",
+        isDone: (_snapshot, latest) => latest?.outcome === "granted",
+      },
+      {
+        title: "The hand-off is in the history",
+        body: (
+          <p>
+            Open <strong>Full activity log</strong> and pick <strong>Sharing</strong>: the attempt, and Alice's
+            acceptance, are events in <code>budget.txt</code>'s own chain, not just in the lab's log.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-panel="activity"] details.log'],
+      },
+    ],
+  },
+  {
+    id: "history-merges",
+    category: "history",
+    title: "3 · Merges & conflicts",
+    summary: "Sign a merge that happened on its own, then see who has to review a conflict it could not settle.",
+    steps: [
+      {
+        title: "A merge that happened on its own",
+        body: (
+          <p>
+            You're Sarah. Pick <code>forecast.txt</code>. Two people edited different lines, so the edits merged into a
+            new revision with <strong>two parents</strong>. It is <strong>pending</strong>: a merge never inherits its
+            parents' signatures.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="tracked-select"]', '[data-testid="tracked-files"]'],
+        ensure: composeEnsures(ensureActiveUser("sarah"), ensureDrivesConnected("sarah")),
+      },
+      {
+        title: "Try it: see what the merge changed",
+        body: (
+          <p>
+            Press <strong>Diff</strong> on the newest revision to see the lines it changed against its first parent.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="tracked-revisions"]'],
+        ensure: composeEnsures(ensureActiveUser("sarah"), ensureDrivesConnected("sarah")),
+        requiredKind: "history-diff",
+        isDone: (_snapshot, latest) => latest?.outcome === "granted" && latest.title.includes("forecast.txt"),
+      },
+      {
+        title: "Try it: sign the merge",
+        body: (
+          <p>
+            Sarah made the merge, so press <strong>Sign revision</strong> on it. Only now is the merged text trusted.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="tracked-revisions"] li[data-trust="pending"]', '[data-testid="tracked-revisions"]'],
+        requiredKind: "history-sign",
+        isDone: (_snapshot, latest) => latest?.outcome === "granted" && latest.title.includes("forecast.txt"),
+      },
+      {
+        title: "Try it: review a conflict",
+        body: (
+          <p>
+            Now pick <code>memo.txt</code>. Two edits changed the same line differently, so it still has two heads.
+            Press <strong>Review the fork</strong>.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="tracked-select"]', '[data-testid="tracked-files"]'],
+        requiredKind: "history-review",
+        isDone: (_snapshot, latest) => latest?.outcome === "granted" && latest.title.includes("memo.txt"),
+      },
+      {
+        title: "A person decides",
+        body: (
+          <p>
+            The review shows each side's changed lines, who wrote each one, and the reviewer the history names
+            &mdash; here Sarah, the file's prior neutral owner. Seniority never picks a winning line; the reviewer
+            settles it by editing, and until then both heads stay exactly as they were.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="tracked-files"]'],
+      },
+    ],
+  },
+  {
+    id: "history-expiry-gates",
+    category: "history",
+    title: "4 · Gate links & expiry",
+    summary: "Record a quorum file's unlocks in a tracked file's history, then expire the tracked file and verify the tombstone.",
+    steps: [
+      {
+        title: "Try it: track a file",
+        body: (
+          <p>
+            You're Alice. Under <strong>New tracked file</strong>, give a name and some text and press{" "}
+            <strong>Track and sign</strong>.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="history-track"]'],
+        ensure: composeEnsures(ensureActiveUser("alice"), ensureDrivesConnected("alice", "sarah")),
+        requiredKind: "history-track",
+        isDone: (_snapshot, latest) => latest?.outcome === "granted",
+      },
+      {
+        title: "Try it: link a gate",
+        body: (
+          <p>
+            Under <strong>Record unlocks of</strong>, choose <strong>architecture.md (quorum)</strong> and press{" "}
+            <strong>Link gate</strong>. The quorum gate itself does not change.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="history-link"]', '[data-testid="history-tools"]'],
+        requiredKind: "history-link",
+        isDone: (_snapshot, latest) => latest?.outcome === "granted",
+      },
+      {
+        title: "Try it: open the linked file",
+        body: (
+          <p>
+            In the <strong>Files</strong> tab, open the <strong>engineering</strong> folder and double-click{" "}
+            <code>architecture.md</code>.
+          </p>
+        ),
+        tab: "files",
+        target: (snapshot) => ['[data-testid="folder-engineering"]', fileRow(snapshot, "architecture.md")],
+        isDone: (_snapshot, latest) => wasOpened(latest, "architecture.md"),
+      },
+      {
+        title: "Try it: find the unlock in the history",
+        body: (
+          <p>
+            Back on the Activity tab, open <strong>Full activity log</strong> and pick <strong>Security</strong>. The
+            unlock you just made is now an event in your tracked file's history.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-panel="activity"] details.log'],
+        requiredKind: "history-filter",
+        isDone: (_snapshot, latest) => latest?.title === "Showed Security activity",
+      },
+      {
+        title: "Try it: end the file",
+        body: (
+          <p>
+            Pick your tracked file again and press <strong>Destroy content now</strong>. Every revision's content goes
+            at once.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="history-expire"]', '[data-testid="tracked-files"]'],
+        requiredKind: "history-expire",
+        isDone: (_snapshot, latest) => latest?.outcome === "granted" && latest.title.startsWith("Destroy"),
+      },
+      {
+        title: "Try it: verify the tombstone",
+        body: (
+          <p>
+            Press <strong>Verify history</strong>. The content is gone, but the history, revisions and signatures still
+            verify &mdash; and any later attempt to use the content is recorded.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="tracked-files"]'],
+        requiredKind: "history-verify",
+        isDone: (_snapshot, latest) => latest?.outcome === "granted",
       },
     ],
   },
