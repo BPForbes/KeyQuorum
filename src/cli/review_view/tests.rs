@@ -141,3 +141,32 @@ fn escape_and_backspace_leave_command_mode() {
     keys(&mut s, "jjj");
     assert_eq!(s.cursor(), 0);
 }
+
+#[test]
+fn a_g_before_command_mode_does_not_leave_a_pending_gg() {
+    let mut s = ReviewState::new(view());
+    keys(&mut s, "jjjjj");
+    // g, then into command mode and out again, then a single g: still no motion.
+    keys(&mut s, "g");
+    s.handle(Key::Char(':'));
+    s.handle(Key::Esc);
+    keys(&mut s, "g");
+    assert_eq!(s.cursor(), 5, "the earlier g must not pair with this one");
+    s.handle(Key::Char('x')); // an ignored key clears the g that is now pending
+                              // Leaving command mode by an empty Backspace or by Enter does the same.
+    keys(&mut s, "g");
+    s.handle(Key::Char(':'));
+    s.handle(Key::Backspace);
+    keys(&mut s, "g");
+    assert_eq!(s.cursor(), 5);
+    s.handle(Key::Char('x'));
+    keys(&mut s, "g");
+    s.handle(Key::Char(':'));
+    s.handle(Key::Enter);
+    keys(&mut s, "g");
+    assert_eq!(s.cursor(), 5);
+    s.handle(Key::Char('x'));
+    // Two g's in a row still go to the top.
+    keys(&mut s, "gg");
+    assert_eq!(s.cursor(), 0);
+}
