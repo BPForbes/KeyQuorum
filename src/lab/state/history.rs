@@ -695,10 +695,8 @@ impl LabState {
             quote(&scratch.display().to_string()),
         );
         let name = self.tracked_name(&kqtf);
-        let title = format!(
-            "View {name} at {}",
-            &revision.trim()[..revision.trim().len().min(8)]
-        );
+        let short: String = revision.trim().chars().take(8).collect();
+        let title = format!("View {name} at {short}");
         let (mut outcome, run) = self.history_command("history-checkout", &title, line);
         if run.ok {
             let text = String::from_utf8_lossy(&self.vm().read(&scratch)?).into_owned();

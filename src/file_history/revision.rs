@@ -13,6 +13,7 @@ use super::codec::{
 use crate::envelope::{push_len_prefixed_u32, take_len_prefixed_u32};
 use crate::error::{Error, Result};
 use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 
 const REVISION_ID_DOMAIN: &[u8] = b"KQ-FILE-REVISION-ID-v1";
 const CONTENT_DOMAIN: &[u8] = b"KQ-FILE-CONTENT-v1";
@@ -360,60 +361,89 @@ impl<'a> RevisionGraph<'a> {
         self.heads().len() > 1
     }
 
+    fn index_of(&self) -> HashMap<[u8; 32], usize> {
+        self.revisions
+            .iter()
+            .enumerate()
+            .map(|(i, stored)| (stored.revision.revision_id, i))
+            .collect()
+    }
+
     /// True when `ancestor` is `descendant` or reachable from it through
     /// parent links. Unknown ids are never ancestors.
     pub fn is_ancestor_or_self(&self, ancestor: &[u8; 32], descendant: &[u8; 32]) -> bool {
-        let mut seen: Vec<[u8; 32]> = Vec::new();
+        let index = self.index_of();
+        if !index.contains_key(ancestor) {
+            return false;
+        }
+        let mut seen: HashSet<[u8; 32]> = HashSet::new();
         let mut stack = vec![*descendant];
         while let Some(id) = stack.pop() {
             if &id == ancestor {
-                return self.get(&id).is_some();
+                return true;
             }
-            if seen.contains(&id) {
+            if !seen.insert(id) {
                 continue;
             }
-            seen.push(id);
-            if let Some(stored) = self.get(&id) {
-                stack.extend(stored.revision.parent_revision_ids.iter().copied());
+            if let Some(&i) = index.get(&id) {
+                stack.extend(
+                    self.revisions[i]
+                        .revision
+                        .parent_revision_ids
+                        .iter()
+                        .copied(),
+                );
             }
         }
         false
     }
 
-    fn ancestors_or_self(&self, id: &[u8; 32]) -> Vec<[u8; 32]> {
-        let mut seen: Vec<[u8; 32]> = Vec::new();
+    /// Marks, by storage index, `id` and everything reachable from it.
+    fn mark_ancestors(&self, index: &HashMap<[u8; 32], usize>, id: &[u8; 32]) -> Vec<bool> {
+        let mut marked = vec![false; self.revisions.len()];
         let mut stack = vec![*id];
         while let Some(next) = stack.pop() {
-            if seen.contains(&next) {
-                continue;
-            }
-            if let Some(stored) = self.get(&next) {
-                seen.push(next);
-                stack.extend(stored.revision.parent_revision_ids.iter().copied());
+            if let Some(&i) = index.get(&next) {
+                if !marked[i] {
+                    marked[i] = true;
+                    stack.extend(
+                        self.revisions[i]
+                            .revision
+                            .parent_revision_ids
+                            .iter()
+                            .copied(),
+                    );
+                }
             }
         }
-        seen
+        marked
     }
 
     /// The nearest common ancestor of `a` and `b`: a common ancestor that is
     /// not itself an ancestor of another common ancestor. Two or more of
     /// those make the base [`MergeBase::Ambiguous`].
     pub fn merge_base(&self, a: &[u8; 32], b: &[u8; 32]) -> MergeBase {
-        let from_b = self.ancestors_or_self(b);
-        let common: Vec<[u8; 32]> = self
-            .ancestors_or_self(a)
-            .into_iter()
-            .filter(|id| from_b.contains(id))
-            .collect();
-        let nearest: Vec<[u8; 32]> = common
-            .iter()
-            .copied()
-            .filter(|c| {
-                !common
-                    .iter()
-                    .any(|d| d != c && self.is_ancestor_or_self(c, d))
-            })
-            .collect();
+        let index = self.index_of();
+        let from_a = self.mark_ancestors(&index, a);
+        let from_b = self.mark_ancestors(&index, b);
+        // Revisions are stored parents-first, so one reverse pass sees every
+        // descendant before its parents: `covered` marks the strict
+        // ancestors of any common ancestor.
+        let mut covered = vec![false; self.revisions.len()];
+        let mut nearest: Vec<[u8; 32]> = Vec::new();
+        for i in (0..self.revisions.len()).rev() {
+            let common = from_a[i] && from_b[i];
+            if common && !covered[i] {
+                nearest.push(self.revisions[i].revision.revision_id);
+            }
+            if common || covered[i] {
+                for parent in &self.revisions[i].revision.parent_revision_ids {
+                    if let Some(&p) = index.get(parent) {
+                        covered[p] = true;
+                    }
+                }
+            }
+        }
         match nearest.as_slice() {
             [] => MergeBase::None,
             [only] => MergeBase::Unique(*only),

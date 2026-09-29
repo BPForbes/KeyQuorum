@@ -213,8 +213,9 @@ pub struct HistoryFields {
     pub user_label: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub parent_revision_ids: Vec<String>,
-    /// The revision's trust under the file's policy now: `trusted`,
-    /// `pending` or `denied`.
+    /// The revision's trust under the file's policy when the entry was
+    /// recorded: `trusted`, `pending` or `denied`. The tracked-file
+    /// snapshot carries the current value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finalization_state: Option<String>,
 }

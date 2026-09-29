@@ -1236,6 +1236,7 @@ fn receive(
         || incoming.history_root() != letter.history_root
         || incoming.logical_name != letter.file_name
         || incoming.graph().get(&letter.revision_id).is_none()
+        || incoming.graph().heads() != [letter.revision_id]
         || DeliveryDecisionKind::from_code(letter.decision).is_none()
     {
         return Err(usage("the letter does not match the container it carries"));

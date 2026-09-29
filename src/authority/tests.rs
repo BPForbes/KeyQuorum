@@ -141,3 +141,11 @@ fn well_formed_relationships_are_unchanged() {
     );
     assert_eq!(ancestry_distance("M", "M.A.1"), Some(2));
 }
+
+#[test]
+fn ancestor_or_self_rejects_malformed_labels() {
+    assert!(!is_ancestor_or_self("M.", "M..A"));
+    assert!(!is_ancestor_or_self("M", "M."));
+    assert!(!is_ancestor_or_self(".A", ".A"));
+    assert!(is_ancestor_or_self("M", "M.A.1"));
+}

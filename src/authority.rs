@@ -46,7 +46,7 @@ pub fn parent_node_label(label: &str) -> Option<&str> {
 /// `M.SALES.1`. `org_update` uses this to decide who may authorize a
 /// hardware-key reissue or key-tree restructure for a label.
 pub fn is_ancestor_or_self(authorizer: &str, subject: &str) -> bool {
-    if authorizer.is_empty() || subject.is_empty() {
+    if !is_well_formed(authorizer) || !is_well_formed(subject) {
         return false;
     }
     if authorizer == subject {

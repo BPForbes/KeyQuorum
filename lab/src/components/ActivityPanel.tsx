@@ -50,7 +50,7 @@ function HistoryEntry({ entry }: { entry: ActivityView }) {
     ["Generated label", entry.generatedLabel],
     ["Label", entry.userLabel],
     ["Parents", entry.parentRevisionIds?.length ? entry.parentRevisionIds.map(short).join(" + ") : undefined],
-    ["Trust now", entry.finalizationState],
+    ["Trust when recorded", entry.finalizationState],
     ["History root", entry.historyRoot ? short(entry.historyRoot) : undefined],
   ];
   return (

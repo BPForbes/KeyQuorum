@@ -208,7 +208,8 @@ function HistoryTools({
 }) {
   const id = useId();
   const copies = snapshot.trackedFiles.filter((other) => other.fileId === file.fileId && other.path !== file.path);
-  const [from, setFrom] = useState(copies[0]?.path ?? "");
+  const [picked, setFrom] = useState("");
+  const from = copies.some((copy) => copy.path === picked) ? picked : (copies[0]?.path ?? "");
   const me = snapshot.activeUser.label;
   const gates: { gate: "quorum" | "password"; id: number; label: string }[] = [
     ...snapshot.files
