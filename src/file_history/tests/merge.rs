@@ -405,3 +405,22 @@ fn a_failed_multi_step_change_leaves_nothing_behind() {
         .unwrap();
     assert_eq!(file.graph().heads(), vec![kept]);
 }
+
+#[test]
+fn a_disabled_policy_blocks_a_divergence_but_not_a_fast_forward() {
+    let mut file = TrackedFile::new(FILE, "a.txt");
+    let r1 = file.check_in(rev(vec![], T1), b"1".to_vec()).unwrap();
+    let r2 = file.check_in(rev(vec![r1], T2), b"2".to_vec()).unwrap();
+    // Equal and ancestor-related heads are not a divergence.
+    for (a, b) in [(r1, r2), (r2, r1), (r2, r2)] {
+        let result = file.plan_auto_merge(&a, &b, false).unwrap();
+        assert_eq!(result.outcome, AutoMergeOutcome::FastForward);
+    }
+    let (fork_file, _, l, r) = fork(b"a\nb\n", b"a\nL\n", b"R\nb\n");
+    let blocked = fork_file.plan_auto_merge(&l, &r, false).unwrap();
+    assert_eq!(blocked.outcome, AutoMergeOutcome::PolicyBlocked);
+    // Identical content on a divergence still counts as a merge, so it is blocked too.
+    let (same, _, sl, sr) = fork(b"base", b"same", b"same");
+    let blocked = same.plan_auto_merge(&sl, &sr, false).unwrap();
+    assert_eq!(blocked.outcome, AutoMergeOutcome::PolicyBlocked);
+}
