@@ -23,7 +23,7 @@ use crate::file_history::{
     HistorySnapshot, ImportContext, MergeBase, NewEvent, NewRevision, ResolverSelection,
     TrackedFile, TrustContext, TrustReason, TrustState,
 };
-use crate::{authority, file_delivery, key_tree, private_bridge, transfer};
+use crate::{authority, file_delivery, key_tree, private_bridge, signing, transfer};
 use clap::Subcommand;
 use rand::rngs::OsRng;
 use rand::RngCore;
@@ -208,6 +208,11 @@ pub enum FileCommand {
         /// Destroy the content now
         #[arg(long)]
         now: bool,
+        /// Prove you hold `--as`: the slot is opened only for this proof
+        #[arg(long, conflicts_with = "signing_key_file")]
+        slot: Option<String>,
+        #[arg(long)]
+        signing_key_file: Option<PathBuf>,
     },
     /// Record what happens at a quorum-protected or password-locked file's
     /// gate in this tracked file's history. The gate is unchanged and never
@@ -418,7 +423,9 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             as_label,
             at,
             now,
-        } => expire(conn, &kqtf, &as_label, at, now),
+            slot,
+            signing_key_file,
+        } => expire(conn, &kqtf, &as_label, (at, now), (slot, signing_key_file)),
         FileCommand::Link {
             kqtf,
             quorum_file,
@@ -1409,8 +1416,8 @@ fn expire(
     conn: &Connection,
     kqtf: &Path,
     as_label: &str,
-    at: Option<String>,
-    now: bool,
+    (at, now): (Option<String>, bool),
+    (slot, key_file): (Option<String>, Option<PathBuf>),
 ) -> Result<()> {
     let mut file = load(kqtf)?;
     let scope = policy_of(&file)?.scope_root.clone();
@@ -1425,6 +1432,7 @@ fn expire(
         return Err(usage("this file's content was already destroyed"));
     }
     let instant = utc_instant()?;
+    prove_possession(conn, &file, as_label, &instant, slot, key_file)?;
     let context = expiry_context(conn, &file, Some(as_label), &instant)?;
     match (at, now) {
         (_, true) => {
@@ -1451,6 +1459,38 @@ fn expire(
         (None, false) => return Err(usage("pass --at or --now")),
     }
     Ok(())
+}
+
+/// Ending a file's content is irreversible, so naming an owner label is not
+/// enough: the caller must sign a challenge bound to this file and moment
+/// with the key the store has registered for `label`. The secret is opened
+/// only here and dropped before anything is changed.
+fn prove_possession(
+    conn: &Connection,
+    file: &TrackedFile,
+    label: &str,
+    instant: &str,
+    slot: Option<String>,
+    key_file: Option<PathBuf>,
+) -> Result<()> {
+    let registered = private_bridge::signing_public_for_label(conn, label).map_err(|_| {
+        usage(&format!(
+            "{label} has no registered signing key on this store"
+        ))
+    })?;
+    let secret = signing_secret(slot, key_file)?;
+    let challenge: [u8; 32] = Sha256::new()
+        .chain_update(b"KQ-FILE-EXPIRE-v1")
+        .chain_update(file.file_id)
+        .chain_update((label.len() as u16).to_be_bytes())
+        .chain_update(label.as_bytes())
+        .chain_update(instant.as_bytes())
+        .finalize()
+        .into();
+    let signature = signing::sign(&secret, &challenge);
+    drop(secret);
+    signing::verify_signature(&registered, &challenge, &signature)
+        .map_err(|_| usage(&format!("that key is not the registered key of {label}")))
 }
 
 fn verify(conn: &Connection, kqtf: &Path) -> Result<()> {

@@ -225,7 +225,7 @@ See section~\ref{sec:file-history}.
 \code{file verify-snapshot} & Check a history snapshot; with \flag{--against}, that it belongs to a file. \\
 \code{file import} & Bring another copy of the same file's revisions and proofs into this one. A fork is kept as two heads; nothing is overwritten. \\
 \code{file verify} & Verify the history chain and revision graph, and judge every revision. \\
-\code{file expire} & Schedule when this file's content is destroyed, or destroy it now. Every retained revision's content goes at once; the history, the revision graph and every signature stay behind as a tombstone. \\
+\code{file expire} & Schedule when this file's content is destroyed, or destroy it now; needs \flag{--slot} to prove you hold the owner label. Every retained revision's content goes at once; the history, the revision graph and every signature stay behind as a tombstone. \\
 \code{file link} & Record what happens at a quorum-protected or password-locked file's gate in this tracked file's history. The gate is unchanged and never depends on it. \\
 \code{file unlink} & Stop recording a gate in this tracked file's history. \\
 \code{file share} & Seal the newest trusted revision to another label as a \file{.kqpb} letter. A newer revision that is not trusted is never included. \\

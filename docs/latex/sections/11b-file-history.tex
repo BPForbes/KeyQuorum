@@ -183,7 +183,11 @@ from the containers, which remain the authority.
 \subsection{Expiry and tombstones}
 
 \code{file expire} lets the scope owner (or one of its ancestors) schedule
-when a tracked file's content ends, or end it now. When the time has passed,
+when a tracked file's content ends, or end it now. Because this cannot be
+undone, naming the owner is not enough: the command signs a challenge with
+\flag{--slot} (or \flag{--signing-key-file}) and checks it against the key
+your store has registered for that label. The key is opened only for that
+proof and released before anything changes. When the time has passed,
 the next command that needs the content destroys \emph{every} retained
 revision's payload at once and records \code{FILE_EXPIRED} and
 \code{CONTENT_DESTROYED}. What remains is a tombstone: the revision graph,
@@ -194,8 +198,9 @@ payloads without a recorded destruction, or keeps any after one, fails
 verification.
 
 \begin{lstlisting}
-keyquorum file expire report.txt.kqtf --as M.A --at "2026-12-31 17:00"
-keyquorum file expire report.txt.kqtf --as M.A --now
+keyquorum file expire report.txt.kqtf --as M.A --at "2026-12-31 17:00" \
+  --slot ./usb=M.A
+keyquorum file expire report.txt.kqtf --as M.A --now --slot ./usb=M.A
 \end{lstlisting}
 
 \begin{cautionBox}

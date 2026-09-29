@@ -598,6 +598,9 @@ impl LabState {
         let Some(kqtf) = self.tracked_path(path) else {
             return Ok(Self::unknown_tracked(path));
         };
+        let Some(slot) = self.own_slot_arg() else {
+            return Ok(self.no_slot());
+        };
         let who = self.actor().label.clone();
         let when = match at.map(str::trim).filter(|a| !a.is_empty()) {
             Some(at) if at.chars().all(|c| c.is_ascii_digit() || "-:T".contains(c)) => {
@@ -613,7 +616,7 @@ impl LabState {
             None => "--now".to_string(),
         };
         let line = format!(
-            "{} expire {} --as {who} {when}",
+            "{} expire {} --as {who} {when} --slot {slot}",
             self.file_line(),
             quote(&kqtf.display().to_string()),
         );

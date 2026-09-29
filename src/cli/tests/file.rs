@@ -1337,7 +1337,10 @@ fn a_scheduled_expiry_destroys_every_revision_on_first_touch_and_leaves_a_tombst
     );
     let out = ok(
         &mut env,
-        &format!("expire {KQTF} --as M.A --at 2026-09-28T12:00"),
+        &format!(
+            "expire {KQTF} --as M.A --at 2026-09-28T12:00 --slot {}",
+            slot("M.A")
+        ),
     );
     assert!(out.contains("expires at 2026-09-28T12:00:00Z"), "{out}");
     assert!(ok(&mut env, &format!("status {KQTF}")).contains("expires      2026-09-28T12:00:00Z"));
@@ -1395,21 +1398,33 @@ fn only_the_scope_owner_or_an_ancestor_expires_a_file_and_never_into_the_past() 
     let mut env = org();
     track(&mut env, "M.A", "M.A");
     // A descendant may edit the file but may not end it.
-    let (result, _) = run(&mut env, &format!("expire {KQTF} --as M.A.1 --now"));
+    let (result, _) = run(
+        &mut env,
+        &format!("expire {KQTF} --as M.A.1 --now --slot {}", slot("M.A.1")),
+    );
     assert!(result.is_err());
     let (result, _) = run(
         &mut env,
-        &format!("expire {KQTF} --as M.A --at 2020-01-01T00:00"),
+        &format!(
+            "expire {KQTF} --as M.A --at 2020-01-01T00:00 --slot {}",
+            slot("M.A")
+        ),
     );
     assert!(result.is_err());
     assert!(!ok(&mut env, &format!("history {KQTF}")).contains("Expiry"));
     // The root, an ancestor, may destroy it now.
-    let out = ok(&mut env, &format!("expire {KQTF} --as M --now"));
+    let out = ok(
+        &mut env,
+        &format!("expire {KQTF} --as M --now --slot {}", slot("M")),
+    );
     assert!(
         out.contains("Destroyed the content of 1 revision(s)"),
         "{out}"
     );
-    let (result, _) = run(&mut env, &format!("expire {KQTF} --as M --now"));
+    let (result, _) = run(
+        &mut env,
+        &format!("expire {KQTF} --as M --now --slot {}", slot("M")),
+    );
     assert!(result.is_err(), "already destroyed");
 }
 
@@ -1423,7 +1438,10 @@ fn a_tombstone_cannot_be_shared_imported_or_merged_into() {
     track(&mut env, "M.A", "M.A");
     let live = env.fs.read(Path::new(KQTF)).unwrap();
     env.fs.write(Path::new("/work/live.kqtf"), &live).unwrap();
-    ok(&mut env, &format!("expire {KQTF} --as M.A --now"));
+    ok(
+        &mut env,
+        &format!("expire {KQTF} --as M.A --now --slot {}", slot("M.A")),
+    );
 
     let (result, _) = run(
         &mut env,
@@ -1453,4 +1471,27 @@ fn a_tombstone_cannot_be_shared_imported_or_merged_into() {
     );
     assert!(result.is_err());
     assert!(ok(&mut env, "checkout /work/live.kqtf --out /work/still.txt").contains("Wrote"));
+}
+
+#[test]
+fn expiry_needs_the_owners_own_key_not_just_the_label() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    // No proof at all.
+    let (result, _) = run(&mut env, &format!("expire {KQTF} --as M --now"));
+    assert!(result.is_err());
+    // Someone else's key does not stand in for M.
+    let (result, _) = run(
+        &mut env,
+        &format!("expire {KQTF} --as M --now --slot {}", slot("M.A")),
+    );
+    assert!(result.is_err());
+    // An ancestor label the store has never registered has no key to prove.
+    let (result, _) = run(
+        &mut env,
+        &format!("expire {KQTF} --as X --now --slot {}", slot("M")),
+    );
+    assert!(result.is_err());
+    assert!(!ok(&mut env, &format!("history {KQTF}")).contains("Expiry"));
+    assert!(!ok(&mut env, &format!("status {KQTF}")).contains("destroyed"));
 }

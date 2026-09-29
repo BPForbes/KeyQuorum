@@ -200,7 +200,7 @@ missing only when the chain holds this container's `CONTENT_DESTROYED` (one
 without a `gate` detail; a linked gate's purge names its gate and leaves the
 revisions alone), and then none may remain. The tombstone keeps the graph, proofs and history, verifies, takes no
 new revision, and is neither imported nor extracted. `keyquorum file expire`
-(scope owner or an ancestor) schedules it or destroys now; commands that need
+(scope owner or an ancestor, proven by signing a challenge with that label's registered key via `--slot`) schedules it or destroys now; commands that need
 content load through `load_live`, which destroys on the first touch after the
 time and records each later attempt as `EXPIRED_ACCESS_ATTEMPT`, attributed
 only to a label the command names. Copies already held elsewhere are their own
