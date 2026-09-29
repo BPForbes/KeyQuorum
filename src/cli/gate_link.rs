@@ -1,4 +1,4 @@
-//! Ties a quorum-protected file to a tracked `.kqtf` and appends what
+//! Ties a quorum-protected or password-locked file to a tracked `.kqtf` and appends what
 //! happened at the gate to that file's history. The gates themselves
 //! (`quorum`, `locked_files`) know nothing about this: the CLI calls in
 //! here after a gate has already answered, and nothing here can change
@@ -18,24 +18,28 @@ use std::path::Path;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Gate {
     Quorum,
+    Password,
 }
 
 impl Gate {
     fn name(self) -> &'static str {
         match self {
             Gate::Quorum => "quorum",
+            Gate::Password => "password",
         }
     }
 
     fn table(self) -> &'static str {
         match self {
             Gate::Quorum => "files",
+            Gate::Password => "password_locked_files",
         }
     }
 
     fn unlock_event(self) -> HistoryEventType {
         match self {
             Gate::Quorum => HistoryEventType::QuorumUnlockAttempted,
+            Gate::Password => HistoryEventType::PasswordUnlockAttempted,
         }
     }
 }

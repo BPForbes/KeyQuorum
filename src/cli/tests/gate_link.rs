@@ -179,3 +179,84 @@ fn a_refusal_by_the_gate_is_recorded_as_a_failure_and_the_gate_still_refuses() {
     );
     assert!(!text.contains("presented="), "{text}");
 }
+
+// ---- password-locked files -------------------------------------------------
+
+/// `secret.txt` locked with a password as password file 1.
+fn password_gated() -> MemoryEnv {
+    let mut env = org();
+    env.fs.write(Path::new("/work/secret.txt"), SECRET).unwrap();
+    let (result, out) = env.keyquorum(&format!(
+        "keyquorum {DB} access password --state 0 --source /work/secret.txt \
+         --encrypted-path /work/secret.kqenc"
+    ));
+    assert!(result.is_ok(), "{out}");
+    track(&mut env, "M.A", "M.A");
+    env
+}
+
+fn unlock_password(env: &mut MemoryEnv) -> (crate::error::Result<()>, String) {
+    env.keyquorum(&format!(
+        "keyquorum {DB} access password --state 1 --id 1 --output /work/out.txt"
+    ))
+}
+
+#[test]
+fn password_unlocks_are_recorded_and_the_password_never_is() {
+    let mut env = password_gated();
+    let out = ok(&mut env, &format!("link {KQTF} --locked-file 1"));
+    assert!(out.contains("Linked password file 1"), "{out}");
+    let (result, _) = run(&mut env, &format!("link {KQTF} --locked-file 9"));
+    assert!(result.is_err());
+
+    let (result, out) = unlock_password(&mut env);
+    assert!(result.is_ok(), "{out}");
+    assert_eq!(env.fs.read(Path::new("/work/out.txt")).unwrap(), SECRET);
+    let text = history(&mut env);
+    let line = text
+        .lines()
+        .find(|l| l.contains("PasswordUnlockAttempted"))
+        .expect("a recorded attempt");
+    assert!(
+        line.contains("Success") && line.contains("gate=password"),
+        "{text}"
+    );
+    assert!(!text.contains(super::memory_env::PASSPHRASE));
+    assert!(!text.contains("launch code"));
+
+    // A gate failure (its ciphertext is gone) is a recorded failure and
+    // the gate's error still reaches the caller.
+    env.fs.delete(Path::new("/work/secret.kqenc")).unwrap();
+    let (result, _) = unlock_password(&mut env);
+    assert!(result.is_err());
+    let text = history(&mut env);
+    assert_eq!(text.matches("PasswordUnlockAttempted").count(), 2, "{text}");
+    assert!(text
+        .lines()
+        .any(|l| l.contains("PasswordUnlockAttempted") && l.contains("Failure")));
+}
+
+#[test]
+fn a_password_files_expiry_leaves_a_tombstone() {
+    let mut env = password_gated();
+    ok(&mut env, &format!("link {KQTF} --locked-file 1"));
+    env.store("/home/org/keyquorum.sqlite")
+        .execute(
+            "UPDATE password_locked_files SET expires_at = '2000-01-01 00:00:00' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    let (result, _) = unlock_password(&mut env);
+    assert!(
+        matches!(result, Err(crate::error::Error::FileExpired)),
+        "{result:?}"
+    );
+    let text = history(&mut env);
+    for kind in ["FileExpired", "ContentDestroyed", "ExpiredAccessAttempt"] {
+        assert_eq!(text.matches(kind).count(), 1, "{kind}\n{text}");
+    }
+    let (result, _) = unlock_password(&mut env);
+    assert!(result.is_err());
+    assert_eq!(history(&mut env).matches("ExpiredAccessAttempt").count(), 2);
+    ok(&mut env, &format!("unlink {KQTF} --locked-file 1"));
+}

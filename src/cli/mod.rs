@@ -1871,14 +1871,18 @@ fn run_access_password(conn: &Connection, args: AccessPasswordArgs) -> Result<()
         }
         1 => {
             let id = require(args.id, "id")?;
-            locked_files::purge_if_expired_in(&mut env::EnvStorage, conn, id)?;
-            if pin::verification_required(conn, ResourceType::LockedFile, id)? {
-                let pin_value = prompt_secret("PIN: ")?;
-                pin::verify_pin(conn, ResourceType::LockedFile, id, &pin_value)?;
-            }
-            let password = prompt_secret("Unlock password: ")?;
-            let plaintext =
-                locked_files::unlock_file_in(&mut env::EnvStorage, conn, id, &password)?;
+            gate_link::note_if_gone(Gate::Password, conn, id);
+            let attempt = (|| -> Result<Vec<u8>> {
+                locked_files::purge_if_expired_in(&mut env::EnvStorage, conn, id)?;
+                if pin::verification_required(conn, ResourceType::LockedFile, id)? {
+                    let pin_value = prompt_secret("PIN: ")?;
+                    pin::verify_pin(conn, ResourceType::LockedFile, id, &pin_value)?;
+                }
+                let password = prompt_secret("Unlock password: ")?;
+                locked_files::unlock_file_in(&mut env::EnvStorage, conn, id, &password)
+            })();
+            gate_link::record_unlock(Gate::Password, conn, id, attempt.as_ref().err(), &[]);
+            let plaintext = attempt?;
             match args.output {
                 Some(path) => env::write_new(&path, &plaintext)?,
                 None => env::stdout_bytes(&plaintext)?,

@@ -187,19 +187,33 @@ pub enum FileCommand {
     },
     /// Verify the history chain and revision graph, and judge every revision
     Verify { kqtf: PathBuf },
-    /// Record what happens at a quorum-protected file's gate in this
-    /// tracked file's history. The gate is unchanged and never depends on it.
+    /// Record what happens at a quorum-protected or password-locked file's
+    /// gate in this tracked file's history. The gate is unchanged and never
+    /// depends on it.
     Link {
         kqtf: PathBuf,
-        /// The quorum-protected file id (see `keyquorum file-lock`)
+        /// The quorum-protected file id (see `keyquorum access quorum`)
+        #[arg(
+            long,
+            conflicts_with = "locked_file",
+            required_unless_present = "locked_file"
+        )]
+        quorum_file: Option<i64>,
+        /// The password-locked file id (see `keyquorum access password`)
         #[arg(long)]
-        quorum_file: i64,
+        locked_file: Option<i64>,
     },
     /// Stop recording a gate in this tracked file's history
     Unlink {
         kqtf: PathBuf,
+        #[arg(
+            long,
+            conflicts_with = "locked_file",
+            required_unless_present = "locked_file"
+        )]
+        quorum_file: Option<i64>,
         #[arg(long)]
-        quorum_file: i64,
+        locked_file: Option<i64>,
     },
     /// Seal the newest trusted revision to another label as a `.kqpb`
     /// letter. A newer revision that is not trusted is never included.
@@ -371,11 +385,21 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             as_label,
         } => import(conn, &kqtf, &from, &as_label),
         FileCommand::Verify { kqtf } => verify(conn, &kqtf),
-        FileCommand::Link { kqtf, quorum_file } => {
-            gate_link::link(conn, &kqtf, Gate::Quorum, quorum_file)
+        FileCommand::Link {
+            kqtf,
+            quorum_file,
+            locked_file,
+        } => {
+            let (gate, id) = gate_target(quorum_file, locked_file)?;
+            gate_link::link(conn, &kqtf, gate, id)
         }
-        FileCommand::Unlink { kqtf, quorum_file } => {
-            gate_link::unlink(conn, &kqtf, Gate::Quorum, quorum_file)
+        FileCommand::Unlink {
+            kqtf,
+            quorum_file,
+            locked_file,
+        } => {
+            let (gate, id) = gate_target(quorum_file, locked_file)?;
+            gate_link::unlink(conn, &kqtf, gate, id)
         }
         FileCommand::Share {
             kqtf,
@@ -422,6 +446,14 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             slot,
             share_file,
         } => record_ack(conn, &kqtf, &ack, share_file.as_deref(), slot.as_deref()),
+    }
+}
+
+fn gate_target(quorum_file: Option<i64>, locked_file: Option<i64>) -> Result<(Gate, i64)> {
+    match (quorum_file, locked_file) {
+        (Some(id), None) => Ok((Gate::Quorum, id)),
+        (None, Some(id)) => Ok((Gate::Password, id)),
+        _ => Err(usage("pass --quorum-file or --locked-file")),
     }
 }
 
