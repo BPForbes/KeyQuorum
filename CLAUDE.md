@@ -258,8 +258,11 @@ which re-verifies it against the live bridge (current generation, signer still a
 member) and accepts it only when the bridge's members reach from the author to the
 scope (`authority::bridge_connects`; supervisors do not count). A bridge merely
 existing between labels (a tree link or a roster) approves nothing; tree links are
-review-path evidence only (`bridge_between`). A revision stamped with a topology
-generation this store never held (`tree_generations_seen`, recorded by every file
+review-path evidence only (`bridge_between`).
+The stricter `author+bridge+owner` cross-branch rule requires that same live,
+revision-specific bridge approval and a countersignature by the file scope owner;
+neither approval can substitute for the other.
+A revision stamped with a topology generation this store never held (`tree_generations_seen`, recorded by every file
 command and on both sides of an applied restructure) is `Pending(MissingTopologyEvidence)`,
 never judged against today's topology; generation 0 means no published topology.
 Container v7 adds optional `EventProof`s after the events (the event's own actor

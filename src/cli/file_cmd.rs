@@ -2443,9 +2443,10 @@ fn bridge_approve(
         .ok_or(Error::InvalidTrackedFile)?
         .revision
         .clone();
-    if policy.requirement_for(&stored.author_hcp_label)
-        != Some(Requirement::AuthorSignBridgeOrOwner)
-    {
+    if !matches!(
+        policy.requirement_for(&stored.author_hcp_label),
+        Some(Requirement::AuthorSignBridgeOrOwner | Requirement::AuthorSignBridgeAndOwner)
+    ) {
         return Err(usage(
             "the file's rules do not accept a bridge approval for this revision's author",
         ));

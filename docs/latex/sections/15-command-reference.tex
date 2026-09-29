@@ -209,7 +209,7 @@ See section~\ref{sec:file-history}.
 \textbf{Command} & \textbf{Purpose} \\
 \midrule
 \endhead
-\code{file track} & Start tracking a file: make its first revision, sign it as its author, and write \file{<file>.kqtf}. \flag{--no-auto-merge} sends every fork to a person. \flag{--owner-rule}, \flag{--descendants-rule}, \flag{--ancestors-rule} and \flag{--cross-branch-rule} set what each role must present (\code{forbidden}, \code{author}, \code{author+parent}, or for cross-branch \code{author+bridge-or-owner}); rules that cannot be met are refused. \\
+\code{file track} & Start tracking a file: make its first revision, sign it as its author, and write \file{<file>.kqtf}. \flag{--no-auto-merge} sends every fork to a person. \flag{--owner-rule}, \flag{--descendants-rule}, \flag{--ancestors-rule} and \flag{--cross-branch-rule} set what each role must present (\code{forbidden}, \code{author}, \code{author+parent}, or for cross-branch \code{author+bridge-or-owner} / \code{author+bridge+owner}); rules that cannot be met are refused. \\
 \code{file policy} & Show the rules a tracked file's revisions are judged by and the policy hash every revision carries. \\
 \code{file checkin} & Check in a new revision from a native file (signed with \flag{--slot}, or \flag{--unsigned}). \\
 \code{file sign} & Sign a revision you authored (the current head unless \flag{--revision}). Given a native file that is not tracked, this first content signature starts tracking it, exactly as \code{file track} does; the scope is your own label unless \flag{--scope} names another. \\

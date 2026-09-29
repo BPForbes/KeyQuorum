@@ -168,6 +168,42 @@ fn bridge_evidence_alone_does_not_replace_the_author_signature() {
     assert_eq!(state(&file, &id, &ctx), Pending(R::MissingContentSignature));
 }
 
+#[test]
+fn a_bridge_and_owner_rule_requires_both_approvals() {
+    let mut policy = policy();
+    policy.cross_branch = Requirement::AuthorSignBridgeAndOwner;
+    let mut file = TrackedFile::new(FILE, "report.txt");
+    let id = revision_by(&mut file, vec![], "M.S.1", 4, &policy, T1);
+    file.sign_revision(&id, ident(4), "M.S.1", &secret(4))
+        .unwrap();
+
+    let mut ctx = Ctx::new();
+    assert_eq!(
+        evaluate_revision_trust(&file, &id, &policy, &ctx).unwrap(),
+        Pending(R::MissingBridgeApproval)
+    );
+
+    ctx.bridge = BridgeEvidence::PrivateAuthorized;
+    assert_eq!(
+        evaluate_revision_trust(&file, &id, &policy, &ctx).unwrap(),
+        Pending(R::MissingScopeOwnerApproval)
+    );
+
+    ctx.bridge = BridgeEvidence::None;
+    file.countersign_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    assert_eq!(
+        evaluate_revision_trust(&file, &id, &policy, &ctx).unwrap(),
+        Pending(R::MissingBridgeApproval)
+    );
+
+    ctx.bridge = BridgeEvidence::PrivateAuthorized;
+    assert_eq!(
+        evaluate_revision_trust(&file, &id, &policy, &ctx).unwrap(),
+        Trusted
+    );
+}
+
 /// A store holding a private bridge's approval, and a tree link that must
 /// not count as one.
 struct PrivateLink(Ctx);

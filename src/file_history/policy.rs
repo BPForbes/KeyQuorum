@@ -34,6 +34,9 @@ pub enum Requirement {
     /// Author signature plus either bridge authorization or a scope-owner
     /// countersignature.
     AuthorSignBridgeOrOwner = 3,
+    /// Author signature plus both bridge authorization and a scope-owner
+    /// countersignature.
+    AuthorSignBridgeAndOwner = 4,
 }
 
 impl Requirement {
@@ -44,6 +47,7 @@ impl Requirement {
             Self::AuthorSign => "author",
             Self::AuthorSignDirectParent => "author+parent",
             Self::AuthorSignBridgeOrOwner => "author+bridge-or-owner",
+            Self::AuthorSignBridgeAndOwner => "author+bridge+owner",
         }
     }
 
@@ -53,6 +57,7 @@ impl Requirement {
             Self::AuthorSign,
             Self::AuthorSignDirectParent,
             Self::AuthorSignBridgeOrOwner,
+            Self::AuthorSignBridgeAndOwner,
         ]
         .into_iter()
         .find(|rule| rule.keyword() == word)
@@ -65,6 +70,9 @@ impl Requirement {
             Self::AuthorSign => "AUTHOR_SIGNATURE",
             Self::AuthorSignDirectParent => "AUTHOR_SIGNATURE + REQUIRED_PARENT_COUNTERSIGNATURE",
             Self::AuthorSignBridgeOrOwner => "AUTHOR_SIGNATURE + BRIDGE_OR_SCOPE_OWNER_APPROVAL",
+            Self::AuthorSignBridgeAndOwner => {
+                "AUTHOR_SIGNATURE + BRIDGE_APPROVAL + SCOPE_OWNER_APPROVAL"
+            }
         }
     }
 
@@ -74,6 +82,7 @@ impl Requirement {
             1 => Self::AuthorSign,
             2 => Self::AuthorSignDirectParent,
             3 => Self::AuthorSignBridgeOrOwner,
+            4 => Self::AuthorSignBridgeAndOwner,
             _ => return Err(Error::InvalidTrackedFile),
         })
     }
@@ -124,7 +133,12 @@ impl FilePolicy {
         policy.ancestors = ancestors.unwrap_or(policy.ancestors);
         policy.cross_branch = cross_branch.unwrap_or(policy.cross_branch);
         let needs_parent = |rule: Requirement| rule == Requirement::AuthorSignDirectParent;
-        let bridge = Requirement::AuthorSignBridgeOrOwner;
+        let bridge_rule = |rule| {
+            matches!(
+                rule,
+                Requirement::AuthorSignBridgeOrOwner | Requirement::AuthorSignBridgeAndOwner
+            )
+        };
         let has_parent = authority::parent_node_label(scope_root).is_some();
         // Ancestors include the root, which has no parent to countersign, so
         // for a scope below the root an ancestor rule of `author+parent`
@@ -132,9 +146,9 @@ impl FilePolicy {
         let root_is_ancestor = has_parent;
         let bad = policy.scope_owner == Requirement::Forbidden
             || (needs_parent(policy.ancestors) && root_is_ancestor)
-            || policy.scope_owner == bridge
-            || policy.descendants == bridge
-            || policy.ancestors == bridge
+            || bridge_rule(policy.scope_owner)
+            || bridge_rule(policy.descendants)
+            || bridge_rule(policy.ancestors)
             || (needs_parent(policy.scope_owner) && !has_parent)
             || needs_parent(policy.cross_branch);
         if bad {
@@ -284,6 +298,8 @@ pub enum TrustReason {
     MissingCountersignature,
     InvalidCountersignature,
     MissingBridgeOrOwnerApproval,
+    MissingBridgeApproval,
+    MissingScopeOwnerApproval,
     /// The revision's topology generation is one this store never held.
     MissingTopologyEvidence,
 }
@@ -400,6 +416,15 @@ pub fn evaluate_revision_trust(
             (
                 Some(policy.scope_root.as_str()),
                 R::MissingBridgeOrOwnerApproval,
+            )
+        }
+        Requirement::AuthorSignBridgeAndOwner => {
+            if ctx.revision_bridge_evidence(revision, &policy.scope_root) == BridgeEvidence::None {
+                return Ok(Pending(R::MissingBridgeApproval));
+            }
+            (
+                Some(policy.scope_root.as_str()),
+                R::MissingScopeOwnerApproval,
             )
         }
     };

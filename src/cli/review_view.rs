@@ -384,11 +384,10 @@ impl ReviewState {
                 self.mode = Mode::Normal;
                 self.command.clear();
             }
-            Key::Backspace => {
-                if self.command.pop().is_none() {
-                    self.mode = Mode::Normal;
-                }
-            }
+            Key::Backspace => match self.command.pop() {
+                Some(_) => {}
+                None => self.mode = Mode::Normal,
+            },
             Key::Char(c) => self.command.push(c),
             Key::Enter => {
                 let command = std::mem::take(&mut self.command);

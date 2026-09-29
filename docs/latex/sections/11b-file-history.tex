@@ -135,7 +135,8 @@ or \code{author+parent}:
   \item \flag{--descendants-rule}
   \item \flag{--ancestors-rule}
   \item \flag{--cross-branch-rule}, which may also take
-  \code{author+bridge-or-owner}.
+  \code{author+bridge-or-owner} or the stricter
+  \code{author+bridge+owner}.
 \end{itemize}
 
 The defaults are the table above. A rule that cannot be met --- a forbidden
@@ -179,6 +180,12 @@ count, and a bridge merely existing between two labels approves nothing. A
 recipient whose store holds no such approval sees the revision as pending
 until the scope owner countersigns it. The history records only the rule
 that was met, not which approval met it.
+
+With the stricter \code{author+bridge+owner} rule, the scope owner's
+countersignature does not replace the bridge approval. The receiving store
+must hold and validate that revision-specific bridge approval \emph{and} the
+container must carry the scope owner's valid countersignature before the
+revision is trusted.
 
 \subsubsection*{Finalization}
 
@@ -436,8 +443,6 @@ The design this feature follows goes further than what is built. Today:
   held each label in each generation. Signing keys come from today's
   registry, so if a label is later given to someone else, that label's old
   revisions read as denied instead of keeping their meaning.
-  \item A cross-branch rule needs a bridge's approval \emph{or} the scope
-  owner's countersignature; there is no rule that needs both.
   \item The history records the rule a cross-branch revision met, not whether
   a bridge or the scope owner met it.
   \item Conflicts are settled a whole revision at a time (\flag{--keep} or

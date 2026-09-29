@@ -330,13 +330,17 @@ signature_policy:
     cross_branch = AUTHOR_SIGN + BRIDGE_OR_SCOPE_OWNER_APPROVAL
 \end{lstlisting}
 Policies should be versioned or hashed so later verification knows what rules applied.
+The cross-branch rule may instead require both approvals. KeyQuorum exposes
+this stricter conjunction as \texttt{author+bridge+owner}: the author's content
+signature, a revision-specific bridge approval, and the scope owner's
+countersignature must all verify; neither approval substitutes for the other.
 
 \section{Cross-Branch Collaboration and Bridges}
-A revision from outside the file scope is explicitly cross-branch. A policy may require a non-private bridge and scope-owner approval:
+A revision from outside the file scope is explicitly cross-branch. A policy may require a revision-specific bridge approval and scope-owner approval:
 \begin{lstlisting}
 M.S.1 signs proposed revision
         v
-Non-private bridge authorizes cross-branch path
+Authorized bridge signs approval of this revision
         v
 M.A countersigns
         v

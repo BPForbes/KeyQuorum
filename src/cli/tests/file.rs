@@ -2617,6 +2617,19 @@ fn a_tracked_files_rules_are_chosen_when_it_starts_and_shown_with_their_hash() {
         policy.contains("cross-branch        author+bridge-or-owner"),
         "{policy}"
     );
+
+    let mut strict = org();
+    track_with(
+        &mut strict,
+        "M.A",
+        "M.A",
+        "--cross-branch-rule author+bridge+owner",
+    );
+    let policy = ok(&mut strict, &format!("policy {KQTF}"));
+    assert!(
+        policy.contains("cross-branch        author+bridge+owner"),
+        "{policy}"
+    );
 }
 
 #[test]
@@ -2624,7 +2637,9 @@ fn rules_that_cannot_be_met_are_refused_before_anything_is_written() {
     for extra in [
         "--owner-rule forbidden",
         "--owner-rule author+bridge-or-owner",
+        "--owner-rule author+bridge+owner",
         "--descendants-rule author+bridge-or-owner",
+        "--descendants-rule author+bridge+owner",
         "--cross-branch-rule author+parent",
     ] {
         let mut env = org();
