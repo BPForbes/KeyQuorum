@@ -166,6 +166,13 @@ the terminal, with Vim-style keys and mouse hover to see who wrote a line.
 It is a viewer: to resolve a conflict you edit the file, \code{file checkin}
 the result and sign it.
 
+\begin{cautionBox}
+Commands replace a container under an exclusive \file{<name>.kqtf.lock}, and
+refuse to write if the container changed since the command read it; run the
+command again. If a command was killed and left the lock behind, the error
+names the lock file to remove.
+\end{cautionBox}
+
 \subsection{History snapshots and the index}
 
 \code{file history} with \flag{--export} writes a \code{KQHS}

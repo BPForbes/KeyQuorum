@@ -29,6 +29,8 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
@@ -332,6 +334,7 @@ pub enum FileCommand {
 }
 
 pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
+    READ_AT.with(|read| read.borrow_mut().clear());
     match command {
         FileCommand::Track {
             path,
@@ -578,8 +581,42 @@ fn generation_for(conn: &Connection, scope: &str) -> Result<u64> {
         .unwrap_or(0))
 }
 
+thread_local! {
+    /// SHA-256 of each container as this command read it, so `save` can
+    /// refuse to replace a file another command changed in between.
+    static READ_AT: RefCell<HashMap<PathBuf, [u8; 32]>> = RefCell::new(HashMap::new());
+}
+
 pub(super) fn load(path: &Path) -> Result<TrackedFile> {
-    TrackedFile::decode(&env::read(path)?)
+    let bytes = env::read(path)?;
+    let digest: [u8; 32] = Sha256::digest(&bytes).into();
+    READ_AT.with(|read| read.borrow_mut().insert(path.to_path_buf(), digest));
+    TrackedFile::decode(&bytes)
+}
+
+/// Exclusive right to replace one container, held as a sibling `.lock`
+/// file that is created without overwriting and removed when dropped.
+struct WriteLock(PathBuf);
+
+impl WriteLock {
+    fn acquire(path: &Path) -> Result<Self> {
+        let mut lock = path.as_os_str().to_owned();
+        lock.push(".lock");
+        let lock = PathBuf::from(lock);
+        env::write_new(&lock, b"keyquorum file lock\n").map_err(|_| {
+            usage(&format!(
+                "another command is updating this file; if none is running, remove {}",
+                lock.display()
+            ))
+        })?;
+        Ok(Self(lock))
+    }
+}
+
+impl Drop for WriteLock {
+    fn drop(&mut self) {
+        let _ = env::remove_file(&self.0);
+    }
 }
 
 fn expiry_context(
@@ -638,8 +675,23 @@ fn policy_of(file: &TrackedFile) -> Result<&FilePolicy> {
 }
 
 /// Replace the container atomically: write a sibling, then rename over it.
+/// The write happens under an exclusive lock, and it is refused when the
+/// container on disk is no longer the one this command read, so two commands
+/// cannot silently overwrite each other's changes.
 pub(super) fn save(path: &Path, file: &TrackedFile) -> Result<()> {
     let bytes = file.encode()?;
+    let _lock = WriteLock::acquire(path)?;
+    let read_at = READ_AT.with(|read| read.borrow_mut().remove(path));
+    if let Some(expected) = read_at {
+        if env::exists(path) {
+            let now: [u8; 32] = Sha256::digest(env::read(path)?).into();
+            if now != expected {
+                return Err(usage(
+                    "this file changed since the command read it; run the command again",
+                ));
+            }
+        }
+    }
     let mut temp = path.as_os_str().to_owned();
     temp.push(".tmp");
     let temp = PathBuf::from(temp);

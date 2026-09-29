@@ -177,7 +177,7 @@ trust: it calls `file_history` and prints the result. The `.kqtf` container
 carries its own policy; the store only supplies signing keys, through
 `StoreTrust`, which accepts a key only for the identity the store knows for
 that label (the enrolled identity from `transfer`, else one derived from the
-label). Containers are replaced by writing a sibling and renaming.
+label). Containers are replaced by writing a sibling and renaming, under an exclusive `<file>.lock` and only if the file is still the one the command read (`save` refuses a changed file rather than overwrite it).
 `file_history/index.rs` keeps `tracked_files`, `tracked_revisions` and
 `tracked_history_index` as a rebuildable cache over `.kqtf` files: metadata
 only, no payload and no trust state, and `file reindex` restores it from the

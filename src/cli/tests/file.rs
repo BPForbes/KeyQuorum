@@ -1495,3 +1495,53 @@ fn expiry_needs_the_owners_own_key_not_just_the_label() {
     assert!(!ok(&mut env, &format!("history {KQTF}")).contains("Expiry"));
     assert!(!ok(&mut env, &format!("status {KQTF}")).contains("destroyed"));
 }
+
+#[test]
+fn a_held_lock_blocks_writes_and_says_how_to_clear_it() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    edit(&mut env, "totals: LOCKED\n");
+    let lock = format!("{KQTF}.lock");
+    env.fs.write(Path::new(&lock), b"held").unwrap();
+    let (result, _) = run(
+        &mut env,
+        &format!(
+            "checkin {KQTF} --from /work/edited.txt --as M.A --slot {}",
+            slot("M.A")
+        ),
+    );
+    let message = result.unwrap_err().to_string();
+    assert!(message.contains("another command is updating"), "{message}");
+    assert!(message.contains(&lock), "{message}");
+    // A refused write leaves the other command's lock alone.
+    assert!(env.fs.exists(Path::new(&lock)));
+    env.fs.delete(Path::new(&lock)).unwrap();
+    ok(
+        &mut env,
+        &format!(
+            "checkin {KQTF} --from /work/edited.txt --as M.A --slot {}",
+            slot("M.A")
+        ),
+    );
+    assert!(!env.fs.exists(Path::new(&lock)), "the lock is released");
+}
+
+#[test]
+fn a_container_changed_since_it_was_read_is_not_overwritten() {
+    use crate::cli::file_cmd::{load, save};
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    let (result, _) = env.run(|| {
+        let file = load(Path::new(KQTF))?;
+        // Another command replaces the container after this one read it.
+        let mut other = load(Path::new(KQTF))?;
+        other.logical_name = "changed.txt".into();
+        crate::cli::env::write(Path::new(KQTF), &other.encode()?)?;
+        let stale = save(Path::new(KQTF), &file);
+        assert!(stale.is_err(), "a stale save must be refused");
+        Ok(())
+    });
+    assert!(result.is_ok(), "{result:?}");
+    let name = ok(&mut env, &format!("status {KQTF}"));
+    assert!(name.contains("changed.txt"), "{name}");
+}

@@ -99,7 +99,7 @@ impl MemoryEnv {
         self.run(|| device_tool::run(cli))
     }
 
-    fn run(&mut self, f: impl FnOnce() -> Result<()>) -> (Result<()>, String) {
+    pub(super) fn run(&mut self, f: impl FnOnce() -> Result<()>) -> (Result<()>, String) {
         self.stdout.clear();
         let (result, env) = env::scoped(std::mem::take(self), f);
         *self = env;
