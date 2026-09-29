@@ -316,3 +316,52 @@ pub(super) fn note_if_gone(gate: Gate, conn: &Connection, id: i64) {
         )],
     );
 }
+
+/// The password-locked file a file share belongs to, and that share's id,
+/// read *before* redemption because purging an expired file cascades its
+/// share rows away. `None` for a token that names no share.
+pub(super) fn share_of_token(conn: &Connection, token: &str) -> Option<(i64, i64)> {
+    let share_id = crate::sharing::file_share_id_for_token(conn, token).ok()?;
+    let file_id = file_of_share(conn, share_id)?;
+    Some((share_id, file_id))
+}
+
+pub(super) fn file_of_share(conn: &Connection, share_id: i64) -> Option<i64> {
+    conn.query_row(
+        "SELECT file_id FROM file_shares WHERE id = ?1",
+        params![share_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+/// A share of a linked password-locked file was created, redeemed or
+/// revoked. Only the share's id is recorded, never its token.
+pub(super) fn record_share(
+    conn: &Connection,
+    file_id: i64,
+    kind: HistoryEventType,
+    failure: Option<&Error>,
+    share_id: i64,
+    extra: &[(&str, String)],
+) {
+    let mut details = gate_details(Gate::Password, file_id).with("share", &share_id.to_string());
+    for (key, value) in extra {
+        details = details.with(key, value);
+    }
+    let outcome = match failure {
+        None => HistoryOutcome::Success,
+        Some(error) => {
+            details = details.with("result", &failure_text(error));
+            HistoryOutcome::Failure
+        }
+    };
+    record(
+        conn,
+        Gate::Password,
+        file_id,
+        vec![info(kind, outcome, details)],
+    );
+}

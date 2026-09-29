@@ -21,6 +21,8 @@ pub struct MemoryEnv {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     stores: HashMap<PathBuf, Connection>,
+    /// Answers for the next prompts, in order; after that, [`PASSPHRASE`].
+    pub prompts: std::collections::VecDeque<String>,
 }
 
 impl Env for MemoryEnv {
@@ -41,7 +43,10 @@ impl Env for MemoryEnv {
     }
 
     fn prompt_secret(&mut self, _prompt: &str) -> Result<String> {
-        Ok(PASSPHRASE.to_string())
+        Ok(self
+            .prompts
+            .pop_front()
+            .unwrap_or_else(|| PASSPHRASE.to_string()))
     }
 
     fn var(&self, _name: &str) -> Option<String> {

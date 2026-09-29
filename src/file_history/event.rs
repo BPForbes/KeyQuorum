@@ -48,6 +48,9 @@ pub enum HistoryEventType {
     PasswordUnlockAttempted = 25,
     ExpiredAccessAttempt = 26,
     GateLinked = 27,
+    ShareLinkCreated = 28,
+    ShareLinkRedeemed = 29,
+    ShareLinkRevoked = 30,
 }
 
 impl HistoryEventType {
@@ -80,6 +83,9 @@ impl HistoryEventType {
             25 => Self::PasswordUnlockAttempted,
             26 => Self::ExpiredAccessAttempt,
             27 => Self::GateLinked,
+            28 => Self::ShareLinkCreated,
+            29 => Self::ShareLinkRedeemed,
+            30 => Self::ShareLinkRevoked,
             _ => return Err(Error::InvalidTrackedFile),
         })
     }

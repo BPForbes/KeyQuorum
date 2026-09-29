@@ -373,3 +373,83 @@ fn a_reused_password_file_id_is_not_mistaken_for_the_file_that_was_linked() {
     let out = ok(&mut env, &format!("link {KQTF} --locked-file 1"));
     assert!(out.contains("Linked password file 1"), "{out}");
 }
+
+// ---- shares ----------------------------------------------------------------
+
+fn share_line(env: &mut MemoryEnv, args: &str) -> (crate::error::Result<()>, String) {
+    env.keyquorum(&format!("keyquorum {DB} share {args}"))
+}
+
+fn token_of(out: &str) -> String {
+    out.lines()
+        .find_map(|l| l.strip_prefix("Token:"))
+        .map(|t| t.trim().to_string())
+        .expect("a token")
+}
+
+#[test]
+fn share_create_redeem_and_revoke_are_recorded_without_the_token() {
+    let mut env = password_gated();
+    ok(&mut env, &format!("link {KQTF} --locked-file 1"));
+
+    let (result, out) = share_line(&mut env, "create-file 1 --max-uses 1");
+    assert!(result.is_ok(), "{out}");
+    let token = token_of(&out);
+    env.prompts.push_back(token.clone());
+    let (result, out) = share_line(&mut env, "redeem-file");
+    assert!(result.is_ok(), "{out}");
+    // The single use is spent, so a second redemption is refused and noted.
+    env.prompts.push_back(token.clone());
+    let (result, _) = share_line(&mut env, "redeem-file");
+    assert!(result.is_err());
+    let (result, _) = share_line(&mut env, "revoke-file 1");
+    assert!(result.is_ok());
+
+    let text = history(&mut env);
+    assert_eq!(text.matches("ShareLinkCreated").count(), 1, "{text}");
+    assert_eq!(text.matches("ShareLinkRedeemed").count(), 2, "{text}");
+    assert_eq!(text.matches("ShareLinkRevoked").count(), 1, "{text}");
+    assert!(text
+        .lines()
+        .any(|l| l.contains("ShareLinkRedeemed") && l.contains("Failure")));
+    assert!(!text.contains(&token), "the bearer token reached history");
+}
+
+#[test]
+fn an_unknown_share_token_and_an_unlinked_file_record_nothing() {
+    let mut env = password_gated();
+    let (result, out) = share_line(&mut env, "create-file 1");
+    assert!(result.is_ok(), "{out}");
+    assert!(!history(&mut env).contains("ShareLink"));
+
+    ok(&mut env, &format!("link {KQTF} --locked-file 1"));
+    env.prompts.push_back("00".repeat(32));
+    let (result, _) = share_line(&mut env, "redeem-file");
+    assert!(result.is_err());
+    assert!(!history(&mut env).contains("ShareLink"));
+}
+
+#[test]
+fn redeeming_a_share_of_an_expired_file_leaves_the_tombstone() {
+    let mut env = password_gated();
+    ok(&mut env, &format!("link {KQTF} --locked-file 1"));
+    let (result, out) = share_line(&mut env, "create-file 1 --max-uses 3");
+    assert!(result.is_ok(), "{out}");
+    let token = token_of(&out);
+    env.store("/home/org/keyquorum.sqlite")
+        .execute(
+            "UPDATE password_locked_files SET expires_at = '2000-01-01 00:00:00' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    env.prompts.push_back(token);
+    let (result, _) = share_line(&mut env, "redeem-file");
+    assert!(
+        matches!(result, Err(crate::error::Error::FileExpired)),
+        "{result:?}"
+    );
+    let text = history(&mut env);
+    for kind in ["FileExpired", "ContentDestroyed", "ExpiredAccessAttempt"] {
+        assert_eq!(text.matches(kind).count(), 1, "{kind}\n{text}");
+    }
+}

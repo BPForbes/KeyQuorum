@@ -182,7 +182,7 @@ foreign key to the gate so a purged gate keeps its link) and appends what
 happened at the gate to that file's history: the attempt and its outcome,
 the labels presented on success, and, when the TTL destroys the file,
 `FILE_EXPIRED`, `CONTENT_DESTROYED` and `EXPIRED_ACCESS_ATTEMPT`. The CLI
-calls it only after `quorum` or `locked_files` (PIN check included) has answered; the gates never read the link,
+calls it only after `quorum`, `locked_files` (PIN check included) or `sharing` (file share create, redeem, revoke; the share's id, never its token) has answered; the gates never read the link,
 recording is best-effort and cannot change an outcome, and no share,
 password, PIN or plaintext is ever recorded.
 `file_history/sync.rs` imports another copy of the same file (same id and

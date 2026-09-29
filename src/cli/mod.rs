@@ -33,6 +33,7 @@ pub mod device_tool;
 pub mod env;
 mod file_cmd;
 mod gate_link;
+use crate::file_history::HistoryEventType;
 use gate_link::Gate;
 #[cfg(feature = "provider")]
 pub mod host_args;
@@ -2589,6 +2590,14 @@ fn run_share(conn: &Connection, command: ShareCommand) -> Result<()> {
                     max_uses,
                 )?,
             };
+            gate_link::record_share(
+                conn,
+                file_id,
+                HistoryEventType::ShareLinkCreated,
+                None,
+                share.id,
+                &[("expires_at", share.expires_at.clone())],
+            );
             if set_pin_flag {
                 let pin_value = prompt_secret("Set a 4-digit PIN for this share: ")?;
                 pin::set_pin(
@@ -2614,13 +2623,33 @@ fn run_share(conn: &Connection, command: ShareCommand) -> Result<()> {
         }
         ShareCommand::RedeemFile => {
             let token = prompt_secret("File share token: ")?;
-            sharing::purge_expired_file_share_in(&mut env::EnvStorage, conn, &token)?;
-            let share_id = sharing::file_share_id_for_token(conn, &token)?;
-            if pin::verification_required(conn, ResourceType::FileShare, share_id)? {
-                let pin_value = prompt_secret("PIN: ")?;
-                pin::verify_pin(conn, ResourceType::FileShare, share_id, &pin_value)?;
+            // Read before anything can purge the file and its share rows.
+            let known = gate_link::share_of_token(conn, &token);
+            let attempt = (|| -> Result<i64> {
+                sharing::purge_expired_file_share_in(&mut env::EnvStorage, conn, &token)?;
+                let share_id = sharing::file_share_id_for_token(conn, &token)?;
+                if pin::verification_required(conn, ResourceType::FileShare, share_id)? {
+                    let pin_value = prompt_secret("PIN: ")?;
+                    pin::verify_pin(conn, ResourceType::FileShare, share_id, &pin_value)?;
+                }
+                sharing::redeem_file_share_in(&mut env::EnvStorage, conn, &token)
+            })();
+            if let Some((share_id, file_id)) = known {
+                match attempt.as_ref().err() {
+                    Some(Error::FileExpired) => {
+                        gate_link::record_expiry(gate_link::Gate::Password, conn, file_id)
+                    }
+                    failure => gate_link::record_share(
+                        conn,
+                        file_id,
+                        HistoryEventType::ShareLinkRedeemed,
+                        failure,
+                        share_id,
+                        &[],
+                    ),
+                }
             }
-            let file_id = sharing::redeem_file_share_in(&mut env::EnvStorage, conn, &token)?;
+            let file_id = attempt?;
             outln!("Redeemed file {file_id}");
         }
         ShareCommand::RevokeCredential { share_id } => {
@@ -2628,7 +2657,19 @@ fn run_share(conn: &Connection, command: ShareCommand) -> Result<()> {
             outln!("Revoked credential share {share_id}");
         }
         ShareCommand::RevokeFile { share_id } => {
-            sharing::revoke_file_share(conn, share_id)?;
+            let file_id = gate_link::file_of_share(conn, share_id);
+            let revoked = sharing::revoke_file_share(conn, share_id);
+            if let Some(file_id) = file_id {
+                gate_link::record_share(
+                    conn,
+                    file_id,
+                    HistoryEventType::ShareLinkRevoked,
+                    revoked.as_ref().err(),
+                    share_id,
+                    &[],
+                );
+            }
+            revoked?;
             outln!("Revoked file share {share_id}");
         }
     }
