@@ -160,6 +160,12 @@ The letter's signed header also binds `content_proof`, the
 container holds for it, in order), which `select_shareable_revision` returns
 in `DeliveryDecision` and `file receive` recomputes from the container,
 refusing a mismatch. It names the proofs that travelled; it decides no trust.
+Freshness is never assumed: `file_delivery::freshness` compares a letter's
+revision and signed history root with `tracked_seen_roots` (what this store
+accepted before for that file) and says `FIRST`, `REPLAYED`, `NEWER` (its
+history holds everything accepted before, and more) or `NOT_NEWER`; `file
+receive` prints it and records it on `SHARE_DELIVERED`, then records the
+accepted root. That table is store state, not a cache over `.kqtf` files.
 `src/file_history.rs` owns the tracked-file container (`KQTF`, its own
 magic and version, not a sealed envelope) and the hash-chained event history
 that travels with it; SQLite may only index it. It frames and chains events

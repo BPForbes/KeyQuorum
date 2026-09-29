@@ -1203,6 +1203,109 @@ fn receiving_the_same_letter_to_the_same_out_file_resends_only_the_answer() {
 }
 
 #[test]
+fn a_receiver_records_whether_each_history_is_newer_than_what_it_accepted() {
+    use crate::file_history::TrackedFile;
+    let mut env = delivering();
+    let first = TrackedFile::decode(&env.fs.read(Path::new(KQTF)).unwrap())
+        .unwrap()
+        .graph()
+        .heads()[0];
+    let fresh_of = |env: &mut MemoryEnv| {
+        let history = ok(env, "history /work/r.kqtf");
+        history
+            .lines()
+            .rfind(|l| l.contains("ShareDelivered"))
+            .and_then(|l| l.split_whitespace().find(|w| w.starts_with("freshness=")))
+            .map(str::to_string)
+            .expect("a recorded delivery")
+    };
+    let clear = |env: &mut MemoryEnv| {
+        for dir in ["/out", "/acks"] {
+            for file in env.fs.list(Path::new(dir)).unwrap_or_default() {
+                env.fs.delete(&file).unwrap();
+            }
+        }
+    };
+    let (result, out) = share_to_mb(&mut env, "");
+    assert!(result.is_ok(), "{out}");
+    let (result, out) = receive_as_mb(&mut env, "--out /work/r.kqtf");
+    assert!(result.is_ok(), "{out}");
+    assert_eq!(fresh_of(&mut env), "freshness=FIRST");
+    clear(&mut env);
+
+    // A newer signed revision: its history holds what was accepted before.
+    edit(&mut env, "totals: 200\n");
+    ok(
+        &mut env,
+        &format!(
+            "checkin {KQTF} --from /work/edited.txt --as M.A --slot {}",
+            slot("M.A")
+        ),
+    );
+    share_to_mb(&mut env, "").0.unwrap();
+    let (result, out) = receive_as_mb(&mut env, "--into /work/r.kqtf");
+    assert!(result.is_ok(), "{out}");
+    assert_eq!(fresh_of(&mut env), "freshness=NEWER");
+    clear(&mut env);
+
+    // The first revision re-sent: accepted (it is trusted), but never
+    // called newer.
+    share_to_mb(&mut env, &format!("--revision {}", hex::encode(first)))
+        .0
+        .unwrap();
+    let (result, out) = receive_as_mb(&mut env, "--into /work/r.kqtf");
+    assert!(result.is_ok(), "{out}");
+    assert_eq!(fresh_of(&mut env), "freshness=NOT_NEWER");
+}
+
+#[test]
+fn a_received_file_answers_its_provenance_without_the_senders_store() {
+    let mut env = delivering();
+    share_to_mb(&mut env, "").0.unwrap();
+    let (result, out) = receive_as_mb(&mut env, "--out /work/r.kqtf");
+    assert!(result.is_ok(), "{out}");
+    // A store that has never met the sender: an empty database.
+    let bytes = env.fs.read(Path::new("/work/r.kqtf")).unwrap();
+    env.fs
+        .write(Path::new("/elsewhere/r.kqtf"), &bytes)
+        .unwrap();
+    let elsewhere = "--db /elsewhere/keyquorum.sqlite";
+    let run_elsewhere = |env: &mut MemoryEnv, args: &str| {
+        let (result, out) = env.keyquorum(&format!("keyquorum {elsewhere} file {args}"));
+        assert!(result.is_ok(), "{args}: {result:?}\n{out}");
+        out
+    };
+    // Who edited and signed it, under which rules, and whether the history
+    // is intact, all from the container itself.
+    let history = run_elsewhere(&mut env, "history /elsewhere/r.kqtf");
+    assert!(
+        history.contains("TrackingStarted Success by M.A"),
+        "{history}"
+    );
+    assert!(
+        history.contains("RevisionSigned Success by M.A"),
+        "{history}"
+    );
+    assert!(
+        history.contains("ShareDelivered Success by M.B"),
+        "{history}"
+    );
+    let policy = run_elsewhere(&mut env, "policy /elsewhere/r.kqtf");
+    assert!(policy.contains("M.A"), "{policy}");
+    // The structure verifies anywhere; trust is this store's to judge, and
+    // without M.A's key it is not trusted here, so `verify` says so and fails.
+    let (result, verify) = env.keyquorum(&format!(
+        "keyquorum {elsewhere} file verify /elsewhere/r.kqtf"
+    ));
+    assert!(result.is_err());
+    assert!(
+        verify.contains("History and revision graph verify"),
+        "{verify}"
+    );
+    assert!(verify.contains("DENIED (UnknownSigner)"), "{verify}");
+}
+
+#[test]
 fn an_untrusted_newer_revision_is_never_sent() {
     let mut env = delivering();
     edit(&mut env, "totals: SECRETNEWER\n");

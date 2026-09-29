@@ -328,3 +328,60 @@ fn an_ack_binds_the_answer_and_what_it_answers() {
         );
     }
 }
+
+fn letter_for(revision: u8, root: u8) -> HistoryLetter {
+    HistoryLetter {
+        delivery_id: [revision; 16],
+        sender_label: "M.A".into(),
+        recipient_label: "M.B".into(),
+        return_public: [0; 32],
+        file_name: "plan.txt".into(),
+        file_id: [3; 16],
+        revision_id: [revision; 32],
+        history_root: [root; 32],
+        decision: 1,
+        content_proof: [0; 32],
+        container: Vec::new(),
+        container_hash: [0; 32],
+    }
+}
+
+#[test]
+fn freshness_is_judged_against_what_this_store_accepted_before() {
+    let conn = db::open_in_memory().unwrap();
+    let r1 = letter_for(1, 10);
+    // Nothing seen yet.
+    assert_eq!(freshness(&conn, &r1, |_| true).unwrap(), Freshness::First);
+    record_seen_root(&conn, &r1).unwrap();
+    // The same revision and root again: a replay.
+    assert_eq!(
+        freshness(&conn, &r1, |_| true).unwrap(),
+        Freshness::Replayed
+    );
+    record_seen_root(&conn, &r1).unwrap();
+    // A later revision whose history holds R1: newer.
+    let r2 = letter_for(2, 20);
+    let holds_r1 = |id: &[u8; 32]| *id == [1; 32] || *id == [2; 32];
+    assert_eq!(freshness(&conn, &r2, holds_r1).unwrap(), Freshness::Newer);
+    record_seen_root(&conn, &r2).unwrap();
+    // R1 again under another root (an older copy re-sent): not newer.
+    let old = letter_for(1, 11);
+    assert_eq!(
+        freshness(&conn, &old, |_| true).unwrap(),
+        Freshness::NotNewer
+    );
+    // A branch that lacks R2: not newer, whatever it adds.
+    let side = letter_for(3, 30);
+    let lacks_r2 = |id: &[u8; 32]| *id != [2; 32];
+    assert_eq!(
+        freshness(&conn, &side, lacks_r2).unwrap(),
+        Freshness::NotNewer
+    );
+    // Another file starts fresh.
+    let mut other = letter_for(1, 10);
+    other.file_id = [9; 16];
+    assert_eq!(
+        freshness(&conn, &other, |_| true).unwrap(),
+        Freshness::First
+    );
+}

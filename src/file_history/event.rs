@@ -100,7 +100,7 @@ impl HistoryEventType {
         }
     }
 
-    fn from_u8(value: u8) -> Result<Self> {
+    pub(super) fn from_u8(value: u8) -> Result<Self> {
         Ok(match value {
             1 => Self::TrackingStarted,
             2 => Self::EditCheckedIn,
@@ -191,6 +191,7 @@ pub const SAFE_DETAIL_KEYS: &[&str] = &[
     "expires_at",
     "fallback_reason",
     "for_actor",
+    "freshness",
     "from",
     "from_history_root",
     "gate",

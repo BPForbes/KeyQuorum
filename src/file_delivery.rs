@@ -501,6 +501,87 @@ pub fn open_history_ack(
     Ok(ack)
 }
 
+/// How a letter's history compares with what this store has already
+/// authenticated for the same file (from earlier accepted letters).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Freshness {
+    /// Nothing from this file was authenticated here before.
+    First,
+    /// The same revision and history root were accepted before (a replay or
+    /// a retry).
+    Replayed,
+    /// The letter's history holds every revision accepted here before, and
+    /// more: it is newer than anything this store has authenticated.
+    Newer,
+    /// The same revision as before, or a history missing something accepted
+    /// here before (an older copy, or another branch). Not newer.
+    NotNewer,
+}
+
+impl Freshness {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::First => "FIRST",
+            Self::Replayed => "REPLAYED",
+            Self::Newer => "NEWER",
+            Self::NotNewer => "NOT_NEWER",
+        }
+    }
+}
+
+/// Compare a letter's authenticated history with what this store accepted
+/// before for the same file. `holds` answers whether the letter's container
+/// includes a revision id; the caller supplies it from the decoded
+/// container, so this module never decodes one.
+pub fn freshness(
+    conn: &Connection,
+    letter: &HistoryLetter,
+    holds: impl Fn(&[u8; 32]) -> bool,
+) -> Result<Freshness> {
+    let mut seen = conn
+        .prepare("SELECT revision_id, history_root FROM tracked_seen_roots WHERE file_id = ?1")?;
+    let rows = seen
+        .query_map(rusqlite::params![letter.file_id.as_slice()], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if rows.is_empty() {
+        return Ok(Freshness::First);
+    }
+    let mut revisions = Vec::new();
+    for (revision, root) in rows {
+        let revision: [u8; 32] = revision.try_into().map_err(|_| Error::InvalidTrackedFile)?;
+        if revision == letter.revision_id && root.as_slice() == letter.history_root {
+            return Ok(Freshness::Replayed);
+        }
+        revisions.push(revision);
+    }
+    let covers_all = revisions.iter().all(&holds);
+    let adds = !revisions.contains(&letter.revision_id);
+    Ok(if covers_all && adds {
+        Freshness::Newer
+    } else {
+        Freshness::NotNewer
+    })
+}
+
+/// Remember that this store accepted `letter`'s history, for later
+/// [`freshness`] checks. Recording the same one twice is harmless.
+pub fn record_seen_root(conn: &Connection, letter: &HistoryLetter) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO tracked_seen_roots
+             (file_id, revision_id, history_root, sender_label)
+         VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![
+            letter.file_id.as_slice(),
+            letter.revision_id.as_slice(),
+            letter.history_root.as_slice(),
+            letter.sender_label
+        ],
+    )?;
+    Ok(())
+}
+
 /// Every field the transport signature covers.
 struct HistoryHeader<'a> {
     recipient_public: &'a [u8; 32],

@@ -1714,6 +1714,13 @@ fn receive(
         letter.file_name,
         short(&letter.revision_id)
     );
+    // Compared with what this store accepted before, never assumed newest.
+    let freshness =
+        file_delivery::freshness(conn, &letter, |id| incoming.graph().get(id).is_some())?;
+    errln!(
+        "History: {} (against what this store accepted before)",
+        freshness.name()
+    );
     let policy = policy_of(&incoming)?.clone();
     let state = evaluate_revision_trust(
         &incoming,
@@ -1747,6 +1754,7 @@ fn receive(
                 generation,
                 EventDetails::new()
                     .with("from", &letter.sender_label)
+                    .with("freshness", freshness.name())
                     .with("delivery_id", &hex::encode(letter.delivery_id))
                     .with("container_hash", &hex::encode(letter.container_hash)),
             )
@@ -1806,6 +1814,9 @@ fn receive(
             }
             (None, None) => return Err(usage("pass --into or --out")),
         }
+    }
+    if accepted {
+        file_delivery::record_seen_root(conn, &letter)?;
     }
     let ack = Letter {
         name: format!("{}-ack", hex::encode(letter.delivery_id)),

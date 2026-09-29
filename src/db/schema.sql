@@ -479,3 +479,16 @@ CREATE TABLE IF NOT EXISTS tracked_gate_links (
 
 CREATE INDEX IF NOT EXISTS tracked_gate_links_by_gate
     ON tracked_gate_links (gate, gate_file_id);
+
+-- Tracked-file histories this store has authenticated: the revision and
+-- history root a sender signed in a letter this store accepted. Not a cache
+-- over `.kqtf` files (it is not rebuildable from them): it is what a later
+-- letter's history is compared against before anyone calls it newer.
+CREATE TABLE IF NOT EXISTS tracked_seen_roots (
+    file_id      BLOB NOT NULL CHECK (length(file_id) = 16),
+    revision_id  BLOB NOT NULL CHECK (length(revision_id) = 32),
+    history_root BLOB NOT NULL CHECK (length(history_root) = 32),
+    sender_label TEXT NOT NULL,
+    seen_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (file_id, revision_id, history_root, sender_label)
+);
