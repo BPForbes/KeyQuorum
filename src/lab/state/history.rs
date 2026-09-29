@@ -9,8 +9,8 @@
 use super::*;
 use crate::cli::file_cmd::StoreTrust;
 use crate::file_history::{
-    evaluate_revision_trust, select_shareable_revision, DeliveryDecisionKind, HistoryOutcome,
-    TrackedFile, TrustState,
+    current_revision, evaluate_revision_trust, latest_trusted_revision, select_shareable_revision,
+    DeliveryDecisionKind, HistoryOutcome, TrackedFile, TrustState,
 };
 
 /// Where tracked-file letters and acknowledgements are handed over: a
@@ -317,6 +317,9 @@ impl LabState {
                     history_root: hex::encode(file.history_root()),
                     revisions,
                     shareable,
+                    current_revision: current_revision(&file).map(hex::encode),
+                    trusted_revision: latest_trusted_revision(&file, &policy, &ctx)
+                        .map(hex::encode),
                     expires_at: file.expires_at(),
                     destroyed: file.is_destroyed(),
                     snapshots: tracked
@@ -627,6 +630,31 @@ impl LabState {
             format!("Destroy the content of {name}")
         };
         let (outcome, _) = self.history_command("history-expire", &title, line);
+        Ok(outcome)
+    }
+
+    /// `keyquorum file rename`: change the name a tracked file is shown
+    /// under; its id and revision ids stay the same.
+    pub fn history_rename(&mut self, path: &str, new_name: &str) -> Result<Outcome> {
+        let Some(kqtf) = self.tracked_path(path) else {
+            return Ok(Self::unknown_tracked(path));
+        };
+        let Some(slot) = self.own_slot_arg() else {
+            return Ok(self.no_slot());
+        };
+        let who = self.actor().label.clone();
+        let line = format!(
+            "{} rename {} {} --as {who} --slot {slot}",
+            self.file_line(),
+            quote(&kqtf.display().to_string()),
+            quote(new_name.trim()),
+        );
+        let name = self.tracked_name(&kqtf);
+        let (outcome, _) = self.history_command(
+            "history-rename",
+            &format!("Rename {name} to {}", new_name.trim()),
+            line,
+        );
         Ok(outcome)
     }
 

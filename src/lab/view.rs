@@ -363,6 +363,10 @@ pub struct TrackedFileView {
     pub revisions: Vec<TrackedRevisionView>,
     /// The revision `file share` would send from the sole head, if any.
     pub shareable: Option<String>,
+    /// The sole head, or `None` when the history has forked.
+    pub current_revision: Option<String>,
+    /// The latest revision this store trusts, which need not be the current one.
+    pub trusted_revision: Option<String>,
     /// The scheduled expiry (`YYYY-MM-DDTHH:MM:SSZ`), if one was set.
     pub expires_at: Option<String>,
     /// Whether every revision's content was destroyed at expiry.

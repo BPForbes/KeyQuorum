@@ -167,6 +167,27 @@ function EditForm({ file, act }: { file: TrackedFileView; act: Act }) {
   );
 }
 
+function RenameForm({ file, act }: { file: TrackedFileView; act: Act }) {
+  const id = useId();
+  const [name, setName] = useState("");
+  return (
+    <form
+      className="tracked-form tracked-share"
+      data-testid="history-rename"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (name.trim()) act((client) => client.historyRename(file.path, name.trim()));
+      }}
+    >
+      <label htmlFor={`${id}-name`}>New name</label>
+      <input id={`${id}-name`} type="text" value={name} onChange={(event) => setName(event.target.value)} />
+      <button type="submit" className="btn small-btn">
+        Rename file
+      </button>
+    </form>
+  );
+}
+
 function ExpiryForm({ file, act }: { file: TrackedFileView; act: Act }) {
   const id = useId();
   const [at, setAt] = useState("");
@@ -324,7 +345,7 @@ function TrackedFileCard({
     if (result) onView(result, title);
   };
   return (
-    <div className="tracked-card" data-testid="tracked-file" data-path={file.path} data-forked={file.forked}>
+    <div className="tracked-card" data-testid="tracked-file" data-path={file.path} data-file-id={file.fileId} data-forked={file.forked}>
       <p>
         <strong>{file.name}</strong>{" "}
         <span className="muted small">
@@ -346,6 +367,12 @@ function TrackedFileCard({
           <RevisionRow key={revision.id} file={file} revision={revision} me={me} act={act} report={report} />
         ))}
       </ol>
+      <p className="small" data-testid="tracked-heads">
+        {file.currentRevision
+          ? `Current revision ${short(file.currentRevision)}`
+          : "Current revision: none (two heads)"}
+        {file.trustedRevision ? `; latest trusted ${short(file.trustedRevision)}.` : "; nothing trusted yet."}
+      </p>
       <p className="small" data-testid="tracked-shareable">
         {file.destroyed
           ? "Nothing can be shared: the content is gone."
@@ -389,6 +416,7 @@ function TrackedFileCard({
       {file.destroyed ? null : (
         <>
           <EditForm key={heads.join()} file={file} act={act} />
+          <RenameForm file={file} act={act} />
           <ExpiryForm file={file} act={act} />
         </>
       )}

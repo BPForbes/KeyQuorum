@@ -292,6 +292,24 @@ test.describe("desktop lab", () => {
     await expect(panel.getByTestId("tracked-letters")).toContainText("answer recorded");
   });
 
+  test("a tracked file can be renamed without changing what it is", async ({ page }) => {
+    await loadLab(page);
+    await switchUser(page, "Sarah");
+    const panel = page.getByTestId("tracked-files");
+    await panel.getByLabel("New tracked file").fill("draft.txt");
+    await panel.getByLabel("First revision").fill("v1");
+    await panel.getByRole("button", { name: "Track and sign" }).click();
+    const card = panel.locator('[data-testid="tracked-file"][data-path="/home/sarah/tracked/draft.txt.kqtf"]');
+    await expect(card.getByTestId("tracked-heads")).toContainText("latest trusted");
+    const idBefore = await card.getAttribute("data-file-id");
+    await card.getByLabel("New name").fill("final.txt");
+    await card.getByRole("button", { name: "Rename file" }).click();
+    await expect(card).toContainText("final.txt");
+    await page.locator('[data-panel="activity"] details.log > summary').click();
+    await expect(page.locator('[data-panel="activity"] [data-event="FileRenamed"]').first()).toBeVisible();
+    if (idBefore) await expect(card).toHaveAttribute("data-file-id", idBefore);
+  });
+
   test("a tracked file can be expired from the Activity page, leaving a tombstone", async ({ page }) => {
     await loadLab(page);
     await switchUser(page, "Sarah");

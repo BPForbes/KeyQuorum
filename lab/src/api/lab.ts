@@ -169,6 +169,10 @@ export class LabClient {
   }
 
   /** Schedule expiry at `at` (UTC `yyyy-mm-ddThh:mm`), or destroy the content now when `at` is omitted. */
+  historyRename(path: string, newName: string): ActionResult {
+    return this.call(this.lab.history_rename(path, newName));
+  }
+
   historyExpire(path: string, at?: string): ActionResult {
     return this.call(this.lab.history_expire(path, at));
   }

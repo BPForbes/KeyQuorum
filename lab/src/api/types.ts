@@ -243,6 +243,10 @@ export interface TrackedRevisionView {
 }
 
 export interface TrackedFileView {
+  /** The sole head, or null when the history has forked. */
+  currentRevision: string | null;
+  /** The latest revision this store trusts; not always the current one. */
+  trustedRevision: string | null;
   path: string;
   name: string;
   fileId: string;

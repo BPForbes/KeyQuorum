@@ -17,11 +17,11 @@ use super::review_view::ReviewView;
 use super::{open_slot_secrets, read_key_array_32, usage};
 use crate::error::{Error, Result};
 use crate::file_history::{
-    diff_text, evaluate_revision_trust, index, select_shareable_revision, verify_tracked_file,
-    AutoMergeOutcome, BridgeEvidence, ChangeKind, DeliveryDecisionKind, EventDetails,
-    ExpiryContext, FilePolicy, HistoryEvent, HistoryEventType, HistoryOutcome, HistoryRelation,
-    HistorySnapshot, ImportContext, MergeBase, NewEvent, NewRevision, ResolverSelection,
-    TrackedFile, TrustContext, TrustReason, TrustState,
+    current_revision, diff_text, evaluate_revision_trust, index, latest_trusted_revision,
+    select_shareable_revision, verify_tracked_file, AutoMergeOutcome, BridgeEvidence, ChangeKind,
+    DeliveryDecisionKind, EventDetails, ExpiryContext, FilePolicy, HistoryEvent, HistoryEventType,
+    HistoryOutcome, HistoryRelation, HistorySnapshot, ImportContext, MergeBase, NewEvent,
+    NewRevision, ResolverSelection, TrackedFile, TrustContext, TrustReason, TrustState,
 };
 use crate::{authority, file_delivery, key_tree, private_bridge, signing, transfer};
 use clap::Subcommand;
@@ -88,6 +88,8 @@ pub enum FileCommand {
     },
     /// Sign a revision you authored (the current head unless --revision)
     Sign {
+        /// A tracked `.kqtf`, or a native file with no container yet: signing
+        /// it is the first content signature, which starts tracking
         kqtf: PathBuf,
         /// Revision id or unique prefix
         #[arg(long)]
@@ -98,6 +100,9 @@ pub enum FileCommand {
         slot: Option<String>,
         #[arg(long)]
         signing_key_file: Option<PathBuf>,
+        /// HCP scope of a newly tracked file (only with a native file)
+        #[arg(long)]
+        scope: Option<String>,
     },
     /// Countersign a revision the author has signed
     Countersign {
@@ -211,6 +216,20 @@ pub enum FileCommand {
         #[arg(long)]
         now: bool,
         /// Prove you hold `--as`: the slot is opened only for this proof
+        #[arg(long, conflicts_with = "signing_key_file")]
+        slot: Option<String>,
+        #[arg(long)]
+        signing_key_file: Option<PathBuf>,
+    },
+    /// Change the name the file is shown under. The stable file id and every
+    /// revision id stay as they are; the old and new names are recorded.
+    Rename {
+        kqtf: PathBuf,
+        /// The new logical name
+        new_name: String,
+        /// Your label: the file's scope owner or one of its ancestors
+        #[arg(long = "as")]
+        as_label: String,
         #[arg(long, conflicts_with = "signing_key_file")]
         slot: Option<String>,
         #[arg(long)]
@@ -382,7 +401,25 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             as_label,
             slot,
             signing_key_file,
-        } => sign(conn, &kqtf, revision, &as_label, slot, signing_key_file),
+            scope,
+        } => {
+            if is_container(&kqtf) {
+                if scope.is_some() {
+                    return Err(usage("--scope only applies to a file that is not tracked"));
+                }
+                sign(conn, &kqtf, revision, &as_label, slot, signing_key_file)
+            } else {
+                activate_on_first_signature(
+                    conn,
+                    &kqtf,
+                    revision,
+                    &as_label,
+                    slot,
+                    signing_key_file,
+                    scope,
+                )
+            }
+        }
         FileCommand::Countersign {
             kqtf,
             revision,
@@ -429,6 +466,13 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             slot,
             signing_key_file,
         } => expire(conn, &kqtf, &as_label, (at, now), (slot, signing_key_file)),
+        FileCommand::Rename {
+            kqtf,
+            new_name,
+            as_label,
+            slot,
+            signing_key_file,
+        } => rename(conn, &kqtf, &new_name, &as_label, (slot, signing_key_file)),
         FileCommand::Link {
             kqtf,
             quorum_file,
@@ -986,6 +1030,55 @@ fn checkin(
     Ok(())
 }
 
+/// True when `path` starts with the KQTF magic.
+fn is_container(path: &Path) -> bool {
+    env::read(path).is_ok_and(|bytes| bytes.starts_with(crate::file_history::CONTAINER_MAGIC))
+}
+
+/// The first content signature over a native file starts tracking it: the
+/// same steps as `file track`, so the file gets its stable id, revision R1,
+/// a signature, and the `TRACKING_STARTED` and `REVISION_SIGNED` events.
+/// Legacy files that are never signed this way stay untracked.
+fn activate_on_first_signature(
+    conn: &Connection,
+    native: &Path,
+    revision: Option<String>,
+    as_label: &str,
+    slot: Option<String>,
+    key_file: Option<PathBuf>,
+    scope: Option<String>,
+) -> Result<()> {
+    if revision.is_some() {
+        return Err(usage("a file that is not tracked has no revisions to pick"));
+    }
+    let Some(scope) = scope else {
+        return Err(usage(
+            "this file is not tracked yet; pass --scope <label> to sign it and start tracking",
+        ));
+    };
+    let mut container = native.as_os_str().to_owned();
+    container.push(".kqtf");
+    let container = PathBuf::from(container);
+    if env::exists(&container) {
+        return Err(usage(&format!(
+            "{} already tracks this file; sign that container",
+            container.display()
+        )));
+    }
+    track(
+        conn,
+        native,
+        &scope,
+        as_label,
+        slot,
+        key_file,
+        None,
+        None,
+        Some(container),
+        false,
+    )
+}
+
 fn sign(
     conn: &Connection,
     kqtf: &Path,
@@ -1076,6 +1169,15 @@ fn status(conn: &Connection, kqtf: &Path) -> Result<()> {
     let heads = file.graph().heads();
     if heads.len() > 1 {
         outln!("  FORK: {} heads; neither is overwritten", heads.len());
+    }
+    // Derived here, from this store's keys; a container never stores trust.
+    match current_revision(&file) {
+        Some(id) => outln!("  current_revision_id {}", short(&id)),
+        None => outln!("  current_revision_id none (forked)"),
+    }
+    match latest_trusted_revision(&file, policy, &ctx) {
+        Some(id) => outln!("  trusted_revision_id {}", short(&id)),
+        None => outln!("  trusted_revision_id none"),
     }
     for head in &heads {
         let stored = file.graph().get(head).expect("head exists");
@@ -1496,7 +1598,7 @@ fn expire(
         return Err(usage("this file's content was already destroyed"));
     }
     let instant = utc_instant()?;
-    prove_possession(conn, &file, as_label, &instant, slot, key_file)?;
+    prove_possession(conn, &file, "expire", as_label, &instant, slot, key_file)?;
     let context = expiry_context(conn, &file, Some(as_label), &instant)?;
     match (at, now) {
         (_, true) => {
@@ -1525,6 +1627,49 @@ fn expire(
     Ok(())
 }
 
+fn rename(
+    conn: &Connection,
+    kqtf: &Path,
+    new_name: &str,
+    as_label: &str,
+    (slot, key_file): (Option<String>, Option<PathBuf>),
+) -> Result<()> {
+    let new_name = new_name.trim();
+    if new_name.is_empty() || new_name.contains(['/', '\\']) {
+        return Err(usage("give a file name, not a path"));
+    }
+    let mut file = load_live(conn, kqtf, Some(as_label), "rename")?;
+    let policy = policy_of(&file)?.clone();
+    // The name people see is the owner's to change, like when the content ends.
+    if !authority::is_ancestor_or_self(as_label, &policy.scope_root) {
+        return Err(usage(&format!(
+            "only {} or one of its ancestors may rename this file",
+            policy.scope_root
+        )));
+    }
+    require_active(conn, as_label)?;
+    let at = utc_instant()?;
+    prove_possession(conn, &file, "rename", as_label, &at, slot, key_file)?;
+    let old = std::mem::replace(&mut file.logical_name, new_name.to_string());
+    if old == new_name {
+        return Err(usage("that is already the file's name"));
+    }
+    let generation = generation_for(conn, &policy.scope_root)?;
+    file.append(event(
+        HistoryEventType::FileRenamed,
+        None,
+        &at,
+        identity_for(conn, as_label)?,
+        as_label,
+        generation,
+        EventDetails::new().with("from", &old).with("to", new_name),
+    ))?;
+    save(kqtf, &file)?;
+    index_after(conn, &file);
+    outln!("Renamed {old} to {new_name}; the file id and every revision id are unchanged");
+    Ok(())
+}
+
 /// Ending a file's content is irreversible, so naming an owner label is not
 /// enough: the caller must sign a challenge bound to this file and moment
 /// with the key the store has registered for `label`. The secret is opened
@@ -1532,6 +1677,7 @@ fn expire(
 fn prove_possession(
     conn: &Connection,
     file: &TrackedFile,
+    purpose: &str,
     label: &str,
     instant: &str,
     slot: Option<String>,
@@ -1544,7 +1690,9 @@ fn prove_possession(
     })?;
     let secret = signing_secret(slot, key_file)?;
     let challenge: [u8; 32] = Sha256::new()
-        .chain_update(b"KQ-FILE-EXPIRE-v1")
+        .chain_update(b"KQ-FILE-POSSESSION-v1")
+        .chain_update((purpose.len() as u16).to_be_bytes())
+        .chain_update(purpose.as_bytes())
         .chain_update(file.file_id)
         .chain_update((label.len() as u16).to_be_bytes())
         .chain_update(label.as_bytes())

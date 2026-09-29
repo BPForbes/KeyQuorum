@@ -371,6 +371,16 @@ impl KeyQuorumLab {
         to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
     }
 
+    /// `keyquorum file rename`: show a tracked file under a new name.
+    pub fn history_rename(
+        &mut self,
+        path: &str,
+        new_name: &str,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self.state.history_rename(path, new_name);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
     /// `keyquorum file diff` between two revisions (defaults: head and its parent).
     pub fn history_diff(
         &mut self,

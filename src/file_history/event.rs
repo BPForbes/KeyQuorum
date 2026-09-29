@@ -52,6 +52,7 @@ pub enum HistoryEventType {
     ShareLinkRedeemed = 29,
     ShareLinkRevoked = 30,
     ExpiryScheduled = 31,
+    FileRenamed = 32,
 }
 
 impl HistoryEventType {
@@ -61,7 +62,7 @@ impl HistoryEventType {
     pub fn category(self) -> &'static str {
         use HistoryEventType as E;
         match self {
-            E::TrackingStarted | E::HistoryImported | E::GateLinked => "file",
+            E::TrackingStarted | E::HistoryImported | E::GateLinked | E::FileRenamed => "file",
             E::EditCheckedIn
             | E::RevisionSigned
             | E::CountersignatureAdded
@@ -126,6 +127,7 @@ impl HistoryEventType {
             29 => Self::ShareLinkRedeemed,
             30 => Self::ShareLinkRevoked,
             31 => Self::ExpiryScheduled,
+            32 => Self::FileRenamed,
             _ => return Err(Error::InvalidTrackedFile),
         })
     }

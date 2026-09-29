@@ -171,8 +171,12 @@ ancestor), from owners whose revisions are trusted under policy; conflicting
 authors never review their own collision, a private bridge is never named
 in history, and nothing is guessed when no one qualifies.
 `src/cli/file_cmd.rs` is the `keyquorum file` command layer over `file_history`
-(track, checkin, sign, countersign, merge, review, graph, diff,
-checkout, status, history, verify). It decides no
+(track, checkin, sign, countersign, rename, merge, review, graph, diff,
+checkout, status, history, verify). Signing a native file with `--scope` is
+the first content signature and starts tracking (the same steps as `track`);
+`rename` changes only `logical_name` and appends `FILE_RENAMED`, never the
+file or revision ids. `status` derives `current_revision_id` and
+`trusted_revision_id` from the store's keys; the container never stores them. It decides no
 trust: it calls `file_history` and prints the result. The `.kqtf` container
 carries its own policy; the store only supplies signing keys, through
 `StoreTrust`, which accepts a key only for the identity the store knows for

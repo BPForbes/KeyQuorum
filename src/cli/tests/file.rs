@@ -1565,3 +1565,164 @@ fn a_new_container_never_replaces_one_that_appeared_meanwhile() {
     });
     assert!(result.is_ok(), "{result:?}");
 }
+
+// ---- activation, rename, derived heads -------------------------------------
+
+#[test]
+fn the_first_content_signature_starts_tracking_and_never_a_second_identity() {
+    let mut env = org();
+    // Not tracked, and no scope to track it under.
+    let (result, _) = run(
+        &mut env,
+        &format!("sign /work/report.txt --as M.A --slot {}", slot("M.A")),
+    );
+    assert!(result.unwrap_err().to_string().contains("--scope"));
+    assert!(!env.fs.exists(Path::new("/work/report.txt.kqtf")));
+
+    let out = ok(
+        &mut env,
+        &format!(
+            "sign /work/report.txt --scope M.A --as M.A --slot {}",
+            slot("M.A")
+        ),
+    );
+    assert!(out.contains("Tracking report.txt as "), "{out}");
+    let history = ok(&mut env, &format!("history {KQTF}"));
+    assert!(history.contains("TrackingStarted"), "{history}");
+    assert!(history.contains("RevisionSigned"), "{history}");
+    let id = ok(&mut env, &format!("status {KQTF}"))
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+
+    // Signing the native file again does not mint a second identity.
+    let (result, _) = run(
+        &mut env,
+        &format!(
+            "sign /work/report.txt --scope M.A --as M.A --slot {}",
+            slot("M.A")
+        ),
+    );
+    assert!(result.unwrap_err().to_string().contains("already tracks"));
+    assert_eq!(
+        ok(&mut env, &format!("status {KQTF}"))
+            .lines()
+            .next()
+            .unwrap(),
+        id
+    );
+    // --scope belongs to activation only.
+    let (result, _) = run(
+        &mut env,
+        &format!("sign {KQTF} --scope M.A --as M.A --slot {}", slot("M.A")),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn a_binary_payload_round_trips_byte_for_byte() {
+    let mut env = org();
+    let blob: Vec<u8> = (0u8..=255).chain([0, 255, 0, 10, 13]).collect();
+    env.fs.write(Path::new("/work/sheet.xlsx"), &blob).unwrap();
+    ok(
+        &mut env,
+        &format!(
+            "sign /work/sheet.xlsx --scope M.A --as M.A --slot {}",
+            slot("M.A")
+        ),
+    );
+    ok(
+        &mut env,
+        "checkout /work/sheet.xlsx.kqtf --out /work/sheet.out.xlsx",
+    );
+    assert_eq!(
+        env.fs.read(Path::new("/work/sheet.out.xlsx")).unwrap(),
+        blob
+    );
+}
+
+#[test]
+fn status_tells_the_current_head_from_the_latest_trusted_one() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    let status = ok(&mut env, &format!("status {KQTF}"));
+    let field = |text: &str, key: &str| {
+        text.lines()
+            .find(|l| l.trim_start().starts_with(key))
+            .unwrap()
+            .split_whitespace()
+            .last()
+            .unwrap()
+            .to_string()
+    };
+    let first = field(&status, "current_revision_id");
+    assert_eq!(field(&status, "trusted_revision_id"), first);
+
+    edit(&mut env, "totals: NEWER\n");
+    ok(
+        &mut env,
+        &format!("checkin {KQTF} --from /work/edited.txt --as M.A --unsigned"),
+    );
+    let status = ok(&mut env, &format!("status {KQTF}"));
+    assert_ne!(field(&status, "current_revision_id"), first);
+    assert_eq!(field(&status, "trusted_revision_id"), first);
+}
+
+#[test]
+fn renaming_keeps_the_file_and_revision_identity_and_is_recorded() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    let before = ok(&mut env, &format!("status {KQTF}"));
+    let id_line = before.lines().next().unwrap().to_string();
+    let head = before
+        .lines()
+        .find(|l| l.trim_start().starts_with("current_revision_id"))
+        .unwrap()
+        .to_string();
+
+    // Outside the scope, or with someone else's key, nothing changes.
+    let (result, _) = run(
+        &mut env,
+        &format!("rename {KQTF} q3.txt --as M.B --slot {}", slot("M.B")),
+    );
+    assert!(result.is_err());
+    let (result, _) = run(
+        &mut env,
+        &format!("rename {KQTF} q3.txt --as M.A --slot {}", slot("M.B")),
+    );
+    assert!(result.is_err());
+    let (result, _) = run(
+        &mut env,
+        &format!("rename {KQTF} a/b.txt --as M.A --slot {}", slot("M.A")),
+    );
+    assert!(result.is_err(), "a path is not a name");
+
+    let out = ok(
+        &mut env,
+        &format!("rename {KQTF} q3.txt --as M.A --slot {}", slot("M.A")),
+    );
+    assert!(out.contains("unchanged"), "{out}");
+    let after = ok(&mut env, &format!("status {KQTF}"));
+    assert!(after.starts_with("q3.txt ("), "{after}");
+    // Same 128-bit id and same revision ids; only the display name moved.
+    assert_eq!(
+        id_line.split_once(' ').unwrap().1,
+        after.lines().next().unwrap().split_once(' ').unwrap().1
+    );
+    assert!(after.contains(&head), "{after}");
+    let history = ok(&mut env, &format!("history {KQTF}"));
+    assert!(history.contains("FileRenamed"), "{history}");
+    assert!(history.contains("from=report.txt"), "{history}");
+    assert!(history.contains("to=q3.txt"), "{history}");
+    let verify = ok(&mut env, &format!("verify {KQTF}"));
+    assert!(verify.contains("TRUSTED"), "{verify}");
+    // A copy of the container elsewhere is the same file.
+    let bytes = env.fs.read(Path::new(KQTF)).unwrap();
+    env.fs.write(Path::new("/work/moved.kqtf"), &bytes).unwrap();
+    let moved = ok(&mut env, "status /work/moved.kqtf");
+    assert_eq!(
+        moved.lines().next().unwrap().split_once(' ').unwrap().1,
+        after.lines().next().unwrap().split_once(' ').unwrap().1
+    );
+}

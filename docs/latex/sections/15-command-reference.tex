@@ -211,7 +211,8 @@ See section~\ref{sec:file-history}.
 \endhead
 \code{file track} & Start tracking a file: make its first revision, sign it as its author, and write \file{<file>.kqtf}. \flag{--no-auto-merge} sends every fork to a person. \\
 \code{file checkin} & Check in a new revision from a native file (signed with \flag{--slot}, or \flag{--unsigned}). \\
-\code{file sign} & Sign a revision you authored (the current head unless \flag{--revision}). \\
+\code{file sign} & Sign a revision you authored (the current head unless \flag{--revision}). Given a native file that is not tracked, together with \flag{--scope}, this first content signature starts tracking it, exactly as \code{file track} does. \\
+\code{file rename} & Change the name a tracked file is shown under. The scope owner or an ancestor proves the label with \flag{--slot}; the file id and every revision id stay the same and the old and new names are recorded. \\
 \code{file countersign} & Countersign a revision the author has signed. \\
 \code{file merge} & Merge two divergent heads automatically when the edits allow it; otherwise record the conflict and who must review it. A merge is a new revision that stays untrusted until it is signed. \\
 \code{file review} & Show what each side of a fork changed, and who reviews a conflict. \flag{--interactive} needs a build with \flag{--features tui}. \\
@@ -220,7 +221,7 @@ See section~\ref{sec:file-history}.
 \code{file checkout} & Write a revision's native bytes to a new file. \\
 \code{file list} & List the tracked files this store has indexed (a cache; see \code{reindex}). \\
 \code{file reindex} & Rebuild index rows from tracked files. Every file is verified first; if any fails, nothing changes. \flag{--clear} also drops rows for files not named here. \\
-\code{file status} & Show the heads, their trust, and what would be shared. \\
+\code{file status} & Show the heads, their trust, what would be shared, and the current and latest trusted revision ids. \\
 \code{file history} & List the recorded events; \flag{--export} also writes a \code{KQHS} snapshot. \\
 \code{file verify-snapshot} & Check a history snapshot; with \flag{--against}, that it belongs to a file. \\
 \code{file import} & Bring another copy of the same file's revisions and proofs into this one. A fork is kept as two heads; nothing is overwritten. \\

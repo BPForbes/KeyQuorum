@@ -45,6 +45,35 @@ still open). It is not a sealed envelope and does not wrap or modify the
 native file format: \code{file checkout} writes a revision's bytes back out
 as an ordinary file.
 
+\subsubsection*{When tracking starts, and what stays the same}
+
+Signing a native file that has no container yet is the first content
+signature: \code{file sign report.txt --scope M.A --as M.A --slot ...}
+allocates the file id, records revision R1, signs it and writes
+\file{report.txt.kqtf}, the same steps as \code{file track}. Files nobody
+signs this way stay untracked, and a second \code{file sign} on the same
+native file is refused instead of minting a second identity.
+
+The file's identity does not depend on its name, path or holder.
+\code{file rename} (scope owner or an ancestor, proven with \flag{--slot})
+changes only the name shown, appends a \code{FILE_RENAMED} event with the
+old and new names, and leaves the file id and every revision id alone.
+Copying or moving the \file{.kqtf} file changes nothing either.
+\code{file checkout} writes a revision's bytes back out exactly, whatever
+the format.
+
+\code{file status} also prints two ids that can differ, because a newer
+edit is not a newer trusted version:
+
+\begin{itemize}
+  \item \code{current_revision_id}: the sole head, or none when the history
+  has forked.
+  \item \code{trusted_revision_id}: the latest revision this store trusts.
+\end{itemize}
+
+Both are worked out on demand from the store's keys and are never stored in
+the container, which carries no trust state.
+
 \subsection{Trust: who may change a file}
 
 A revision is \emph{trusted} only when its author's content signature
@@ -234,9 +263,9 @@ being collected) is not recorded.
 The design this feature follows goes further than what is built. Today:
 
 \begin{itemize}
-  \item Tracking starts with \code{file track}; it does not start
-  automatically on a file's first signature. There is no separate
-  ``finalized'' state beyond \emph{trusted}.
+  \item Tracking starts with \code{file track} or the first \code{file
+  sign --scope} of a native file; nothing tracks a file on its own. There is
+  no separate ``finalized'' state beyond \emph{trusted}.
   \item Bridge authorization is not consulted when judging a revision: a
   cross-branch author's revision needs the scope owner's countersignature.
   \item Resolving a conflict is done by editing, checking in and signing;

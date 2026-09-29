@@ -1833,6 +1833,41 @@ fn two_people_fork_a_file_by_letter_and_one_of_them_merges_it() {
 }
 
 #[test]
+fn renaming_a_tracked_file_keeps_its_identity_and_shows_the_current_and_trusted_head() {
+    let mut state = lab();
+    state.switch_user("sarah").unwrap();
+    ok(state.history_track("notes.txt", "first\n"));
+    let before = tracked(&snap(&state), NOTES).clone();
+    assert_eq!(before.current_revision, before.trusted_revision);
+    // Alice is a descendant, not the scope owner or an ancestor.
+    state.switch_user("alice").unwrap();
+    assert!(!state.history_rename(NOTES, "renamed.txt").unwrap().ok);
+    state.switch_user("sarah").unwrap();
+    ok(state.history_rename(NOTES, "renamed.txt"));
+    let s = snap(&state);
+    let after = tracked(&s, NOTES);
+    assert_eq!(after.name, "renamed.txt");
+    assert_eq!(after.file_id, before.file_id);
+    assert_eq!(
+        after
+            .revisions
+            .iter()
+            .map(|r| r.id.clone())
+            .collect::<Vec<_>>(),
+        before
+            .revisions
+            .iter()
+            .map(|r| r.id.clone())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(s.activity[0].kind, "history-rename");
+    assert_eq!(
+        s.activity[1].history.as_ref().unwrap().history_event_type,
+        "FileRenamed"
+    );
+}
+
+#[test]
 fn expiring_a_tracked_file_from_the_gui_leaves_a_tombstone_the_timeline_shows() {
     let mut state = lab();
     state.switch_user("sarah").unwrap();

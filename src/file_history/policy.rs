@@ -347,6 +347,36 @@ pub struct DeliveryDecision {
     pub decision: DeliveryDecisionKind,
 }
 
+/// The head the file is at: its only head, or `None` when the history has
+/// forked and neither side is "the" current revision.
+pub fn current_revision(file: &TrackedFile) -> Option<[u8; 32]> {
+    match file.graph().heads().as_slice() {
+        [only] => Some(*only),
+        _ => None,
+    }
+}
+
+/// The most recently stored revision that is trusted under `policy`, which
+/// need not be the current one: a newer byte sequence is not automatically a
+/// newer trusted version. Derived on demand by the store that holds the
+/// keys, never stored in the container.
+pub fn latest_trusted_revision(
+    file: &TrackedFile,
+    policy: &FilePolicy,
+    ctx: &dyn TrustContext,
+) -> Option<[u8; 32]> {
+    file.revisions()
+        .iter()
+        .rev()
+        .map(|stored| stored.revision.revision_id)
+        .find(|id| {
+            matches!(
+                evaluate_revision_trust(file, id, policy, ctx),
+                Ok(TrustState::Trusted)
+            )
+        })
+}
+
 /// Newer is not trusted. Deliver `candidate` if trusted; otherwise the most
 /// recently stored trusted ancestor of it; otherwise nothing. When the
 /// requester already holds the revision that would be delivered, say so.
