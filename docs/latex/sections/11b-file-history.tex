@@ -352,7 +352,7 @@ line. Press \code{za}, \code{zc} or \code{zo} to fold, close or open the change 
 Two unchanged lines are shown on each side of a change, dimmed and marked as unchanged, and \code{c} hides or shows them; a fold hides them with the change, and the printed \code{file review} lists changed lines only. Press \code{Space} to pick the change under the cursor on either side,
 \code{:compose} to see the result (the common ancestor with the picked changes applied;
 picks that touch the same lines are refused), and \code{:edit} to change that
-result in \code{\$VISUAL} or \code{\$EDITOR}, in an owner-only temporary file that is
+result in \code{$VISUAL} or \code{$EDITOR}, in an owner-only temporary file that is
 removed afterwards. \code{:as LABEL} and \code{:slot CONTAINER=LABEL} (or
 \flag{--as} and \flag{--slot} on \code{review --interactive}) say who is acting;
 after that \code{:accept left}, \code{:accept right}, \code{:accept result},
@@ -378,7 +378,7 @@ names the lock file to remove.
 
 \subsection{History snapshots and the index}
 
-\code{file history} with \flag{--export} writes a \code{KQHS}
+\code{file history} with \flag{--export} (or \code{file history export --out}) writes a \code{KQHS}
 snapshot: the event
 history alone, which verifies on its own. \code{file verify-snapshot}
 with \flag{--against} checks that a snapshot is a point in a file's history --- for
