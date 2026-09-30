@@ -1991,3 +1991,40 @@ fn a_linked_quorum_file_records_its_unlocks_in_the_tracked_timeline() {
     assert!(tracked(&snap(&state), path).links.is_empty());
     assert!(!state.history_link(path, "sideways", id, true).unwrap().ok);
 }
+
+const MEMO: &str = "/srv/keyquorum/tracked/memo.txt.kqtf";
+
+#[test]
+fn only_the_assigned_reviewer_can_resolve_the_seeded_memo_conflict() {
+    let mut state = lab();
+    state.switch_user("sarah").unwrap();
+    assert!(tracked(&snap(&state), MEMO).forked, "seeded as a conflict");
+
+    // Alice wrote one side: the CLI refuses her, and the lab adds no rule.
+    state.switch_user("alice").unwrap();
+    let refused = state
+        .history_resolve(MEMO, "left", None, None)
+        .expect("action runs");
+    assert!(!refused.ok, "{}", refused.message);
+    assert!(tracked(&snap(&state), MEMO).forked);
+
+    // Sarah is the assigned reviewer (M.S): an edited result settles it.
+    state.switch_user("sarah").unwrap();
+    let unknown = state
+        .history_resolve(MEMO, "sideways", None, None)
+        .expect("action runs");
+    assert!(!unknown.ok);
+    let done = ok(state.history_resolve(
+        MEMO,
+        "edited",
+        Some("Owner: TBD\nBudget: 100\n"),
+        Some("Settled"),
+    ));
+    assert!(said(&done).contains("resolve"), "{}", said(&done));
+    let file = tracked(&snap(&state), MEMO).clone();
+    assert!(!file.forked);
+    let resolved = file.revisions.last().unwrap();
+    assert_eq!(resolved.parents.len(), 2);
+    assert_eq!(resolved.text.as_deref(), Some("Owner: TBD\nBudget: 100\n"));
+    assert_eq!(resolved.trust, "trusted", "the reviewer's own signature");
+}

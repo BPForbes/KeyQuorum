@@ -120,8 +120,11 @@ own store and their own drive's slot; each button runs one real
   \item When two copies diverge: \textbf{Import copy}, \textbf{Review the
   fork} (each side's changed lines and the named reviewer) and
   \textbf{Merge heads}; a clean merge is a new revision that still has to be
-  signed. There is no button to settle a conflict: the reviewer runs
-  \code{keyquorum file resolve} in the Terminal.
+  signed. \textbf{Resolve} runs \code{keyquorum file resolve} as the active
+  person with their own slot: keep the left or right side, use text you
+  type, or reject a proposed merge. Only the assigned reviewer (or an
+  ancestor of theirs) can settle a conflict, so the same button is refused
+  for anyone else; the lab adds no check of its own.
   \item \textbf{Verify history}, \textbf{Export history snapshot} and
   \textbf{Check} a snapshot against the file.
   \item \textbf{Schedule expiry} or \textbf{Destroy content now}: the file

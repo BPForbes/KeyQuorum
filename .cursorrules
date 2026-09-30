@@ -357,7 +357,7 @@ action, appending unseen events as `ActivityView` entries (`kind == "history"`,
 with `fileId`, `revisionId`, `generatedLabel`, `historyRoot`,
 `finalizationState`, ...) beneath the action's own entry, which stays newest
 because tutorial gates read `activity[0]`. The Activity page's tracked-file
-buttons (track, check in signed or unsigned, sign, countersign, merge, review,
+buttons (track, check in signed or unsigned, sign, countersign, merge, review, resolve,
 verify, share, receive or refuse, record the answer, expire, view a revision,
 diff, export and check a snapshot, import another copy, link or unlink a quorum
 or password gate) each run one `keyquorum file` command as the active person against their own store with their own slot

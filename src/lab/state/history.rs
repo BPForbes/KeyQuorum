@@ -566,6 +566,59 @@ impl LabState {
         Ok(outcome)
     }
 
+    /// `keyquorum file resolve`: settle a conflict as the active person, with
+    /// their own slot. `choice` is `left`, `right`, `edited` (with `text` as
+    /// the result) or `reject` (a proposed merge at the head). The CLI decides
+    /// who may: the lab adds no reviewer check of its own.
+    pub fn history_resolve(
+        &mut self,
+        path: &str,
+        choice: &str,
+        text: Option<&str>,
+        label: Option<&str>,
+    ) -> Result<Outcome> {
+        let Some(kqtf) = self.tracked_path(path) else {
+            return Ok(Self::unknown_tracked(path));
+        };
+        let Some(slot) = self.own_slot_arg() else {
+            return Ok(self.no_slot());
+        };
+        let who = self.actor().label.clone();
+        let mut line = format!(
+            "{} resolve {}",
+            self.file_line(),
+            quote(&kqtf.display().to_string()),
+        );
+        match choice {
+            "left" | "right" => line.push_str(&format!(" --keep {choice}")),
+            "reject" => line.push_str(" --reject"),
+            "edited" => {
+                let edit = self.actor().home().join("tracked").join(".resolve");
+                self.write_file(&edit, text.unwrap_or_default().as_bytes())?;
+                line.push_str(&format!(" --from {}", quote(&edit.display().to_string())));
+            }
+            other => {
+                return Ok(Outcome::done(
+                    false,
+                    format!("unknown resolution {other}: use left, right, edited or reject"),
+                    vec![],
+                ))
+            }
+        }
+        line.push_str(&format!(" --as {who} --slot {slot}"));
+        if let Some(label) = label.map(str::trim).filter(|l| !l.is_empty()) {
+            line.push_str(&format!(" --label {}", quote(label)));
+        }
+        let name = self.tracked_name(&kqtf);
+        let title = match choice {
+            "reject" => format!("Reject the proposed merge of {name}"),
+            "edited" => format!("Resolve {name} with an edited result"),
+            side => format!("Resolve {name}, keeping {side}"),
+        };
+        let (outcome, _) = self.history_command("history-resolve", &title, line);
+        Ok(outcome)
+    }
+
     /// A read-only command whose output opens like a file.
     fn history_report(
         &mut self,

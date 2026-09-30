@@ -179,6 +179,59 @@ function EditForm({ file, act }: { file: TrackedFileView; act: Act }) {
   );
 }
 
+function ResolveForm({ file, act }: { file: TrackedFileView; act: Act }) {
+  const id = useId();
+  const heads = file.revisions.filter((revision) => revision.head);
+  const proposed = heads.length === 1 && heads[0].parents.length === 2 && heads[0].trust !== "trusted";
+  const [choice, setChoice] = useState<"left" | "right" | "edited" | "reject">(file.forked ? "left" : "reject");
+  const [text, setText] = useState(heads.length === 1 ? (heads[0].text ?? "") : "");
+  if (!file.forked && !proposed) return null;
+  return (
+    <form
+      className="tracked-form"
+      data-testid="history-resolve"
+      onSubmit={(event) => {
+        event.preventDefault();
+        act((client) => client.historyResolve(file.path, choice, choice === "edited" ? text : undefined));
+      }}
+    >
+      <label htmlFor={`${id}-choice`}>Resolve as the active reviewer</label>
+      <select
+        id={`${id}-choice`}
+        value={choice}
+        onChange={(event) => setChoice(event.target.value as typeof choice)}
+      >
+        {file.forked ? (
+          <>
+            <option value="left">Keep the left side</option>
+            <option value="right">Keep the right side</option>
+            <option value="edited">Use the text below</option>
+          </>
+        ) : (
+          <>
+            <option value="reject">Reject the proposed merge</option>
+            <option value="edited">Use the text below</option>
+          </>
+        )}
+      </select>
+      {choice === "edited" ? (
+        <>
+          <label htmlFor={`${id}-text`} className="visually-hidden">
+            Result text
+          </label>
+          <textarea id={`${id}-text`} value={text} onChange={(event) => setText(event.target.value)} rows={4} />
+        </>
+      ) : null}
+      <button type="submit" className="btn">
+        Resolve
+      </button>
+      <p className="small muted">
+        Only the assigned reviewer, or an ancestor of theirs, can resolve; the command refuses anyone else.
+      </p>
+    </form>
+  );
+}
+
 function RenameForm({ file, act }: { file: TrackedFileView; act: Act }) {
   const id = useId();
   const [name, setName] = useState("");
@@ -425,6 +478,7 @@ function TrackedFileCard({
           </>
         ) : null}
       </div>
+      <ResolveForm key={file.revisions.map((revision) => revision.id).join()} file={file} act={act} />
       <HistoryTools file={file} snapshot={snapshot} act={act} report={report} />
       {file.destroyed ? null : (
         <>

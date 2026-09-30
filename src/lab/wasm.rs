@@ -358,6 +358,21 @@ impl KeyQuorumLab {
         to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
     }
 
+    /// `keyquorum file resolve`: settle a conflict as the active person.
+    /// `choice` is `left`, `right`, `edited` or `reject`.
+    pub fn history_resolve(
+        &mut self,
+        path: &str,
+        choice: &str,
+        text: Option<String>,
+        label: Option<String>,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self
+            .state
+            .history_resolve(path, choice, text.as_deref(), label.as_deref());
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
     /// `keyquorum file verify`, shown like an opened file.
     pub fn history_verify(&mut self, path: &str) -> std::result::Result<String, JsError> {
         let outcome = self.state.history_verify(path);

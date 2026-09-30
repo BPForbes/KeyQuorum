@@ -164,6 +164,16 @@ export class LabClient {
     return this.call(this.lab.history_merge(path, label));
   }
 
+  /** Settle a conflict as the active person; `text` is the result when `choice` is "edited". */
+  historyResolve(
+    path: string,
+    choice: "left" | "right" | "edited" | "reject",
+    text?: string,
+    label?: string,
+  ): ActionResult {
+    return this.call(this.lab.history_resolve(path, choice, text, label));
+  }
+
   historyVerify(path: string): ActionResult {
     return this.call(this.lab.history_verify(path));
   }

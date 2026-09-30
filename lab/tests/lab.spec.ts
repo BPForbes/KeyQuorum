@@ -305,6 +305,28 @@ test.describe("desktop lab", () => {
     await expect(panel.getByTestId("tracked-letters")).toContainText("answer recorded");
   });
 
+  test("the seeded memo conflict is settled from the Resolve form, and only its reviewer can", async ({ page }) => {
+    await loadLab(page);
+    const panel = page.getByTestId("tracked-files");
+    await panel.getByTestId("tracked-select").selectOption({ label: "memo.txt — /srv/keyquorum/tracked/memo.txt.kqtf" });
+    const card = panel.locator('[data-testid="tracked-file"][data-path="/srv/keyquorum/tracked/memo.txt.kqtf"]');
+    await expect(card.getByTestId("tracked-heads")).toContainText("two heads");
+
+    // Alice wrote one side of the conflict: the command refuses her.
+    await card.getByTestId("history-resolve").getByRole("button", { name: "Resolve", exact: true }).click();
+    await expect(status(page)).toContainText("memo.txt");
+    await expect(card.getByTestId("tracked-heads")).toContainText("two heads");
+
+    // Sarah is the assigned reviewer; her edited result settles it.
+    await switchUser(page, "Sarah");
+    const form = card.getByTestId("history-resolve");
+    await form.getByLabel("Resolve as the active reviewer").selectOption("edited");
+    await form.getByLabel("Result text").fill("Owner: TBD\nBudget: 100\n");
+    await form.getByRole("button", { name: "Resolve", exact: true }).click();
+    await expect(card.getByTestId("tracked-heads")).toContainText("Current revision");
+    await expect(card.getByTestId("history-resolve")).toHaveCount(0);
+  });
+
   test("a tracked file can be renamed without changing what it is", async ({ page }) => {
     await loadLab(page);
     await switchUser(page, "Sarah");
