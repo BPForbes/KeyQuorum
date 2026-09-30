@@ -2986,3 +2986,44 @@ fn a_reissued_label_keeps_the_meaning_of_its_older_signed_revisions() {
         "no evidence, no trust: {out}"
     );
 }
+
+#[test]
+fn a_review_result_settles_a_conflict_but_is_checked_in_on_a_clean_merge() {
+    use super::super::file_cmd::{result_route, ResultRoute};
+    use crate::file_history::TrackedFile;
+    let load =
+        |env: &MemoryEnv| TrackedFile::decode(&env.fs.read(Path::new(KQTF)).unwrap()).unwrap();
+
+    // Two edits to one line stop for a person: the result resolves it.
+    let mut env = org();
+    forked(&mut env, "a\nb\n", "a\nleft\n", "a\nright\n");
+    ok(&mut env, &format!("merge {KQTF} --as M.A"));
+    let file = load(&env);
+    let policy = file.policy().unwrap().clone();
+    assert_eq!(result_route(&file, &policy).unwrap(), ResultRoute::Resolve);
+
+    // A clean merge has no conflict: an edit becomes a new revision.
+    let mut env = org();
+    forked(
+        &mut env,
+        "north\n100\nsouth\n",
+        "north\n125\nsouth\n",
+        "north\n100\nsouth-east\n",
+    );
+    ok(&mut env, &format!("merge {KQTF} --as M.A"));
+    let file = load(&env);
+    let policy = file.policy().unwrap().clone();
+    assert_eq!(result_route(&file, &policy).unwrap(), ResultRoute::Checkin);
+    // That route is `file checkin`: it takes an edited result on top of the
+    // pending merge and signs it.
+    edit(&mut env, "north\n125\nsouth-east\nwest\n");
+    let out = ok(
+        &mut env,
+        &format!(
+            "checkin {KQTF} --from /work/edited.txt --as M.A --slot {}",
+            slot("M.A")
+        ),
+    );
+    assert!(out.contains("trust"), "{out}");
+    assert_eq!(load(&env).graph().heads().len(), 1);
+}

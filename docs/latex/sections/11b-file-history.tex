@@ -359,7 +359,7 @@ after that \code{:accept left}, \code{:accept right}, \code{:accept result},
 \code{:reject}, \code{:sign} and \code{:finalize} run the real \code{file resolve},
 \code{file sign} and \code{file finalize} with the terminal handed back for the
 passphrase, so the reviewer and scope rules are those commands', and the review
-then shows the history as it stands. Press \code{/} to type a query and \code{Enter} to search; \code{n} and
+then shows the history as it stands. \code{:accept result} settles the conflict when one waits for its reviewer; on a clean merge, which has no conflict, it checks the result in as a new signed revision (\code{file checkin}) on top of the merge. Press \code{/} to type a query and \code{Enter} to search; \code{n} and
 \code{N} repeat it forward and backward. Matching ignores case, looks for a
 substring in the active pane, and wraps around. On such a build,
 \code{file merge} opens it by itself when a person

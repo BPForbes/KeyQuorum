@@ -2831,6 +2831,62 @@ fn review_interactive(
     ))
 }
 
+/// How a result built in the review is recorded.
+#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(all(feature = "tui", not(target_arch = "wasm32"))),
+    allow(dead_code)
+)]
+pub(super) enum ResultRoute {
+    /// A conflict waits for its reviewer: `file resolve --from`.
+    Resolve,
+    /// A clean merge (or any single head) has no conflict to settle, so the
+    /// result is a new signed revision on top of it: `file checkin`.
+    Checkin,
+}
+
+#[cfg_attr(
+    not(all(feature = "tui", not(target_arch = "wasm32"))),
+    allow(dead_code)
+)]
+pub(super) fn result_route(file: &TrackedFile, policy: &FilePolicy) -> Result<ResultRoute> {
+    Ok(if file.open_conflict(policy.auto_merge)?.is_some() {
+        ResultRoute::Resolve
+    } else {
+        ResultRoute::Checkin
+    })
+}
+
+/// Check the review's result in as a signed revision, through a sibling
+/// file that is removed afterwards (it holds the file's content).
+#[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
+fn checkin_result(
+    conn: &Connection,
+    kqtf: &Path,
+    text: &str,
+    as_label: &str,
+    slot: &str,
+) -> Result<()> {
+    let mut random = [0u8; 8];
+    OsRng.fill_bytes(&mut random);
+    let mut name = kqtf.as_os_str().to_owned();
+    name.push(format!(".result-{}.tmp", hex::encode(random)));
+    let from = PathBuf::from(name);
+    env::write_new(&from, text.as_bytes())?;
+    let outcome = checkin(
+        conn,
+        kqtf,
+        &from,
+        as_label,
+        Some(slot.to_string()),
+        None,
+        false,
+        None,
+    );
+    let _ = env::remove_file(&from);
+    outcome
+}
+
 /// The review of the container as it stands now, with its merge status.
 #[cfg_attr(
     not(all(feature = "tui", not(target_arch = "wasm32"))),
@@ -2863,14 +2919,21 @@ fn review_action(
     match action {
         Action::KeepLeft => resolve(conn, kqtf, Resolution::KeepLeft, as_label, keys, None)?,
         Action::KeepRight => resolve(conn, kqtf, Resolution::KeepRight, as_label, keys, None)?,
-        Action::Result(text) => resolve(
-            conn,
-            kqtf,
-            Resolution::Edited(text.clone().into_bytes()),
-            as_label,
-            keys,
-            None,
-        )?,
+        Action::Result(text) => {
+            let file = load(kqtf)?;
+            let policy = policy_of(&file)?.clone();
+            match result_route(&file, &policy)? {
+                ResultRoute::Resolve => resolve(
+                    conn,
+                    kqtf,
+                    Resolution::Edited(text.clone().into_bytes()),
+                    as_label,
+                    keys,
+                    None,
+                )?,
+                ResultRoute::Checkin => checkin_result(conn, kqtf, text, as_label, slot)?,
+            }
+        }
         Action::Reject => reject_merge(conn, kqtf, as_label, keys)?,
         Action::Sign => sign(conn, kqtf, None, as_label, Some(slot.to_string()), None)?,
         Action::Finalize => finalize(conn, kqtf, None, as_label, Some(slot.to_string()), None)?,

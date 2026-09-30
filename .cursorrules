@@ -227,7 +227,7 @@ or pointer) with no terminal and no dependencies; `keyquorum file review` prints
 `ReviewView`. `src/cli/review_tui.rs` (feature `tui`, `ratatui`, native-only,
 refused by `build.rs` on wasm32) only draws it and reads keys and the mouse.
 It decides no trust and edits no history: `:sign`, `:accept`, `:reject` and
-`:finalize` run the real `file sign`, `file resolve` and `file finalize`
+`:finalize` run the real `file sign`, `file resolve` (or, for a result on a clean merge with no conflict, `file checkin`) and `file finalize`
 only after `:as`/`:slot` (or `review --as --slot`) name who is acting; the review
 never judges authority itself. Hunks fold (`za`/`zc`/`zo`, `zM`/`zR`), `Space`
 picks a change, `:compose` applies the picked changes to the common ancestor
