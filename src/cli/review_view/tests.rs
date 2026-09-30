@@ -99,7 +99,7 @@ fn provenance_follows_the_pointer_then_the_cursor() {
 }
 
 #[test]
-fn commands_quit_help_and_never_act_for_the_user() {
+fn commands_quit_help_and_do_not_act_until_told_who_is_acting() {
     let mut s = ReviewState::new(view());
     assert_eq!(s.handle(Key::Char('?')), Effect::Message(HELP.to_string()));
     s.handle(Key::Char(':'));
@@ -111,11 +111,17 @@ fn commands_quit_help_and_never_act_for_the_user() {
         other => panic!("{other:?}"),
     }
     assert_eq!(s.mode, Mode::Normal);
-    for command in ["accept", "reject", "finalize", "countersign"] {
+    for command in ["accept left", "reject", "finalize"] {
         s.handle(Key::Char(':'));
         keys(&mut s, command);
-        assert!(matches!(s.handle(Key::Enter), Effect::Message(t) if t.contains("not available")));
+        assert!(
+            matches!(s.handle(Key::Enter), Effect::Message(t) if t.contains(":as LABEL")),
+            "{command}"
+        );
     }
+    s.handle(Key::Char(':'));
+    keys(&mut s, "countersign");
+    assert!(matches!(s.handle(Key::Enter), Effect::Message(t) if t.contains("not available")));
     s.handle(Key::Char(':'));
     keys(&mut s, "bogus");
     assert!(matches!(s.handle(Key::Enter), Effect::Message(t) if t.contains("unknown command")));
@@ -379,4 +385,60 @@ fn a_side_with_no_line_changes_has_nothing_to_pick() {
         state.handle(Key::Char(' ')),
         Effect::Message(text) if text.contains("nothing to pick")
     ));
+}
+
+fn run(state: &mut ReviewState, command: &str) -> Effect {
+    state.handle(Key::Char(':'));
+    for c in command.chars() {
+        state.handle(Key::Char(c));
+    }
+    state.handle(Key::Enter)
+}
+
+#[test]
+fn once_told_who_is_acting_the_commands_hand_an_action_to_the_shell() {
+    let mut state = pickable();
+    assert!(matches!(run(&mut state, "as"), Effect::Message(t) if t.contains("usage")));
+    assert!(matches!(run(&mut state, "slot nope"), Effect::Message(t) if t.contains("usage")));
+    assert_eq!(state.identity(), None, "both are needed");
+    run(&mut state, "as M.A");
+    assert_eq!(state.identity(), None);
+    run(&mut state, "slot /usb/ma=M.A");
+    assert_eq!(state.identity(), Some(("M.A", "/usb/ma=M.A")));
+
+    assert_eq!(
+        run(&mut state, "accept left"),
+        Effect::Run(Action::KeepLeft)
+    );
+    assert_eq!(
+        run(&mut state, "accept right"),
+        Effect::Run(Action::KeepRight)
+    );
+    assert_eq!(run(&mut state, "reject"), Effect::Run(Action::Reject));
+    assert_eq!(run(&mut state, "sign"), Effect::Run(Action::Sign));
+    assert_eq!(run(&mut state, "finalize"), Effect::Run(Action::Finalize));
+    assert!(
+        matches!(run(&mut state, "accept sideways"), Effect::Message(t) if t.contains("usage"))
+    );
+
+    // A result needs something picked or edited first.
+    assert!(
+        matches!(run(&mut state, "accept result"), Effect::Message(t) if t.contains("nothing picked"))
+    );
+    state.handle(Key::Char(' '));
+    assert_eq!(
+        run(&mut state, "accept result"),
+        Effect::Run(Action::Result("a\nB\nc\nd\n".to_string()))
+    );
+}
+
+#[test]
+fn a_reload_forgets_picks_and_folds_but_keeps_who_is_acting() {
+    let mut state = pickable().with_identity(Some("M.A".into()), Some("/usb/ma=M.A".into()));
+    state.handle(Key::Char(' '));
+    keys(&mut state, "zc");
+    state.reload(pickable().view);
+    assert_eq!(state.picked_count(), 0);
+    assert_eq!(state.visible(0), vec![0]);
+    assert_eq!(state.identity(), Some(("M.A", "/usb/ma=M.A")));
 }

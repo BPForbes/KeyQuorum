@@ -349,7 +349,17 @@ A build with \flag{--features tui} adds \flag{review --interactive}: the same
 view in the terminal, with Vim-style keys and mouse hover to see who wrote a
 line. Press \code{za}, \code{zc} or \code{zo} to fold, close or open the change under the cursor
 (a folded change shows its first line and a count), and \code{zM} or \code{zR} to fold or open every change on the side.
-Press \code{/} to type a query and \code{Enter} to search; \code{n} and
+Press \code{Space} to pick the change under the cursor on either side,
+\code{:compose} to see the result (the common ancestor with the picked changes applied;
+picks that touch the same lines are refused), and \code{:edit} to change that
+result in \code{\$VISUAL} or \code{\$EDITOR}, in an owner-only temporary file that is
+removed afterwards. \code{:as LABEL} and \code{:slot CONTAINER=LABEL} (or
+\flag{--as} and \flag{--slot} on \code{review --interactive}) say who is acting;
+after that \code{:accept left}, \code{:accept right}, \code{:accept result},
+\code{:reject}, \code{:sign} and \code{:finalize} run the real \code{file resolve},
+\code{file sign} and \code{file finalize} with the terminal handed back for the
+passphrase, so the reviewer and scope rules are those commands', and the review
+then shows the history as it stands. Press \code{/} to type a query and \code{Enter} to search; \code{n} and
 \code{N} repeat it forward and backward. Matching ignores case, looks for a
 substring in the active pane, and wraps around. On such a build,
 \code{file merge} opens it by itself when a person
@@ -462,7 +472,8 @@ The design this feature follows goes further than what is built. Today:
   was seen in, not proven to have signed at a particular time.
   \item Conflicts are settled a whole revision at a time (\flag{--keep} or
   \flag{--from}), not hunk by hunk. The interactive review shows only changed
-  lines, never unchanged context; it has no in-place editing.
+  lines, never unchanged context, and settles a conflict from the terminal
+  only through the same commands as the command line.
   \item Checkouts, signature checks and exports are recorded only when asked
   (\flag{--record}), and only under the label \flag{--as} names; that label is
   a claim, so the event is chained but never attested. Tampering is refused

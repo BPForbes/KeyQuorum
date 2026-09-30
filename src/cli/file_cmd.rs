@@ -215,6 +215,13 @@ pub enum FileCommand {
         /// a line). Needs a build with the `tui` feature.
         #[arg(long)]
         interactive: bool,
+        /// With --interactive: your label, so the review can resolve, sign or
+        /// finalize as you (you can also type `:as LABEL`)
+        #[arg(long = "as", requires = "interactive")]
+        as_label: Option<String>,
+        /// With --interactive: your `container=label` signing slot
+        #[arg(long, requires = "interactive")]
+        slot: Option<String>,
     },
     /// Show the revisions, their parents and their trust
     Graph { kqtf: PathBuf },
@@ -624,9 +631,14 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             as_label,
             label,
         } => merge(conn, &kqtf, &as_label, label),
-        FileCommand::Review { kqtf, interactive } => {
+        FileCommand::Review {
+            kqtf,
+            interactive,
+            as_label,
+            slot,
+        } => {
             if interactive {
-                review_interactive(conn, &kqtf)
+                review_interactive(conn, &kqtf, (as_label, slot))
             } else {
                 review(conn, &kqtf)
             }
@@ -2765,18 +2777,18 @@ fn merge(conn: &Connection, kqtf: &Path, as_label: &str, user_label: Option<Stri
             outln!("  merged revision {}", short(&id));
             outln!("  trust {}", trust_text(state));
             outln!("Review the result, then sign it with `keyquorum file sign`.");
-            return open_review_if_interactive(conn, kqtf);
+            return open_review_if_interactive(conn, kqtf, as_label);
         }
         _ => match result.selection {
             Some(ResolverSelection::Assigned { reviewer, rule, .. }) => {
                 outln!("  a person must resolve this; review assigned to {reviewer} ({rule:?})");
                 outln!("  the reviewer runs `keyquorum file resolve --keep left|right` or `--from FILE`");
-                return open_review_if_interactive(conn, kqtf);
+                return open_review_if_interactive(conn, kqtf, as_label);
             }
             Some(ResolverSelection::Unresolved) => {
                 outln!("  a person must resolve this, but no authorized reviewer exists;");
                 outln!("  an explicit root or admin decision is required");
-                return open_review_if_interactive(conn, kqtf);
+                return open_review_if_interactive(conn, kqtf, as_label);
             }
             None => outln!("  nothing to merge: one head already contains the other"),
         },
@@ -2786,30 +2798,84 @@ fn merge(conn: &Connection, kqtf: &Path, as_label: &str, user_label: Option<Stri
 
 /// At a terminal, a merge that stopped for a person opens the review there
 /// and then; scripts, tests and builds without `tui` keep the printed form.
-fn open_review_if_interactive(conn: &Connection, kqtf: &Path) -> Result<()> {
+fn open_review_if_interactive(conn: &Connection, kqtf: &Path, as_label: &str) -> Result<()> {
     if cfg!(all(feature = "tui", not(target_arch = "wasm32"))) && env::interactive() {
-        review_interactive(conn, kqtf)
+        review_interactive(conn, kqtf, (Some(as_label.to_string()), None))
     } else {
         Ok(())
     }
 }
 
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
-fn review_interactive(conn: &Connection, kqtf: &Path) -> Result<()> {
-    let file = load_live(conn, kqtf, None, "review")?;
-    let policy = policy_of(&file)?.clone();
-    let mut view = ReviewView::of(&file).ok_or_else(|| {
+fn review_interactive(
+    conn: &Connection,
+    kqtf: &Path,
+    who: (Option<String>, Option<String>),
+) -> Result<()> {
+    let view = review_view_of(conn, kqtf)?.ok_or_else(|| {
         usage("nothing to review: the history has neither two heads nor one merge head")
     })?;
-    view.status = merge_status(conn, &file, &policy)?;
-    super::review_tui::run(view)
+    super::review_tui::run(view, who, &mut |action, as_label, slot| {
+        review_action(conn, kqtf, action, as_label, slot)
+    })
 }
 
 #[cfg(not(all(feature = "tui", not(target_arch = "wasm32"))))]
-fn review_interactive(_conn: &Connection, _kqtf: &Path) -> Result<()> {
+fn review_interactive(
+    _conn: &Connection,
+    _kqtf: &Path,
+    _who: (Option<String>, Option<String>),
+) -> Result<()> {
     Err(usage(
         "this build has no interactive review; rebuild with `--features tui`, or use `file review`",
     ))
+}
+
+/// The review of the container as it stands now, with its merge status.
+#[cfg_attr(
+    not(all(feature = "tui", not(target_arch = "wasm32"))),
+    allow(dead_code)
+)]
+fn review_view_of(conn: &Connection, kqtf: &Path) -> Result<Option<ReviewView>> {
+    let file = load_live(conn, kqtf, None, "review")?;
+    let policy = policy_of(&file)?.clone();
+    let Some(mut view) = ReviewView::of(&file) else {
+        return Ok(None);
+    };
+    view.status = merge_status(conn, &file, &policy)?;
+    Ok(Some(view))
+}
+
+/// Run one action from the interactive review as the label and slot the
+/// person gave, through the same commands as the command line (so the
+/// reviewer, scope and key checks are theirs), then return the refreshed
+/// review.
+#[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
+fn review_action(
+    conn: &Connection,
+    kqtf: &Path,
+    action: &super::review_view::Action,
+    as_label: &str,
+    slot: &str,
+) -> Result<Option<ReviewView>> {
+    use super::review_view::Action;
+    let keys = (Some(slot.to_string()), None);
+    match action {
+        Action::KeepLeft => resolve(conn, kqtf, Resolution::KeepLeft, as_label, keys, None)?,
+        Action::KeepRight => resolve(conn, kqtf, Resolution::KeepRight, as_label, keys, None)?,
+        Action::Result(text) => resolve(
+            conn,
+            kqtf,
+            Resolution::Edited(text.clone().into_bytes()),
+            as_label,
+            keys,
+            None,
+        )?,
+        Action::Reject => reject_merge(conn, kqtf, as_label, keys)?,
+        Action::Sign => sign(conn, kqtf, None, as_label, Some(slot.to_string()), None)?,
+        Action::Finalize => finalize(conn, kqtf, None, as_label, Some(slot.to_string()), None)?,
+    }
+    review_view_of(conn, kqtf)
 }
 
 fn review(conn: &Connection, kqtf: &Path) -> Result<()> {

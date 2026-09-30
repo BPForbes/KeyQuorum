@@ -233,8 +233,12 @@ or pointer) with no terminal and no dependencies; `keyquorum file review` prints
 `ReviewView`. `src/cli/review_tui.rs` (feature `tui`, `ratatui`, native-only,
 refused by `build.rs` on wasm32) only draws it and reads keys and the mouse.
 It decides no trust and edits no history: `:sign`, `:accept`, `:reject` and
-`:finalize` answer with the CLI command to run (`file resolve` for accept
-and reject).
+`:finalize` run the real `file sign`, `file resolve` and `file finalize`
+only after `:as`/`:slot` (or `review --as --slot`) name who is acting; the review
+never judges authority itself. Hunks fold (`za`/`zc`/`zo`, `zM`/`zR`), `Space`
+picks a change, `:compose` applies the picked changes to the common ancestor
+(`file_history::apply_hunks`), and `:edit` opens the result in `$VISUAL`/`$EDITOR`.
+A clean merge waiting at the sole head opens the same review (`ReviewView::pending_merge`).
 `src/cli/gate_link.rs` ties a quorum-protected or password-locked file to a
 tracked `.kqtf` (`keyquorum file link --quorum-file|--locked-file`, table `tracked_gate_links`, deliberately without a
 foreign key to the gate so a purged gate keeps its link) and appends what

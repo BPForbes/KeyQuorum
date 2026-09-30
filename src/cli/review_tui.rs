@@ -2,7 +2,7 @@
 //! keys and the mouse. It holds no review logic and decides nothing; every
 //! rule lives in `review_view`. Native-only (feature `tui`).
 
-use super::review_view::{Effect, Key, Mode, ReviewState, ReviewView};
+use super::review_view::{Action, Effect, Key, Mode, ReviewState, ReviewView};
 use crate::error::Result;
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -192,8 +192,17 @@ fn edit_externally(
 
 /// Run the review until the user quits. The terminal is restored on every
 /// exit path.
-pub fn run(view: ReviewView) -> Result<()> {
-    let mut state = ReviewState::new(view);
+///
+/// `who` is the label and slot to start from (either can be set later with
+/// `:as` and `:slot`). `act` runs one [`Action`] as that person with the
+/// terminal handed back, so a passphrase prompt works, and returns the
+/// review of the history as it now stands.
+pub fn run(
+    view: ReviewView,
+    who: (Option<String>, Option<String>),
+    act: &mut dyn FnMut(&Action, &str, &str) -> Result<Option<ReviewView>>,
+) -> Result<()> {
+    let mut state = ReviewState::new(view).with_identity(who.0, who.1);
     let mut layouts = Layouts::default();
     let mut message = String::from("? for help");
     let mut terminal = ratatui::init();
@@ -212,6 +221,27 @@ pub fn run(view: ReviewView) -> Result<()> {
                     match state.handle(key) {
                         Effect::Quit => return Ok(()),
                         Effect::Message(text) => message = text,
+                        Effect::Run(action) => {
+                            let Some((as_label, slot)) = state.identity() else {
+                                continue;
+                            };
+                            let (as_label, slot) = (as_label.to_string(), slot.to_string());
+                            let _ = execute!(std::io::stdout(), DisableMouseCapture);
+                            ratatui::restore();
+                            let outcome = act(&action, &as_label, &slot);
+                            println!("\nPress Enter to return to the review.");
+                            let _ = std::io::stdin().read_line(&mut String::new());
+                            terminal = ratatui::init();
+                            let _ = execute!(std::io::stdout(), EnableMouseCapture);
+                            message = match outcome {
+                                Ok(Some(view)) => {
+                                    state.reload(view);
+                                    "done: the review shows the history as it now stands".into()
+                                }
+                                Ok(None) => "done: nothing is left to review".into(),
+                                Err(error) => format!("refused: {error}"),
+                            };
+                        }
                         Effect::Edit(text) => {
                             message = match edit_externally(&mut terminal, &text) {
                                 Ok(edited) => {

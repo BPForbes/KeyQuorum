@@ -300,6 +300,25 @@ pub enum Key {
     PageDown,
 }
 
+/// A command the review hands to the shell to run for the person, as the
+/// label and slot they gave. The shell runs the real `keyquorum file`
+/// command, which is where authority is judged: nothing here decides it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Action {
+    /// `file resolve --keep left`
+    KeepLeft,
+    /// `file resolve --keep right`
+    KeepRight,
+    /// `file resolve --from`, with this text as the merge result
+    Result(String),
+    /// `file resolve --reject`
+    Reject,
+    /// `file sign`
+    Sign,
+    /// `file finalize`
+    Finalize,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
     None,
@@ -308,6 +327,8 @@ pub enum Effect {
     /// Let the person edit this text in their editor; the shell hands the
     /// result back through [`ReviewState::set_edited`].
     Edit(String),
+    /// Run this command as the person; see [`Action`].
+    Run(Action),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -333,25 +354,30 @@ pub struct ReviewState {
     picked: Vec<HashSet<usize>>,
     /// The text the person edited; it replaces the picked changes.
     edited: Option<String>,
+    /// Who the person says they are: the label, and the `container=label`
+    /// slot that proves it when a command signs.
+    as_label: Option<String>,
+    slot: Option<String>,
 }
 
 const HELP: &str = "j/k move · gg/G ends · Ctrl-d/u page · Tab or h/l switch side · \
 / search · n/N repeat · za/zc/zo fold a change · zM/zR fold or open all · Space pick a change · \
-:compose :edit :q quit · hover a line for who wrote it";
+:compose :edit :as :slot :accept :reject :sign :finalize :q · hover a line for who wrote it";
 
-/// The commands the interface does not perform, and what to run.
+/// What to run when the review cannot act for the person (no `:as` and
+/// `:slot` yet, or a command it never performs).
 fn guidance(command: &str) -> Option<&'static str> {
     Some(match command {
-        "sign" => "not available here: run `keyquorum file sign` as the author",
+        "sign" => "needs :as LABEL and :slot CONTAINER=LABEL first; or run `keyquorum file sign` as the author",
         "countersign" => "not available here: run `keyquorum file countersign` as the supervisor",
         "accept" => {
-            "not available here: as the reviewer, run `keyquorum file resolve --keep left|right` or `--from FILE`"
+            "needs :as LABEL and :slot CONTAINER=LABEL first; or, as the reviewer, run `keyquorum file resolve --keep left|right` or `--from FILE`"
         }
         "reject" => {
-            "not available here: as the reviewer, run `keyquorum file resolve --reject` on a proposed merge"
+            "needs :as LABEL and :slot CONTAINER=LABEL first; or, as the reviewer, run `keyquorum file resolve --reject` on a proposed merge"
         }
         "finalize" => {
-            "not available here: once the revision is trusted, run `keyquorum file finalize` as the scope owner"
+            "needs :as LABEL and :slot CONTAINER=LABEL first; or, once the revision is trusted, run `keyquorum file finalize` as the scope owner"
         }
         _ => return None,
     })
@@ -373,6 +399,8 @@ impl ReviewState {
             folded: vec![HashSet::new(); panes],
             picked: vec![HashSet::new(); panes],
             edited: None,
+            as_label: None,
+            slot: None,
         }
     }
 
@@ -495,6 +523,56 @@ impl ReviewState {
                 .base_text
                 .clone()
                 .ok_or_else(|| "no UTF-8 common ancestor to edit".to_string()),
+        }
+    }
+
+    /// Say who is acting, before any command that signs. Both are only what
+    /// the person typed; the command they lead to checks them.
+    pub fn with_identity(mut self, as_label: Option<String>, slot: Option<String>) -> Self {
+        self.as_label = as_label;
+        self.slot = slot;
+        self
+    }
+
+    /// The label and slot given, when both are.
+    pub fn identity(&self) -> Option<(&str, &str)> {
+        Some((self.as_label.as_deref()?, self.slot.as_deref()?))
+    }
+
+    /// Replace the view after a command changed the history: what was
+    /// picked, edited or folded no longer applies.
+    pub fn reload(&mut self, view: ReviewView) {
+        let (as_label, slot) = (self.as_label.take(), self.slot.take());
+        *self = Self::new(view).with_identity(as_label, slot);
+    }
+
+    fn act(&mut self, action: Action) -> Effect {
+        if self.identity().is_none() {
+            return Effect::Message(
+                match action {
+                    Action::KeepLeft | Action::KeepRight | Action::Result(_) => guidance("accept"),
+                    Action::Reject => guidance("reject"),
+                    Action::Sign => guidance("sign"),
+                    Action::Finalize => guidance("finalize"),
+                }
+                .unwrap_or_default()
+                .to_string(),
+            );
+        }
+        Effect::Run(action)
+    }
+
+    /// `:accept left|right|result`: settle the conflict with a side, or
+    /// with the text built by picking changes or by editing.
+    fn accept(&mut self, choice: &str) -> Effect {
+        match choice {
+            "left" => self.act(Action::KeepLeft),
+            "right" => self.act(Action::KeepRight),
+            "result" | "picked" | "edited" => match self.compose() {
+                Ok(text) => self.act(Action::Result(text)),
+                Err(reason) => Effect::Message(reason),
+            },
+            _ => Effect::Message("usage: :accept left | right | result".to_string()),
         }
     }
 
@@ -641,10 +719,29 @@ impl ReviewState {
             Key::Enter => {
                 let command = std::mem::take(&mut self.command);
                 self.mode = Mode::Normal;
-                return match command.trim() {
+                let command = command.trim();
+                let (word, argument) = command
+                    .split_once(char::is_whitespace)
+                    .map_or((command, ""), |(word, rest)| (word, rest.trim()));
+                return match word {
                     "" => Effect::None,
                     "q" | "quit" => Effect::Quit,
                     "help" | "h" => Effect::Message(HELP.to_string()),
+                    "as" if !argument.is_empty() => {
+                        self.as_label = Some(argument.to_string());
+                        Effect::Message(format!("acting as {argument}; :slot CONTAINER=LABEL next"))
+                    }
+                    "slot" if argument.contains('=') => {
+                        self.slot = Some(argument.to_string());
+                        Effect::Message(format!("signing slot {argument}"))
+                    }
+                    "as" | "slot" => Effect::Message(format!(
+                        "usage: :as LABEL · :slot CONTAINER=LABEL (got \"{command}\")"
+                    )),
+                    "accept" => self.accept(argument),
+                    "reject" => self.act(Action::Reject),
+                    "sign" => self.act(Action::Sign),
+                    "finalize" => self.act(Action::Finalize),
                     "compose" => Effect::Message(match self.compose() {
                         Ok(text) => format!(
                             "result: {} line(s) from {}",
@@ -666,9 +763,9 @@ impl ReviewState {
                         self.edited = None;
                         Effect::Message("picks and edit cleared".to_string())
                     }
-                    other => Effect::Message(match guidance(other) {
+                    _ => Effect::Message(match guidance(command) {
                         Some(text) => text.to_string(),
-                        None => format!("unknown command: {other}"),
+                        None => format!("unknown command: {command}"),
                     }),
                 };
             }
