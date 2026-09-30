@@ -588,3 +588,41 @@ fn redeeming_a_share_of_an_expired_file_leaves_the_tombstone() {
         assert_eq!(text.matches(kind).count(), 1, "{kind}\n{text}");
     }
 }
+
+#[test]
+fn a_parent_approved_unlock_is_recorded_with_the_approval_policy_and_count() {
+    let mut env = gated_with("--unlock-approval parent");
+    env.device("keyquorum-device init /usb/q").0.unwrap();
+    let (result, _) = env.device("keyquorum-device provision /usb/q --label Q");
+    assert!(result.is_ok(), "{result:?}");
+    let (result, out) = env.keyquorum(&format!(
+        "keyquorum {DB} device register /usb/q --slot Q --type signing"
+    ));
+    assert!(result.is_ok(), "{out}");
+    ok(&mut env, &format!("link {KQTF} --quorum-file 1"));
+
+    // Without the parent's signature the gate refuses, and history says why.
+    let (result, _) = unlock(&mut env, BOTH);
+    assert!(result.is_err());
+    assert!(!env.fs.exists(Path::new("/work/out.txt")));
+
+    let approved = format!("{BOTH} --approve Q.A=/usb/q>Q --approve Q.B=/usb/q>Q");
+    let (result, out) = unlock(&mut env, &approved);
+    assert!(result.is_ok(), "{out}");
+    assert_eq!(env.fs.read(Path::new("/work/out.txt")).unwrap(), SECRET);
+
+    let history = history(&mut env);
+    let lines: Vec<&str> = history
+        .lines()
+        .filter(|l| l.contains("QuorumUnlockAttempted"))
+        .collect();
+    let success = lines
+        .iter()
+        .find(|l| l.contains("Success"))
+        .unwrap_or_else(|| panic!("{history}"));
+    for detail in ["approval=parent", "approvals=2", "presented=Q.A,Q.B"] {
+        assert!(success.contains(detail), "{detail}: {history}");
+    }
+    // Only counts and policy words: no signature or key material.
+    assert!(!success.contains("signature"), "{success}");
+}
