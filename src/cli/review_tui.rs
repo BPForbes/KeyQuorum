@@ -18,6 +18,10 @@ use std::time::Duration;
 
 use crate::file_history::ChangeKind;
 
+/// Runs one [`Action`] as the given label and slot, returning the review of
+/// the history afterwards (`None` when nothing is left to review).
+pub type ActionRunner<'a> = dyn FnMut(&Action, &str, &str) -> Result<Option<ReviewView>> + 'a;
+
 /// Where each side was drawn last, so a pointer position can be mapped
 /// back to a line.
 #[derive(Default)]
@@ -200,7 +204,7 @@ fn edit_externally(
 pub fn run(
     view: ReviewView,
     who: (Option<String>, Option<String>),
-    act: &mut dyn FnMut(&Action, &str, &str) -> Result<Option<ReviewView>>,
+    act: &mut ActionRunner,
 ) -> Result<()> {
     let mut state = ReviewState::new(view).with_identity(who.0, who.1);
     let mut layouts = Layouts::default();

@@ -2967,8 +2967,7 @@ fn a_reissued_label_keeps_the_meaning_of_its_older_signed_revisions() {
             [],
         )
         .unwrap();
-        crate::keys::register_key(&conn, "M.A", crate::keys::KeyType::Signing, &new_public)
-            .unwrap();
+        crate::keys::register_key(conn, "M.A", crate::keys::KeyType::Signing, &new_public).unwrap();
     }
     // The old revision still verifies against the key this store saw M.A
     // hold, under the generation it was stamped with.

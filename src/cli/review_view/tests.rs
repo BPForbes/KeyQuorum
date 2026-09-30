@@ -250,7 +250,7 @@ fn zc_folds_a_change_to_one_line_and_the_cursor_steps_over_it() {
 }
 
 #[test]
-fn zo_za_zM_and_zR_open_toggle_and_fold_every_change() {
+fn folds_open_toggle_and_fold_every_change_with_zo_za_and_capital_z_keys() {
     let mut state = hunked();
     keys(&mut state, "zM");
     assert_eq!(state.visible(0), vec![0, 3]);
