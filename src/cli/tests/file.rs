@@ -3060,3 +3060,92 @@ fn history_export_and_verify_spell_the_snapshot_operations_the_design_names() {
     );
     assert!(result.is_err());
 }
+
+/// Run one action from the interactive review against the org store, as the
+/// review's terminal shell does after `:as` and `:slot`.
+#[cfg(feature = "tui")]
+fn review_action(
+    env: &mut MemoryEnv,
+    action: &super::super::review_view::Action,
+    who: &str,
+) -> crate::error::Result<()> {
+    use super::super::env as cli_env;
+    use super::super::file_cmd;
+    let slot = slot(who);
+    let (result, _) = env.run(|| {
+        cli_env::with_db(Path::new("/home/org/keyquorum.sqlite"), |conn| {
+            file_cmd::review_action(conn, Path::new(KQTF), action, who, &slot).map(|_| ())
+        })
+    });
+    result
+}
+
+#[cfg(feature = "tui")]
+#[test]
+fn review_actions_run_the_real_commands_and_are_refused_like_them() {
+    use super::super::review_view::Action;
+    let load = |env: &MemoryEnv| {
+        crate::file_history::TrackedFile::decode(&env.fs.read(Path::new(KQTF)).unwrap()).unwrap()
+    };
+
+    // A conflict: a conflicting author is refused by `file resolve`, the
+    // assigned reviewer's edited result settles it.
+    let mut env = org();
+    forked(&mut env, "totals: 100\n", "totals: 125\n", "totals: 130\n");
+    ok(&mut env, &format!("merge {KQTF} --as M.A"));
+    let result = Action::Result("totals: 128\n".to_string());
+    let err = review_action(&mut env, &result, "M.A.1")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("not the reviewer"), "{err}");
+    assert_eq!(
+        load(&env).graph().heads().len(),
+        2,
+        "refused: nothing changed"
+    );
+    review_action(&mut env, &result, "M.A").unwrap();
+    assert_eq!(load(&env).graph().heads().len(), 1);
+    ok(&mut env, &format!("checkout {KQTF} --out /work/r.txt"));
+    assert_eq!(
+        env.fs.read(Path::new("/work/r.txt")).unwrap(),
+        b"totals: 128\n"
+    );
+    assert!(!env.fs.exists(Path::new("/work/report.txt.kqtf.result.tmp")));
+
+    // A clean merge has no conflict: the result is checked in on top of it,
+    // and the plaintext sibling used for that is gone afterwards.
+    let mut env = org();
+    forked(
+        &mut env,
+        "north\n100\nsouth\n",
+        "north\n125\nsouth\n",
+        "north\n100\nsouth-east\n",
+    );
+    ok(&mut env, &format!("merge {KQTF} --as M.A"));
+    let before = load(&env).revisions().len();
+    let edited = Action::Result("north\n125\nsouth-east\nwest\n".to_string());
+    review_action(&mut env, &edited, "M.A").unwrap();
+    let file = load(&env);
+    assert_eq!(file.revisions().len(), before + 1);
+    assert_eq!(file.graph().heads().len(), 1);
+    let leftovers: Vec<_> = env
+        .fs
+        .list(Path::new("/work"))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| p.to_string_lossy().contains(".result-"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+
+    // The other actions are the real sign and finalize commands: the
+    // checked-in result is already signed, so signing again is refused, and
+    // a stranger may not finalize.
+    let err = review_action(&mut env, &Action::Sign, "M.A")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("only once"), "{err}");
+    let err = review_action(&mut env, &Action::Finalize, "M.B")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("may finalize"), "{err}");
+}

@@ -2953,7 +2953,7 @@ fn review_view_of(conn: &Connection, kqtf: &Path) -> Result<Option<ReviewView>> 
 /// reviewer, scope and key checks are theirs), then return the refreshed
 /// review.
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
-fn review_action(
+pub(super) fn review_action(
     conn: &Connection,
     kqtf: &Path,
     action: &super::review_view::Action,
