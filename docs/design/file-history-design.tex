@@ -1247,7 +1247,10 @@ pub struct HistorySnapshot {
     pub events: Vec<HistoryEvent>,
 }
 \end{lstlisting}
-KQPB may gain dedicated history kinds and KQXB may gain a history-snapshot subtype.
+KQPB carries dedicated tracked-file and history-snapshot kinds. KQXB carries
+the complete, verified KQTF container as a tracked-file subtype, preserving
+its revision graph, proofs, policy, and history byte-for-byte inside the
+recipient-sealed payload.
 
 \section{Privacy and Attribution}
 History must never expose private keys, raw API keys, bridge shared secrets, passwords, PINs, or bearer tokens. It must never claim more attribution than KeyQuorum can establish. Unknown actors remain \texttt{UNKNOWN}; unauthenticated bearer users remain \texttt{UNKNOWN\_BEARER}.

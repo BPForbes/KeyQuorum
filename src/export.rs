@@ -14,7 +14,8 @@
 //!
 //! The outer framing is [`crate::envelope`]'s, under the
 //! [`crate::envelope::EXPORT_BUNDLE`] magic, with the bundle type as its
-//! kind byte: 1 = credential, 2 = file. The recipient's name/label stays
+//! kind byte: 1 = credential, 2 = password-locked file, 3 = tracked file.
+//! The recipient's name/label stays
 //! inside the sealed payload rather than the outer header — a credential
 //! label or file name can be sensitive on its own, and the outer header is
 //! the one part of a bundle that's never encrypted.
@@ -23,6 +24,9 @@
 //!   | password_len (2) | password (password_len)
 //! (username_len = 0 means no username) and for a file:
 //!   name_len (2) | name (name_len) | file_bytes (remainder)
+//! A tracked-file payload is the complete, already self-describing KQTF
+//! container. It is structurally verified before export and then preserved
+//! byte-for-byte inside the recipient-sealed bundle.
 
 use crate::envelope::{self, push_len_prefixed};
 use crate::error::Result;
@@ -32,6 +36,7 @@ use rusqlite::{params, Connection};
 
 const BUNDLE_TYPE_CREDENTIAL: u8 = 1;
 const BUNDLE_TYPE_FILE: u8 = 2;
+const BUNDLE_TYPE_TRACKED_FILE: u8 = 3;
 
 pub fn export_credential(
     conn: &Connection,
@@ -87,6 +92,16 @@ pub fn export_file_in(
     payload.extend_from_slice(&plaintext);
 
     encode_bundle(BUNDLE_TYPE_FILE, recipient_public_key, &payload)
+}
+
+/// Seal a complete KQTF container into a portable export bundle.
+///
+/// The container remains the authority for its file identity, policy,
+/// revisions, proofs and history. Refusing malformed input here prevents an
+/// exporter from presenting arbitrary bytes as a tracked-file bundle.
+pub fn export_tracked_file(container: &[u8], recipient_public_key: &[u8; 32]) -> Result<Vec<u8>> {
+    crate::file_history::TrackedFile::decode(container)?;
+    encode_bundle(BUNDLE_TYPE_TRACKED_FILE, recipient_public_key, container)
 }
 
 fn encode_bundle(
