@@ -4,7 +4,7 @@
 // actually happen — checked against the live snapshot and the latest
 // activity-log entry — rather than just advancing on a click. A step with
 // no action to check just explains something and advances on demand.
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import type { Act, Tab } from "../App";
 import type { Snapshot } from "../api/types";
@@ -33,10 +33,6 @@ function sameRect(a: DOMRect | null, b: DOMRect | null): boolean {
 }
 
 /** Keeps `value` within [min, max], anchoring to `min` when the box is too big to fit at all. */
-function clamp(value: number, min: number, max: number): number {
-  return max < min ? min : Math.min(Math.max(value, min), max);
-}
-
 export function Tutorial({
   pickerOpen,
   onPickerClose,
@@ -56,7 +52,11 @@ export function Tutorial({
   const [finishedModule, setFinishedModule] = useState<TutorialModule | null>(null);
   const [rect, setRect] = useState<DOMRect | null>(null);
   const [stepDone, setStepDone] = useState(false);
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  // The step card is docked in a corner, not placed beside its target, so it
+  // never covers the part of the page it is teaching.
+  const scrolledRef = useRef(false);
+  const [minimized, setMinimized] = useState(false);
+  const [side, setSide] = useState<"right" | "left">("right");
 
   const snapshotRef = useRef(snapshot);
   snapshotRef.current = snapshot;
@@ -71,7 +71,6 @@ export function Tutorial({
   // Data one step's `remember` captured, for a later step in the same
   // module to read back via its own `isDone`. Reset when a module starts.
   const memoryRef = useRef<TutorialMemory>({});
-  const tooltipRef = useRef<HTMLDivElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
 
   const module = progress ? TUTORIALS.find((candidate) => candidate.id === progress.moduleId) ?? null : null;
@@ -123,6 +122,7 @@ export function Tutorial({
     clearAdvanceTimer();
     setStepDone(false);
     setRect(null);
+    scrolledRef.current = false;
     // ensure runs a real action (e.g. switch away from a blocked identity)
     // before the cursor is captured, so that corrective action can never
     // itself be mistaken for the visitor's own -- and the step's precise
@@ -144,7 +144,16 @@ export function Tutorial({
     const tick = () => {
       const currentSnapshot = snapshotRef.current;
       const target = resolveTarget(step.target(currentSnapshot));
-      const nextRect = target ? target.getBoundingClientRect() : null;
+      let nextRect = target ? target.getBoundingClientRect() : null;
+      // Bring an off-screen target into view once per step, so the card can
+      // stay in its corner and the spotlight still shows the target.
+      if (target && nextRect && !scrolledRef.current) {
+        scrolledRef.current = true;
+        if (nextRect.bottom < 0 || nextRect.top > window.innerHeight) {
+          target.scrollIntoView({ block: "center" });
+          nextRect = target.getBoundingClientRect();
+        }
+      }
       setRect((previous) => (sameRect(previous, nextRect) ? previous : nextRect));
       if (step.isDone && !stepDone) {
         const latest = currentSnapshot.activity[0];
@@ -173,29 +182,6 @@ export function Tutorial({
   }, [step, stepDone]);
 
   useEffect(() => clearAdvanceTimer, []);
-
-  // Position the tooltip from its own measured size, not a guessed one, so
-  // it stays fully on screen (including its Back/Skip/Exit row) on short
-  // or narrow viewports. Runs after the DOM reflects the current step but
-  // before paint, so there is no visible jump.
-  useLayoutEffect(() => {
-    const el = tooltipRef.current;
-    if (!el || !step) {
-      setPos(null);
-      return;
-    }
-    const margin = 16;
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const width = el.offsetWidth;
-    const height = el.offsetHeight;
-    const rawTop = rect ? rect.bottom + margin : vh / 2 - height / 2;
-    const rawLeft = rect ? rect.left : vw / 2 - width / 2;
-    setPos({
-      top: clamp(rawTop, margin, vh - height - margin),
-      left: clamp(rawLeft, margin, vw - width - margin),
-    });
-  }, [rect, step]);
 
   if (pickerOpen && !module) {
     const categories = [
@@ -305,9 +291,8 @@ export function Tutorial({
     <div className="tutorial-overlay" role="dialog" aria-labelledby="tutorial-step-heading">
       <div className="tutorial-spotlight" style={spotlightStyle} />
       <div
-        ref={tooltipRef}
-        className="tutorial-tooltip"
-        style={pos ? { top: pos.top, left: pos.left } : { top: "50%", left: "50%", transform: "translate(-50%, -50%)", visibility: "hidden" }}
+        className={`tutorial-tooltip is-docked-${side}`}
+        data-testid="tutorial-card"
       >
         <p className="tutorial-progress">
           {module.title} · step {progress.stepIndex + 1} of {module.steps.length}
@@ -315,7 +300,7 @@ export function Tutorial({
         <h3 id="tutorial-step-heading" ref={headingRef} tabIndex={-1}>
           {step.title}
         </h3>
-        <div className="tutorial-body">{step.body}</div>
+        {minimized ? null : <div className="tutorial-body">{step.body}</div>}
         {step.isDone ? (
           <p className={`tutorial-gate ${stepDone ? "is-done" : ""}`} role="status">
             {stepDone ? "✓ Nice — that's it." : "Waiting for you to try it…"}
@@ -337,6 +322,17 @@ export function Tutorial({
               {isLast ? "Finish" : "Next"}
             </button>
           )}
+          <button type="button" className="btn small-btn" onClick={() => setMinimized(!minimized)}>
+            {minimized ? "Show text" : "Hide text"}
+          </button>
+          <button
+            type="button"
+            className="btn small-btn"
+            onClick={() => setSide(side === "right" ? "left" : "right")}
+            aria-label={`Move this card to the ${side === "right" ? "left" : "right"}`}
+          >
+            {side === "right" ? "← Move" : "Move →"}
+          </button>
           <button type="button" className="btn small-btn" onClick={exit}>
             Exit tutorial
           </button>

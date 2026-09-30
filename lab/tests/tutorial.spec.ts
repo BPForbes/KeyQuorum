@@ -373,6 +373,32 @@ test.describe("guided tutorials", () => {
     await page.getByRole("listitem").filter({ hasText: title }).getByRole("button", { name: "Start" }).click();
   }
 
+  test("the step card is docked in a corner and never covers the part it teaches", async ({ page }) => {
+    await loadLab(page);
+    await page.getByRole("button", { name: "Tutorials & Documentation" }).click();
+    await page.getByRole("listitem").filter({ hasText: "2 · Hand a file over" }).getByRole("button", { name: "Start" }).click();
+    const card = page.getByTestId("tutorial-card");
+    await expect(card).toBeVisible();
+    const select = page.getByTestId("tracked-select");
+    await expect(select).toBeInViewport();
+    const cardBox = (await card.boundingBox())!;
+    const targetBox = (await select.boundingBox())!;
+    const viewport = page.viewportSize()!;
+    expect(cardBox.x + cardBox.width).toBeGreaterThan(viewport.width - 40);
+    expect(cardBox.y).toBeLessThan(40);
+    const overlaps =
+      cardBox.x < targetBox.x + targetBox.width &&
+      targetBox.x < cardBox.x + cardBox.width &&
+      cardBox.y < targetBox.y + targetBox.height &&
+      targetBox.y < cardBox.y + cardBox.height;
+    expect(overlaps).toBe(false);
+    // It can be moved to the other side or shrunk to its title.
+    await card.getByRole("button", { name: "Move this card to the left" }).click();
+    expect((await card.boundingBox())!.x).toBeLessThan(40);
+    await card.getByRole("button", { name: "Hide text" }).click();
+    await expect(card.locator(".tutorial-body")).toHaveCount(0);
+  });
+
   test("history part 2 hands a file to Alice and records her answer", async ({ page }) => {
     await loadLab(page);
     await startModule(page, "2 · Hand a file over");

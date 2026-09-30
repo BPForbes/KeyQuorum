@@ -1214,14 +1214,16 @@ h1 {
 .tutorial-spotlight {
   position: fixed;
   border-radius: 10px;
-  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.7);
-  outline: 2px solid var(--action);
+  /* A light dim and a bright outline: the target stays readable. */
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.28);
+  outline: 3px solid var(--action);
   transition: top 0.15s ease, left 0.15s ease, width 0.15s ease, height 0.15s ease;
 }
 
 .tutorial-tooltip {
   position: fixed;
-  width: 320px;
+  top: 1rem;
+  width: 300px;
   max-width: calc(100vw - 2rem);
   max-height: calc(100vh - 2rem);
   overflow-y: auto;
@@ -1231,6 +1233,27 @@ h1 {
   background: var(--surface-raised);
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
   pointer-events: auto;
+}
+
+.tutorial-tooltip.is-docked-right {
+  right: 1rem;
+}
+
+.tutorial-tooltip.is-docked-left {
+  left: 1rem;
+}
+
+/* On a narrow screen the card sits along the bottom edge instead. */
+@media (max-width: 700px) {
+  .tutorial-tooltip.is-docked-right,
+  .tutorial-tooltip.is-docked-left {
+    top: auto;
+    bottom: 0.75rem;
+    left: 1rem;
+    right: 1rem;
+    width: auto;
+    max-height: 45vh;
+  }
 }
 
 .tutorial-tooltip h3:focus {
