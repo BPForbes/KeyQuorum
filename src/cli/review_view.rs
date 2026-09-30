@@ -66,7 +66,7 @@ fn describe(file: &TrackedFile, id: &[u8; 32]) -> String {
         .map(|stored| {
             let r = &stored.revision;
             // The user label first when there is one, then the generated
-            // label and the short hash (design §35).
+            // label and the short hash.
             let user = r
                 .user_label
                 .as_deref()

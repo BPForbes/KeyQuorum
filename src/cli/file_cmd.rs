@@ -37,7 +37,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
-/// `keyquorum file history export|verify`: the design's spelling of the
+/// `keyquorum file history export|verify`: the alternative spelling of the
 /// snapshot operations that `history --export` and `verify-snapshot` already
 /// perform.
 #[derive(Subcommand)]
@@ -1312,7 +1312,7 @@ fn approval_satisfaction(
     }
 }
 
-/// The design's wording for why the policy decided as it did.
+/// The wording for why the policy decided as it did.
 fn decision_reason(
     policy: &FilePolicy,
     file: &TrackedFile,

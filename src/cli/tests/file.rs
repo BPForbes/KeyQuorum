@@ -3030,11 +3030,11 @@ fn a_review_result_settles_a_conflict_but_is_checked_in_on_a_clean_merge() {
 }
 
 #[test]
-fn history_export_and_verify_spell_the_snapshot_operations_the_design_names() {
+fn history_export_and_verify_spell_the_snapshot_operations_as_subcommands() {
     let mut env = org();
     track(&mut env, "M.A", "M.A");
 
-    // `history <file>` still lists events; the subcommands add the design's spelling.
+    // `history <file>` still lists events; the subcommands add the alternative spelling.
     assert!(ok(&mut env, &format!("history {KQTF}")).contains("TrackingStarted"));
     let out = ok(
         &mut env,

@@ -279,6 +279,13 @@ registry, of the identity and signing key each label held per topology generatio
 `TrustContext::historical_signing_publics` lets a revision or event stamped with an
 older generation verify against that key after a reissue. It is the store's own
 observation, never taken from a `.kqtf`.
+Terms for proposing a change: a **merge proposal** is prepared changes submitted for
+review (the pending merge revision and its reviewer resolution; built); a **change request**
+(ask someone to change a file) and a **file request** (ask the holder to send a file,
+the unbuilt `FILE_REQUESTED`) name features with no request protocol yet. This version states
+two limits: historical authority is local key history, not a complete generation-specific
+identity, relationship or reviewer-authority record, and `satisfied_by` discloses bridge
+participation in portable history pending the owner's acceptance.
 `file_history/expiry.rs` ends a tracked file: an `EXPIRY_SCHEDULED` event
 sets the time, and destruction removes every retained revision's payload at
 once (container v5 lets a payload be absent; v4 still decodes).

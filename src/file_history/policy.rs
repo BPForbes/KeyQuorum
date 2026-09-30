@@ -63,7 +63,7 @@ impl Requirement {
         .find(|rule| rule.keyword() == word)
     }
 
-    /// Why a revision that met this rule is trusted, in the design's words.
+    /// Why a revision that met this rule is trusted, in words a reader can check.
     pub fn trusted_because(self) -> &'static str {
         match self {
             Self::Forbidden => "ROLE_FORBIDDEN",

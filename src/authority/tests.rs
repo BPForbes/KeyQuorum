@@ -85,8 +85,8 @@ fn relationship_classifies_against_scope() {
             common_ancestor: Some("M".into())
         }
     );
-    // Distinct roots are another branch with no common ancestor (the
-    // design's `CrossBranch { common_ancestor: None }`); only a malformed
+    // Distinct roots are another branch with no common ancestor (
+    // `CrossBranch { common_ancestor: None }`); only a malformed
     // or empty label is unrelated.
     assert_eq!(
         relationship("M.A", "X.1"),

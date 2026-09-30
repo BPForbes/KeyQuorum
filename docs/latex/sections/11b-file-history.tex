@@ -376,6 +376,38 @@ command again. If a command was killed and left the lock behind, the error
 names the lock file to remove.
 \end{cautionBox}
 
+\subsection{Terms for proposing a change}
+
+Three words describe someone asking for, or offering, a change to a file.
+Only the second is something this version does; the other two name what
+is not built yet, so a person reading a history or a command does not take
+them to mean more than they do.
+
+\begin{center}
+\begin{tabular}{@{}p{0.22\linewidth}p{0.72\linewidth}@{}}
+\toprule
+\textbf{Term} & \textbf{Meaning and status} \\
+\midrule
+\textbf{Merge proposal} & Prepared changes submitted for review: a merge
+  revision, made automatically from two heads or by an author outside the
+  file's scope, that stays \code{Pending} until the reviewer, the scope
+  owner or a bridge decides. The reviewer settles it with \code{file
+  resolve} or refuses it with \flag{--reject}. The manual also calls it a
+  proposed merge. \emph{Built.} \\
+\textbf{Change request} & Asking someone to change a file (``please change
+  this file''), before any change exists. There is no request object, no
+  command to make one and no event that records it. \emph{Not built; the
+  term is reserved.} \\
+\textbf{File request} & Asking the holder to send a file. A
+  \code{FILE_REQUESTED} event is reserved for it, but there is no request
+  protocol, so no request is ever recorded. \emph{Not built.} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Use \emph{change request} for ``please change this file'' and \emph{merge
+proposal} once the author has already prepared the changes.
+
 \subsection{History snapshots and the index}
 
 \code{file history} with \flag{--export} (or \code{file history export --out}) writes a \code{KQHS}
@@ -458,7 +490,24 @@ What is recorded is limited to what is safe to keep:
   proves nothing about who is holding it.
 \end{itemize}
 
-The design this feature follows goes further than what is built. Today:
+\subsection{Limits this version states}
+
+Two limits are stated on purpose, so this version does not claim stronger
+guarantees than it has.
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Historical authority is local key history.} The store
+  preserves which identity and signing key each label held, as observed
+  here. It does not establish complete generation-specific identity,
+  relationship or reviewer authority.
+  \item \textbf{Bridge disclosure awaits the owner's acceptance.} A
+  \code{satisfied_by} of \code{BRIDGE} or \code{BRIDGE_AND_SCOPE_OWNER}
+  reveals that a bridge approval took part in a decision. That stays in the
+  portable history and in any export. Whether to keep it is the owner's
+  policy decision.
+\end{itemize}
+
+The full architecture goes further than what is built. Today:
 
 \begin{itemize}
   \item Tracking starts with \code{file track} or the first \code{file sign}
