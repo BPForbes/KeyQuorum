@@ -303,6 +303,22 @@ test.describe("desktop lab", () => {
     await switchUser(page, "Sarah");
     await panel.getByTestId("tracked-letters").getByRole("button", { name: "Record the answer" }).click();
     await expect(panel.getByTestId("tracked-letters")).toContainText("answer recorded");
+
+    // Ask Alice for a change; a request only asks, and her answer only says yes or no.
+    await card.getByLabel("Ask").selectOption("alice");
+    await card.getByLabel("for", { exact: true }).selectOption("change");
+    await card.getByLabel("Request message").fill("Please tighten the second paragraph");
+    await card.getByRole("button", { name: "Send request" }).click();
+    await expect(panel.getByTestId("tracked-requests")).toContainText("waiting");
+    await switchUser(page, "Alice");
+    await expect(panel.getByTestId("tracked-requests")).toContainText("Please tighten the second paragraph");
+    await panel.getByTestId("tracked-requests").getByRole("button", { name: "Accept request for plan.txt" }).click();
+    await expect(panel.getByTestId("tracked-requests")).toContainText("accepted");
+    await switchUser(page, "Sarah");
+    await panel.getByTestId("tracked-requests").getByRole("button", { name: "Record the request answer" }).click();
+    await expect(panel.getByTestId("tracked-requests")).toContainText("answer recorded");
+    await expect(page.locator('[data-panel="activity"] [data-event="ChangeRequested"]').first()).toBeVisible();
+    await expect(page.locator('[data-panel="activity"] [data-event="RequestAnswered"]').first()).toBeVisible();
   });
 
   test("the seeded memo conflict is settled from the Resolve form, and only its reviewer can", async ({ page }) => {

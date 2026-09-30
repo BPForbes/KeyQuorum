@@ -226,4 +226,16 @@ export class LabClient {
   historyAck(letterId: number): ActionResult {
     return this.call(this.lab.history_ack(letterId));
   }
+
+  historyRequest(path: string, toUser: string, change: boolean, message: string): ActionResult {
+    return this.call(this.lab.history_request(path, toUser, change, message));
+  }
+
+  historyAnswerRequest(requestId: number, accept: boolean): ActionResult {
+    return this.call(this.lab.history_answer_request(requestId, accept));
+  }
+
+  historyOpenAnswer(requestId: number): ActionResult {
+    return this.call(this.lab.history_open_answer(requestId));
+  }
 }

@@ -48,6 +48,31 @@ pub(in crate::lab) struct TrackedLetter {
     ack_recorded: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RequestStatus {
+    Waiting,
+    Accepted,
+    Declined,
+}
+
+/// A request letter (`file request`) and the answer to it.
+pub(in crate::lab) struct TrackedRequest {
+    id: i64,
+    file_name: String,
+    /// `file` or `change`.
+    kind: &'static str,
+    message: String,
+    from_user: String,
+    to_user: String,
+    /// The requester's container, where the answer is recorded.
+    requester_kqtf: PathBuf,
+    letter: PathBuf,
+    answer: Option<PathBuf>,
+    opened: bool,
+    status: RequestStatus,
+    answer_recorded: bool,
+}
+
 /// `AutoMergeRequiresHuman` as "Auto merge requires human".
 fn humanize(name: &str) -> String {
     let mut out = String::new();
@@ -365,6 +390,42 @@ impl LabState {
                     }
                     .to_string(),
                     ack_recorded: letter.ack_recorded,
+                }
+            })
+            .collect()
+    }
+
+    pub(super) fn request_views(&self) -> Vec<TrackedRequestView> {
+        let name = |id: &str| {
+            self.users
+                .iter()
+                .find(|user| user.id == id)
+                .map(|user| (user.name.clone(), user.label.clone()))
+                .unwrap_or_default()
+        };
+        self.requests
+            .iter()
+            .map(|request| {
+                let (from_name, from_label) = name(&request.from_user);
+                let (to_name, to_label) = name(&request.to_user);
+                TrackedRequestView {
+                    id: request.id,
+                    file_name: request.file_name.clone(),
+                    kind: request.kind.to_string(),
+                    message: request.message.clone(),
+                    from: request.from_user.clone(),
+                    from_name,
+                    from_label,
+                    to: request.to_user.clone(),
+                    to_name,
+                    to_label,
+                    status: match request.status {
+                        RequestStatus::Waiting => "waiting",
+                        RequestStatus::Accepted => "accepted",
+                        RequestStatus::Declined => "declined",
+                    }
+                    .to_string(),
+                    answer_recorded: request.answer_recorded,
                 }
             })
             .collect()
@@ -1072,6 +1133,176 @@ impl LabState {
         );
         if run.ok {
             self.letters[index].ack_recorded = true;
+        }
+        Ok(outcome)
+    }
+
+    /// `keyquorum file request`: ask another person for a file, or for a
+    /// change to it. The request only asks; the lab delivers nothing here.
+    pub fn history_request(
+        &mut self,
+        path: &str,
+        to_user: &str,
+        change: bool,
+        message: &str,
+    ) -> Result<Outcome> {
+        let Some(kqtf) = self.tracked_path(path) else {
+            return Ok(Self::unknown_tracked(path));
+        };
+        let Some(to) = self.user_index(to_user) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No lab user {to_user}"),
+                vec![],
+            ));
+        };
+        let Some(slot) = self.own_slot_arg() else {
+            return Ok(self.no_slot());
+        };
+        let (to_id, to_label, to_name) = {
+            let user = &self.users[to];
+            (user.id.clone(), user.label.clone(), user.name.clone())
+        };
+        let who = self.actor().label.clone();
+        let mut line = format!(
+            "{} request {} --to {to_label} --as {who} --slot {slot} --output-dir {LETTERS_DIR}",
+            self.file_line(),
+            quote(&kqtf.display().to_string()),
+        );
+        let message = message.trim();
+        if change {
+            line.push_str(" --change");
+        }
+        if !message.is_empty() {
+            line.push_str(&format!(" --message {}", quote(message)));
+        }
+        let name = self.tracked_name(&kqtf);
+        let kind = if change { "change" } else { "file" };
+        let (outcome, run) = self.history_command(
+            "history-request",
+            &format!("Ask {to_name} for a {kind} on {name}"),
+            line,
+        );
+        if let Some(letter) = written_path(&run) {
+            let id = self.next_request_id;
+            self.next_request_id += 1;
+            self.requests.push(TrackedRequest {
+                id,
+                file_name: name,
+                kind,
+                message: message.to_string(),
+                from_user: self.actor().id.clone(),
+                to_user: to_id,
+                requester_kqtf: kqtf,
+                letter,
+                answer: None,
+                opened: false,
+                status: RequestStatus::Waiting,
+                answer_recorded: false,
+            });
+        }
+        Ok(outcome)
+    }
+
+    /// `keyquorum file open-request` then `answer-request`: the holder reads
+    /// the request, it is recorded in their copy of the file when they have
+    /// one, and a signed accept or decline goes back.
+    pub fn history_answer_request(&mut self, request_id: i64, accept: bool) -> Result<Outcome> {
+        let Some(index) = self.requests.iter().position(|r| r.id == request_id) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No request {request_id}"),
+                vec![],
+            ));
+        };
+        let Some(slot) = self.own_slot_arg() else {
+            return Ok(self.no_slot());
+        };
+        let (letter, file_name) = {
+            let request = &self.requests[index];
+            (request.letter.clone(), request.file_name.clone())
+        };
+        let home = self.actor().home();
+        let copy = self
+            .tracked_views()
+            .into_iter()
+            .find(|view| view.name == file_name && Path::new(&view.path).starts_with(&home))
+            .map(|view| format!(" --file {}", quote(&view.path)))
+            .unwrap_or_default();
+        let letter_arg = quote(&letter.display().to_string());
+        let open = format!(
+            "{} open-request --letter {letter_arg} --slot {slot}{copy}",
+            self.file_line()
+        );
+        let (outcome, run) = self.history_command(
+            "history-open-request",
+            &format!("Read the request for {file_name}"),
+            open,
+        );
+        if !run.ok {
+            return Ok(outcome);
+        }
+        self.requests[index].opened = true;
+        let decision = if accept { "accept" } else { "decline" };
+        let line = format!(
+            "{} answer-request --letter {letter_arg} --decision {decision} --slot {slot}{copy} --ack-dir {ACKS_DIR}",
+            self.file_line()
+        );
+        let title = if accept {
+            format!("Accept the request for {file_name}")
+        } else {
+            format!("Decline the request for {file_name}")
+        };
+        let (outcome, run) = self.history_command("history-answer-request", &title, line);
+        if run.ok {
+            let request = &mut self.requests[index];
+            request.answer = written_path(&run);
+            request.status = if accept {
+                RequestStatus::Accepted
+            } else {
+                RequestStatus::Declined
+            };
+        }
+        Ok(outcome)
+    }
+
+    /// `keyquorum file open-answer`: record the holder's answer in the
+    /// requester's own copy.
+    pub fn history_open_answer(&mut self, request_id: i64) -> Result<Outcome> {
+        let Some(index) = self.requests.iter().position(|r| r.id == request_id) else {
+            return Ok(Outcome::done(
+                false,
+                format!("No request {request_id}"),
+                vec![],
+            ));
+        };
+        let Some(answer) = self.requests[index].answer.clone() else {
+            return Ok(Outcome::done(
+                false,
+                "That request has not been answered yet",
+                vec![],
+            ));
+        };
+        let Some(slot) = self.own_slot_arg() else {
+            return Ok(self.no_slot());
+        };
+        let (kqtf, name) = {
+            let request = &self.requests[index];
+            (request.requester_kqtf.clone(), request.file_name.clone())
+        };
+        let line = format!(
+            "{} open-answer --answer {} --slot {slot} --file {}",
+            self.file_line(),
+            quote(&answer.display().to_string()),
+            quote(&kqtf.display().to_string()),
+        );
+        let (outcome, run) = self.history_command(
+            "history-open-answer",
+            &format!("Record the answer to the request for {name}"),
+            line,
+        );
+        if run.ok {
+            self.requests[index].answer_recorded = true;
         }
         Ok(outcome)
     }

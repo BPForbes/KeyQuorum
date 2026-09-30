@@ -217,6 +217,9 @@ pub struct LabState {
     /// Tracked-file letters handed between people in the lab.
     letters: Vec<history::TrackedLetter>,
     next_letter_id: i64,
+    /// Request letters (`file request`) and their answers.
+    requests: Vec<history::TrackedRequest>,
+    next_request_id: i64,
 }
 
 impl LabState {
@@ -265,6 +268,8 @@ impl LabState {
             tracked: Vec::new(),
             letters: Vec::new(),
             next_letter_id: 1,
+            requests: Vec::new(),
+            next_request_id: 1,
         };
         let commands = state.provision()?;
         let home = state.actor().home();
@@ -3397,6 +3402,7 @@ impl LabState {
             pending_restructures: self.pending_restructure_views()?,
             tracked_files: self.tracked_views(),
             tracked_letters: self.letter_views(),
+            tracked_requests: self.request_views(),
         })
     }
 

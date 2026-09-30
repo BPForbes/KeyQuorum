@@ -487,6 +487,7 @@ function TrackedFileCard({
           <ExpiryForm file={file} act={act} />
         </>
       )}
+      <RequestForm file={file} snapshot={snapshot} act={act} />
       <form
         className="tracked-form tracked-share"
         data-testid="history-share"
@@ -507,6 +508,84 @@ function TrackedFileCard({
           Share file
         </button>
       </form>
+    </div>
+  );
+}
+
+function RequestForm({ file, snapshot, act }: { file: TrackedFileView; snapshot: Snapshot; act: Act }) {
+  const id = useId();
+  const others = snapshot.users.filter((user) => user.id !== snapshot.activeUser.id);
+  const [to, setTo] = useState(others[0]?.id ?? "");
+  const [change, setChange] = useState(false);
+  const [message, setMessage] = useState("");
+  return (
+    <form
+      className="tracked-form tracked-request"
+      data-testid="history-request"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (to) act((client) => client.historyRequest(file.path, to, change, message));
+      }}
+    >
+      <label htmlFor={`${id}-to`}>Ask</label>
+      <select id={`${id}-to`} value={to} onChange={(event) => setTo(event.target.value)}>
+        {others.map((user) => (
+          <option key={user.id} value={user.id}>
+            {user.name} ({user.label})
+          </option>
+        ))}
+      </select>
+      <label htmlFor={`${id}-kind`}>for</label>
+      <select id={`${id}-kind`} value={change ? "change" : "file"} onChange={(event) => setChange(event.target.value === "change")}>
+        <option value="file">a file (send me your copy)</option>
+        <option value="change">a change to this file</option>
+      </select>
+      <input
+        aria-label="Request message"
+        placeholder="Message (shown to them, never recorded)"
+        maxLength={500}
+        value={message}
+        onChange={(event) => setMessage(event.target.value)}
+      />
+      <button type="submit" className="btn small-btn">
+        Send request
+      </button>
+    </form>
+  );
+}
+
+function Requests({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
+  const me = snapshot.activeUser.id;
+  const mine = snapshot.trackedRequests.filter((request) => request.to === me || request.from === me);
+  if (mine.length === 0) return null;
+  return (
+    <div className="tracked-letters tracked-requests" data-testid="tracked-requests">
+      <h4 className="small">Requests for a file or a change</h4>
+      <ul>
+        {mine.map((request) => (
+          <li key={request.id} data-testid={`tracked-request-${request.id}`} data-status={request.status}>
+            {request.fileName}: {request.fromName} asks {request.toName} for {request.kind === "change" ? "a change" : "a file"}{" "}
+            <span className="badge">{request.status}</span>
+            {request.message && request.to === me ? <span className="muted small"> · “{request.message}”</span> : null}
+            {request.to === me && request.status === "waiting" ? (
+              <>
+                <button type="button" className="btn small-btn" onClick={() => act((client) => client.historyAnswerRequest(request.id, true))}>
+                  Accept request for {request.fileName}
+                </button>
+                <button type="button" className="btn small-btn" onClick={() => act((client) => client.historyAnswerRequest(request.id, false))}>
+                  Decline request for {request.fileName}
+                </button>
+              </>
+            ) : null}
+            {request.from === me && request.status !== "waiting" && !request.answerRecorded ? (
+              <button type="button" className="btn small-btn" onClick={() => act((client) => client.historyOpenAnswer(request.id))}>
+                Record the request answer
+              </button>
+            ) : null}
+            {request.answerRecorded ? <span className="muted small"> · answer recorded</span> : null}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -586,6 +665,7 @@ export function TrackedFiles({ snapshot, act }: { snapshot: Snapshot; act: Act }
         />
       ) : null}
       <Letters snapshot={snapshot} act={act} />
+      <Requests snapshot={snapshot} act={act} />
       {viewing ? <FileViewer result={viewing.result} fileName={viewing.title} onClose={() => setViewing(null)} /> : null}
     </section>
   );

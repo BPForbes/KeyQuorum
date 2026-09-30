@@ -226,6 +226,8 @@ export interface Snapshot {
   trackedFiles: TrackedFileView[];
   /** Tracked-file letters handed between people. */
   trackedLetters: TrackedLetterView[];
+  /** Requests for a file or a change, and their answers. */
+  trackedRequests: TrackedRequestView[];
 }
 
 export interface TrackedRevisionView {
@@ -286,6 +288,21 @@ export interface TrackedLetterView {
   toLabel: string;
   status: "waiting" | "accepted" | "rejected";
   ackRecorded: boolean;
+}
+
+export interface TrackedRequestView {
+  id: number;
+  fileName: string;
+  kind: "file" | "change";
+  message: string;
+  from: string;
+  fromName: string;
+  fromLabel: string;
+  to: string;
+  toName: string;
+  toLabel: string;
+  status: "waiting" | "accepted" | "declined";
+  answerRecorded: boolean;
 }
 
 export interface OpenedFile {

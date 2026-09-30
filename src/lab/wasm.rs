@@ -494,6 +494,36 @@ impl KeyQuorumLab {
         to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
     }
 
+    /// `keyquorum file request`: ask a person for a file or a change.
+    pub fn history_request(
+        &mut self,
+        path: &str,
+        to_user: &str,
+        change: bool,
+        message: &str,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self.state.history_request(path, to_user, change, message);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum file open-request` and `answer-request`.
+    pub fn history_answer_request(
+        &mut self,
+        request_id: i32,
+        accept: bool,
+    ) -> std::result::Result<String, JsError> {
+        let outcome = self
+            .state
+            .history_answer_request(i64::from(request_id), accept);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum file open-answer`: record the answer in the requester's copy.
+    pub fn history_open_answer(&mut self, request_id: i32) -> std::result::Result<String, JsError> {
+        let outcome = self.state.history_open_answer(i64::from(request_id));
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
     /// One terminal line against the same state the GUI uses.
     pub fn run_command(&mut self, line: &str) -> std::result::Result<String, JsError> {
         if line.trim() == "reset" {

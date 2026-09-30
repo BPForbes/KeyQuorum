@@ -344,6 +344,8 @@ pub struct Snapshot {
     pub tracked_files: Vec<TrackedFileView>,
     /// Tracked-file letters handed between people.
     pub tracked_letters: Vec<TrackedLetterView>,
+    /// Requests for a file or a change, and their answers.
+    pub tracked_requests: Vec<TrackedRequestView>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -422,6 +424,25 @@ pub struct TrackedLetterView {
     /// `waiting`, `accepted` or `rejected`.
     pub status: String,
     pub ack_recorded: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackedRequestView {
+    pub id: i64,
+    pub file_name: String,
+    /// `file` or `change`.
+    pub kind: String,
+    pub message: String,
+    pub from: String,
+    pub from_name: String,
+    pub from_label: String,
+    pub to: String,
+    pub to_name: String,
+    pub to_label: String,
+    /// `waiting`, `accepted` or `declined`.
+    pub status: String,
+    pub answer_recorded: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -377,7 +377,9 @@ with `fileId`, `revisionId`, `generatedLabel`, `historyRoot`,
 `finalizationState`, ...) beneath the action's own entry, which stays newest
 because tutorial gates read `activity[0]`. The Activity page's tracked-file
 buttons (track, check in signed or unsigned, sign, countersign, merge, review, resolve,
-verify, share, receive or refuse, record the answer, expire, view a revision,
+verify, share, receive or refuse, record the answer, ask for a file or a change
+(`file request`, `--change`), accept or decline a request (`open-request` then `answer-request`),
+record a request's answer (`open-answer`), expire, view a revision,
 diff, export and check a snapshot, import another copy, link or unlink a quorum
 or password gate) each run one `keyquorum file` command as the active person against their own store with their own slot
 (a quorum gate is linked in the org store and a password gate in its owner's

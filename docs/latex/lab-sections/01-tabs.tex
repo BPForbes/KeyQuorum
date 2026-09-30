@@ -117,6 +117,18 @@ own store and their own drive's slot; each button runs one real
   when the head is pending. The recipient \textbf{Accept}s or
   \textbf{Refuse}s the letter (into their own copy), and the sender
   \textbf{Record}s \textbf{the answer}.
+  \item \textbf{Ask for a file, or for a change}: pick a person, choose
+  \emph{a file} (send me your copy) or \emph{a change to this file}, add a
+  message if you like, and press \textbf{Send request} (\code{keyquorum file
+  request}, with \code{--change} for a change). Under \emph{Requests for a
+  file or a change} the holder sees the message and presses \textbf{Accept
+  request} or \textbf{Decline request} (\code{open-request}, then
+  \code{answer-request}, which also records the request in their own copy
+  of the file). The asker presses \textbf{Record the request answer}
+  (\code{open-answer}). A request only asks: nothing is delivered or
+  changed. To serve an accepted file request the holder uses \textbf{Share
+  file}; a change arrives as an ordinary revision. The log shows the request
+  id, kind and decision, never the message.
   \item When two copies diverge: \textbf{Import copy}, \textbf{Review the
   fork} (each side's changed lines and the named reviewer) and
   \textbf{Merge heads}; a clean merge is a new revision that still has to be

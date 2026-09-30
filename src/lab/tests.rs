@@ -2028,3 +2028,36 @@ fn only_the_assigned_reviewer_can_resolve_the_seeded_memo_conflict() {
     assert_eq!(resolved.text.as_deref(), Some("Owner: TBD\nBudget: 100\n"));
     assert_eq!(resolved.trust, "trusted", "the reviewer's own signature");
 }
+
+#[test]
+fn a_change_request_is_asked_answered_and_recorded_by_real_commands() {
+    let mut state = lab();
+    state.switch_user("sarah").unwrap();
+    ok(state.history_track("notes.txt", "a\n"));
+    ok(state.history_share(NOTES, "alice"));
+    state.switch_user("alice").unwrap();
+    let letter = snap(&state).tracked_letters[0].id;
+    ok(state.history_receive(letter, true));
+    state.switch_user("sarah").unwrap();
+    ok(state.history_request(NOTES, "alice", true, "tighten the intro"));
+    let request = snap(&state).tracked_requests[0].clone();
+    assert_eq!(request.kind, "change");
+    assert_eq!(request.status, "waiting");
+    state.switch_user("alice").unwrap();
+    ok(state.history_answer_request(request.id, true));
+    assert_eq!(snap(&state).tracked_requests[0].status, "accepted");
+    state.switch_user("sarah").unwrap();
+    ok(state.history_open_answer(request.id));
+    let view = snap(&state);
+    assert!(view.tracked_requests[0].answer_recorded);
+    let events: Vec<_> = view
+        .activity
+        .iter()
+        .filter_map(|e| e.history.as_ref())
+        .map(|h| h.history_event_type.as_str())
+        .collect();
+    assert!(events.contains(&"ChangeRequested"), "{events:?}");
+    assert!(events.contains(&"RequestAnswered"), "{events:?}");
+    // The message is shown to the holder in the CLI output, never recorded.
+    assert!(!format!("{:?}", view.activity).contains("tighten the intro\"}"));
+}
