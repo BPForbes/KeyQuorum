@@ -444,15 +444,11 @@ The design this feature follows goes further than what is built. Today:
   held each label in each generation. Signing keys come from today's
   registry, so if a label is later given to someone else, that label's old
   revisions read as denied instead of keeping their meaning.
-  \item The history records the rule a cross-branch revision met, not whether
-  a bridge or the scope owner met it.
   \item Conflicts are settled a whole revision at a time (\flag{--keep} or
   \flag{--from}), not hunk by hunk. The interactive review has no search,
   folding of unchanged lines or in-place editing, and \code{file merge}
   does not open it for a clean merge waiting to be signed.
   \item Checkouts, signature checks and exports are not recorded as events,
   and tampering is refused when a file is opened rather than recorded in it.
-  \item Tracked files cannot yet be carried in a \code{KQXB} export bundle;
-  history snapshots travel as letters instead.
   \item Recording at gates is opt-in (\code{file link}) and best effort.
 \end{itemize}
