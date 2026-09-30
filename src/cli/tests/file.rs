@@ -3027,3 +3027,36 @@ fn a_review_result_settles_a_conflict_but_is_checked_in_on_a_clean_merge() {
     assert!(out.contains("trust"), "{out}");
     assert_eq!(load(&env).graph().heads().len(), 1);
 }
+
+#[test]
+fn history_export_and_verify_spell_the_snapshot_operations_the_design_names() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+
+    // `history <file>` still lists events; the subcommands add the design's spelling.
+    assert!(ok(&mut env, &format!("history {KQTF}")).contains("TrackingStarted"));
+    let out = ok(
+        &mut env,
+        &format!("history export {KQTF} --out /work/snap.kqhs"),
+    );
+    assert!(out.contains("TrackingStarted"), "{out}");
+    assert!(env.fs.exists(Path::new("/work/snap.kqhs")));
+
+    // Given a snapshot it checks the snapshot, and --against ties it to a file.
+    assert!(ok(&mut env, "history verify /work/snap.kqhs").contains("Snapshot verifies"));
+    let against = ok(
+        &mut env,
+        &format!("history verify /work/snap.kqhs --against {KQTF}"),
+    );
+    assert!(against.contains("point in the history"), "{against}");
+    // Given a tracked file it verifies the chain and graph, like `file verify`.
+    assert!(ok(&mut env, &format!("history verify {KQTF}")).contains("verify"));
+    let (result, _) = run(&mut env, &format!("history verify {KQTF} --against {KQTF}"));
+    assert!(result.is_err());
+    // Export never overwrites.
+    let (result, _) = run(
+        &mut env,
+        &format!("history export {KQTF} --out /work/snap.kqhs"),
+    );
+    assert!(result.is_err());
+}

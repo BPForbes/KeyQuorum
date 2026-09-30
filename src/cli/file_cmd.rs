@@ -37,6 +37,29 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
+/// `keyquorum file history export|verify`: the design's spelling of the
+/// snapshot operations that `history --export` and `verify-snapshot` already
+/// perform.
+#[derive(Subcommand)]
+pub enum HistoryAction {
+    /// List the events, and write them as a portable snapshot (KQHS)
+    Export {
+        kqtf: PathBuf,
+        /// Where to write the snapshot (never overwrites)
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Check a snapshot (with --against, that it belongs to a file), or, given
+    /// a tracked file, verify its history chain and revision graph
+    Verify {
+        /// A snapshot (.kqhs) or a tracked file (.kqtf)
+        target: PathBuf,
+        /// A tracked file the snapshot must be a point in the history of
+        #[arg(long)]
+        against: Option<PathBuf>,
+    },
+}
+
 #[derive(Subcommand)]
 pub enum FileCommand {
     /// Start tracking a file: make its first revision, sign it as its
@@ -267,12 +290,17 @@ pub enum FileCommand {
     },
     /// Show the heads, their trust, and what would be shared
     Status { kqtf: PathBuf },
-    /// List the recorded events
+    /// List the recorded events; `history export` and `history verify` are
+    /// the snapshot forms of `--export` and `verify-snapshot`
+    #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
     History {
-        kqtf: PathBuf,
+        #[arg(required = true)]
+        kqtf: Option<PathBuf>,
         /// Also write the event history as a portable snapshot (KQHS)
         #[arg(long)]
         export: Option<PathBuf>,
+        #[command(subcommand)]
+        action: Option<HistoryAction>,
     },
     /// Check a history snapshot; with --against, that it belongs to a file
     VerifySnapshot {
@@ -663,7 +691,25 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
         FileCommand::List => list(conn),
         FileCommand::Reindex { kqtf, clear } => reindex(conn, &kqtf, clear),
         FileCommand::Status { kqtf } => status(conn, &kqtf),
-        FileCommand::History { kqtf, export } => history(conn, &kqtf, export),
+        FileCommand::History {
+            kqtf,
+            export,
+            action,
+        } => match (action, kqtf) {
+            (Some(HistoryAction::Export { kqtf, out }), _) => history(conn, &kqtf, Some(out)),
+            (Some(HistoryAction::Verify { target, against }), _) => {
+                if is_container(&target) {
+                    if against.is_some() {
+                        return Err(usage("--against only applies to a snapshot"));
+                    }
+                    verify(conn, &target, None)
+                } else {
+                    verify_snapshot(&target, against)
+                }
+            }
+            (None, Some(kqtf)) => history(conn, &kqtf, export),
+            (None, None) => Err(usage("name a tracked file")),
+        },
         FileCommand::VerifySnapshot { snapshot, against } => verify_snapshot(&snapshot, against),
         FileCommand::Import {
             kqtf,

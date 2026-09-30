@@ -231,6 +231,8 @@ See section~\ref{sec:file-history}.
 \code{file reindex} & Rebuild index rows from tracked files. Every file is verified first; if any fails, nothing changes. \flag{--clear} also drops rows for files not named here. \\
 \code{file status} & Show the heads, their trust, what would be shared, and the current and latest trusted revision ids. \\
 \code{file history} & List the recorded events; \flag{--export} also writes a \code{KQHS} snapshot. \\
+\code{file history export} & The design's spelling of \code{file history --export}: list the events and write a \code{KQHS} snapshot to \flag{--out}. \\
+\code{file history verify} & The design's spelling of \code{file verify-snapshot} for a snapshot; given a tracked file it is \code{file verify}. \\
 \code{file verify-snapshot} & Check a history snapshot; with \flag{--against}, that it belongs to a file. \\
 \code{file import} & Bring another copy of the same file's revisions and proofs into this one. A fork is kept as two heads; nothing is overwritten. \\
 \code{file verify} & Verify the history chain and revision graph, and judge every revision. \\
