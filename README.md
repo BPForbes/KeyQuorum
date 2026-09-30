@@ -443,6 +443,7 @@ keyquorum verify --bridge-uid <uid> --as-node M.S.2 \
 
 keyquorum export credential 1 --recipient-key-file bob.pub --output cred.kqxb
 keyquorum export file 1 --recipient-key-file bob.pub --output file.kqxb
+keyquorum export tracked-file report.kqtf --recipient-key-file bob.pub --output report.kqxb
 
 keyquorum share create-file 1 --ttl-seconds 3600 --pin
 keyquorum share create-file 1 --expires "2026-12-31 23:59"
