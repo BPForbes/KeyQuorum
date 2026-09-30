@@ -60,6 +60,120 @@ pub enum HistoryAction {
     },
 }
 
+#[derive(clap::Args)]
+pub struct RequestOpts {
+    /// Your copy of the file, when you have one (recorded in its history)
+    #[arg(required_unless_present = "file_id")]
+    kqtf: Option<PathBuf>,
+    /// The file's id, for a file you do not hold yet (with --name)
+    #[arg(long, requires = "name", conflicts_with = "kqtf")]
+    file_id: Option<String>,
+    /// The file's name, with --file-id
+    #[arg(long, requires = "file_id")]
+    name: Option<String>,
+    /// The holder's label (its encryption key must be registered here)
+    #[arg(long)]
+    to: String,
+    /// Your label
+    #[arg(long = "as")]
+    as_label: String,
+    #[arg(long, conflicts_with = "signing_key_file")]
+    slot: Option<String>,
+    #[arg(long)]
+    signing_key_file: Option<PathBuf>,
+    /// Ask for a change to the file instead of the file itself
+    #[arg(long, requires_all = ["message", "kqtf"])]
+    change: bool,
+    /// What you would like changed (up to 1024 bytes; never recorded in history)
+    #[arg(long, requires = "change")]
+    message: Option<String>,
+    /// The revision the message is about (id or unique prefix; default: the latest)
+    #[arg(long, requires = "change")]
+    base: Option<String>,
+    /// Write the sealed request to this directory
+    #[arg(long, required_unless_present = "push")]
+    output_dir: Option<PathBuf>,
+    /// Upload the request to the relay (inbox.push key)
+    #[arg(long)]
+    push: bool,
+    #[arg(long, requires = "push")]
+    url: Option<String>,
+    #[arg(long, requires = "push")]
+    api_key: Option<String>,
+}
+
+#[derive(clap::Args)]
+pub struct OpenRequestOpts {
+    /// The request (.kqpb)
+    #[arg(long)]
+    letter: PathBuf,
+    #[arg(
+        long = "slot",
+        required_unless_present = "share_file",
+        conflicts_with = "share_file"
+    )]
+    slot: Option<String>,
+    /// Your encryption private key file, instead of --slot
+    #[arg(long)]
+    share_file: Option<String>,
+    /// Your copy of the file: records the request in its history
+    #[arg(long)]
+    file: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+pub struct AnswerRequestOpts {
+    /// The request (.kqpb)
+    #[arg(long)]
+    letter: PathBuf,
+    #[arg(long, value_parser = ["accept", "decline"])]
+    decision: String,
+    #[arg(
+        long = "slot",
+        required_unless_present = "share_file",
+        conflicts_with_all = ["share_file", "signing_key_file"]
+    )]
+    slot: Option<String>,
+    /// Your encryption private key file, instead of --slot
+    #[arg(long, requires = "signing_key_file")]
+    share_file: Option<String>,
+    /// Your signing private key file, with --share-file
+    #[arg(long, requires = "share_file")]
+    signing_key_file: Option<PathBuf>,
+    /// Your copy of the file: records the answer in its history
+    #[arg(long)]
+    file: Option<PathBuf>,
+    /// Write the sealed answer to this directory
+    #[arg(long, required_unless_present = "push_ack")]
+    ack_dir: Option<PathBuf>,
+    /// Upload the answer to the relay (inbox.push key)
+    #[arg(long)]
+    push_ack: bool,
+    #[arg(long, requires = "push_ack")]
+    url: Option<String>,
+    #[arg(long, requires = "push_ack")]
+    api_key: Option<String>,
+}
+
+#[derive(clap::Args)]
+pub struct OpenAnswerOpts {
+    /// The answer (.kqpb)
+    #[arg(long)]
+    answer: PathBuf,
+    #[arg(
+        long = "slot",
+        required_unless_present = "share_file",
+        conflicts_with = "share_file"
+    )]
+    slot: Option<String>,
+    /// Your encryption private key file, instead of --slot
+    #[arg(long)]
+    share_file: Option<String>,
+    /// Your copy of the file, to record the answer against your request
+    #[arg(long)]
+    file: Option<PathBuf>,
+}
+
 #[derive(Subcommand)]
 pub enum FileCommand {
     /// Start tracking a file: make its first revision, sign it as its
@@ -425,6 +539,15 @@ pub enum FileCommand {
     /// Send another label this file's event history (a `KQHS` snapshot,
     /// no content), its root signed by you, so they can compare it with
     /// their own copy.
+    /// Ask the holder of a file for it, or (with --change) to change it. It
+    /// only asks: nothing is delivered or changed until the holder acts.
+    Request(Box<RequestOpts>),
+    /// Open a request made of you: check who asked, and show what for
+    OpenRequest(Box<OpenRequestOpts>),
+    /// Accept or decline a request made of you, and seal the answer
+    AnswerRequest(Box<AnswerRequestOpts>),
+    /// Open the holder's answer to a request you made
+    OpenAnswer(Box<OpenAnswerOpts>),
     SendHistory {
         kqtf: PathBuf,
         /// Recipient label (its encryption key must be registered here)
@@ -823,12 +946,98 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             (into, out, reject),
             (ack_dir, push_ack, url, api_key),
         ),
+        command @ (FileCommand::Request { .. }
+        | FileCommand::OpenRequest { .. }
+        | FileCommand::AnswerRequest { .. }
+        | FileCommand::OpenAnswer { .. }) => request_command(conn, command),
         FileCommand::Ack {
             kqtf,
             ack,
             slot,
             share_file,
         } => record_ack(conn, &kqtf, &ack, share_file.as_deref(), slot.as_deref()),
+    }
+}
+
+/// The request commands, kept out of `run` so that function's frame (one
+/// per test thread in a debug build) does not grow with every command.
+#[inline(never)]
+fn request_command(conn: &Connection, command: FileCommand) -> Result<()> {
+    match command {
+        FileCommand::Request(opts) => {
+            let RequestOpts {
+                kqtf,
+                file_id,
+                name,
+                to,
+                as_label,
+                slot,
+                signing_key_file,
+                change,
+                message,
+                base,
+                output_dir,
+                push,
+                url,
+                api_key,
+            } = *opts;
+            request(
+                conn,
+                RequestArgs {
+                    kqtf,
+                    file_id,
+                    name,
+                    to,
+                    as_label,
+                    change,
+                    message,
+                    base,
+                },
+                (slot, signing_key_file),
+                (output_dir, push, url, api_key),
+            )
+        }
+        FileCommand::OpenRequest(opts) => {
+            let OpenRequestOpts {
+                letter,
+                slot,
+                share_file,
+                file,
+            } = *opts;
+            open_request(conn, &letter, share_file.as_deref(), slot.as_deref(), file)
+        }
+        FileCommand::AnswerRequest(opts) => {
+            let AnswerRequestOpts {
+                letter,
+                decision,
+                slot,
+                share_file,
+                signing_key_file,
+                file,
+                ack_dir,
+                push_ack,
+                url,
+                api_key,
+            } = *opts;
+            answer_request(
+                conn,
+                &letter,
+                decision == "accept",
+                recipient_secrets(slot, share_file, signing_key_file)?,
+                file,
+                (ack_dir, push_ack, url, api_key),
+            )
+        }
+        FileCommand::OpenAnswer(opts) => {
+            let OpenAnswerOpts {
+                answer,
+                slot,
+                share_file,
+                file,
+            } = *opts;
+            open_answer(conn, &answer, share_file.as_deref(), slot.as_deref(), file)
+        }
+        _ => unreachable!("only the request commands are routed here"),
     }
 }
 
@@ -2040,6 +2249,362 @@ fn share(
         bytes: sealed.bytes,
     };
     carry(conn, &letter, output_dir.as_deref(), push, url, api_key)
+}
+
+struct RequestArgs {
+    kqtf: Option<PathBuf>,
+    file_id: Option<String>,
+    name: Option<String>,
+    to: String,
+    as_label: String,
+    change: bool,
+    message: Option<String>,
+    base: Option<String>,
+}
+
+/// An event of one of `kinds` that carries `request_id`, in this copy.
+fn recorded_request<'a>(
+    file: &'a TrackedFile,
+    kinds: &[HistoryEventType],
+    request_id: &str,
+) -> Option<&'a crate::file_history::HistoryEvent> {
+    file.events().iter().find(|event| {
+        kinds.contains(&event.event_type)
+            && event
+                .details
+                .entries()
+                .iter()
+                .any(|(key, value)| key == "request_id" && value == request_id)
+    })
+}
+
+fn event_detail<'a>(event: &'a crate::file_history::HistoryEvent, key: &str) -> Option<&'a str> {
+    event
+        .details
+        .entries()
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
+}
+
+const REQUEST_EVENTS: [HistoryEventType; 2] = [
+    HistoryEventType::FileRequested,
+    HistoryEventType::ChangeRequested,
+];
+
+fn request_event_type(kind: file_delivery::RequestKind) -> HistoryEventType {
+    match kind {
+        file_delivery::RequestKind::File => HistoryEventType::FileRequested,
+        file_delivery::RequestKind::Change => HistoryEventType::ChangeRequested,
+    }
+}
+
+/// `file request`: ask the holder for a file, or to change it. The request
+/// is a signed letter; it is recorded in the requester's copy (when they
+/// have one) before it leaves, so a failed upload still leaves a truthful
+/// entry.
+fn request(
+    conn: &Connection,
+    args: RequestArgs,
+    keys: (Option<String>, Option<PathBuf>),
+    (output_dir, push, url, api_key): Transport,
+) -> Result<()> {
+    let RequestArgs {
+        kqtf,
+        file_id,
+        name,
+        to,
+        as_label,
+        change,
+        message,
+        base,
+    } = args;
+    require_active(conn, &as_label)?;
+    let mut copy = match &kqtf {
+        Some(path) => Some(load_live(conn, path, Some(&as_label), "request")?),
+        None => None,
+    };
+    let (file_id, file_name) = match (&copy, file_id, name) {
+        (Some(file), _, _) => (file.file_id, file.logical_name.clone()),
+        (None, Some(id), Some(name)) => {
+            let bytes = hex::decode(id.trim()).map_err(|_| usage("--file-id is 32 hex digits"))?;
+            let id: [u8; 16] = bytes
+                .try_into()
+                .map_err(|_| usage("--file-id is 32 hex digits"))?;
+            (id, name)
+        }
+        _ => return Err(usage("name a tracked file, or --file-id with --name")),
+    };
+    let base_revision = match (&copy, &base) {
+        (Some(file), Some(prefix)) => Some(pick_revision(file, Some(prefix))?),
+        (Some(file), None) if change => file.graph().heads().first().copied(),
+        _ => None,
+    };
+    let kind = if change {
+        file_delivery::RequestKind::Change
+    } else {
+        file_delivery::RequestKind::File
+    };
+    let message = message.unwrap_or_default();
+    if message.len() > file_delivery::MAX_REQUEST_MESSAGE {
+        return Err(usage(&format!(
+            "the message is longer than {} bytes",
+            file_delivery::MAX_REQUEST_MESSAGE
+        )));
+    }
+    let (signing_secret, encryption_public) = sender_keys(conn, keys.0, keys.1, &as_label)?;
+    let holder = registered_encryption_key(conn, &to)?;
+    let sealed = file_delivery::seal_request(&file_delivery::OutgoingRequest {
+        sender_label: &as_label,
+        sender_signing_secret: &signing_secret,
+        sender_encryption_public: &encryption_public,
+        recipient_label: &to,
+        recipient_encryption_public: &holder,
+        file_name: &file_name,
+        file_id,
+        kind,
+        base_revision,
+        message: &message,
+    })?;
+    let id = hex::encode(sealed.request_id);
+    if let (Some(file), Some(path)) = (copy.as_mut(), &kqtf) {
+        let policy = file.policy().cloned();
+        let generation = match &policy {
+            Some(policy) => generation_for(conn, &policy.scope_root)?,
+            None => 0,
+        };
+        file.append(event(
+            request_event_type(kind),
+            base_revision,
+            &utc_instant()?,
+            identity_for(conn, &as_label)?,
+            &as_label,
+            generation,
+            EventDetails::new()
+                .with("request_id", &id)
+                .with("request_kind", kind.name())
+                .with("to", &to),
+        ))?;
+        save(path, file)?;
+        index_after(conn, file);
+    }
+    outln!(
+        "Sealed a {} request {id} for {file_name} to {to}",
+        kind.name()
+    );
+    let letter = Letter {
+        name: format!("{id}-request"),
+        bytes: sealed.bytes,
+    };
+    carry(conn, &letter, output_dir.as_deref(), push, url, api_key)
+}
+
+fn check_same_file(file: &TrackedFile, file_id: [u8; 16]) -> Result<()> {
+    if file.file_id == file_id {
+        Ok(())
+    } else {
+        Err(usage("that is not a copy of the file the request names"))
+    }
+}
+
+/// `file open-request`: the holder reads a request. With their copy of the
+/// file, it is also recorded there once, whoever asked.
+fn open_request(
+    conn: &Connection,
+    letter_path: &Path,
+    share_file: Option<&str>,
+    slot: Option<&str>,
+    file: Option<PathBuf>,
+) -> Result<()> {
+    let secret = super::encryption_secret_from(share_file, slot)?;
+    let request = file_delivery::open_request(conn, &secret, &env::read(letter_path)?)?;
+    require_recipient_key(conn, &request.holder_label, &secret)?;
+    let id = hex::encode(request.request_id);
+    outln!(
+        "{} request {id} from {} to {}: {} ({}), signature verified",
+        request.kind.name(),
+        request.requester_label,
+        request.holder_label,
+        request.file_name,
+        hex::encode(request.file_id)
+    );
+    if let Some(base) = request.base_revision {
+        outln!("  about revision {}", short(&base));
+    }
+    if !request.message.is_empty() {
+        outln!("  message: {}", request.message);
+    }
+    if let Some(path) = file {
+        let mut copy = load_live(conn, &path, Some(&request.holder_label), "open-request")?;
+        check_same_file(&copy, request.file_id)?;
+        if recorded_request(&copy, &REQUEST_EVENTS, &id).is_some() {
+            outln!("Already recorded in {}", path.display());
+            return Ok(());
+        }
+        let generation = match copy.policy() {
+            Some(policy) => generation_for(conn, &policy.scope_root)?,
+            None => 0,
+        };
+        // The requester's signature was checked above, so the event is
+        // attributed to them; it stays hash-chained, never attested by the
+        // holder's copy.
+        copy.append(event(
+            request_event_type(request.kind),
+            request.base_revision,
+            &utc_instant()?,
+            identity_for(conn, &request.requester_label)?,
+            &request.requester_label,
+            generation,
+            EventDetails::new()
+                .with("request_id", &id)
+                .with("request_kind", request.kind.name())
+                .with("to", &request.holder_label),
+        ))?;
+        save(&path, &copy)?;
+        index_after(conn, &copy);
+        outln!("Recorded in {}", path.display());
+    }
+    outln!(
+        "Answer with `file answer-request --letter {} --decision accept|decline`",
+        letter_path.display()
+    );
+    Ok(())
+}
+
+/// `file answer-request`: the holder accepts or declines. Accepting only
+/// says yes; a file request is then served with `file share`.
+fn answer_request(
+    conn: &Connection,
+    letter_path: &Path,
+    accepted: bool,
+    secrets: RecipientSecrets,
+    file: Option<PathBuf>,
+    (ack_dir, push_ack, url, api_key): Transport,
+) -> Result<()> {
+    let request = file_delivery::open_request(conn, &secrets.encryption, &env::read(letter_path)?)?;
+    require_recipient_key(conn, &request.holder_label, &secrets.encryption)?;
+    let id = hex::encode(request.request_id);
+    let decision = if accepted { "accepted" } else { "declined" };
+    if let Some(path) = file {
+        let mut copy = load_live(conn, &path, Some(&request.holder_label), "answer-request")?;
+        check_same_file(&copy, request.file_id)?;
+        match recorded_request(&copy, &[HistoryEventType::RequestAnswered], &id) {
+            Some(prior) if event_detail(prior, "decision") != Some(decision) => {
+                return Err(usage(&format!(
+                    "request {id} was already answered as {}",
+                    event_detail(prior, "decision").unwrap_or("something else")
+                )));
+            }
+            Some(_) => outln!("Already recorded in {}", path.display()),
+            None => {
+                let generation = match copy.policy() {
+                    Some(policy) => generation_for(conn, &policy.scope_root)?,
+                    None => 0,
+                };
+                copy.append(event(
+                    HistoryEventType::RequestAnswered,
+                    request.base_revision,
+                    &utc_instant()?,
+                    identity_for(conn, &request.holder_label)?,
+                    &request.holder_label,
+                    generation,
+                    EventDetails::new()
+                        .with("request_id", &id)
+                        .with("request_kind", request.kind.name())
+                        .with("decision", decision),
+                ))?;
+                save(&path, &copy)?;
+                index_after(conn, &copy);
+            }
+        }
+    }
+    let bytes = file_delivery::seal_request_answer(&request, &secrets.signing, accepted)?;
+    outln!(
+        "{} {} request {id} from {}",
+        if accepted { "Accepted" } else { "Declined" },
+        request.kind.name(),
+        request.requester_label
+    );
+    if accepted && request.kind == file_delivery::RequestKind::File {
+        outln!(
+            "Send the file with `file share <file> --to {} --as {} --slot …`",
+            request.requester_label,
+            request.holder_label
+        );
+    }
+    let letter = Letter {
+        name: format!("{id}-answer"),
+        bytes,
+    };
+    carry(conn, &letter, ack_dir.as_deref(), push_ack, url, api_key)
+}
+
+/// `file open-answer`: the requester reads the holder's answer. It is
+/// recorded only against a request this copy shows it made.
+fn open_answer(
+    conn: &Connection,
+    answer_path: &Path,
+    share_file: Option<&str>,
+    slot: Option<&str>,
+    file: Option<PathBuf>,
+) -> Result<()> {
+    let secret = super::encryption_secret_from(share_file, slot)?;
+    let answer = file_delivery::open_request_answer(conn, &secret, &env::read(answer_path)?)?;
+    let id = hex::encode(answer.request_id);
+    let decision = if answer.accepted {
+        "accepted"
+    } else {
+        "declined"
+    };
+    outln!(
+        "{} request {id} {decision} by {}, signature verified",
+        answer.kind.name(),
+        answer.holder_label
+    );
+    let Some(path) = file else {
+        return Ok(());
+    };
+    let mut copy = load_live(conn, &path, None, "open-answer")?;
+    check_same_file(&copy, answer.file_id)?;
+    let sent = recorded_request(&copy, &REQUEST_EVENTS, &id)
+        .ok_or_else(|| usage("this copy shows no request with that id"))?;
+    if event_detail(sent, "request_kind") != Some(answer.kind.name())
+        || event_detail(sent, "to") != Some(answer.holder_label.as_str())
+    {
+        return Err(usage("the answer does not match the request recorded here"));
+    }
+    match recorded_request(&copy, &[HistoryEventType::RequestAnswered], &id) {
+        Some(prior) if event_detail(prior, "decision") != Some(decision) => Err(usage(&format!(
+            "request {id} was already recorded as {}",
+            event_detail(prior, "decision").unwrap_or("something else")
+        ))),
+        Some(_) => {
+            outln!("Already recorded in {}", path.display());
+            Ok(())
+        }
+        None => {
+            let generation = match copy.policy() {
+                Some(policy) => generation_for(conn, &policy.scope_root)?,
+                None => 0,
+            };
+            copy.append(event(
+                HistoryEventType::RequestAnswered,
+                sent.revision_id,
+                &utc_instant()?,
+                identity_for(conn, &answer.holder_label)?,
+                &answer.holder_label,
+                generation,
+                EventDetails::new()
+                    .with("request_id", &id)
+                    .with("request_kind", answer.kind.name())
+                    .with("decision", decision),
+            ))?;
+            save(&path, &copy)?;
+            index_after(conn, &copy);
+            outln!("Recorded in {}", path.display());
+            Ok(())
+        }
+    }
 }
 
 fn send_history(

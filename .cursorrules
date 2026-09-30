@@ -280,9 +280,15 @@ registry, of the identity and signing key each label held per topology generatio
 older generation verify against that key after a reissue. It is the store's own
 observation, never taken from a `.kqtf`.
 Terms for proposing a change: a **merge proposal** is prepared changes submitted for
-review (the pending merge revision and its reviewer resolution; built); a **change request**
-(ask someone to change a file) and a **file request** (ask the holder to send a file,
-the unbuilt `FILE_REQUESTED`) name features with no request protocol yet. This version states
+review (the pending merge revision and its reviewer resolution); a **change request**
+(ask someone to change a file, `file request --change`) and a **file request** (ask the
+holder to send a file, `file request`) are signed request letters (`KIND_FILE_REQUEST` 18,
+answered by `KIND_FILE_REQUEST_ANSWER` 19, `file_delivery::request`), opened with
+`file open-request` and answered with `file answer-request` / `file open-answer`. A request
+only asks: it delivers and changes nothing, `file share` serves an accepted file request,
+and a change arrives as an ordinary revision. `FILE_REQUESTED` (39), `CHANGE_REQUESTED` (40)
+and `REQUEST_ANSWERED` (41) record the id, kind and decision in a copy named with `--file`;
+a change request's message is shown to the holder and never recorded. This version states
 two limits: historical authority is local key history, not a complete generation-specific
 identity, relationship or reviewer-authority record, and `satisfied_by` discloses bridge
 participation in portable history pending the owner's acceptance.

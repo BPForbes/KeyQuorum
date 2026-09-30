@@ -59,6 +59,9 @@ pub enum HistoryEventType {
     RevisionCheckedOut = 36,
     VerificationRun = 37,
     HistoryExported = 38,
+    FileRequested = 39,
+    ChangeRequested = 40,
+    RequestAnswered = 41,
 }
 
 impl HistoryEventType {
@@ -82,7 +85,8 @@ impl HistoryEventType {
             | E::AutoMergeAttempted
             | E::AutoMergeFastForward
             | E::AutoMergeEquivalent
-            | E::AutoMergeClean => "revision",
+            | E::AutoMergeClean
+            | E::ChangeRequested => "revision",
             E::QuorumUnlockAttempted
             | E::PasswordUnlockAttempted
             | E::FileExpired
@@ -95,7 +99,9 @@ impl HistoryEventType {
             | E::ShareDelivered
             | E::ShareLinkCreated
             | E::ShareLinkRedeemed
-            | E::ShareLinkRevoked => "sharing",
+            | E::ShareLinkRevoked
+            | E::FileRequested
+            | E::RequestAnswered => "sharing",
             E::AutoMergeBlocked
             | E::AutoMergeRequiresHuman
             | E::HistoryForkDetected
@@ -149,6 +155,9 @@ impl HistoryEventType {
             36 => Self::RevisionCheckedOut,
             37 => Self::VerificationRun,
             38 => Self::HistoryExported,
+            39 => Self::FileRequested,
+            40 => Self::ChangeRequested,
+            41 => Self::RequestAnswered,
             _ => return Err(Error::InvalidTrackedFile),
         })
     }
@@ -222,6 +231,8 @@ pub const SAFE_DETAIL_KEYS: &[&str] = &[
     "relation",
     "relationship",
     "result",
+    "request_id",
+    "request_kind",
     "reviewer",
     "revision_a",
     "revision_b",

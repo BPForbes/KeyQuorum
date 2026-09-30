@@ -220,6 +220,10 @@ See section~\ref{sec:file-history}.
 \code{file finalize} & Mark a trusted revision final (scope owner or an ancestor, by slot). Trust itself is unchanged, and each store decides finality from its own keys. \\
 \code{file send-history} & Seal this file's event history (a KQHS snapshot, no content) to a label, its root signed by you. \\
 \code{file open-history} & Open a history snapshot letter and compare it with your copy (\code{--against}). \\
+\code{file request} & Ask a holder for a file (\code{--file-id} and \code{--name}), or with \code{--change} and \code{--message} to change one you hold. Writes a sealed request (\code{--output-dir}) or uploads it (\code{--push}). \\
+\code{file open-request} & Open a request made of you; \code{--file} records it once in your copy. \\
+\code{file answer-request} & Accept or decline a request (\code{--decision}); \code{--file} records the answer once. An answer delivers nothing. \\
+\code{file open-answer} & Open the holder's answer; \code{--file} records it against the request your copy shows you made. \\
 \code{file bridge-approve} & As a member of a private bridge that reaches from the author to the scope, approve a revision with the bridge (kept in this store only). \\
 \code{file resolve} & As a conflict's reviewer, keep one side (\code{--keep left|right}) or supply the edited result (\code{--from}), signed as yours; \code{--reject} refuses a proposed merge. \\
 \code{file merge} & Merge two divergent heads automatically when the edits allow it; otherwise record the conflict and who must review it, and on a \flag{--features tui} build in an interactive terminal open the review. A merge is a new revision that stays untrusted until it is signed. \\

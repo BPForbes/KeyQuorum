@@ -404,9 +404,8 @@ Without the relay a drive is needed only for the person who is signing or
 opening at that moment. The only cases that need two devices open together
 are moving or copying an identity between devices
 (\code{keyquorum transfer copy|move}), and the browser lab, which simulates
-everyone on one machine. A merge proposal travels as a letter today; a
-change request would be another letter, but there is no such command yet
-(see the terms above).
+everyone on one machine. A merge proposal, a file request and a change
+request all travel as letters the same way (see the two sections below).
 \end{cautionBox}
 
 \subsection{Copies, forks and merging}
@@ -512,34 +511,117 @@ names the lock file to remove.
 \subsection{Terms for proposing a change}
 
 Three words describe someone asking for, or offering, a change to a file.
-Only the second is something this version does; the other two name what
-is not built yet, so a person reading a history or a command does not take
-them to mean more than they do.
+Each names something this version does. A request only asks: it delivers
+nothing and changes nothing, and the answer to it only says yes or no. The
+file or the change itself always travels the ordinary way, as a letter
+(\code{file share}) whose revision is judged by the file's own rules.
 
 \begin{center}
 \begin{tabular}{@{}p{0.22\linewidth}p{0.72\linewidth}@{}}
 \toprule
-\textbf{Term} & \textbf{Meaning and status} \\
+\textbf{Term} & \textbf{Meaning and how it works} \\
 \midrule
 \textbf{Merge proposal} & Prepared changes submitted for review: a merge
   revision, made automatically from two heads or by an author outside the
   file's scope, that stays \code{Pending} until the reviewer, the scope
   owner or a bridge decides. The reviewer settles it with \code{file
   resolve} or refuses it with \flag{--reject}. The manual also calls it a
-  proposed merge. \emph{Built.} \\
+  proposed merge. \\
 \textbf{Change request} & Asking someone to change a file (``please change
-  this file''), before any change exists. There is no request object, no
-  command to make one and no event that records it. \emph{Not built; the
-  term is reserved.} \\
-\textbf{File request} & Asking the holder to send a file. A
-  \code{FILE_REQUESTED} event is reserved for it, but there is no request
-  protocol, so no request is ever recorded. \emph{Not built.} \\
+  this file''), before any change exists: \code{file request --change} with
+  a short message. The holder reads it (\code{file open-request}) and
+  answers accept or decline (\code{file answer-request}). \\
+\textbf{File request} & Asking the holder to send a file, usually one you do
+  not hold: \code{file request}. An accepted file request is served with
+  \code{file share}. \\
 \bottomrule
 \end{tabular}
 \end{center}
 
 Use \emph{change request} for ``please change this file'' and \emph{merge
 proposal} once the author has already prepared the changes.
+
+\subsection{Asking for a file, or for a change}
+
+A request is a small signed letter (\file{.kqpb}) sealed to the holder, and
+the answer is another, sealed back to the requester. They travel exactly as
+in the previous section: as plain files you carry, or through the relay. The
+holder checks the requester's signature against the key their own store
+holds for that label, and the requester checks the holder's answer the same
+way. A request never opens as a delivery letter, or the other way round.
+
+What a history records, when a copy of the file is named: the request
+(\code{FILE_REQUESTED} or \code{CHANGE_REQUESTED}) with its id and kind, and
+the answer (\code{REQUEST_ANSWERED}) with the decision. The message of a
+change request is shown to the holder and is \emph{never} recorded. Opening
+the same request or answer twice records it once, and a request already
+answered one way cannot be answered the other.
+
+\subsubsection*{When the API is not available: you carry the files}
+
+The public keys of both people are exchanged and registered first (step 0
+in the previous section). M.B asks M.A:
+
+\begin{lstlisting}
+# 1. M.B's computer, M.B's drive in: ask for a file M.B does not hold yet
+keyquorum --db mb.sqlite file request --file-id <32 hex digits> \
+  --name report.txt --to M.A --as M.B --slot ./usb=M.B --output-dir ./requests
+#    or ask for a change to M.B's own copy (message up to 1024 bytes)
+keyquorum --db mb.sqlite file request report.txt.kqtf --change \
+  --message "the total in row 3 is wrong" --to M.A --as M.B \
+  --slot ./usb=M.B --output-dir ./requests
+
+# 2. Carry ./requests/<id>-request.kqpb to M.A (any channel)
+
+# 3. M.A's computer, M.A's drive in: read it; --file records it in M.A's copy
+keyquorum --db ma.sqlite file open-request --letter ./<id>-request.kqpb \
+  --slot ./usb=M.A --file report.txt.kqtf
+
+# 4. M.A's computer: answer (accept or decline); --file records the answer
+keyquorum --db ma.sqlite file answer-request --letter ./<id>-request.kqpb \
+  --decision accept --slot ./usb=M.A --file report.txt.kqtf --ack-dir ./answers
+
+# 5. Carry ./answers/<id>-answer.kqpb back to M.B (any channel)
+
+# 6. M.B's computer, M.B's drive in: read the answer (--file records it
+#    against the request M.B's copy shows it made)
+keyquorum --db mb.sqlite file open-answer --answer ./<id>-answer.kqpb \
+  --slot ./usb=M.B --file report.txt.kqtf
+\end{lstlisting}
+
+If M.A accepted a \emph{file request}, M.A now sends the file with the
+\code{file share} steps of the previous section. If M.A accepted a
+\emph{change request}, the change reaches M.A as a revision the ordinary
+way: M.B checks it in on their copy and sends it with \code{file share}, and
+it arrives as a merge proposal.
+
+\subsubsection*{When the API is available: the relay carries the files}
+
+Store the relay URL and key once per person (\code{loadkey}, as before). Only
+the commands that move a file change:
+
+\begin{lstlisting}
+# 1. M.B: the same file request commands, with --push in place of --output-dir
+keyquorum --db mb.sqlite file request --file-id <32 hex digits> \
+  --name report.txt --to M.A --as M.B --slot ./usb=M.B --push
+
+# 2. Later, M.A's computer: download what is waiting, then read the request
+keyquorum --db ma.sqlite relay pull --output-dir ./inbox
+keyquorum --db ma.sqlite file open-request --letter ./inbox/<n>.kqpb \
+  --slot ./usb=M.A --file report.txt.kqtf
+
+# 3. M.A answers and uploads the answer
+keyquorum --db ma.sqlite file answer-request --letter ./inbox/<n>.kqpb \
+  --decision accept --slot ./usb=M.A --file report.txt.kqtf --push-ack
+
+# 4. Later, M.B's computer: download the answer, then read it
+keyquorum --db mb.sqlite relay pull --output-dir ./answers
+keyquorum --db mb.sqlite file open-answer --answer ./answers/<n>.kqpb \
+  --slot ./usb=M.B --file report.txt.kqtf
+\end{lstlisting}
+
+\code{relay pull --import} lists a request or an answer and tells you which
+command opens it; it never imports one, because a request only asks.
 
 \subsection{History snapshots and the index}
 
@@ -644,8 +726,8 @@ The full architecture goes further than what is built. Today:
 
 \begin{itemize}
   \item Tracking starts with \code{file track} or the first \code{file sign}
-  of a native file; nothing tracks a file on its own, and there is no way
-  to request a file, so no request is ever recorded.
+  of a native file; nothing tracks a file on its own. A request for a file
+  or a change is recorded only in a copy you name, and never as a delivery.
   \item A store keeps which topology generations it has held. Each command that
   resolves a file's topology generation (track, check in, sign, merge and
   the like, not a plain \code{verify}) also records which identity and

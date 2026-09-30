@@ -215,8 +215,8 @@ fn a_stale_stored_root_is_rejected() {
 
 #[test]
 fn every_event_code_decodes_to_itself_and_the_next_one_is_unknown() {
-    // Codes are wire format: 1..=38 are assigned, nothing renumbered.
-    for code in 1u8..=38 {
+    // Codes are wire format: 1..=41 are assigned, nothing renumbered.
+    for code in 1u8..=41 {
         let kind = event::HistoryEventType::from_u8(code).unwrap();
         assert_eq!(kind as u8, code);
     }
@@ -225,7 +225,10 @@ fn every_event_code_decodes_to_itself_and_the_next_one_is_unknown() {
     assert_eq!(HistoryEventType::RevisionCheckedOut as u8, 36);
     assert_eq!(HistoryEventType::VerificationRun as u8, 37);
     assert_eq!(HistoryEventType::HistoryExported as u8, 38);
-    assert!(event::HistoryEventType::from_u8(39).is_err());
+    assert_eq!(HistoryEventType::FileRequested as u8, 39);
+    assert_eq!(HistoryEventType::ChangeRequested as u8, 40);
+    assert_eq!(HistoryEventType::RequestAnswered as u8, 41);
+    assert!(event::HistoryEventType::from_u8(42).is_err());
     assert!(event::HistoryEventType::from_u8(0).is_err());
     // The new conflict events round-trip through a container.
     let mut file = tracked_file();
@@ -235,6 +238,9 @@ fn every_event_code_decodes_to_itself_and_the_next_one_is_unknown() {
         HistoryEventType::RevisionCheckedOut,
         HistoryEventType::VerificationRun,
         HistoryEventType::HistoryExported,
+        HistoryEventType::FileRequested,
+        HistoryEventType::ChangeRequested,
+        HistoryEventType::RequestAnswered,
     ] {
         file.append(new_event(kind, None)).unwrap();
     }

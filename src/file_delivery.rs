@@ -43,6 +43,12 @@ const HISTORY_LETTER_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-DELIVERY-v1";
 const HISTORY_ACK_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-DELIVERY-ACK-v1";
 const SNAPSHOT_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-SNAPSHOT-v1";
 
+mod request;
+pub use request::{
+    open_request, open_request_answer, seal_request, seal_request_answer, FileRequest,
+    OutgoingRequest, RequestAnswer, RequestKind, SealedRequest, MAX_REQUEST_MESSAGE,
+};
+
 /// What the sender needs to seal one letter.
 pub struct Outgoing<'a> {
     pub sender_label: &'a str,

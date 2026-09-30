@@ -2501,6 +2501,28 @@ fn relay_in_store(conn: &Connection, command: RelayCommand) -> Result<()> {
                     );
                     continue;
                 }
+                if kind == crate::envelope::KIND_FILE_REQUEST
+                    || kind == crate::envelope::KIND_FILE_REQUEST_ANSWER
+                {
+                    // Opened by `file open-request` / `file open-answer`;
+                    // a request asks and an answer says yes or no, so there
+                    // is nothing to import.
+                    outln!(
+                        "Envelope {} is a file {}; open it with `keyquorum file {}`",
+                        item.id,
+                        if kind == crate::envelope::KIND_FILE_REQUEST {
+                            "request"
+                        } else {
+                            "request answer"
+                        },
+                        if kind == crate::envelope::KIND_FILE_REQUEST {
+                            "open-request"
+                        } else {
+                            "open-answer"
+                        }
+                    );
+                    continue;
+                }
                 if kind == crate::envelope::KIND_FILE_HISTORY
                     || kind == crate::envelope::KIND_FILE_HISTORY_ACK
                 {

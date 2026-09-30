@@ -101,6 +101,13 @@ pub const KIND_FILE_HISTORY_ACK: u8 = 16;
 /// revisions), sealed to a recipient label with its root signed by the
 /// sender (`file_delivery`). Carried by the bridge inbox; not answered.
 pub const KIND_FILE_HISTORY_SNAPSHOT: u8 = 17;
+/// A request for a file, or for a change to it, sealed to the label that
+/// holds it and signed by the requester (`file_delivery::request`). Carried
+/// by the bridge inbox like any other letter.
+pub const KIND_FILE_REQUEST: u8 = 18;
+/// The holder's signed accept or decline of a [`KIND_FILE_REQUEST`], sealed
+/// back to the requester.
+pub const KIND_FILE_REQUEST_ANSWER: u8 = 19;
 
 /// Kinds the device mailbox accepts. Every other `KQPB` kind belongs to
 /// the bridge inbox. The two stores do not mix.
