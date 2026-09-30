@@ -2031,7 +2031,7 @@ fn each_changed_line_is_attributed_to_the_revision_that_wrote_it() {
     let by = |kind, text: &str| {
         left.lines
             .iter()
-            .find(|l| l.kind == kind && l.text == text)
+            .find(|l| !l.context && l.kind == kind && l.text == text)
             .unwrap_or_else(|| panic!("{kind:?} {text}: {:?}", left.lines))
             .provenance
             .clone()
@@ -2049,6 +2049,7 @@ fn each_changed_line_is_attributed_to_the_revision_that_wrote_it() {
     assert!(view.panes[1]
         .lines
         .iter()
+        .filter(|l| !l.context)
         .all(|l| l.provenance.starts_with("M.S.1")));
     assert!(left.revision.starts_with("M.A.2"));
 }
