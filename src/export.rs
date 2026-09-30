@@ -93,7 +93,9 @@ pub fn export_file_in(
     encode_bundle(BUNDLE_TYPE_FILE, recipient_public_key, &payload)
 }
 
-/// Verify and seal a complete KQTF container for portable transport.
+/// Structurally verify and seal a complete KQTF container for portable
+/// transport. Structure is not signatures or trust: every retained revision,
+/// pending ones included, travels, and the recipient's store judges them.
 ///
 /// `container` is deliberately bytes: KQTF contains payloads, signatures,
 /// and hashes and is not UTF-8 text. The logical name is read from that

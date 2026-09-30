@@ -363,9 +363,11 @@ then shows the history as it stands. Press \code{/} to type a query and \code{En
 \code{N} repeat it forward and backward. Matching ignores case, looks for a
 substring in the active pane, and wraps around. On such a build,
 \code{file merge} opens it by itself when a person
-has to decide and the terminal is interactive. It is a viewer: its
-\code{:sign}, \code{:accept}, \code{:reject} and \code{:finalize} commands
-name the CLI command to run (\code{file resolve} for accept and reject).
+has to decide and the terminal is interactive. The review decides no trust
+and edits no history itself: every action above is the real command run
+as the label and slot you gave, and it is refused when that command would
+refuse you. Without \code{:as} and \code{:slot} the commands only name the
+CLI command to run.
 
 \begin{cautionBox}
 Commands replace a container under an exclusive \file{<name>.kqtf.lock}, and
@@ -462,14 +464,19 @@ The design this feature follows goes further than what is built. Today:
   \item Tracking starts with \code{file track} or the first \code{file sign}
   of a native file; nothing tracks a file on its own, and there is no way
   to request a file, so no request is ever recorded.
-  \item A store keeps which topology generations it has held, and every
-  file command records which identity and signing key each label held
-  under the current generation. A revision stamped with an older
-  generation is also checked against the key the store saw that label hold
-  then, so it keeps its meaning after the label is reissued or reassigned.
-  A store that never ran a file command while a key was current has no
-  such record, and a retired key is honoured only for the generations it
-  was seen in, not proven to have signed at a particular time.
+  \item A store keeps which topology generations it has held. Each command that
+  resolves a file's topology generation (track, check in, sign, merge and
+  the like, not a plain \code{verify}) also records which identity and
+  signing key each label under that tree holds now, as the first and last
+  generation it was observed in. A revision stamped with an older
+  generation is also checked against every key recorded for that label and
+  identity whose observed range covers it, in addition to the current key,
+  so it keeps its meaning after the label is reissued or reassigned. This is
+  the store's own key history, not a per-generation record of who held the
+  label: a generation between two observations counts as covered, the
+  current key is tried without proof it held the label then, a store that
+  never saw a key has no record of it, and nothing proves when a signature
+  was made.
   \item Conflicts are settled a whole revision at a time (\flag{--keep} or
   \flag{--from}), not hunk by hunk. The interactive review shows only changed
   lines, never unchanged context, and settles a conflict from the terminal

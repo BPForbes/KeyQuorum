@@ -25,10 +25,13 @@ private sign bridge's roster (\flag{--bridge-uid} / \flag{--as-node}) for a
 \file{.kqbs} artifact --- see Section~\ref{sec:private-bridges}.
 
 \code{export} produces a portable \code{KQXB} bundle sealed to a recipient's
-public key, for a credential, a locked file, or a complete verified tracked
+public key, for a credential, a locked file, or a complete, structurally verified tracked
 file. Bundles use the same sealed
 envelope framing as every other letter in this manual; only the recipient's
-private key can open one.
+private key can open one. A tracked-file bundle is checked for structure
+(hashes, parent links and the history chain), not for signatures or trust: it
+carries every revision the container holds, pending ones included, and the
+recipient's store judges them.
 
 \flag{--expires} is UTC (\code{yyyy-mm-dd hh:mm}). After that instant,
 redeeming a share link, unlocking, or a routine scan deletes the ciphertext
