@@ -24,6 +24,10 @@ pub struct ViewLine {
     /// Which change on this side the line belongs to (counting from 0): a
     /// removal and the additions that replace it are one hunk.
     pub hunk: usize,
+    /// An unchanged line shown for orientation around a change. It is not
+    /// part of any diff: the printed review leaves it out, and the
+    /// interactive one can hide it.
+    pub context: bool,
     /// Who authored the revision this side's change belongs to.
     pub provenance: String,
 }
@@ -168,6 +172,54 @@ fn blame(file: &TrackedFile, base: &[u8; 32], head: &[u8; 32]) -> Option<Blame> 
     })
 }
 
+/// Unchanged lines kept on each side of a change, for orientation.
+const CONTEXT_LINES: usize = 2;
+
+/// `changed` (grouped by hunk, in order) with up to [`CONTEXT_LINES`]
+/// unchanged lines of the new text before and after each change. Lines two
+/// changes are close enough to share are shown once, after the earlier one.
+fn with_context(new: &str, hunks: &[DiffHunk], changed: Vec<ViewLine>) -> Vec<ViewLine> {
+    let new_lines: Vec<&str> = new.split_inclusive('\n').collect();
+    let context = |index: usize, hunk: usize| ViewLine {
+        kind: ChangeKind::Added,
+        number: index + 1,
+        text: new_lines[index].trim_end_matches('\n').to_string(),
+        hunk,
+        context: true,
+        provenance: "unchanged since the common ancestor".to_string(),
+    };
+    // Where each change starts and ends in the new text.
+    let mut spans = Vec::with_capacity(hunks.len());
+    let mut shift: isize = 0;
+    for hunk in hunks {
+        let start = (hunk.start as isize + shift).max(0) as usize;
+        spans.push((start, start + hunk.lines.len()));
+        shift += hunk.lines.len() as isize - (hunk.end - hunk.start) as isize;
+    }
+    let mut out = Vec::with_capacity(changed.len());
+    let mut lines = changed.into_iter().peekable();
+    let mut emitted = 0usize;
+    for (index, (start, end)) in spans.iter().copied().enumerate() {
+        for line in emitted.max(start.saturating_sub(CONTEXT_LINES))..start.min(new_lines.len()) {
+            out.push(context(line, index));
+        }
+        while lines.peek().is_some_and(|line| line.hunk == index) {
+            out.extend(lines.next());
+        }
+        emitted = end;
+        let limit = spans
+            .get(index + 1)
+            .map_or(new_lines.len(), |next| next.0)
+            .min(end + CONTEXT_LINES);
+        for line in end..limit.min(new_lines.len()) {
+            out.push(context(line, index));
+        }
+        emitted = emitted.max(limit.min(new_lines.len()));
+    }
+    out.extend(lines);
+    out
+}
+
 /// One side of a review: the lines `id` changed since `base`, each with the
 /// revision on that side that wrote it (the head describes any line the
 /// replay cannot place).
@@ -199,19 +251,18 @@ fn side_pane(file: &TrackedFile, base: Option<[u8; 32]>, side: &str, id: &[u8; 3
                             .map(|rev| describe(file, rev))
                             .unwrap_or_else(|| provenance.clone())
                     };
-                    (
-                        changes
-                            .iter()
-                            .map(|c| ViewLine {
-                                kind: c.kind,
-                                number: c.line,
-                                text: c.text.trim_end_matches('\n').to_string(),
-                                hunk: c.hunk,
-                                provenance: who(c),
-                            })
-                            .collect(),
-                        None,
-                    )
+                    let changed: Vec<ViewLine> = changes
+                        .iter()
+                        .map(|c| ViewLine {
+                            kind: c.kind,
+                            number: c.line,
+                            text: c.text.trim_end_matches('\n').to_string(),
+                            hunk: c.hunk,
+                            context: false,
+                            provenance: who(c),
+                        })
+                        .collect();
+                    (with_context(&new, &hunks, changed), None)
                 }
                 None => (
                     Vec::new(),
@@ -350,6 +401,8 @@ pub struct ReviewState {
     pending_z: bool,
     /// Hunks folded to a single line, per side.
     folded: Vec<HashSet<usize>>,
+    /// Whether unchanged context lines are shown (`c` toggles).
+    show_context: bool,
     /// Changes picked to build a result from, per side.
     picked: Vec<HashSet<usize>>,
     /// The text the person edited; it replaces the picked changes.
@@ -361,7 +414,7 @@ pub struct ReviewState {
 }
 
 const HELP: &str = "j/k move · gg/G ends · Ctrl-d/u page · Tab or h/l switch side · \
-/ search · n/N repeat · za/zc/zo fold a change · zM/zR fold or open all · Space pick a change · \
+/ search · n/N repeat · za/zc/zo fold a change · zM/zR fold or open all · Space pick a change · c context · \
 :compose :edit :as :slot :accept :reject :sign :finalize :q · hover a line for who wrote it";
 
 /// What to run when the review cannot act for the person (no `:as` and
@@ -397,6 +450,7 @@ impl ReviewState {
             pending_g: false,
             pending_z: false,
             folded: vec![HashSet::new(); panes],
+            show_context: true,
             picked: vec![HashSet::new(); panes],
             edited: None,
             as_label: None,
@@ -408,36 +462,43 @@ impl ReviewState {
         self.view.panes[self.pane].lines.len()
     }
 
-    /// The lines of `pane` that are shown: all of them, except that a folded
-    /// change shows only its first line.
+    /// The lines of `pane` that are shown: all of them (context only while
+    /// it is switched on), except that a folded change shows only its first
+    /// changed line.
     pub fn visible(&self, pane: usize) -> Vec<usize> {
         let lines = &self.view.panes[pane].lines;
         let mut shown = Vec::with_capacity(lines.len());
-        let mut previous: Option<usize> = None;
+        let mut headed: HashSet<usize> = HashSet::new();
         for (index, line) in lines.iter().enumerate() {
-            let starts = previous != Some(line.hunk);
-            previous = Some(line.hunk);
-            if starts || !self.folded[pane].contains(&line.hunk) {
+            if line.context && !self.show_context {
+                continue;
+            }
+            let folded = self.folded[pane].contains(&line.hunk);
+            // A fold keeps one line: the first changed line of the change.
+            if !folded || (!line.context && headed.insert(line.hunk)) {
                 shown.push(index);
             }
         }
         shown
     }
 
-    /// How many lines the fold at `index` hides, when that line is the
-    /// first of a folded change.
+    /// How many lines the fold at `index` hides, when that line is the one
+    /// a folded change keeps.
     pub fn fold_hidden(&self, pane: usize, index: usize) -> Option<usize> {
         let lines = &self.view.panes[pane].lines;
         let hunk = lines.get(index)?.hunk;
-        if !self.folded[pane].contains(&hunk) || (index > 0 && lines[index - 1].hunk == hunk) {
+        if !self.folded[pane].contains(&hunk) || lines[index].context {
             return None;
         }
-        Some(
-            lines[index + 1..]
-                .iter()
-                .take_while(|l| l.hunk == hunk)
-                .count(),
-        )
+        let first_changed = lines.iter().position(|l| l.hunk == hunk && !l.context)?;
+        if first_changed != index {
+            return None;
+        }
+        let total = lines
+            .iter()
+            .filter(|l| l.hunk == hunk && (self.show_context || !l.context))
+            .count();
+        Some(total - 1)
     }
 
     /// The change the cursor is in.
@@ -679,6 +740,15 @@ impl ReviewState {
         match key {
             Key::Char('z') => self.pending_z = true,
             Key::Char(' ') => return self.toggle_pick(),
+            Key::Char('c') => {
+                self.show_context = !self.show_context;
+                let index = self.cursor();
+                self.move_to(index);
+                return Effect::Message(format!(
+                    "unchanged context {}",
+                    if self.show_context { "shown" } else { "hidden" }
+                ));
+            }
             Key::Char('j') | Key::Down => self.step(1),
             Key::Char('k') | Key::Up => self.step(-1),
             Key::Char('g') if was_g => self.move_to(0),

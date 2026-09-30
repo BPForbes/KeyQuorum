@@ -67,9 +67,10 @@ fn draw(frame: &mut Frame, state: &ReviewState, message: &str, layouts: &mut Lay
                 .into_iter()
                 .map(|index| {
                     let l = &pane.lines[index];
-                    let (mark, color, tint) = match l.kind {
-                        ChangeKind::Removed => ('-', Color::Red, REMOVED_BACKGROUND),
-                        ChangeKind::Added => ('+', Color::Green, ADDED_BACKGROUND),
+                    let (mark, color, tint) = match (l.context, l.kind) {
+                        (true, _) => (' ', Color::DarkGray, Color::Reset),
+                        (false, ChangeKind::Removed) => ('-', Color::Red, REMOVED_BACKGROUND),
+                        (false, ChangeKind::Added) => ('+', Color::Green, ADDED_BACKGROUND),
                     };
                     let picked = if state.is_picked(i, index) { '*' } else { ' ' };
                     let mut spans = vec![

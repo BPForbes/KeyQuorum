@@ -6,6 +6,7 @@ fn line(kind: ChangeKind, number: usize, text: &str, who: &str) -> ViewLine {
         number,
         text: text.to_string(),
         hunk: 0,
+        context: false,
         provenance: who.to_string(),
     }
 }
@@ -218,6 +219,7 @@ fn hunked() -> ReviewState {
         number,
         text: format!("line {number}"),
         hunk,
+        context: false,
         provenance: "M.A rev a".to_string(),
     };
     ReviewState::new(ReviewView {
@@ -291,6 +293,7 @@ fn pickable() -> ReviewState {
         number,
         text: text.to_string(),
         hunk,
+        context: false,
         provenance: "M.A rev a".to_string(),
     };
     ReviewState::new(ReviewView {
@@ -441,4 +444,103 @@ fn a_reload_forgets_picks_and_folds_but_keeps_who_is_acting() {
     assert_eq!(state.picked_count(), 0);
     assert_eq!(state.visible(0), vec![0]);
     assert_eq!(state.identity(), Some(("M.A", "/usb/ma=M.A")));
+}
+
+fn changed(number: usize, hunk: usize, text: &str, kind: ChangeKind) -> ViewLine {
+    ViewLine {
+        kind,
+        number,
+        text: text.to_string(),
+        hunk,
+        context: false,
+        provenance: "M.A rev a".to_string(),
+    }
+}
+
+#[test]
+fn context_surrounds_each_change_without_repeating_shared_lines() {
+    let new = "a\nb\nc\nD\ne\nf\ng\nh\ni\nJ\nk\nl\nm\n";
+    let old = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\n";
+    let hunks = diff_hunks(old, new).unwrap();
+    assert_eq!(hunks.len(), 2);
+    let changes = diff_text(old, new).unwrap();
+    let lines: Vec<ViewLine> = changes
+        .iter()
+        .map(|c| changed(c.line, c.hunk, c.text.trim_end(), c.kind))
+        .collect();
+    let out = with_context(new, &hunks, lines);
+    let shown: Vec<String> = out
+        .iter()
+        .map(|l| {
+            let mark = if l.context {
+                ' '
+            } else if l.kind == ChangeKind::Removed {
+                '-'
+            } else {
+                '+'
+            };
+            format!("{mark}{}:{}", l.number, l.text)
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            " 2:b", " 3:c", "-4:d", "+4:D", " 5:e", " 6:f", // change 0 and its context
+            " 8:h", " 9:i", "-10:j", "+10:J", " 11:k", " 12:l", // change 1 and its context
+        ]
+    );
+    // Context belongs to the change it surrounds.
+    assert!(out.iter().take(6).all(|l| l.hunk == 0));
+    assert!(out.iter().skip(6).all(|l| l.hunk == 1));
+
+    // Close changes share the lines between them once.
+    let close_new = "a\nB\nc\nD\ne\n";
+    let close_old = "a\nb\nc\nd\ne\n";
+    let hunks = diff_hunks(close_old, close_new).unwrap();
+    let lines: Vec<ViewLine> = diff_text(close_old, close_new)
+        .unwrap()
+        .iter()
+        .map(|c| changed(c.line, c.hunk, c.text.trim_end(), c.kind))
+        .collect();
+    let out = with_context(close_new, &hunks, lines);
+    assert_eq!(out.iter().filter(|l| l.context && l.number == 3).count(), 1);
+}
+
+#[test]
+fn c_hides_and_shows_context_and_a_fold_keeps_only_the_changed_line() {
+    let mut lines = vec![
+        changed(1, 0, "before", ChangeKind::Added),
+        changed(2, 0, "new", ChangeKind::Added),
+        changed(3, 0, "after", ChangeKind::Added),
+    ];
+    lines[0].context = true;
+    lines[2].context = true;
+    let mut state = ReviewState::new(ReviewView {
+        title: "t".to_string(),
+        panes: vec![Pane {
+            heading: "LEFT".to_string(),
+            lines,
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    assert_eq!(state.visible(0), vec![0, 1, 2]);
+    keys(&mut state, "zc");
+    assert_eq!(state.visible(0), vec![1], "the fold keeps the changed line");
+    assert_eq!(state.fold_hidden(0, 1), Some(2));
+    assert_eq!(state.fold_hidden(0, 0), None);
+    keys(&mut state, "zo");
+    assert_eq!(
+        state.handle(Key::Char('c')),
+        Effect::Message("unchanged context hidden".to_string())
+    );
+    assert_eq!(state.visible(0), vec![1]);
+    keys(&mut state, "zc");
+    assert_eq!(
+        state.fold_hidden(0, 1),
+        Some(0),
+        "nothing else is shown to hide"
+    );
+    state.handle(Key::Char('c'));
+    assert_eq!(state.visible(0), vec![1], "folded again with context shown");
 }

@@ -9,6 +9,7 @@ fn state() -> ReviewState {
         number,
         text: text.to_string(),
         hunk: 0,
+        context: false,
         provenance: who.to_string(),
     };
     ReviewState::new(ReviewView {
@@ -163,4 +164,43 @@ fn removed_and_added_text_are_drawn_on_red_and_green_backgrounds() {
     };
     assert_eq!(background_of("old total"), REMOVED_BACKGROUND);
     assert_eq!(background_of("new total"), ADDED_BACKGROUND);
+}
+
+#[test]
+fn context_lines_are_drawn_dimmed_and_unmarked() {
+    let mut state = state();
+    // Add an unchanged line before the first change on the left.
+    state.reload(ReviewView {
+        title: "t".into(),
+        panes: vec![Pane {
+            heading: "LEFT".into(),
+            lines: vec![
+                ViewLine {
+                    kind: ChangeKind::Added,
+                    number: 1,
+                    text: "kept line".into(),
+                    hunk: 0,
+                    context: true,
+                    provenance: "unchanged".into(),
+                },
+                ViewLine {
+                    kind: ChangeKind::Added,
+                    number: 2,
+                    text: "new total".into(),
+                    hunk: 0,
+                    context: false,
+                    provenance: "M.A rev a".into(),
+                },
+            ],
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    let (text, _) = render(&state, "");
+    assert!(text.contains("   1 kept line"), "{text}");
+    assert!(
+        text.contains("+    2 new total") || text.contains("+ "),
+        "{text}"
+    );
+    assert!(!text.contains("+    1 kept line"), "{text}");
 }

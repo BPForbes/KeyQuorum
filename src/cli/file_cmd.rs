@@ -3006,7 +3006,7 @@ fn review(conn: &Connection, kqtf: &Path) -> Result<()> {
         if let Some(note) = &pane.note {
             outln!("  ({note})");
         }
-        for line in &pane.lines {
+        for line in pane.lines.iter().filter(|line| !line.context) {
             let mark = match line.kind {
                 ChangeKind::Removed => '-',
                 ChangeKind::Added => '+',

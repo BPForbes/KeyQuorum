@@ -349,7 +349,7 @@ A build with \flag{--features tui} adds \flag{review --interactive}: the same
 view in the terminal, with removed text on a red and added text on a green background, Vim-style keys and mouse hover to see who wrote a
 line. Press \code{za}, \code{zc} or \code{zo} to fold, close or open the change under the cursor
 (a folded change shows its first line and a count), and \code{zM} or \code{zR} to fold or open every change on the side.
-Press \code{Space} to pick the change under the cursor on either side,
+Two unchanged lines are shown on each side of a change, dimmed and marked as unchanged, and \code{c} hides or shows them; a fold hides them with the change, and the printed \code{file review} lists changed lines only. Press \code{Space} to pick the change under the cursor on either side,
 \code{:compose} to see the result (the common ancestor with the picked changes applied;
 picks that touch the same lines are refused), and \code{:edit} to change that
 result in \code{\$VISUAL} or \code{\$EDITOR}, in an owner-only temporary file that is
@@ -478,9 +478,10 @@ The design this feature follows goes further than what is built. Today:
   never saw a key has no record of it, and nothing proves when a signature
   was made.
   \item Conflicts are settled a whole revision at a time (\flag{--keep} or
-  \flag{--from}), not hunk by hunk. The interactive review shows only changed
-  lines, never unchanged context, and settles a conflict from the terminal
-  only through the same commands as the command line.
+  \flag{--from}), not hunk by hunk. The interactive review settles a conflict
+  from the terminal only through the same commands as the command line, and
+  a line has one recorded author in it: where several revisions on one side
+  touched it, only the last is shown.
   \item Checkouts, signature checks and exports are recorded only when asked
   (\flag{--record}), and only under the label \flag{--as} names; that label is
   a claim, so the event is chained but never attested. Tampering is refused
