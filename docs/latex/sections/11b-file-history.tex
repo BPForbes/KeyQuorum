@@ -276,6 +276,139 @@ keyquorum --db mb.sqlite file open-history --letter ./outbox/<id>.kqpb \
   --slot ./usb=M.B --against report.txt.kqtf
 \end{lstlisting}
 
+\subsection{Sending and receiving a tracked file from the command line}
+
+A tracked file travels as a \emph{letter}: a sealed \file{.kqpb} file that
+holds no secret. It is signed by the sender and sealed to the recipient's
+public key, so it can cross any channel. The commands that make and open
+a letter are the same whether or not a relay is used; only the way the
+letter and the answer get from one person to the other differs. Each person
+needs only their \emph{own} drive, plugged into their \emph{own} computer,
+and only at the moment they sign or open something. Nobody hands over a
+key drive.
+
+The examples send \file{report.txt.kqtf} from M.A to M.B. Each command names
+the person who runs it and the computer it runs on.
+
+\subsubsection*{Step 0, once, before either way: exchange public keys}
+
+Each store needs the other's public keys: the sender's signing key (to check
+the letter) and the recipient's encryption key (to seal it). They are
+public, so any channel will do.
+
+\begin{lstlisting}
+# 0a. on M.A's computer (M.A's drive in): print M.A's public keys, send them to M.B
+keyquorum-device public ./usb --label M.A
+# 0b. on M.B's computer: register what M.A sent
+keyquorum --db mb.sqlite register --type encryption --label M.A \
+  --public-key-file a-enc.pub
+keyquorum --db mb.sqlite register --type signing --label M.A \
+  --public-key-file a-sign.pub
+# 0c. M.B does the same in the other direction: prints their keys with
+#     keyquorum-device public, M.A registers them in ma.sqlite
+\end{lstlisting}
+
+\subsubsection*{When the API is not available: you carry the files}
+
+No URL and no API key. The letter and the answer are plain files; move them
+by email, a shared folder, or a USB stick that is only a courier.
+
+\begin{lstlisting}
+# 1. M.A's computer, M.A's drive in: seal the letter into a folder
+keyquorum --db ma.sqlite file share report.txt.kqtf --to M.B --as M.A \
+  --slot ./usb=M.A --output-dir ./outbox
+
+# 2. Carry ./outbox/<id>.kqpb to M.B's computer (any channel)
+
+# 3. M.B's computer, M.B's drive in: open the letter and seal the answer
+keyquorum --db mb.sqlite file receive --letter ./<id>.kqpb \
+  --slot ./usb=M.B --ack-dir ./acks --out report.txt.kqtf
+#    --into report.txt.kqtf   merge into a copy M.B already holds (instead of --out)
+#    --reject                 refuse the letter (instead of --out or --into)
+
+# 4. Carry ./acks/<id>-ack.kqpb back to M.A's computer (any channel)
+
+# 5. M.A's computer, M.A's drive in: record the answer
+keyquorum --db ma.sqlite file ack report.txt.kqtf --ack ./<id>-ack.kqpb \
+  --slot ./usb=M.A
+\end{lstlisting}
+
+To send M.B's changes back, swap the roles and repeat steps 1 to 5. If both
+copies have moved on, the receiver ends up with two heads:
+
+\begin{lstlisting}
+# 6. on whoever received: join the heads, then settle any conflict
+keyquorum --db ma.sqlite file merge report.txt.kqtf --as M.A
+keyquorum --db ma.sqlite file review report.txt.kqtf
+keyquorum --db ma.sqlite file resolve report.txt.kqtf --keep right \
+  --as M.A --slot ./usb=M.A
+keyquorum --db ma.sqlite file sign report.txt.kqtf --as M.A --slot ./usb=M.A
+\end{lstlisting}
+
+A no-drive alternative to steps 1 to 5 is to carry the whole \file{.kqtf}
+and run \code{file import report.txt.kqtf --from theirs.kqtf --as M.B}. It
+skips the signature and trust check that a letter carries.
+
+\subsubsection*{When the API is available: the relay carries the files}
+
+A relay is a mailbox that stores sealed letters and cannot open them. It
+adds no security the letter lacks. It saves the two people from handing
+the files over and lets them act at different times. You need the relay's
+URL and API keys from its operator. Each key has one scope: an
+\emph{inbox push} key sends a letter or an answer, an \emph{inbox pull} key
+downloads what is waiting, so each person usually holds both.
+
+\begin{lstlisting}
+# 1. Once per person, on their own computer: store the relay URL and key
+#    (the key is prompted for when it is not on the command line)
+keyquorum --db ma.sqlite loadkey --url https://relay.example
+
+# 2. M.A's computer, M.A's drive in: seal the letter and upload it
+keyquorum --db ma.sqlite file share report.txt.kqtf --to M.B --as M.A \
+  --slot ./usb=M.A --push
+
+# 3. Later, M.B's computer: download what is waiting for M.B
+keyquorum --db mb.sqlite relay pull --output-dir ./inbox
+
+# 4. M.B's computer, M.B's drive in: open the letter, upload the answer
+keyquorum --db mb.sqlite file receive --letter ./inbox/<n>.kqpb \
+  --slot ./usb=M.B --push-ack --out report.txt.kqtf
+
+# 5. Later, M.A's computer: download the answer
+keyquorum --db ma.sqlite relay pull --output-dir ./answers
+
+# 6. M.A's computer, M.A's drive in: record the answer
+keyquorum --db ma.sqlite file ack report.txt.kqtf --ack ./answers/<n>.kqpb \
+  --slot ./usb=M.A
+\end{lstlisting}
+
+Sending changes back and settling conflicts work exactly as in the
+previous case (swap the roles, then the merge, review, resolve and sign
+commands above). \flag{--url} and \flag{--api-key} can be given on
+\code{share} and \code{receive} instead of using the stored key. These
+environment variables work too:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \code{KEYQUORUM_RELAY_URL}
+  \item \code{KEYQUORUM_RELAY_API_KEY}
+\end{itemize}
+
+Downloaded letters are named by the relay's own number (\code{<n>.kqpb}). The
+official client only talks to a relay that proves it holds a KeyQuorum-signed
+certificate. Everything else, including the sender's signature, the
+recipient-key check, the history comparison and the signed answer, is the
+same as without the relay.
+
+\begin{cautionBox}
+Without the relay a drive is needed only for the person who is signing or
+opening at that moment. The only cases that need two devices open together
+are moving or copying an identity between devices
+(\code{keyquorum transfer copy|move}), and the browser lab, which simulates
+everyone on one machine. A merge proposal travels as a letter today; a
+change request would be another letter, but there is no such command yet
+(see the terms above).
+\end{cautionBox}
+
 \subsection{Copies, forks and merging}
 
 Two holders of a file can each extend it. \code{file import} brings another
