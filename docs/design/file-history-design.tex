@@ -1884,7 +1884,10 @@ pub struct HistoryEvent {
 }
 \end{lstlisting}
 
-The KQTF header should carry both:
+The architecture proposes that the KQTF header carry both of the following.
+This is a design target, not the implemented format: the implementation
+derives \texttt{current\_revision\_id} and \texttt{latest\_trusted\_revision\_id}
+per store (see the file history manual) and never stores them in the container.
 \begin{lstlisting}
 current_revision_id
 latest_trusted_revision_id

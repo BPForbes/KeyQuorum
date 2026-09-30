@@ -177,12 +177,15 @@ The approval is kept only in the approving store and never written into the
 revision is judged it is checked again: the bridge must still be live at the
 same generation and the signer still a member. A bridge's supervisors do not
 count, and a bridge merely existing between two labels approves nothing. A
-recipient whose store holds no such approval sees the revision as pending
-until the scope owner countersigns it. A trusted cross-branch policy decision
-records the privacy-safe alternative that satisfied it as
+recipient whose store holds no such approval sees the revision as pending.
+Under \code{author+bridge-or-owner}, a valid scope-owner countersignature
+then substitutes for the bridge approval. A trusted cross-branch policy
+decision records the alternative that satisfied it as
 \code{satisfied_by=BRIDGE}, \code{SCOPE_OWNER}, or
 \code{BRIDGE_AND_SCOPE_OWNER}. It never records a bridge id, generation,
-signer, member, or roster.
+signer, member, or roster, but \code{BRIDGE} and
+\code{BRIDGE_AND_SCOPE_OWNER} do reveal that a bridge approval took part in
+the decision, and that stays in the \file{.kqtf} and in any export of it.
 
 With the stricter \code{author+bridge+owner} rule, the scope owner's
 countersignature does not replace the bridge approval. The receiving store
@@ -340,7 +343,10 @@ line, the merge outcome and the reviewer. Revisions are shown by their user
 label first, when they have one, then the generated label and the short id.
 A build with \flag{--features tui} adds \flag{review --interactive}: the same
 view in the terminal, with Vim-style keys and mouse hover to see who wrote a
-line. On such a build, \code{file merge} opens it by itself when a person
+line. Press \code{/} to type a query and \code{Enter} to search; \code{n} and
+\code{N} repeat it forward and backward. Matching ignores case, looks for a
+substring in the active pane, and wraps around. On such a build,
+\code{file merge} opens it by itself when a person
 has to decide and the terminal is interactive. It is a viewer: its
 \code{:sign}, \code{:accept}, \code{:reject} and \code{:finalize} commands
 name the CLI command to run (\code{file resolve} for accept and reject).
