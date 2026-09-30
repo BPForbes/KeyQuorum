@@ -624,5 +624,12 @@ fn a_parent_approved_unlock_is_recorded_with_the_approval_policy_and_count() {
         assert!(success.contains(detail), "{detail}: {history}");
     }
     // Only counts and policy words: no signature or key material.
+    // Nor any key-sized hex: a signature or share would show as a long run.
+    let longest_hex = success
+        .split(|c: char| !c.is_ascii_hexdigit())
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+    assert!(longest_hex < 32, "{success}");
     assert!(!success.contains("signature"), "{success}");
 }

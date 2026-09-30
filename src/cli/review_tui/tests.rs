@@ -139,3 +139,28 @@ fn a_folded_change_is_drawn_as_its_first_line_and_a_count() {
     assert!(text.contains("▸1 folded"), "{text}");
     assert!(!text.contains("new total"), "{text}");
 }
+
+#[test]
+fn removed_and_added_text_are_drawn_on_red_and_green_backgrounds() {
+    let mut terminal = Terminal::new(TestBackend::new(70, 18)).unwrap();
+    let mut layouts = Layouts::default();
+    let state = state();
+    terminal
+        .draw(|frame| draw(frame, &state, "", &mut layouts))
+        .unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let background_of = |needle: &str| {
+        (0..buffer.area.height)
+            .find_map(|y| {
+                let row: String = (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect();
+                let x = row.find(needle)?;
+                let column = row[..x].chars().count() as u16;
+                Some(buffer[(column, y)].bg)
+            })
+            .unwrap_or_else(|| panic!("{needle} not drawn"))
+    };
+    assert_eq!(background_of("old total"), REMOVED_BACKGROUND);
+    assert_eq!(background_of("new total"), ADDED_BACKGROUND);
+}

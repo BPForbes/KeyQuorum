@@ -18,6 +18,11 @@ use std::time::Duration;
 
 use crate::file_history::ChangeKind;
 
+/// Background of a removed and an added line's text, so a change reads at a
+/// glance without relying on the `-`/`+` mark alone.
+const REMOVED_BACKGROUND: Color = Color::Rgb(0x4b, 0x1d, 0x22);
+const ADDED_BACKGROUND: Color = Color::Rgb(0x14, 0x3d, 0x22);
+
 /// Runs one [`Action`] as the given label and slot, returning the review of
 /// the history afterwards (`None` when nothing is left to review).
 pub type ActionRunner<'a> = dyn FnMut(&Action, &str, &str) -> Result<Option<ReviewView>> + 'a;
@@ -62,9 +67,9 @@ fn draw(frame: &mut Frame, state: &ReviewState, message: &str, layouts: &mut Lay
                 .into_iter()
                 .map(|index| {
                     let l = &pane.lines[index];
-                    let (mark, color) = match l.kind {
-                        ChangeKind::Removed => ('-', Color::Red),
-                        ChangeKind::Added => ('+', Color::Green),
+                    let (mark, color, tint) = match l.kind {
+                        ChangeKind::Removed => ('-', Color::Red, REMOVED_BACKGROUND),
+                        ChangeKind::Added => ('+', Color::Green, ADDED_BACKGROUND),
                     };
                     let picked = if state.is_picked(i, index) { '*' } else { ' ' };
                     let mut spans = vec![
@@ -72,7 +77,7 @@ fn draw(frame: &mut Frame, state: &ReviewState, message: &str, layouts: &mut Lay
                             format!("{picked}{mark} {:>4} ", l.number),
                             Style::new().fg(color),
                         ),
-                        Span::raw(l.text.clone()),
+                        Span::styled(l.text.clone(), Style::new().bg(tint)),
                     ];
                     if let Some(hidden) = state.fold_hidden(i, index) {
                         spans.push(Span::styled(
