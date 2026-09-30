@@ -339,7 +339,11 @@ keyquorum file graph report.txt.kqtf
 \end{lstlisting}
 
 \code{file review} prints each side's changed lines with who wrote each
-line, the merge outcome and the reviewer. Revisions are shown by their user
+line, the merge outcome and the reviewer. When the only head is a merge
+that waits to be signed, \code{file review} shows what each parent changed
+and what the merge changed (\code{LEFT PARENT}, \code{RIGHT PARENT},
+\code{MERGED}) with its trust state, and \code{file merge} opens the
+interactive review for it. Revisions are shown by their user
 label first, when they have one, then the generated label and the short id.
 A build with \flag{--features tui} adds \flag{review --interactive}: the same
 view in the terminal, with Vim-style keys and mouse hover to see who wrote a
@@ -452,8 +456,7 @@ The design this feature follows goes further than what is built. Today:
   revisions read as denied instead of keeping their meaning.
   \item Conflicts are settled a whole revision at a time (\flag{--keep} or
   \flag{--from}), not hunk by hunk. The interactive review has no folding
-  of unchanged lines or in-place editing, and \code{file merge}
-  does not open it for a clean merge waiting to be signed.
+  of unchanged lines or in-place editing.
   \item Checkouts, signature checks and exports are not recorded as events,
   and tampering is refused when a file is opened rather than recorded in it.
   \item Recording at gates is opt-in (\code{file link}) and best effort.

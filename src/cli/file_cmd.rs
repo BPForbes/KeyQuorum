@@ -2669,6 +2669,7 @@ fn merge(conn: &Connection, kqtf: &Path, as_label: &str, user_label: Option<Stri
             outln!("  merged revision {}", short(&id));
             outln!("  trust {}", trust_text(state));
             outln!("Review the result, then sign it with `keyquorum file sign`.");
+            return open_review_if_interactive(conn, kqtf);
         }
         _ => match result.selection {
             Some(ResolverSelection::Assigned { reviewer, rule, .. }) => {
@@ -2701,8 +2702,9 @@ fn open_review_if_interactive(conn: &Connection, kqtf: &Path) -> Result<()> {
 fn review_interactive(conn: &Connection, kqtf: &Path) -> Result<()> {
     let file = load_live(conn, kqtf, None, "review")?;
     let policy = policy_of(&file)?.clone();
-    let mut view = ReviewView::of(&file)
-        .ok_or_else(|| usage("nothing to review: the history does not have exactly two heads"))?;
+    let mut view = ReviewView::of(&file).ok_or_else(|| {
+        usage("nothing to review: the history has neither two heads nor one merge head")
+    })?;
     view.status = merge_status(conn, &file, &policy)?;
     super::review_tui::run(view)
 }
@@ -2753,6 +2755,9 @@ fn review(conn: &Connection, kqtf: &Path) -> Result<()> {
 /// interactive review show exactly these lines.
 fn merge_status(conn: &Connection, file: &TrackedFile, policy: &FilePolicy) -> Result<Vec<String>> {
     let heads = file.graph().heads();
+    if let [head] = heads.as_slice() {
+        return pending_merge_status(conn, file, policy, head);
+    }
     let [left, right] = heads.as_slice() else {
         return Ok(Vec::new());
     };
@@ -2785,6 +2790,37 @@ fn merge_status(conn: &Connection, file: &TrackedFile, policy: &FilePolicy) -> R
     } else {
         lines.push("  review the result, then `keyquorum file merge` and `file sign`".to_string());
     }
+    Ok(lines)
+}
+
+/// The MERGE and STATUS lines for a sole head that is a two-parent merge:
+/// its parents and where it stands, so a clean merge can be reviewed before
+/// it is signed. Empty for any other head.
+fn pending_merge_status(
+    conn: &Connection,
+    file: &TrackedFile,
+    policy: &FilePolicy,
+    head: &[u8; 32],
+) -> Result<Vec<String>> {
+    let Some(stored) = file.graph().get(head) else {
+        return Ok(Vec::new());
+    };
+    let [left, right] = stored.revision.parent_revision_ids.as_slice() else {
+        return Ok(Vec::new());
+    };
+    let state = evaluate_revision_trust(file, head, policy, &StoreTrust { conn })?;
+    let mut lines = vec![
+        "MERGE".to_string(),
+        format!("  left   {}", short(left)),
+        format!("  right  {}", short(right)),
+        format!("  merged {}", short(head)),
+        "STATUS".to_string(),
+        format!("  trust  {}", trust_text(state)),
+    ];
+    lines.push(match state {
+        TrustState::Trusted => "  merged revision is trusted".to_string(),
+        _ => "  review the result, then sign it with `keyquorum file sign`".to_string(),
+    });
     Ok(lines)
 }
 

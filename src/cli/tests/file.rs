@@ -452,6 +452,35 @@ fn a_clean_fork_merges_into_a_pending_revision_that_the_author_can_sign() {
 }
 
 #[test]
+fn a_pending_clean_merge_can_be_reviewed_before_it_is_signed() {
+    let mut env = org();
+    forked(
+        &mut env,
+        "north\n100\nsouth\n",
+        "north\n125\nsouth\n",
+        "north\n100\nsouth-east\n",
+    );
+    ok(&mut env, &format!("merge {KQTF} --as M.A"));
+
+    let review = ok(&mut env, &format!("review {KQTF}"));
+    assert!(review.contains("CHANGED LINES (LEFT PARENT)"), "{review}");
+    assert!(review.contains("CHANGED LINES (RIGHT PARENT)"), "{review}");
+    assert!(review.contains("CHANGED LINES (MERGED)"), "{review}");
+    // The merged pane carries both parents' edits, each attributed.
+    assert!(review.contains("+    2 | 125"), "{review}");
+    assert!(review.contains("+    3 | south-east"), "{review}");
+    assert!(review.contains("trust  PENDING"), "{review}");
+    assert!(review.contains("`keyquorum file sign`"), "{review}");
+
+    ok(
+        &mut env,
+        &format!("sign {KQTF} --as M.A --slot {}", slot("M.A")),
+    );
+    let review = ok(&mut env, &format!("review {KQTF}"));
+    assert!(review.contains("merged revision is trusted"), "{review}");
+}
+
+#[test]
 fn a_conflicting_fork_is_recorded_and_assigned_to_a_reviewer() {
     let mut env = org();
     forked(&mut env, "totals: 100\n", "totals: 125\n", "totals: 130\n");

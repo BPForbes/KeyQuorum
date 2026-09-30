@@ -157,77 +157,108 @@ fn blame(file: &TrackedFile, base: &[u8; 32], head: &[u8; 32]) -> Option<Blame> 
     })
 }
 
+/// One side of a review: the lines `id` changed since `base`, each with the
+/// revision on that side that wrote it (the head describes any line the
+/// replay cannot place).
+fn side_pane(file: &TrackedFile, base: Option<[u8; 32]>, side: &str, id: &[u8; 32]) -> Pane {
+    let provenance = describe(file, id);
+    let (lines, note) = match base {
+        None => (
+            Vec::new(),
+            Some("no single common ancestor: no line view".to_string()),
+        ),
+        Some(base) => match (text(file, &base), text(file, id)) {
+            (Some(old), Some(new)) => match diff_text(&old, &new) {
+                Some(changes) if changes.is_empty() => {
+                    (Vec::new(), Some("no changed lines".to_string()))
+                }
+                Some(changes) => {
+                    let blame = blame(file, &base, id);
+                    let who = |line: &crate::file_history::LineChange| {
+                        blame
+                            .as_ref()
+                            .and_then(|b| match line.kind {
+                                ChangeKind::Added => b.added_by.get(&line.line),
+                                ChangeKind::Removed => b.removed_by.get(&line.line),
+                            })
+                            .map(|rev| describe(file, rev))
+                            .unwrap_or_else(|| provenance.clone())
+                    };
+                    (
+                        changes
+                            .iter()
+                            .map(|c| ViewLine {
+                                kind: c.kind,
+                                number: c.line,
+                                text: c.text.trim_end_matches('\n').to_string(),
+                                provenance: who(c),
+                            })
+                            .collect(),
+                        None,
+                    )
+                }
+                None => (
+                    Vec::new(),
+                    Some("too large to compare: no line view".to_string()),
+                ),
+            },
+            _ => (Vec::new(), Some("not UTF-8 text: no line view".to_string())),
+        },
+    };
+    Pane {
+        heading: side.to_string(),
+        revision: provenance,
+        lines,
+        note,
+    }
+}
+
 impl ReviewView {
     /// The two sides of a forked history, each as the lines it changed
-    /// since the unique common ancestor. `None` unless there are exactly
-    /// two heads.
+    /// since the unique common ancestor; or, when the only head is a
+    /// two-parent merge, its two parents and the merged result (see
+    /// [`ReviewView::pending_merge`]). `None` for any other shape.
     pub fn of(file: &TrackedFile) -> Option<Self> {
         let heads = file.graph().heads();
-        let [left, right] = heads.as_slice() else {
+        let [left, right] = match heads.as_slice() {
+            [left, right] => [left, right],
+            [head] => return Self::pending_merge(file, head),
+            _ => return None,
+        };
+        let base = match file.graph().merge_base(left, right) {
+            MergeBase::Unique(id) => Some(id),
+            _ => None,
+        };
+        Some(Self {
+            title: format!("{} — merge review", file.logical_name),
+            panes: vec![
+                side_pane(file, base, "LEFT", left),
+                side_pane(file, base, "RIGHT", right),
+            ],
+            status: Vec::new(),
+        })
+    }
+
+    /// The merge revision waiting at a sole head: what each parent changed
+    /// since the common ancestor, and what the merge itself changed, so a
+    /// person can review a clean merge before it is signed. `None` unless
+    /// `head` has exactly two parents.
+    pub fn pending_merge(file: &TrackedFile, head: &[u8; 32]) -> Option<Self> {
+        let parents = &file.graph().get(head)?.revision.parent_revision_ids;
+        let [left, right] = parents.as_slice() else {
             return None;
         };
         let base = match file.graph().merge_base(left, right) {
             MergeBase::Unique(id) => Some(id),
             _ => None,
         };
-        let pane = |side: &str, id: &[u8; 32]| {
-            let provenance = describe(file, id);
-            let (lines, note) = match base {
-                None => (
-                    Vec::new(),
-                    Some("no single common ancestor: no line view".to_string()),
-                ),
-                Some(base) => match (text(file, &base), text(file, id)) {
-                    (Some(old), Some(new)) => match diff_text(&old, &new) {
-                        Some(changes) if changes.is_empty() => {
-                            (Vec::new(), Some("no changed lines".to_string()))
-                        }
-                        Some(changes) => {
-                            // Each line is attributed to the revision on this
-                            // side that wrote it; the head describes any
-                            // line the replay cannot place.
-                            let blame = blame(file, &base, id);
-                            let who = |line: &crate::file_history::LineChange| {
-                                blame
-                                    .as_ref()
-                                    .and_then(|b| match line.kind {
-                                        ChangeKind::Added => b.added_by.get(&line.line),
-                                        ChangeKind::Removed => b.removed_by.get(&line.line),
-                                    })
-                                    .map(|rev| describe(file, rev))
-                                    .unwrap_or_else(|| provenance.clone())
-                            };
-                            (
-                                changes
-                                    .iter()
-                                    .map(|c| ViewLine {
-                                        kind: c.kind,
-                                        number: c.line,
-                                        text: c.text.trim_end_matches('\n').to_string(),
-                                        provenance: who(c),
-                                    })
-                                    .collect(),
-                                None,
-                            )
-                        }
-                        None => (
-                            Vec::new(),
-                            Some("too large to compare: no line view".to_string()),
-                        ),
-                    },
-                    _ => (Vec::new(), Some("not UTF-8 text: no line view".to_string())),
-                },
-            };
-            Pane {
-                heading: side.to_string(),
-                revision: provenance,
-                lines,
-                note,
-            }
-        };
         Some(Self {
             title: format!("{} — merge review", file.logical_name),
-            panes: vec![pane("LEFT", left), pane("RIGHT", right)],
+            panes: vec![
+                side_pane(file, base, "LEFT PARENT", left),
+                side_pane(file, base, "RIGHT PARENT", right),
+                side_pane(file, base, "MERGED", head),
+            ],
             status: Vec::new(),
         })
     }
