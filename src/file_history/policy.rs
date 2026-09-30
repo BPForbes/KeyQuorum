@@ -257,6 +257,20 @@ pub enum GenerationEvidence {
 pub trait TrustContext {
     /// The Ed25519 signing key registered for this identity and label.
     fn signing_public(&self, identity: &[u8; 16], label: &str) -> Option<[u8; 32]>;
+
+    /// Keys this store saw `identity` hold for `label` while it held
+    /// topology `generation`, for a signature the current key does not
+    /// verify because the label was since reissued or reassigned. Only what
+    /// the store recorded itself; the default has no history.
+    fn historical_signing_publics(
+        &self,
+        _identity: &[u8; 16],
+        _label: &str,
+        _generation: u64,
+    ) -> Vec<[u8; 32]> {
+        Vec::new()
+    }
+
     fn bridge_evidence(&self, revision_id: &[u8; 32]) -> BridgeEvidence;
 
     /// A bridge's approval of `revision` under `scope_root`: what the
@@ -318,12 +332,23 @@ fn check_signature(
     proof: &RevisionProof,
     ctx: &dyn TrustContext,
 ) -> Option<bool> {
-    let public = ctx.signing_public(&proof.signer_identity, &proof.signer_label)?;
-    let ok = proof
-        .preimage(revision)
-        .and_then(|digest| signing::verify_signature(&public, &digest, &proof.signature))
-        .is_ok();
-    Some(ok)
+    let current = ctx.signing_public(&proof.signer_identity, &proof.signer_label);
+    let historical = ctx.historical_signing_publics(
+        &proof.signer_identity,
+        &proof.signer_label,
+        revision.topology_generation,
+    );
+    let mut candidates: Vec<[u8; 32]> = current.into_iter().collect();
+    candidates.extend(historical.into_iter().filter(|key| Some(*key) != current));
+    if candidates.is_empty() {
+        return None;
+    }
+    let digest = proof.preimage(revision).ok();
+    Some(digest.is_some_and(|digest| {
+        candidates
+            .iter()
+            .any(|public| signing::verify_signature(public, &digest, &proof.signature).is_ok())
+    }))
 }
 
 /// Whether `proof` is bound to `revision` and its signature verifies under
@@ -544,10 +569,20 @@ pub fn event_attested(file: &TrackedFile, sequence: u64, ctx: &dyn TrustContext)
         .iter()
         .filter(|proof| proof.sequence == sequence)
         .find(|proof| {
-            ctx.signing_public(&proof.signer_identity, &proof.signer_label)
-                .is_some_and(|public| {
-                    signing::verify_signature(&public, &digest, &proof.signature).is_ok()
-                })
+            let current = ctx.signing_public(&proof.signer_identity, &proof.signer_label);
+            let historical = event
+                .topology_generation
+                .map_or_else(Vec::new, |generation| {
+                    ctx.historical_signing_publics(
+                        &proof.signer_identity,
+                        &proof.signer_label,
+                        generation,
+                    )
+                });
+            current
+                .into_iter()
+                .chain(historical)
+                .any(|public| signing::verify_signature(&public, &digest, &proof.signature).is_ok())
         })
         .map(|proof| proof.signer_label.clone())
 }

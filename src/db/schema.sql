@@ -504,6 +504,23 @@ CREATE TABLE IF NOT EXISTS tree_generations_seen (
     PRIMARY KEY (key_id, generation)
 );
 
+-- Which identity and signing key this store saw holding each label, and for
+-- which topology generations of the tree (first through last observed).
+-- Recorded by every file command from this store's own key registry, so a
+-- revision stamped with an older generation can still be checked against the
+-- key its author held then, after the label was reissued or reassigned. A
+-- store that never ran a file command while a key was current has no
+-- evidence for it. See `authority::record_label_evidence`.
+CREATE TABLE IF NOT EXISTS label_authority_evidence (
+    scope_root      TEXT NOT NULL,
+    label           TEXT NOT NULL,
+    identity        BLOB NOT NULL CHECK (length(identity) = 16),
+    signing_public  BLOB NOT NULL CHECK (length(signing_public) = 32),
+    first_generation INTEGER NOT NULL CHECK (first_generation >= 0),
+    last_generation  INTEGER NOT NULL CHECK (last_generation >= first_generation),
+    PRIMARY KEY (scope_root, label, identity, signing_public)
+);
+
 -- Private-bridge approvals of tracked revisions, held only in this store:
 -- the KQBS artifact names the bridge, so it never travels in a `.kqtf`.
 -- `private_bridge::revision_approved` re-verifies each against the live

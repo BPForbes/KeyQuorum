@@ -796,6 +796,16 @@ impl TrustContext for StoreTrust<'_> {
         private_bridge::signing_public_for_label(self.conn, label).ok()
     }
 
+    fn historical_signing_publics(
+        &self,
+        identity: &[u8; 16],
+        label: &str,
+        generation: u64,
+    ) -> Vec<[u8; 32]> {
+        authority::historical_signing_publics(self.conn, label, identity, generation)
+            .unwrap_or_default()
+    }
+
     fn bridge_evidence(&self, _revision_id: &[u8; 32]) -> BridgeEvidence {
         BridgeEvidence::None
     }
@@ -942,11 +952,43 @@ fn utc_form(now: &str) -> Result<String> {
 fn generation_for(conn: &Connection, scope: &str) -> Result<u64> {
     let root = scope.split('.').next().unwrap_or(scope);
     let Some((key_id, generation)) = key_tree::tree_by_label(conn, root)? else {
+        note_label_authority(conn, root, 0)?;
         return Ok(0);
     };
     let generation = u64::from(generation);
     key_tree::note_generation(conn, key_id, generation)?;
+    note_label_authority(conn, root, generation)?;
     Ok(generation)
+}
+
+/// Remember which identity and signing key each label under `root` holds
+/// right now, against `generation`, so revisions stamped with it stay
+/// checkable after a label is reissued or reassigned (`authority`).
+fn note_label_authority(conn: &Connection, root: &str, generation: u64) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT label, public_key FROM hardware_keys
+         WHERE key_type = 'signing' AND revoked_at IS NULL
+           AND (label = ?1 OR label LIKE ?2 ESCAPE '\\')",
+    )?;
+    let pattern = format!(
+        "{}.%",
+        root.replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
+    let rows = stmt
+        .query_map(rusqlite::params![root, pattern], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (label, public) in rows {
+        let Ok(public) = <[u8; 32]>::try_from(public) else {
+            continue;
+        };
+        let identity = identity_for(conn, &label)?;
+        authority::record_label_evidence(conn, root, &label, &identity, &public, generation)?;
+    }
+    Ok(())
 }
 
 thread_local! {

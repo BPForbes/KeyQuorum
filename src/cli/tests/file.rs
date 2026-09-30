@@ -2947,3 +2947,43 @@ fn only_a_trusted_revision_can_be_finalized_and_only_by_the_owner_or_an_ancestor
     assert!(status.contains("finalized "), "{status}");
     assert!(!status.contains("finalized none"), "{status}");
 }
+
+#[test]
+fn a_reissued_label_keeps_the_meaning_of_its_older_signed_revisions() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    // The file command above recorded which key M.A held.
+    let path = "/home/org/keyquorum.sqlite";
+    assert!(ok(&mut env, &format!("verify {KQTF}")).contains("TRUSTED"));
+
+    // M.A is reissued: the old signing key is revoked and a new one takes
+    // the label, as after `org_update` or a new hire in the same role.
+    {
+        let conn = env.store(path);
+        let (_, new_public) = crate::keys::generate_signing_keypair();
+        conn.execute(
+            "UPDATE hardware_keys SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE label = 'M.A' AND key_type = 'signing'",
+            [],
+        )
+        .unwrap();
+        crate::keys::register_key(&conn, "M.A", crate::keys::KeyType::Signing, &new_public)
+            .unwrap();
+    }
+    // The old revision still verifies against the key this store saw M.A
+    // hold, under the generation it was stamped with.
+    let verified = ok(&mut env, &format!("verify {KQTF}"));
+    assert!(verified.contains("TRUSTED"), "{verified}");
+
+    // A store that never saw the old key cannot vouch for it.
+    {
+        let conn = env.store(path);
+        conn.execute("DELETE FROM label_authority_evidence", [])
+            .unwrap();
+    }
+    let (result, out) = run(&mut env, &format!("verify {KQTF}"));
+    assert!(
+        result.is_err() || !out.contains("TRUSTED"),
+        "no evidence, no trust: {out}"
+    );
+}

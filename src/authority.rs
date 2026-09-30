@@ -22,7 +22,7 @@ use crate::envelope::hash_len_prefixed;
 use crate::error::{Error, Result};
 use crate::private_bridge;
 use crate::signing;
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 
 const UNLOCK_DOMAIN: &[u8] = b"KQ-UNLOCK-APPROVAL-v1";
@@ -237,3 +237,60 @@ fn segment_count(label: &str) -> usize {
 #[cfg(test)]
 #[path = "authority/tests.rs"]
 mod tests;
+
+/// Remember that `label` held `identity` and signing key `public` while this
+/// store held `generation` of the tree rooted at `scope_root`. The range of
+/// generations a key was seen in only ever widens, and a retired key's range
+/// stops where the last observation of it did.
+pub fn record_label_evidence(
+    conn: &Connection,
+    scope_root: &str,
+    label: &str,
+    identity: &[u8; 16],
+    public: &[u8; 32],
+    generation: u64,
+) -> Result<()> {
+    let generation = i64::try_from(generation).map_err(|_| Error::InvalidTreeSpec)?;
+    conn.execute(
+        "INSERT INTO label_authority_evidence
+             (scope_root, label, identity, signing_public, first_generation, last_generation)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+         ON CONFLICT (scope_root, label, identity, signing_public) DO UPDATE SET
+             first_generation = MIN(first_generation, excluded.first_generation),
+             last_generation  = MAX(last_generation, excluded.last_generation)",
+        params![
+            scope_root,
+            label,
+            identity.as_slice(),
+            public.as_slice(),
+            generation
+        ],
+    )?;
+    Ok(())
+}
+
+/// The signing keys this store saw `identity` hold for `label` at
+/// `generation`: every recorded key whose observed range covers it. Empty
+/// when the store never saw one, which is not evidence either way.
+pub fn historical_signing_publics(
+    conn: &Connection,
+    label: &str,
+    identity: &[u8; 16],
+    generation: u64,
+) -> Result<Vec<[u8; 32]>> {
+    let generation = i64::try_from(generation).map_err(|_| Error::InvalidTreeSpec)?;
+    let mut stmt = conn.prepare(
+        "SELECT signing_public FROM label_authority_evidence
+         WHERE label = ?1 AND identity = ?2
+           AND first_generation <= ?3 AND ?3 <= last_generation
+         ORDER BY signing_public",
+    )?;
+    let rows = stmt.query_map(params![label, identity.as_slice(), generation], |row| {
+        row.get::<_, Vec<u8>>(0)
+    })?;
+    let mut keys = Vec::new();
+    for row in rows {
+        keys.push(row?.try_into().map_err(|_| Error::InvalidPublicKey)?);
+    }
+    Ok(keys)
+}

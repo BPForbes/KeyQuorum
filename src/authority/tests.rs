@@ -189,3 +189,33 @@ fn a_bridge_connects_an_actor_only_to_the_scope_line_it_reaches() {
     // Label shape is segment-wise: M.S never covers M.SALES.1.
     assert!(!bridge_connects("M.S", "M.A", "M.SALES.1", "M.A"));
 }
+
+#[test]
+fn label_evidence_covers_only_the_generations_a_key_was_seen_in() {
+    let conn = crate::db::open_in_memory().expect("schema");
+    let (identity, old, new) = ([1u8; 16], [2u8; 32], [3u8; 32]);
+    for generation in [1, 2, 3] {
+        record_label_evidence(&conn, "M", "M.A", &identity, &old, generation).unwrap();
+    }
+    // A reissue: a second key takes the label from generation 3 on.
+    record_label_evidence(&conn, "M", "M.A", &identity, &new, 3).unwrap();
+    record_label_evidence(&conn, "M", "M.A", &identity, &new, 5).unwrap();
+
+    let at = |generation| historical_signing_publics(&conn, "M.A", &identity, generation).unwrap();
+    assert!(at(0).is_empty(), "before the first observation");
+    assert_eq!(at(2), vec![old]);
+    assert_eq!(at(3), vec![old, new], "both were seen in generation 3");
+    assert_eq!(
+        at(4),
+        vec![new],
+        "the range stretches over unseen generations"
+    );
+    assert!(at(6).is_empty(), "after the last observation");
+    // Another identity or label never borrows the evidence.
+    assert!(historical_signing_publics(&conn, "M.A", &[9u8; 16], 2)
+        .unwrap()
+        .is_empty());
+    assert!(historical_signing_publics(&conn, "M.B", &identity, 2)
+        .unwrap()
+        .is_empty());
+}

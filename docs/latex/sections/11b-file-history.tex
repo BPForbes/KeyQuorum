@@ -450,10 +450,14 @@ The design this feature follows goes further than what is built. Today:
   \item Tracking starts with \code{file track} or the first \code{file sign}
   of a native file; nothing tracks a file on its own, and there is no way
   to request a file, so no request is ever recorded.
-  \item A store keeps which topology generations it has held, but not who
-  held each label in each generation. Signing keys come from today's
-  registry, so if a label is later given to someone else, that label's old
-  revisions read as denied instead of keeping their meaning.
+  \item A store keeps which topology generations it has held, and every
+  file command records which identity and signing key each label held
+  under the current generation. A revision stamped with an older
+  generation is also checked against the key the store saw that label hold
+  then, so it keeps its meaning after the label is reissued or reassigned.
+  A store that never ran a file command while a key was current has no
+  such record, and a retired key is honoured only for the generations it
+  was seen in, not proven to have signed at a particular time.
   \item Conflicts are settled a whole revision at a time (\flag{--keep} or
   \flag{--from}), not hunk by hunk. The interactive review has no folding
   of unchanged lines or in-place editing.

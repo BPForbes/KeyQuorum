@@ -275,7 +275,12 @@ signing `signing::file_history_event_preimage`), written only when one exists;
 key for that actor verifies it. Unsigned events stay hash-chained, never attested. `file checkout`, `file verify` and `export tracked-file` append
 `REVISION_CHECKED_OUT` (36), `VERIFICATION_RUN` (37) and `HISTORY_EXPORTED` (38)
 only under `--record`, attributed only to the label `--as` names; that label is a
-claim, so the event is hash-chained and never attested.
+claim, so the event is hash-chained and never attested. `label_authority_evidence` (owned by `authority`: `record_label_evidence`,
+`historical_signing_publics`) is what every file command records, from the store's own
+registry, of the identity and signing key each label held per topology generation;
+`TrustContext::historical_signing_publics` lets a revision or event stamped with an
+older generation verify against that key after a reissue. It is the store's own
+observation, never taken from a `.kqtf`.
 `file_history/expiry.rs` ends a tracked file: an `EXPIRY_SCHEDULED` event
 sets the time, and destruction removes every retained revision's payload at
 once (container v5 lets a payload be absent; v4 still decodes).
