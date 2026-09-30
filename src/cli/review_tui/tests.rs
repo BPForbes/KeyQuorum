@@ -226,5 +226,10 @@ fn context_lines_are_drawn_dimmed_and_unmarked() {
     let marker = cell_of("   1 ");
     assert_eq!(marker.fg, Color::DarkGray);
     assert_eq!(cell_of("kept line").bg, Color::Reset);
+    assert_eq!(
+        cell_of("kept line").fg,
+        Color::DarkGray,
+        "the text is dimmed too"
+    );
     assert_eq!(cell_of("new total").bg, ADDED_BACKGROUND);
 }

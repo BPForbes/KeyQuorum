@@ -78,7 +78,14 @@ fn draw(frame: &mut Frame, state: &ReviewState, message: &str, layouts: &mut Lay
                             format!("{picked}{mark} {:>4} ", l.number),
                             Style::new().fg(color),
                         ),
-                        Span::styled(l.text.clone(), Style::new().bg(tint)),
+                        Span::styled(
+                            l.text.clone(),
+                            if l.context {
+                                Style::new().fg(Color::DarkGray)
+                            } else {
+                                Style::new().bg(tint)
+                            },
+                        ),
                     ];
                     if let Some(hidden) = state.fold_hidden(i, index) {
                         spans.push(Span::styled(
