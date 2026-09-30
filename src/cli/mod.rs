@@ -740,9 +740,9 @@ pub enum ExportCommand {
         #[arg(long)]
         output: PathBuf,
     },
-    /// Export a complete tracked KQTF file, sealed to a recipient's public key
+    /// Export a complete tracked-file container, sealed to a recipient's public key
     TrackedFile {
-        kqtf: PathBuf,
+        file: PathBuf,
         #[arg(long)]
         recipient_key_file: PathBuf,
         #[arg(long)]
@@ -2151,17 +2151,19 @@ fn run_export(conn: &Connection, command: ExportCommand) -> Result<()> {
             outln!("Exported file {id} to {}", output.display());
         }
         ExportCommand::TrackedFile {
-            kqtf,
+            file,
             recipient_key_file,
             output,
         } => {
             let recipient_public_key = read_key_array_32(&recipient_key_file)?;
-            let container = env::read(&kqtf)?;
+            // KQTF is a binary container. Keep it as bytes; the exporter
+            // decodes it to refuse a malformed or tampered artifact.
+            let container = env::read(&file)?;
             let bundle = export::export_tracked_file(&container, &recipient_public_key)?;
             env::write_new(&output, &bundle)?;
             outln!(
                 "Exported tracked file {} to {}",
-                kqtf.display(),
+                file.display(),
                 output.display()
             );
         }

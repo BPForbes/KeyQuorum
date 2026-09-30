@@ -78,32 +78,6 @@ fn edit(env: &mut MemoryEnv, text: &str) {
 }
 
 #[test]
-fn export_tracked_file_seals_the_complete_kqtf() {
-    let mut env = org();
-    track(&mut env, "M.A", "M.A");
-    let secret = crypto_box::SecretKey::generate(&mut rand::rngs::OsRng);
-    env.fs
-        .write_new(
-            Path::new("/work/recipient.pub"),
-            secret.public_key().as_bytes(),
-        )
-        .unwrap();
-
-    let (result, output) = env.keyquorum(&format!(
-        "keyquorum {DB} export tracked-file {KQTF} \
-         --recipient-key-file /work/recipient.pub --output /work/report.kqxb"
-    ));
-    assert!(result.is_ok(), "{result:?}\n{output}");
-
-    let bundle = env.fs.read(Path::new("/work/report.kqxb")).unwrap();
-    assert_eq!(&bundle[..6], b"KQXB\x01\x03");
-    let sealed_len = u32::from_be_bytes(bundle[38..42].try_into().unwrap()) as usize;
-    let container = secret.unseal(&bundle[42..42 + sealed_len]).unwrap();
-    assert_eq!(container, env.fs.read(Path::new(KQTF)).unwrap());
-    crate::file_history::TrackedFile::decode(&container).unwrap();
-}
-
-#[test]
 fn tracking_writes_a_signed_trusted_container() {
     let mut env = org();
     let out = track(&mut env, "M.A", "M.A");
@@ -1268,6 +1242,37 @@ fn a_snapshot_exports_verifies_and_matches_its_file() {
         &format!("history {KQTF} --export /work/snap.kqhs"),
     );
     assert!(result.is_err());
+}
+
+#[test]
+fn export_tracked_file_seals_the_complete_binary_kqtf() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    let original = env.fs.read(Path::new(KQTF)).unwrap();
+    assert!(std::str::from_utf8(&original).is_err());
+
+    let recipient = crypto_box::SecretKey::generate(&mut rand::rngs::OsRng);
+    env.fs
+        .write_new(
+            Path::new("/keys/recipient.pub"),
+            hex::encode(recipient.public_key().as_bytes()).as_bytes(),
+        )
+        .unwrap();
+    ok_keyquorum(
+        &mut env,
+        &format!(
+            "export tracked-file {KQTF} --recipient-key-file /keys/recipient.pub \
+             --output /work/report.kqxb"
+        ),
+    );
+
+    let bundle = env.fs.read(Path::new("/work/report.kqxb")).unwrap();
+    assert_eq!(&bundle[..6], b"KQXB\x01\x03");
+    let sealed_len = u32::from_be_bytes(bundle[38..42].try_into().unwrap()) as usize;
+    let plaintext = recipient.unseal(&bundle[42..42 + sealed_len]).unwrap();
+    let name_len = u16::from_be_bytes(plaintext[..2].try_into().unwrap()) as usize;
+    assert_eq!(&plaintext[2..2 + name_len], b"report.txt");
+    assert_eq!(&plaintext[2 + name_len..], original);
 }
 
 // ---- tracked delivery ------------------------------------------------------
