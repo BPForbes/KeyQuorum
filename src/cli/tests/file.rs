@@ -3095,6 +3095,7 @@ fn review_actions_run_the_real_commands_and_are_refused_like_them() {
     forked(&mut env, "totals: 100\n", "totals: 125\n", "totals: 130\n");
     ok(&mut env, &format!("merge {KQTF} --as M.A"));
     let result = Action::Result("totals: 128\n".to_string());
+    let before_refusal = env.fs.read(Path::new(KQTF)).unwrap();
     let err = review_action(&mut env, &result, "M.A.1")
         .unwrap_err()
         .to_string();
@@ -3103,6 +3104,11 @@ fn review_actions_run_the_real_commands_and_are_refused_like_them() {
         load(&env).graph().heads().len(),
         2,
         "refused: nothing changed"
+    );
+    assert_eq!(
+        env.fs.read(Path::new(KQTF)).unwrap(),
+        before_refusal,
+        "the refused action left the container byte for byte as it was"
     );
     review_action(&mut env, &result, "M.A").unwrap();
     assert_eq!(load(&env).graph().heads().len(), 1);

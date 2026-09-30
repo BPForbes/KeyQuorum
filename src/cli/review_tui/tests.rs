@@ -203,4 +203,28 @@ fn context_lines_are_drawn_dimmed_and_unmarked() {
         "{text}"
     );
     assert!(!text.contains("+    1 kept line"), "{text}");
+
+    // The unchanged line is dimmed and carries no change background; the
+    // change keeps its green background.
+    let mut terminal = Terminal::new(TestBackend::new(70, 18)).unwrap();
+    let mut layouts = Layouts::default();
+    terminal
+        .draw(|frame| draw(frame, &state, "", &mut layouts))
+        .unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let cell_of = |needle: &str| {
+        (0..buffer.area.height)
+            .find_map(|y| {
+                let row: String = (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect();
+                let x = row.find(needle)?;
+                Some(buffer[(row[..x].chars().count() as u16, y)].clone())
+            })
+            .unwrap_or_else(|| panic!("{needle} not drawn"))
+    };
+    let marker = cell_of("   1 ");
+    assert_eq!(marker.fg, Color::DarkGray);
+    assert_eq!(cell_of("kept line").bg, Color::Reset);
+    assert_eq!(cell_of("new total").bg, ADDED_BACKGROUND);
 }
