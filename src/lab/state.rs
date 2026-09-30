@@ -28,9 +28,14 @@ use rusqlite::Connection;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+mod history;
+
 const ACTIVITY_LIMIT: usize = 80;
 const SRV: &str = "/srv/keyquorum";
 const ARCHIVE: &str = "/srv/archive";
+const TRACKED_DIR: &str = "/srv/keyquorum/tracked";
+/// The store the seeded tracked files are made with: their author's own.
+const SEED_TRACKER_STORE: &str = "/home/sarah/keyquorum.sqlite";
 
 struct LabUser {
     id: String,
@@ -207,6 +212,14 @@ pub struct LabState {
     file_shares: Vec<FileShare>,
     signatures: Vec<SignedFile>,
     next_signature_id: i64,
+    /// Tracked-file containers whose history the activity log follows.
+    tracked: Vec<history::Tracked>,
+    /// Tracked-file letters handed between people in the lab.
+    letters: Vec<history::TrackedLetter>,
+    next_letter_id: i64,
+    /// Request letters (`file request`) and their answers.
+    requests: Vec<history::TrackedRequest>,
+    next_request_id: i64,
 }
 
 impl LabState {
@@ -252,6 +265,11 @@ impl LabState {
             file_shares: Vec::new(),
             signatures: Vec::new(),
             next_signature_id: 1,
+            tracked: Vec::new(),
+            letters: Vec::new(),
+            next_letter_id: 1,
+            requests: Vec::new(),
+            next_request_id: 1,
         };
         let commands = state.provision()?;
         let home = state.actor().home();
@@ -521,6 +539,10 @@ impl LabState {
             }
         }
 
+        // Tracked files with a history, made by real `keyquorum file`
+        // commands while every drive is still connected.
+        commands.set(commands.get() + self.seed_tracked()?);
+
         for drive in seed::DRIVES {
             if !drive.inserted {
                 if let Some(mock) = self.vm_mut().bay.get_mut(drive.id) {
@@ -529,6 +551,112 @@ impl LabState {
             }
         }
         Ok(commands.get())
+    }
+
+    /// Three tracked files, each ending somewhere different: a newer
+    /// unsigned edit that shares the last trusted revision, two edits by
+    /// Alice and Bob that auto-merge, and two edits to one line that go to
+    /// a person (Sarah, who wrote the trusted base). Every
+    /// step is a real `keyquorum file` command; the history is then read
+    /// back from the containers into the activity log.
+    fn seed_tracked(&mut self) -> Result<usize> {
+        let count = std::cell::Cell::new(0usize);
+        let run = |state: &mut Self, line: String| -> Result<CommandRun> {
+            count.set(count.get() + 1);
+            state.checked(&line)
+        };
+        let mount = |label: &str| -> Result<String> {
+            seed::DRIVES
+                .iter()
+                .find(|drive| drive.slots.contains(&label))
+                .map(|drive| format!("{}={label}", drive.mount))
+                .ok_or(Error::NodeNotFound)
+        };
+        let sarah = mount("M.S")?;
+        let dir = TRACKED_DIR;
+        let file = |name: &str| format!("{dir}/{name}.kqtf");
+        let edit = |state: &mut Self, name: &str, text: &str| -> Result<String> {
+            let path = format!("{dir}/{name}");
+            state.write_file(Path::new(&path), text.as_bytes())?;
+            Ok(path)
+        };
+        let db = format!("keyquorum --db {} file", SEED_TRACKER_STORE);
+
+        // 1. A newer edit nobody has signed: sharing falls back.
+        let source = edit(self, "budget.txt", "Q4 budget: 120000\n")?;
+        run(
+            self,
+            format!(
+                "{db} track {source} --scope M.S --as M.S --slot {sarah} --label \"Q4 baseline\""
+            ),
+        )?;
+        let later = edit(self, "budget-edit.txt", "Q4 budget: 125000\n")?;
+        run(
+            self,
+            format!(
+                "{db} checkin {} --from {later} --as M.S --unsigned --label \"Late edit, unsigned\"",
+                file("budget.txt")
+            ),
+        )?;
+        run(
+            self,
+            format!(
+                "{db} share {} --to M --as M.S --slot {sarah} --output-dir {dir}/outbox",
+                file("budget.txt")
+            ),
+        )?;
+
+        // 2 and 3. Two people edit their own copy, then bring them together.
+        for (name, base, alice_text, bob_text, label) in [
+            (
+                "forecast.txt",
+                "north 10\nsouth 20\neast 30\n",
+                "north 10\nsouth 20\neast 35\n",
+                "north 12\nsouth 20\neast 30\n",
+                "Merged forecast",
+            ),
+            (
+                "memo.txt",
+                "Owner: TBD\nBudget: 100\n",
+                "Owner: TBD\nBudget: 110\n",
+                "Owner: TBD\nBudget: 90\n",
+                "Merged memo",
+            ),
+        ] {
+            let source = edit(self, name, base)?;
+            run(
+                self,
+                format!("{db} track {source} --scope M.S --as M.S --slot {sarah}"),
+            )?;
+            let original = file(name);
+            let copy = format!("{dir}/{name}.bob.kqtf");
+            let bytes = self.vm().read(Path::new(&original))?;
+            self.write_file(Path::new(&copy), &bytes)?;
+            let a = edit(self, &format!("{name}.alice"), alice_text)?;
+            let b = edit(self, &format!("{name}.bob"), bob_text)?;
+            run(
+                self,
+                format!("{db} checkin {original} --from {a} --as M.S.1 --unsigned"),
+            )?;
+            run(
+                self,
+                format!("{db} checkin {copy} --from {b} --as M.S.2 --unsigned"),
+            )?;
+            run(
+                self,
+                format!("{db} import {original} --from {copy} --as M.S"),
+            )?;
+            run(
+                self,
+                format!("{db} merge {original} --as M.S --label \"{label}\""),
+            )?;
+        }
+
+        for name in ["budget.txt", "forecast.txt", "memo.txt"] {
+            self.register_tracked(Path::new(&file(name)));
+        }
+        self.sync_history();
+        Ok(count.get())
     }
 
     /// Lock (or publish) one seeded file the way an administrator would.
@@ -2959,6 +3087,12 @@ impl LabState {
         trace: Vec<TraceStep>,
         command: Option<String>,
     ) {
+        // History the action just wrote goes in first, so the action's own
+        // entry stays the newest one (tutorial gates read `activity[0]`).
+        if let Some(line) = &command {
+            self.register_from_command(line);
+        }
+        self.sync_history();
         let actor = self.actor();
         self.activity.push(ActivityView {
             seq: self.next_seq,
@@ -2968,6 +3102,7 @@ impl LabState {
             title: title.to_string(),
             trace,
             command,
+            history: None,
         });
         self.next_seq += 1;
         if self.activity.len() > ACTIVITY_LIMIT {
@@ -3265,6 +3400,9 @@ impl LabState {
             file_shares: self.file_share_views(),
             signatures: self.signature_views(),
             pending_restructures: self.pending_restructure_views()?,
+            tracked_files: self.tracked_views(),
+            tracked_letters: self.letter_views(),
+            tracked_requests: self.request_views(),
         })
     }
 

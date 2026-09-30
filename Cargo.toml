@@ -28,6 +28,10 @@ provider = [
 # wasm-bindgen when built for wasm32. Demonstration only; never combined
 # with `provider` in a wasm32 build (see the guard in lib.rs).
 lab = ["dep:wasm-bindgen"]
+# Interactive review terminal UI (`keyquorum file review --interactive`).
+# Presentation only, over `cli::review_view`; native-only, never part of
+# the wasm32 lab build.
+tui = ["dep:ratatui"]
 
 [[bin]]
 name = "keyquorum"
@@ -62,6 +66,7 @@ utoipa-swagger-ui = { version = "9", optional = true, features = ["axum"] }
 url = "2"
 tracing = { version = "0.1", optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
+ratatui = { version = "0.30", optional = true }
 tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter"] }
 
 # Terminal prompts and the HTTPS relay client are native-only: the browser

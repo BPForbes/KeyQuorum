@@ -31,6 +31,13 @@ mod deliver_cmd;
 mod device_cmd;
 pub mod device_tool;
 pub mod env;
+pub(crate) mod file_cmd;
+mod gate_link;
+#[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
+mod review_tui;
+mod review_view;
+use crate::file_history::{EventDetails, HistoryEventType, HistoryOutcome};
+use gate_link::Gate;
 #[cfg(feature = "provider")]
 pub mod host_args;
 mod transfer_cmd;
@@ -353,6 +360,11 @@ pub enum Command {
     Deliver {
         #[command(subcommand)]
         command: deliver_cmd::DeliverCommand,
+    },
+    /// Track files with a signed, hash-chained revision history
+    File {
+        #[command(subcommand)]
+        command: file_cmd::FileCommand,
     },
     /// Push and pull opaque .kqpb envelopes through the mailbox relay
     Relay {
@@ -728,6 +740,20 @@ pub enum ExportCommand {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Export a complete tracked-file container, sealed to a recipient's public key
+    TrackedFile {
+        file: PathBuf,
+        #[arg(long)]
+        recipient_key_file: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        /// Record this export in the source file's history
+        #[arg(long)]
+        record: bool,
+        /// With --record: the label to attribute it to (else no one)
+        #[arg(long = "as", requires = "record")]
+        as_label: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -939,6 +965,7 @@ fn run_in_store(conn: &mut Connection, command: Command) -> Result<()> {
         Command::Share { command } => run_share(conn, command)?,
         Command::Pin { command } => run_pin(conn, command)?,
         Command::Deliver { command } => deliver_cmd::run(conn, command)?,
+        Command::File { command } => file_cmd::run(conn, command)?,
         Command::Device { command } => device_cmd::run(conn, command)?,
         Command::Transfer { .. } | Command::Relay { .. } | Command::Loadkey { .. } => {
             unreachable!("transfer and relay commands are handled before opening the org db")
@@ -1270,6 +1297,7 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
         | Command::Share { .. }
         | Command::Pin { .. }
         | Command::Deliver { .. }
+        | Command::File { .. }
         | Command::Relay { .. }
         | Command::Loadkey { .. }
         | Command::Device { .. }
@@ -1861,14 +1889,23 @@ fn run_access_password(conn: &Connection, args: AccessPasswordArgs) -> Result<()
         }
         1 => {
             let id = require(args.id, "id")?;
-            locked_files::purge_if_expired_in(&mut env::EnvStorage, conn, id)?;
-            if pin::verification_required(conn, ResourceType::LockedFile, id)? {
-                let pin_value = prompt_secret("PIN: ")?;
-                pin::verify_pin(conn, ResourceType::LockedFile, id, &pin_value)?;
-            }
-            let password = prompt_secret("Unlock password: ")?;
-            let plaintext =
-                locked_files::unlock_file_in(&mut env::EnvStorage, conn, id, &password)?;
+            gate_link::note_if_gone(Gate::Password, conn, id);
+            let mut pin_step = gate_link::PinStep::NotRequired;
+            let attempt = (|| -> Result<Vec<u8>> {
+                locked_files::purge_if_expired_in(&mut env::EnvStorage, conn, id)?;
+                check_pin(conn, ResourceType::LockedFile, id, &mut pin_step)?;
+                let password = prompt_secret("Unlock password: ")?;
+                locked_files::unlock_file_in(&mut env::EnvStorage, conn, id, &password)
+            })();
+            gate_link::record_unlock_with(
+                Gate::Password,
+                conn,
+                id,
+                attempt.as_ref().err(),
+                &[],
+                &pin_step.detail(),
+            );
+            let plaintext = attempt?;
             match args.output {
                 Some(path) => env::write_new(&path, &plaintext)?,
                 None => env::stdout_bytes(&plaintext)?,
@@ -1956,10 +1993,34 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
             // Before anything else: an expired file is destroyed on the
             // first unlock attempt, whether or not the presented shares
             // would have reconstructed it (see quorum::unlock_file_with_approval).
-            quorum::purge_if_expired_in(&mut env::EnvStorage, conn, id)?;
+            gate_link::note_if_gone(Gate::Quorum, conn, id);
+            if let Err(err) = quorum::purge_if_expired_in(&mut env::EnvStorage, conn, id) {
+                gate_link::record_unlock(Gate::Quorum, conn, id, Some(&err), &[]);
+                return Err(err);
+            }
             let file_status = quorum::status(conn, id)?;
             let shares =
                 collect_shares(conn, &file_status.tree.root, &args.share_files, &args.slots)?;
+            // What the gate's history may say about this attempt: counts and
+            // the policy it ran under, never a share, key or device secret.
+            let policy = device::custody_policy(conn, file_status.tree.key_id)?;
+            let mut safe = vec![
+                ("shares", shares.len().to_string()),
+                (
+                    "threshold",
+                    file_status
+                        .tree
+                        .root
+                        .threshold
+                        .map_or_else(|| "-".to_string(), |t| t.to_string()),
+                ),
+                ("custody", policy.mode.as_str().to_string()),
+                (
+                    "minimum_devices",
+                    policy.minimum_physical_devices.to_string(),
+                ),
+                ("approval", policy.unlock_approval.as_str().to_string()),
+            ];
             if args.verbose {
                 let mut leaves = Vec::new();
                 collect_leaves(&file_status.tree.root, &mut leaves);
@@ -1982,11 +2043,19 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
                     Ok(presented) => presented,
                     Err(err) => {
                         quorum::record_unlock_failure(conn, id, &err)?;
+                        gate_link::record_unlock_with(
+                            Gate::Quorum,
+                            conn,
+                            id,
+                            Some(&err),
+                            &[],
+                            &safe,
+                        );
                         return Err(err);
                     }
                 };
+            safe.push(("devices", presented.devices.len().to_string()));
             if args.verbose {
-                let policy = device::custody_policy(conn, file_status.tree.key_id)?;
                 let used: Vec<&str> = presented
                     .leaves
                     .iter()
@@ -2011,9 +2080,12 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
                     let mut secret = presented.secret;
                     secret.zeroize();
                     quorum::record_unlock_failure(conn, id, &err)?;
+                    safe.push(("approvals", "missing".to_string()));
+                    gate_link::record_unlock_with(Gate::Quorum, conn, id, Some(&err), &[], &safe);
                     return Err(err);
                 }
             };
+            safe.push(("approvals", grants.len().to_string()));
             if args.verbose {
                 for grant in &grants {
                     errln!(
@@ -2023,8 +2095,22 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
                     );
                 }
             }
-            let plaintext =
-                quorum::complete_unlock_in(&mut env::EnvStorage, conn, id, presented, &grants)?;
+            let presented_labels: Vec<String> = presented
+                .leaves
+                .iter()
+                .map(|leaf| leaf.leaf_label.clone())
+                .collect();
+            let unlocked =
+                quorum::complete_unlock_in(&mut env::EnvStorage, conn, id, presented, &grants);
+            gate_link::record_unlock_with(
+                Gate::Quorum,
+                conn,
+                id,
+                unlocked.as_ref().err(),
+                &presented_labels,
+                &safe,
+            );
+            let plaintext = unlocked?;
             match args.output {
                 Some(path) => env::write_new(&path, &plaintext)?,
                 None => env::stdout_bytes(&plaintext)?,
@@ -2069,6 +2155,38 @@ fn run_export(conn: &Connection, command: ExportCommand) -> Result<()> {
             )?;
             env::write_new(&output, &bundle)?;
             outln!("Exported file {id} to {}", output.display());
+        }
+        ExportCommand::TrackedFile {
+            file,
+            recipient_key_file,
+            output,
+            record,
+            as_label,
+        } => {
+            let recipient_public_key = read_key_array_32(&recipient_key_file)?;
+            // KQTF is a binary container. Keep it as bytes; the exporter
+            // decodes it to refuse a malformed or tampered artifact.
+            let container = env::read(&file)?;
+            let bundle = export::export_tracked_file(&container, &recipient_public_key)?;
+            env::write_new(&output, &bundle)?;
+            outln!(
+                "Exported tracked file {} to {}",
+                file.display(),
+                output.display()
+            );
+            if record {
+                // The bundle above holds the container as it was sent; the
+                // event lands in the sender's copy only.
+                file_cmd::record_access(
+                    conn,
+                    &file,
+                    HistoryEventType::HistoryExported,
+                    HistoryOutcome::Success,
+                    None,
+                    as_label.as_deref(),
+                    EventDetails::new().with("bundle_type", "3"),
+                )?;
+            }
         }
     }
     Ok(())
@@ -2375,6 +2493,64 @@ fn relay_in_store(conn: &Connection, command: RelayCommand) -> Result<()> {
                     outln!("Wrote {}", path.display());
                 }
                 let kind = crate::envelope::kind(&bytes)?;
+                if kind == crate::envelope::KIND_FILE_HISTORY_SNAPSHOT {
+                    // Opened by `file open-history`; nothing to import.
+                    outln!(
+                        "Envelope {} is a tracked-file history snapshot; open it with `keyquorum file open-history`",
+                        item.id
+                    );
+                    continue;
+                }
+                if kind == crate::envelope::KIND_FILE_REQUEST
+                    || kind == crate::envelope::KIND_FILE_REQUEST_ANSWER
+                {
+                    // Opened by `file open-request` / `file open-answer`;
+                    // a request asks and an answer says yes or no, so there
+                    // is nothing to import.
+                    outln!(
+                        "Envelope {} is a file {}; open it with `keyquorum file {}`",
+                        item.id,
+                        if kind == crate::envelope::KIND_FILE_REQUEST {
+                            "request"
+                        } else {
+                            "request answer"
+                        },
+                        if kind == crate::envelope::KIND_FILE_REQUEST {
+                            "open-request"
+                        } else {
+                            "open-answer"
+                        }
+                    );
+                    continue;
+                }
+                if kind == crate::envelope::KIND_FILE_HISTORY
+                    || kind == crate::envelope::KIND_FILE_HISTORY_ACK
+                {
+                    // Tracked-file letters are opened by `file receive` and
+                    // `file ack`, not imported into the store.
+                    if share_sk.is_some() {
+                        outln!(
+                            "Envelope {} is a tracked-file {}; open it with `keyquorum file {}`{}",
+                            item.id,
+                            if kind == crate::envelope::KIND_FILE_HISTORY {
+                                "letter"
+                            } else {
+                                "acknowledgement"
+                            },
+                            if kind == crate::envelope::KIND_FILE_HISTORY {
+                                "receive"
+                            } else {
+                                "ack"
+                            },
+                            if output_dir.is_some() {
+                                ""
+                            } else {
+                                " (pass --output-dir to keep it)"
+                            }
+                        );
+                    }
+                    continue;
+                }
                 if kind == crate::envelope::KIND_FILE_DELIVERY
                     || kind == crate::envelope::KIND_FILE_DELIVERY_ACK
                 {
@@ -2528,6 +2704,14 @@ fn run_share(conn: &Connection, command: ShareCommand) -> Result<()> {
                     max_uses,
                 )?,
             };
+            gate_link::record_share(
+                conn,
+                file_id,
+                HistoryEventType::ShareLinkCreated,
+                None,
+                share.id,
+                &[("expires_at", share.expires_at.clone())],
+            );
             if set_pin_flag {
                 let pin_value = prompt_secret("Set a 4-digit PIN for this share: ")?;
                 pin::set_pin(
@@ -2553,13 +2737,35 @@ fn run_share(conn: &Connection, command: ShareCommand) -> Result<()> {
         }
         ShareCommand::RedeemFile => {
             let token = prompt_secret("File share token: ")?;
-            sharing::purge_expired_file_share_in(&mut env::EnvStorage, conn, &token)?;
-            let share_id = sharing::file_share_id_for_token(conn, &token)?;
-            if pin::verification_required(conn, ResourceType::FileShare, share_id)? {
-                let pin_value = prompt_secret("PIN: ")?;
-                pin::verify_pin(conn, ResourceType::FileShare, share_id, &pin_value)?;
+            // Read before anything can purge the file and its share rows.
+            let known = gate_link::share_of_token(conn, &token);
+            let mut pin_step = gate_link::PinStep::NotRequired;
+            let attempt = (|| -> Result<i64> {
+                sharing::purge_expired_file_share_in(&mut env::EnvStorage, conn, &token)?;
+                let share_id = sharing::file_share_id_for_token(conn, &token)?;
+                check_pin(conn, ResourceType::FileShare, share_id, &mut pin_step)?;
+                sharing::redeem_file_share_in(&mut env::EnvStorage, conn, &token)
+            })();
+            // A share link is a bearer credential: whoever holds the token
+            // redeems it, and nothing here proves who that is.
+            let mut redeem_details = vec![("redeemer", "UNKNOWN_BEARER".to_string())];
+            redeem_details.extend(pin_step.detail());
+            if let Some((share_id, file_id)) = known {
+                match attempt.as_ref().err() {
+                    Some(Error::FileExpired) => {
+                        gate_link::record_expiry(gate_link::Gate::Password, conn, file_id)
+                    }
+                    failure => gate_link::record_share(
+                        conn,
+                        file_id,
+                        HistoryEventType::ShareLinkRedeemed,
+                        failure,
+                        share_id,
+                        &redeem_details,
+                    ),
+                }
             }
-            let file_id = sharing::redeem_file_share_in(&mut env::EnvStorage, conn, &token)?;
+            let file_id = attempt?;
             outln!("Redeemed file {file_id}");
         }
         ShareCommand::RevokeCredential { share_id } => {
@@ -2567,11 +2773,41 @@ fn run_share(conn: &Connection, command: ShareCommand) -> Result<()> {
             outln!("Revoked credential share {share_id}");
         }
         ShareCommand::RevokeFile { share_id } => {
-            sharing::revoke_file_share(conn, share_id)?;
+            let file_id = gate_link::file_of_share(conn, share_id);
+            let revoked = sharing::revoke_file_share(conn, share_id);
+            if let Some(file_id) = file_id {
+                gate_link::record_share(
+                    conn,
+                    file_id,
+                    HistoryEventType::ShareLinkRevoked,
+                    revoked.as_ref().err(),
+                    share_id,
+                    &[],
+                );
+            }
+            revoked?;
             outln!("Revoked file share {share_id}");
         }
     }
     Ok(())
+}
+
+/// Ask for the PIN when the resource needs one, tracking how far the check
+/// got so the gate's history can say so (the outcome only, never the PIN).
+fn check_pin(
+    conn: &Connection,
+    resource: ResourceType,
+    id: i64,
+    step: &mut gate_link::PinStep,
+) -> Result<()> {
+    if !pin::verification_required(conn, resource, id)? {
+        return Ok(());
+    }
+    *step = gate_link::PinStep::Asked;
+    let pin_value = prompt_secret("PIN: ")?;
+    let result = pin::verify_pin(conn, resource, id, &pin_value);
+    *step = gate_link::PinStep::from_result(&result);
+    result
 }
 
 fn run_pin(conn: &Connection, command: PinCommand) -> Result<()> {

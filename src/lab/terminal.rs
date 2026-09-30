@@ -14,6 +14,8 @@ pub const HELP: &[&str] = &[
     "keyquorum ...               the real CLI (try `keyquorum --help`)",
     "keyquorum-device ...        the real device tool",
     "bridge ...                  shorthand for keyquorum --db <org store> bridge ...",
+    "keyquorum --db /home/<you>/keyquorum.sqlite file ...   tracked files (see the Activity tab)",
+    "                            (use full paths: ~ is not expanded inside arguments)",
     "",
     "whoami                      active identity",
     "users                       list lab users",

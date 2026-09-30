@@ -111,7 +111,25 @@ export interface ActivityView {
   title: string;
   trace: TraceStep[];
   command: string | null;
+  /**
+   * The fields below are present only on entries read back from a tracked
+   * file's history (`kind === "history"`); every other entry omits them.
+   */
+  fileId?: string;
+  fileName?: string;
+  historyEventType?: string;
+  historyCategory?: HistoryCategory;
+  /** The event's own hash: the file's history root as of this event. */
+  historyRoot?: string;
+  revisionId?: string;
+  generatedLabel?: string;
+  userLabel?: string;
+  parentRevisionIds?: string[];
+  /** The revision's trust under the file's policy: trusted, pending or denied. */
+  finalizationState?: "trusted" | "pending" | "denied";
 }
+
+export type HistoryCategory = "file" | "revision" | "security" | "sharing" | "conflict";
 
 export interface AccessView {
   fileId: string;
@@ -204,6 +222,87 @@ export interface Snapshot {
   fileShares: FileShareView[];
   signatures: SignatureView[];
   pendingRestructures: RestructureProposalView[];
+  /** Tracked files the activity log follows, judged by the active person's store. */
+  trackedFiles: TrackedFileView[];
+  /** Tracked-file letters handed between people. */
+  trackedLetters: TrackedLetterView[];
+  /** Requests for a file or a change, and their answers. */
+  trackedRequests: TrackedRequestView[];
+}
+
+export interface TrackedRevisionView {
+  id: string;
+  generatedLabel: string;
+  userLabel: string | null;
+  author: string;
+  createdAt: string;
+  parents: string[];
+  head: boolean;
+  trust: "trusted" | "pending" | "denied" | "unknown";
+  reason: string | null;
+  /** Finalized by the scope owner or an ancestor, as this store judges it. */
+  finalized: boolean;
+  /** The revision's text, when it is UTF-8 and small enough to edit here. */
+  text: string | null;
+}
+
+export interface TrackedFileView {
+  /** The sole head, or null when the history has forked. */
+  currentRevision: string | null;
+  /** The latest revision this store trusts; not always the current one. */
+  trustedRevision: string | null;
+  /** The latest finalized revision behind the sole head; null on a fork. */
+  finalizedRevision: string | null;
+  path: string;
+  name: string;
+  fileId: string;
+  scope: string;
+  /** The lab user whose home holds the container; null for shared ones. */
+  owner: string | null;
+  autoMerge: boolean;
+  forked: boolean;
+  historyLen: number;
+  historyRoot: string;
+  /** Oldest first. */
+  revisions: TrackedRevisionView[];
+  /** The revision `file share` would send from the sole head, if any. */
+  shareable: string | null;
+  /** The scheduled expiry (`YYYY-MM-DDTHH:MM:SSZ`), if one was set. */
+  expiresAt: string | null;
+  /** Whether every revision's content was destroyed at expiry. */
+  destroyed: boolean;
+  /** History snapshots (`KQHS`) exported from this file in the lab. */
+  snapshots: string[];
+  /** Quorum or password files whose gate records into this history. */
+  links: { gate: "quorum" | "password"; id: number }[];
+}
+
+export interface TrackedLetterView {
+  id: number;
+  fileName: string;
+  from: string;
+  fromName: string;
+  fromLabel: string;
+  to: string;
+  toName: string;
+  toLabel: string;
+  status: "waiting" | "accepted" | "rejected";
+  ackRecorded: boolean;
+}
+
+export interface TrackedRequestView {
+  id: number;
+  fileName: string;
+  kind: "file" | "change";
+  message: string;
+  from: string;
+  fromName: string;
+  fromLabel: string;
+  to: string;
+  toName: string;
+  toLabel: string;
+  status: "waiting" | "accepted" | "declined";
+  answerRecorded: boolean;
 }
 
 export interface OpenedFile {

@@ -19,3 +19,203 @@ fn a_supervisor_reissue_of_an_employee_is_routine() {
     assert!(!is_routine_employee_reissue("M.A", "M.S.1"));
     assert!(!is_routine_employee_reissue("M", "M.S"));
 }
+
+#[test]
+fn ancestry_is_segment_wise() {
+    assert!(is_ancestor_or_self("M.S", "M.S.2"));
+    assert!(is_ancestor_or_self("M.S", "M.S"));
+    assert!(!is_ancestor_or_self("M.S", "M.SALES.1"));
+    assert!(!is_ancestor_or_self("M.A", "M.S.3"));
+    assert!(!is_ancestor_or_self("", "M"));
+    assert!(!is_ancestor_or_self("M", ""));
+}
+
+#[test]
+fn parent_and_direct_parent() {
+    assert_eq!(parent_node_label("M.S.2"), Some("M.S"));
+    assert_eq!(parent_node_label("M"), None);
+    assert!(direct_parent("M.S", "M.S.2"));
+    assert!(!direct_parent("M", "M.S.2"));
+}
+
+#[test]
+fn distance_counts_steps() {
+    assert_eq!(ancestry_distance("M", "M"), Some(0));
+    assert_eq!(ancestry_distance("M", "M.S.1"), Some(2));
+    assert_eq!(ancestry_distance("M.S.1", "M"), None);
+    assert_eq!(ancestry_distance("M.S", "M.SALES.1"), None);
+}
+
+#[test]
+fn lowest_common_ancestor_cases() {
+    assert_eq!(
+        lowest_common_ancestor("M.A.1", "M.S.1").as_deref(),
+        Some("M")
+    );
+    assert_eq!(
+        lowest_common_ancestor("M.A", "M.A.2").as_deref(),
+        Some("M.A")
+    );
+    assert_eq!(lowest_common_ancestor("M.A", "M.A").as_deref(), Some("M.A"));
+    assert_eq!(
+        lowest_common_ancestor("M.SALES", "M.S").as_deref(),
+        Some("M")
+    );
+    assert_eq!(lowest_common_ancestor("M", "X"), None);
+    assert_eq!(lowest_common_ancestor("", "M"), None);
+}
+
+#[test]
+fn relationship_classifies_against_scope() {
+    assert_eq!(relationship("M.A", "M.A"), RevisionAuthority::ScopeOwner);
+    assert_eq!(
+        relationship("M.A", "M.A.1"),
+        RevisionAuthority::Descendant {
+            ancestor: "M.A".into(),
+            depth: 1
+        }
+    );
+    assert_eq!(
+        relationship("M.A", "M"),
+        RevisionAuthority::Ancestor { depth: 1 }
+    );
+    assert_eq!(
+        relationship("M.A", "M.S.1"),
+        RevisionAuthority::CrossBranch {
+            common_ancestor: Some("M".into())
+        }
+    );
+    // Distinct roots are another branch with no common ancestor (
+    // `CrossBranch { common_ancestor: None }`); only a malformed
+    // or empty label is unrelated.
+    assert_eq!(
+        relationship("M.A", "X.1"),
+        RevisionAuthority::CrossBranch {
+            common_ancestor: None
+        }
+    );
+    assert_eq!(relationship("M.A", ""), RevisionAuthority::Unrelated);
+}
+
+#[test]
+fn empty_leading_segment_is_not_a_common_ancestor() {
+    assert_eq!(lowest_common_ancestor(".A", ".B"), None);
+    assert_eq!(relationship(".A", ".B"), RevisionAuthority::Unrelated);
+}
+
+#[test]
+fn common_prefix_stops_at_an_empty_segment() {
+    assert_eq!(
+        lowest_common_ancestor("M..A", "M..B"),
+        Some("M".to_string())
+    );
+    assert_eq!(lowest_common_ancestor("M.", "M."), Some("M".to_string()));
+    assert_eq!(lowest_common_ancestor("M.", "M.A"), Some("M".to_string()));
+    assert_eq!(lowest_common_ancestor(".", "."), None);
+}
+
+#[test]
+fn malformed_labels_are_unrelated_and_have_no_distance() {
+    for (a, b) in [
+        ("M..A", "M..B"),
+        ("M.", "M.A"),
+        ("M", "M."),
+        ("M", "M..A"),
+        ("M.A", "M..A"),
+        (".A", ".A.B"),
+        (".A", ".A"),
+    ] {
+        assert_eq!(relationship(a, b), RevisionAuthority::Unrelated, "{a} {b}");
+        assert_eq!(relationship(b, a), RevisionAuthority::Unrelated, "{b} {a}");
+        assert_eq!(ancestry_distance(a, b), None, "{a} {b}");
+    }
+}
+
+#[test]
+fn well_formed_relationships_are_unchanged() {
+    assert_eq!(relationship("M.A", "M.A"), RevisionAuthority::ScopeOwner);
+    assert_eq!(
+        relationship("M", "M.A.1"),
+        RevisionAuthority::Descendant {
+            ancestor: "M".to_string(),
+            depth: 2
+        }
+    );
+    assert_eq!(
+        relationship("M.A", "M.B"),
+        RevisionAuthority::CrossBranch {
+            common_ancestor: Some("M".to_string())
+        }
+    );
+    assert_eq!(ancestry_distance("M", "M.A.1"), Some(2));
+}
+
+#[test]
+fn ancestor_or_self_rejects_malformed_labels() {
+    assert!(!is_ancestor_or_self("M.", "M..A"));
+    assert!(!is_ancestor_or_self("M", "M."));
+    assert!(!is_ancestor_or_self(".A", ".A"));
+    assert!(is_ancestor_or_self("M", "M.A.1"));
+}
+
+#[test]
+fn strict_ancestor_and_descendant_helpers() {
+    assert!(is_ancestor("M", "M.A.1"));
+    assert!(is_ancestor("M.A", "M.A.1"));
+    assert!(
+        !is_ancestor("M.A", "M.A"),
+        "a label is not its own ancestor"
+    );
+    assert!(!is_ancestor("M.S", "M.SALES.1"));
+    assert!(is_descendant("M.A.1", "M.A"));
+    assert!(!is_descendant("M.A", "M.A.1"));
+    assert!(!is_descendant("M", "M"));
+    assert!(!is_ancestor("M.", "M..A"));
+}
+
+#[test]
+fn a_bridge_connects_an_actor_only_to_the_scope_line_it_reaches() {
+    // M.S <-> M.A reaches M.S.1 (under M.S) to M.A's scope, either way round.
+    assert!(bridge_connects("M.S", "M.A", "M.S.1", "M.A"));
+    assert!(bridge_connects("M.A", "M.S", "M.S.1", "M.A"));
+    // A node inside the scope, or above it, is on its line too.
+    assert!(bridge_connects("M.S", "M.A.2", "M.S.1", "M.A"));
+    assert!(bridge_connects("M.S.1", "M", "M.S.1", "M.A"));
+    // Not when neither end holds the actor, nor when the other end is off
+    // the scope's line, nor for a bridge from a node to itself.
+    assert!(!bridge_connects("M.B", "M.A", "M.S.1", "M.A"));
+    assert!(!bridge_connects("M.S", "M.B", "M.S.1", "M.A"));
+    assert!(!bridge_connects("M.S", "M.S", "M.S.1", "M.S"));
+    // Label shape is segment-wise: M.S never covers M.SALES.1.
+    assert!(!bridge_connects("M.S", "M.A", "M.SALES.1", "M.A"));
+}
+
+#[test]
+fn label_evidence_covers_only_the_generations_a_key_was_seen_in() {
+    let conn = crate::db::open_in_memory().expect("schema");
+    let (identity, old, new) = ([1u8; 16], [2u8; 32], [3u8; 32]);
+    for generation in [1, 2, 3] {
+        record_label_evidence(&conn, "M", "M.A", &identity, &old, generation).unwrap();
+    }
+    // A reissue: a second key takes the label from generation 3 on.
+    record_label_evidence(&conn, "M", "M.A", &identity, &new, 3).unwrap();
+    record_label_evidence(&conn, "M", "M.A", &identity, &new, 5).unwrap();
+
+    let at = |generation| historical_signing_publics(&conn, "M.A", &identity, generation).unwrap();
+    assert!(at(0).is_empty(), "before the first observation");
+    assert_eq!(at(2), vec![old]);
+    assert_eq!(at(3), vec![old, new], "both were seen in generation 3");
+    assert_eq!(
+        at(4),
+        vec![new],
+        "the range stretches over unseen generations"
+    );
+    assert!(at(6).is_empty(), "after the last observation");
+    // Another identity or label never borrows the evidence.
+    assert!(historical_signing_publics(&conn, "M.A", &[9u8; 16], 2)
+        .unwrap()
+        .is_empty());
+    assert!(historical_signing_publics(&conn, "M.B", &identity, 2)
+        .unwrap()
+        .is_empty());
+}

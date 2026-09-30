@@ -92,27 +92,9 @@ impl PartyRole {
     }
 }
 
-/// Direct parent in the dotted tree: `M.S.2` → `M.S`, `M.S` → `M`.
-pub fn parent_node_label(label: &str) -> Option<&str> {
-    label.rsplit_once('.').map(|(parent, _)| parent)
-}
-
-/// `M` and `M.S` both have standing over `M.S.2` — ancestor-or-self in
-/// the same dotted hierarchy [`parent_node_label`] walks one step at a
-/// time; `M.A` and `M.S.3` do not. Segment-wise, so `M.S` never covers
-/// `M.SALES.1`. `org_update` uses this to decide who may authorize a
-/// hardware-key reissue or key-tree restructure for a label.
-pub fn is_ancestor_or_self(authorizer: &str, subject: &str) -> bool {
-    if authorizer.is_empty() || subject.is_empty() {
-        return false;
-    }
-    if authorizer == subject {
-        return true;
-    }
-    subject
-        .strip_prefix(authorizer)
-        .is_some_and(|rest| rest.starts_with('.'))
-}
+// The dotted-label topology algorithms live in `authority`; re-exported so
+// bridge callers keep their paths and there is one implementation.
+pub use crate::authority::{is_ancestor_or_self, parent_node_label};
 
 /// Members plus each distinct direct parent. For `M.S.2`, `M.S.3`, `M.A.2`
 /// this is five labels: those three and `M.S`, `M.A` — not `M`.
@@ -836,6 +818,32 @@ pub fn on_leaf_removed(
 /// key, so a hardware-key reissue for that label must notify them too,
 /// the same way `on_member_revoked` finds the bridges a revocation
 /// touches.
+/// The member labels of every live (not destroyed) private bridge this
+/// store holds, one roster per bridge. Used to answer whether some private
+/// bridge connects two labels; callers must never record which one.
+pub fn active_rosters(conn: &Connection) -> Result<Vec<Vec<String>>> {
+    let mut stmt = conn.prepare(
+        "SELECT b.id, m.node_label
+         FROM private_bridges b
+         JOIN private_bridge_members m ON m.bridge_id = b.id
+         WHERE b.destroyed_at IS NULL
+         ORDER BY b.id, m.node_label",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut rosters: Vec<(i64, Vec<String>)> = Vec::new();
+    for (bridge, label) in rows {
+        match rosters.last_mut() {
+            Some((id, labels)) if *id == bridge => labels.push(label),
+            _ => rosters.push((bridge, vec![label])),
+        }
+    }
+    Ok(rosters.into_iter().map(|(_, labels)| labels).collect())
+}
+
 pub fn bridge_notify_targets(
     conn: &Connection,
     node_label: &str,
@@ -963,6 +971,97 @@ pub fn verify_message(
         Err(err) => return Err(err),
     }
     signing::verify_bridge_signature(artifact, &summary.public_key, &roster_signing, message)
+}
+
+/// Check `artifact` against this store's copy of its bridge, as
+/// [`verify_message`] does but for the store itself rather than a named
+/// verifier: the bridge is live, the artifact is from its current
+/// generation and salt, the signer is a member whose roster key is the one
+/// registered for that label, and both signatures verify. Returns the
+/// labels of the bridge's members.
+fn verify_artifact(
+    conn: &Connection,
+    message: &[u8],
+    artifact: &BridgeSignature,
+) -> Result<Vec<String>> {
+    let summary = get(conn, &artifact.uid)?;
+    if summary.destroyed {
+        return Err(Error::BridgeDestroyed);
+    }
+    if artifact.generation != summary.generation || artifact.bridge_salt != summary.salt {
+        return Err(Error::BridgeGenerationMismatch);
+    }
+    let signer = summary
+        .parties
+        .iter()
+        .find(|p| p.role == PartyRole::Member && p.label == artifact.signer_label)
+        .ok_or(Error::NotBridgeMember)?;
+    let roster_signing = signer.signing_public_key.ok_or(Error::InvalidBridge)?;
+    match signing_public_for_label(conn, &artifact.signer_label) {
+        Ok(local) if local != roster_signing => return Err(Error::IntegrityCheckFailed),
+        Ok(_) | Err(Error::NodeNotFound) => {}
+        Err(err) => return Err(err),
+    }
+    signing::verify_bridge_signature(artifact, &summary.public_key, &roster_signing, message)?;
+    // Members are what the bridge joins; supervisors oversee it and would
+    // otherwise make every bridge under the root reach everywhere.
+    Ok(summary
+        .parties
+        .into_iter()
+        .filter(|p| p.role == PartyRole::Member)
+        .map(|p| p.label)
+        .collect())
+}
+
+/// A member of bridge `uid` approves tracked revision `revision_id` by
+/// signing `message` (`signing::file_bridge_approval_preimage`) with the
+/// bridge. The artifact is kept in this store only, replacing an earlier
+/// approval of the same revision through the same bridge.
+pub fn approve_revision(
+    conn: &Connection,
+    uid: &str,
+    local_label: &str,
+    encryption_sk: &[u8; 32],
+    signing_sk: &[u8; 32],
+    revision_id: &[u8; 32],
+    message: &[u8],
+) -> Result<()> {
+    let artifact = sign_message(conn, uid, local_label, encryption_sk, signing_sk, message)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO tracked_bridge_approvals (revision_id, bridge_uid, artifact)
+         VALUES (?1, ?2, ?3)",
+        params![
+            revision_id.as_slice(),
+            uid,
+            signing::encode_bridge_signature(&artifact)?
+        ],
+    )?;
+    Ok(())
+}
+
+/// Whether a stored approval of `revision_id` still verifies against a live
+/// bridge whose parties satisfy `reaches` (the caller's test that the bridge
+/// connects the revision's author to its scope). An approval from an older
+/// bridge generation, a destroyed bridge, or a signer no longer a member
+/// does not count. Never says which bridge.
+pub fn revision_approved(
+    conn: &Connection,
+    revision_id: &[u8; 32],
+    message: &[u8],
+    reaches: impl Fn(&[String]) -> bool,
+) -> Result<bool> {
+    let mut stmt =
+        conn.prepare("SELECT artifact FROM tracked_bridge_approvals WHERE revision_id = ?1")?;
+    let artifacts = stmt
+        .query_map(params![revision_id.as_slice()], |row| {
+            row.get::<_, Vec<u8>>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(artifacts.iter().any(|bytes| {
+        signing::decode_bridge_signature(bytes)
+            .and_then(|artifact| verify_artifact(conn, message, &artifact))
+            .is_ok_and(|parties| reaches(&parties))
+    }))
 }
 
 pub fn encryption_public_for_label(

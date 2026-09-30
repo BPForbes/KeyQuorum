@@ -1028,6 +1028,63 @@ h1 {
   color: var(--text-subtle);
 }
 
+.log .chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.5rem 0;
+}
+
+.history-entry > summary {
+  cursor: pointer;
+}
+
+.history-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.25rem 1rem;
+  margin: 0.5rem 0;
+}
+
+.history-facts div {
+  min-width: 0;
+}
+
+.history-facts dt {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.history-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+}
+
+.revision-graph {
+  margin-top: 1rem;
+}
+
+.revision-graph ol {
+  list-style: none;
+  margin: 0.25rem 0 0.75rem;
+  padding-left: 0.5rem;
+  border-left: 2px solid var(--border);
+}
+
+.revision-graph li {
+  padding: 0.15rem 0;
+  border-bottom: 0;
+}
+
 .terminal-output {
   height: 16rem;
   font-size: 0.85rem;
@@ -1157,14 +1214,16 @@ h1 {
 .tutorial-spotlight {
   position: fixed;
   border-radius: 10px;
-  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.7);
-  outline: 2px solid var(--action);
+  /* A light dim and a bright outline: the target stays readable. */
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.28);
+  outline: 3px solid var(--action);
   transition: top 0.15s ease, left 0.15s ease, width 0.15s ease, height 0.15s ease;
 }
 
 .tutorial-tooltip {
   position: fixed;
-  width: 320px;
+  top: 1rem;
+  width: 300px;
   max-width: calc(100vw - 2rem);
   max-height: calc(100vh - 2rem);
   overflow-y: auto;
@@ -1174,6 +1233,27 @@ h1 {
   background: var(--surface-raised);
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
   pointer-events: auto;
+}
+
+.tutorial-tooltip.is-docked-right {
+  right: 1rem;
+}
+
+.tutorial-tooltip.is-docked-left {
+  left: 1rem;
+}
+
+/* On a narrow screen the card sits along the bottom edge instead. */
+@media (max-width: 700px) {
+  .tutorial-tooltip.is-docked-right,
+  .tutorial-tooltip.is-docked-left {
+    top: auto;
+    bottom: 0.75rem;
+    left: 1rem;
+    right: 1rem;
+    width: auto;
+    max-height: 45vh;
+  }
 }
 
 .tutorial-tooltip h3:focus {
@@ -1211,4 +1291,82 @@ h1 {
   flex-wrap: wrap;
   gap: 0.4rem;
   margin-top: 0.5rem;
+}
+
+.tracked-files {
+  margin: 1rem 0;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+.tracked-files h3 {
+  margin: 0 0 0.25rem;
+}
+
+.tracked-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0.5rem 0;
+}
+
+.tracked-share {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.tracked-card {
+  margin-top: 0.5rem;
+  min-width: 0;
+}
+
+.tracked-card code,
+.tracked-card .muted {
+  overflow-wrap: anywhere;
+}
+
+.tracked-revisions {
+  list-style: none;
+  margin: 0.25rem 0;
+  padding-left: 0.5rem;
+  border-left: 2px solid var(--border);
+}
+
+.tracked-revisions li {
+  padding: 0.2rem 0;
+}
+
+.tracked-revisions li[data-trust="pending"] .badge {
+  border-color: var(--warn, var(--border));
+}
+
+.tracked-revisions li[data-trust="denied"] .badge {
+  border-color: var(--error);
+}
+
+.tracked-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.tracked-letters ul {
+  list-style: none;
+  padding: 0;
+}
+
+.tracked-letters li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  padding: 0.2rem 0;
+}
+
+.tracked-files > select {
+  margin-left: 0.4rem;
+  max-width: 100%;
 }

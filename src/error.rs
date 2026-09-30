@@ -38,6 +38,7 @@ pub enum Error {
     CannotAddLeaf,
     ShareShapeMismatch,
     InvalidBridgePackage,
+    InvalidTrackedFile,
     NotBridgeMember,
     TooFewBridgeMembers,
     BridgeDestroyed,
@@ -186,6 +187,9 @@ impl fmt::Display for Error {
             }
             Error::InvalidBridgePackage => {
                 write!(f, "private-bridge package is malformed or not for this key")
+            }
+            Error::InvalidTrackedFile => {
+                write!(f, "tracked file is malformed or its history fails verification")
             }
             Error::NotBridgeMember => {
                 write!(f, "that node is not a member of this private bridge")

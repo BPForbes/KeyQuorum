@@ -186,6 +186,38 @@ pub struct ActivityView {
     pub title: String,
     pub trace: Vec<TraceStep>,
     pub command: Option<String>,
+    /// Set only on entries drawn from a tracked file's history
+    /// (`kind == "history"`); every other entry serializes exactly as before.
+    #[serde(flatten)]
+    pub history: Option<HistoryFields>,
+}
+
+/// What a tracked-file history event adds to an activity entry. Read from
+/// the `.kqtf` container, never computed by the lab.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryFields {
+    pub file_id: String,
+    pub file_name: String,
+    pub history_event_type: String,
+    /// From `HistoryEventType::category`: `file`, `revision`, `security`,
+    /// `sharing` or `conflict`.
+    pub history_category: String,
+    /// The event's own hash: the history root as of this event.
+    pub history_root: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generated_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_label: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub parent_revision_ids: Vec<String>,
+    /// The revision's trust under the file's policy when the entry was
+    /// recorded: `trusted`, `pending` or `denied`. The tracked-file
+    /// snapshot carries the current value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finalization_state: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -307,6 +339,110 @@ pub struct Snapshot {
     pub signatures: Vec<SignatureView>,
     /// Tree restructure proposals still waiting on their countersigner.
     pub pending_restructures: Vec<RestructureProposalView>,
+    /// Tracked files the activity log follows, judged by the active
+    /// person's store.
+    pub tracked_files: Vec<TrackedFileView>,
+    /// Tracked-file letters handed between people.
+    pub tracked_letters: Vec<TrackedLetterView>,
+    /// Requests for a file or a change, and their answers.
+    pub tracked_requests: Vec<TrackedRequestView>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackedFileView {
+    pub path: String,
+    pub name: String,
+    pub file_id: String,
+    pub scope: String,
+    /// The lab user whose home holds the container; `None` for shared ones.
+    pub owner: Option<String>,
+    pub auto_merge: bool,
+    pub forked: bool,
+    pub history_len: usize,
+    pub history_root: String,
+    /// Oldest first.
+    pub revisions: Vec<TrackedRevisionView>,
+    /// The revision `file share` would send from the sole head, if any.
+    pub shareable: Option<String>,
+    /// The sole head, or `None` when the history has forked.
+    pub current_revision: Option<String>,
+    /// The latest revision this store trusts, which need not be the current one.
+    pub trusted_revision: Option<String>,
+    /// The latest finalized revision behind the sole head, if any; none on
+    /// a fork, where no branch is picked.
+    pub finalized_revision: Option<String>,
+    /// The scheduled expiry (`YYYY-MM-DDTHH:MM:SSZ`), if one was set.
+    pub expires_at: Option<String>,
+    /// Whether every revision's content was destroyed at expiry.
+    pub destroyed: bool,
+    /// History snapshots (`KQHS`) exported from this file in the lab.
+    pub snapshots: Vec<String>,
+    /// Quorum or password files whose gate records into this history.
+    pub links: Vec<TrackedLinkView>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackedLinkView {
+    /// `quorum` or `password`.
+    pub gate: String,
+    pub id: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackedRevisionView {
+    pub id: String,
+    pub generated_label: String,
+    pub user_label: Option<String>,
+    pub author: String,
+    pub created_at: String,
+    pub parents: Vec<String>,
+    pub head: bool,
+    /// `trusted`, `pending` or `denied`, from `file_history`.
+    pub trust: String,
+    pub reason: Option<String>,
+    /// Whether the scope owner or an ancestor finalized it, judged by this
+    /// store's keys.
+    pub finalized: bool,
+    /// The revision's text, when it is UTF-8 and small enough to edit here.
+    pub text: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackedLetterView {
+    pub id: i64,
+    pub file_name: String,
+    pub from: String,
+    pub from_name: String,
+    pub from_label: String,
+    pub to: String,
+    pub to_name: String,
+    pub to_label: String,
+    /// `waiting`, `accepted` or `rejected`.
+    pub status: String,
+    pub ack_recorded: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackedRequestView {
+    pub id: i64,
+    pub file_name: String,
+    /// `file` or `change`.
+    pub kind: String,
+    pub message: String,
+    pub from: String,
+    pub from_name: String,
+    pub from_label: String,
+    pub to: String,
+    pub to_name: String,
+    pub to_label: String,
+    /// `waiting`, `accepted` or `declined`.
+    pub status: String,
+    pub answer_recorded: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]

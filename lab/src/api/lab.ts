@@ -139,4 +139,103 @@ export class LabClient {
   countersignRestructure(passphrase: string): ActionResult {
     return this.call(this.lab.countersign_restructure(passphrase));
   }
+
+  historyTrack(name: string, text: string): ActionResult {
+    return this.call(this.lab.history_track(name, text));
+  }
+
+  historyCheckin(path: string, text: string, signed: boolean, label?: string): ActionResult {
+    return this.call(this.lab.history_checkin(path, text, signed, label));
+  }
+
+  historySign(path: string, revision?: string): ActionResult {
+    return this.call(this.lab.history_sign(path, revision));
+  }
+
+  historyCountersign(path: string, revision?: string): ActionResult {
+    return this.call(this.lab.history_countersign(path, revision));
+  }
+
+  historyFinalize(path: string, revision?: string): ActionResult {
+    return this.call(this.lab.history_finalize(path, revision));
+  }
+
+  historyMerge(path: string, label?: string): ActionResult {
+    return this.call(this.lab.history_merge(path, label));
+  }
+
+  /** Settle a conflict as the active person; `text` is the result when `choice` is "edited". */
+  historyResolve(
+    path: string,
+    choice: "left" | "right" | "edited" | "reject",
+    text?: string,
+    label?: string,
+  ): ActionResult {
+    return this.call(this.lab.history_resolve(path, choice, text, label));
+  }
+
+  historyVerify(path: string): ActionResult {
+    return this.call(this.lab.history_verify(path));
+  }
+
+  historyReview(path: string): ActionResult {
+    return this.call(this.lab.history_review(path));
+  }
+
+  /** Schedule expiry at `at` (UTC `yyyy-mm-ddThh:mm`), or destroy the content now when `at` is omitted. */
+  historyRename(path: string, newName: string): ActionResult {
+    return this.call(this.lab.history_rename(path, newName));
+  }
+
+  historyExpire(path: string, at?: string): ActionResult {
+    return this.call(this.lab.history_expire(path, at));
+  }
+
+  historyDiff(path: string, from?: string, to?: string): ActionResult {
+    return this.call(this.lab.history_diff(path, from, to));
+  }
+
+  historyViewRevision(path: string, revision: string): ActionResult {
+    return this.call(this.lab.history_view_revision(path, revision));
+  }
+
+  historyExport(path: string): ActionResult {
+    return this.call(this.lab.history_export(path));
+  }
+
+  historyVerifySnapshot(path: string, snapshot: string): ActionResult {
+    return this.call(this.lab.history_verify_snapshot(path, snapshot));
+  }
+
+  historyImport(path: string, from: string): ActionResult {
+    return this.call(this.lab.history_import(path, from));
+  }
+
+  historyLink(path: string, gate: "quorum" | "password", id: number, link: boolean): ActionResult {
+    return this.call(this.lab.history_link(path, gate, id, link));
+  }
+
+  historyShare(path: string, toUser: string): ActionResult {
+    return this.call(this.lab.history_share(path, toUser));
+  }
+
+  historyReceive(letterId: number, accept: boolean): ActionResult {
+    return this.call(this.lab.history_receive(letterId, accept));
+  }
+
+  historyAck(letterId: number): ActionResult {
+    return this.call(this.lab.history_ack(letterId));
+  }
+
+  historyRequest(path: string, toUser: string, change: boolean, message: string): ActionResult {
+    return this.call(this.lab.history_request(path, toUser, change, message));
+  }
+
+  historyAnswerRequest(requestId: number, accept: boolean): ActionResult {
+    return this.call(this.lab.history_answer_request(requestId, accept));
+  }
+
+  historyOpenAnswer(requestId: number): ActionResult {
+    return this.call(this.lab.history_open_answer(requestId));
+  }
 }

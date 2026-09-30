@@ -25,3 +25,7 @@ keyquorum deliver ack --file ./mail/8.kqpb --slot ./usb=M.S.1
 \flag{--output-dir} / \flag{--ack-dir} write the envelope to disk instead of
 (or as well as) \flag{--push} / \flag{--push-ack}. \flag{--reject} refuses
 the file and says so in the answer.
+
+To send a file whose revisions and signatures should travel with it, and
+where an unsigned newer edit must never go out, track it instead and use
+\code{file share} (section~\ref{sec:file-history}).

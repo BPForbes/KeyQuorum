@@ -1,0 +1,754 @@
+\section{Tracked files and history}
+\label{sec:file-history}
+
+A \emph{tracked file} carries its own provenance. Where \code{deliver}
+sends a native file once, \code{keyquorum file} keeps a \file{.kqtf}
+container that holds every revision of the file, the signatures over them,
+the rules they are judged by, and an append-only, hash-chained history of
+everything that happened to it. The container is the authority: SQLite only
+keeps a cache of it, and a recipient can verify a tracked file without the
+sender's database.
+
+\subsection{What a tracked file holds}
+
+\begin{itemize}
+  \item \textbf{A stable identity.} A random 128-bit \code{file_id} is
+  allocated once, when the file is first tracked, and never changes on
+  rename, move, device transfer or new revisions. The logical file name is
+  display metadata, not identity.
+  \item \textbf{A revision graph.} Each revision records its parent
+  revisions (none for the first, one for an edit, two for a merge), a
+  content commitment bound to the file (so it is not a global fingerprint
+  of the plaintext), the author's label and identity, a UTC time, the
+  topology generation, and the hash of the file's policy. Its 32-byte
+  \code{revision_id} is a domain-separated hash of all of that, so a
+  revision cannot be re-parented or re-attributed without changing its id.
+  Every revision also has a generated label,
+  \code{R<file-name>-<UTC time>-<HCP label>}, and may have a user label;
+  labels are for people, the id is what is signed.
+  \item \textbf{Proofs.} Content signatures by a revision's author,
+  countersignatures by an approver, and finalizations by the scope owner or
+  an ancestor. They are ordinary Ed25519 signatures over domain-separated
+  preimages (\code{KQ-FILE-REVISION-v1}, \code{KQ-FILE-COUNTERSIGN-v1} and
+  \code{KQ-FILE-FINALIZE-v1}), made and checked by the same signing code as the
+  rest of KeyQuorum.
+  \item \textbf{A policy.} The HCP scope the file belongs to and what each
+  kind of author needs before a revision is trusted (below).
+  \item \textbf{A history.} Sequenced events, each linked to the hash of
+  the one before; the last hash is the file's \emph{history root}. Changing,
+  removing or reordering any earlier event breaks the chain. Events record
+  outcomes and labels, never passwords, PINs, shares, bearer tokens or
+  private keys. Every detail an event may carry comes from a fixed list of
+  safe keys; anything else is refused before it is written. Some events are
+  also signed by the person who caused them (below).
+\end{itemize}
+
+The container format is \code{KQTF}, currently version 7. Version 6 added
+finalization proofs and version 7 optional event signatures; each is written
+only when a file has one, so most files stay at an older version, and
+versions 4 to 6 still open. It is not a sealed envelope and does not wrap or modify the
+native file format: \code{file checkout} writes a revision's bytes back out
+as an ordinary file.
+
+\subsubsection*{When tracking starts, and what stays the same}
+
+Signing a native file that has no container yet is the first content
+signature: \code{file sign report.txt --as M.A --slot ...} allocates the
+file id, records revision R1, signs it and writes
+\file{report.txt.kqtf}, the same steps as \code{file track}. The file's
+scope is the signer's own label unless \flag{--scope} names another. Files nobody
+signs this way stay untracked. Tracking begins at the first \emph{trusted}
+signature: if the first revision would still wait for a countersignature (a
+descendant signing alone), nothing is written and the command says who can
+start tracking; the explicit \code{file track} may still begin pending. A
+second \code{file sign} on the same native path is refused instead of minting
+a second identity. The check is by path: the same bytes signed from a copy at
+another path start a separate tracked file, because a file's identity is a
+random id and not a fingerprint of its content.
+
+The file's identity does not depend on its name, path or holder.
+\code{file rename} (scope owner or an ancestor, proven with \flag{--slot})
+changes only the name shown, appends a \code{FILE_RENAMED} event with the
+old and new names, and leaves the file id and every revision id alone.
+Copying or moving the \file{.kqtf} file changes nothing either.
+\code{file checkout} writes a revision's bytes back out exactly, whatever
+the format.
+
+\code{file status} also prints two ids that can differ, because a newer
+edit is not a newer trusted version (and says when a revision is final):
+
+\begin{itemize}
+  \item \code{current_revision_id}: the sole head, or none when the history
+  has forked.
+  \item \code{trusted_revision_id}: the latest revision this store trusts.
+\end{itemize}
+
+Both are worked out on demand from the store's keys and are never stored in
+the container, which carries no trust state.
+They are views relative to the store that shows them, not claims the
+container makes, so a copy of the file judged with other keys can show a
+different trusted revision. On a fork there is no single current revision, and
+the trusted one is only the most recently stored trusted revision across
+both branches: a display value, never a branch winner and never the revision a
+share would send.
+
+\subsection{Trust: who may change a file}
+
+A revision is \emph{trusted} only when its author's content signature
+verifies against the signing key your store has registered for that label
+\emph{and} the file's policy is met. The default policy (\code{file track})
+is, relative to the file's scope:
+
+\begin{center}
+\begin{tabular}{@{}p{0.26\linewidth}p{0.68\linewidth}@{}}
+\toprule
+\textbf{Author} & \textbf{Needs} \\
+\midrule
+The scope owner & Their own signature. \\
+A descendant (e.g.\ \code{M.A.1} in scope \code{M.A}) & Their own signature
+  and a countersignature by their \emph{direct parent} (\code{M.A}). \\
+An ancestor & Their own signature. \\
+Cross-branch & Their own signature and either a private bridge's approval
+  of that revision or a countersignature by the scope owner. \\
+Unrelated & May not create trusted revisions. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A revision is therefore \emph{pending} until its signatures are complete,
+and \emph{denied} if a signature is present but wrong. A newer revision
+never becomes trusted just because it is newer, and time stamps never decide
+anything.
+
+Each revision also records the topology generation (the version of the
+published key tree) it was made under. Your store judges it only under a
+generation it has held; a revision from a generation your store never saw is
+left \emph{pending} (\code{MissingTopologyEvidence}) rather than judged
+against today's tree. Generation 0 means no published tree.
+
+The rules are chosen when the file is tracked and are fixed for its life.
+Each role has its own option, which takes \code{forbidden}, \code{author}
+or \code{author+parent}:
+
+\begin{itemize}
+  \item \flag{--owner-rule}
+  \item \flag{--descendants-rule}
+  \item \flag{--ancestors-rule}
+  \item \flag{--cross-branch-rule}, which may also take
+  \code{author+bridge-or-owner} or the stricter
+  \code{author+bridge+owner}.
+\end{itemize}
+
+The defaults are the table above. A rule that cannot be met --- a forbidden
+owner, a bridge for anyone but a cross-branch author, a parent
+countersignature where there is no parent --- is refused before anything is
+written. \code{file policy} prints the rules and the \code{policy_hash} that
+every revision carries, so later verification knows which rules applied. When
+a countersignature arrives, the history records its \code{relationship} to
+the author (for example \code{DIRECT_PARENT}) and the policy decision records
+its \code{reason}.
+
+Revision labels are \code{R<name>-<UTC time>-<HCP label>} with the time to the
+millisecond where the clock has it, so adjacent check-ins get different
+labels. A label is part of the immutable revision: changing it would mean a
+different revision, never an edit of the existing one.
+
+\begin{lstlisting}
+keyquorum file track report.txt --scope M.A --as M.A --slot ./usb=M.A
+keyquorum file checkin report.txt.kqtf --from edited.txt --as M.A.1 --unsigned
+keyquorum file sign report.txt.kqtf --as M.A.1 --slot ./usb=M.A.1
+keyquorum file countersign report.txt.kqtf --as M.A --slot ./usb=M.A
+keyquorum file status report.txt.kqtf
+\end{lstlisting}
+
+\subsubsection*{Bridge approval}
+
+A cross-branch author can be approved through a private bridge instead of by
+the scope owner. A member of a live private bridge whose members reach from
+the author to the file's scope signs an approval of that exact revision:
+
+\begin{lstlisting}
+keyquorum file bridge-approve report.txt.kqtf --bridge <uid> --as M.S.1 \
+  --slot ./usb=M.S.1
+\end{lstlisting}
+
+The approval is kept only in the approving store and never written into the
+\file{.kqtf}, so the file never names the bridge or its members. Each time a
+revision is judged it is checked again: the bridge must still be live at the
+same generation and the signer still a member. A bridge's supervisors do not
+count, and a bridge merely existing between two labels approves nothing. A
+recipient whose store holds no such approval sees the revision as pending.
+Under \code{author+bridge-or-owner}, a valid scope-owner countersignature
+then substitutes for the bridge approval. A trusted cross-branch policy
+decision records the alternative that satisfied it as
+\code{satisfied_by=BRIDGE}, \code{SCOPE_OWNER}, or
+\code{BRIDGE_AND_SCOPE_OWNER}. It never records a bridge id, generation,
+signer, member, or roster, but \code{BRIDGE} and
+\code{BRIDGE_AND_SCOPE_OWNER} do reveal that a bridge approval took part in
+the decision, and that stays in the \file{.kqtf} and in any export of it.
+
+With the stricter \code{author+bridge+owner} rule, the scope owner's
+countersignature does not replace the bridge approval. The receiving store
+must hold and validate that revision-specific bridge approval \emph{and} the
+container must carry the scope owner's valid countersignature before the
+revision is trusted.
+
+\subsubsection*{Finalization}
+
+Trusted is not final. The scope owner or one of its ancestors can mark a
+trusted revision final:
+
+\begin{lstlisting}
+keyquorum file finalize report.txt.kqtf --as M.A --slot ./usb=M.A
+\end{lstlisting}
+
+This adds a signed finalization proof and a \code{REVISION_FINALIZED} event.
+Like trust, finality is worked out by each store from its own keys; a store
+without the finalizer's key does not see the revision as final. A merge of
+two final revisions is a new revision and starts neither trusted nor final.
+
+\begin{securityBox}
+Your store supplies only public signing keys, and it accepts a key only for
+the identity it knows for that label (the one enrolled by
+\code{transfer enroll}, or else one derived from the label). A container
+cannot bring its own keys. A ghost identity (after a \code{transfer move})
+cannot author or sign anything new; what it signed earlier still verifies.
+\end{securityBox}
+
+\subsection{Sharing falls back to the last trusted revision}
+
+\code{file share} sends the head (or the revision named with
+\flag{--revision}) when it is \emph{trusted}. If it is not --- say someone
+checked in an edit without signing it --- the letter carries its nearest
+trusted \emph{ancestor} instead. Trusted work on another branch is never
+substituted, and the unsigned revision never leaves your copy: the container
+in the letter holds only the delivered revision and its ancestors. If no
+ancestor is trusted, nothing is sent and the refusal is recorded. The
+refusal says why: \emph{denied by policy} when the file's rules refuse the
+revision outright (an unrelated or forbidden author, evidence that does not
+verify), and \emph{no trusted revision} when it is only waiting for a
+signature.
+
+\begin{lstlisting}
+keyquorum file share report.txt.kqtf --to M.B --as M.A --slot ./usb=M.A \
+  --output-dir ./outbox
+keyquorum --db mb.sqlite file receive --letter ./outbox/<id>.kqpb \
+  --slot ./usb=M.B --ack-dir ./acks --out report.txt.kqtf
+keyquorum file ack report.txt.kqtf --ack ./acks/<id>-ack.kqpb --slot ./usb=M.A
+\end{lstlisting}
+
+Letters are \code{KQPB} envelopes of their own kind, carried by the relay
+like any other letter. The sender's signature on the letter is
+\emph{transport} authentication only: the recipient still judges the
+delivered revision by the file's own policy against their own store, and
+refuses it if it is not trusted there. The recipient's store must also hold the encryption key that
+opened the letter under the recipient label the letter names, so a letter
+sealed to one person cannot credit the delivery to another; \code{deliver
+open} makes the same check. The signed letter also names every proof it
+carries for the delivered revision, and \code{file receive} refuses a letter
+whose container does not match. A rename made before sharing travels with the
+letter, and so does any later history that does not concern a revision
+outside the delivered one. \flag{--into} merges a letter into a
+copy you already hold. Either way the recipient seals back a signed accept
+or reject, and \code{file ack} records it once in the sender's history.
+Receiving the same letter again records nothing new; it only seals the
+answer again.
+
+\code{file receive} also says how the delivered history compares with what
+your store accepted before for that file: \code{FIRST}, \code{REPLAYED} (the
+same revision and history again), \code{NEWER} (its history passes through
+every history root you accepted before, holds those revisions and adds one)
+or \code{NOT_NEWER} (an older copy, another branch, or the same revisions on
+a rewritten history). It is recorded on the delivery. \code{NOT_NEWER} is a
+warning, not a refusal: a trusted older revision is still accepted.
+
+\code{file send-history} seals a file's event history alone (a \code{KQHS}
+snapshot, no content) to another label, with its root and event count signed
+by you. \code{file open-history} checks the signature and the snapshot and,
+with \flag{--against}, compares it with your copy: \code{SAME},
+\code{LOCAL_AHEAD}, \code{REMOTE_AHEAD} or \code{DIVERGED}. It is not
+answered.
+
+\begin{lstlisting}
+keyquorum file send-history report.txt.kqtf --to M.B --as M.A \
+  --slot ./usb=M.A --output-dir ./outbox
+keyquorum --db mb.sqlite file open-history --letter ./outbox/<id>.kqpb \
+  --slot ./usb=M.B --against report.txt.kqtf
+\end{lstlisting}
+
+\subsection{Sending and receiving a tracked file from the command line}
+
+A tracked file travels as a \emph{letter}: a sealed \file{.kqpb} file that
+holds no secret. It is signed by the sender and sealed to the recipient's
+public key, so it can cross any channel. The commands that make and open
+a letter are the same whether or not a relay is used; only the way the
+letter and the answer get from one person to the other differs. Each person
+needs only their \emph{own} drive, plugged into their \emph{own} computer,
+and only at the moment they sign or open something. Nobody hands over a
+key drive.
+
+The examples send \file{report.txt.kqtf} from M.A to M.B. Each command names
+the person who runs it and the computer it runs on.
+
+\subsubsection*{Step 0, once, before either way: exchange public keys}
+
+Each store needs the other's public keys: the sender's signing key (to check
+the letter) and the recipient's encryption key (to seal it). They are
+public, so any channel will do.
+
+\begin{lstlisting}
+# 0a. on M.A's computer (M.A's drive in): print M.A's public keys, send them to M.B
+keyquorum-device public ./usb --label M.A
+# 0b. on M.B's computer: register what M.A sent
+keyquorum --db mb.sqlite register --type encryption --label M.A \
+  --public-key-file a-enc.pub
+keyquorum --db mb.sqlite register --type signing --label M.A \
+  --public-key-file a-sign.pub
+# 0c. M.B does the same in the other direction: prints their keys with
+#     keyquorum-device public, M.A registers them in ma.sqlite
+\end{lstlisting}
+
+\subsubsection*{When the API is not available: you carry the files}
+
+No URL and no API key. The letter and the answer are plain files; move them
+by email, a shared folder, or a USB stick that is only a courier.
+
+\begin{lstlisting}
+# 1. M.A's computer, M.A's drive in: seal the letter into a folder
+keyquorum --db ma.sqlite file share report.txt.kqtf --to M.B --as M.A \
+  --slot ./usb=M.A --output-dir ./outbox
+
+# 2. Carry ./outbox/<id>.kqpb to M.B's computer (any channel)
+
+# 3. M.B's computer, M.B's drive in: open the letter and seal the answer
+keyquorum --db mb.sqlite file receive --letter ./<id>.kqpb \
+  --slot ./usb=M.B --ack-dir ./acks --out report.txt.kqtf
+#    --into report.txt.kqtf   merge into a copy M.B already holds (instead of --out)
+#    --reject                 refuse the letter (instead of --out or --into)
+
+# 4. Carry ./acks/<id>-ack.kqpb back to M.A's computer (any channel)
+
+# 5. M.A's computer, M.A's drive in: record the answer
+keyquorum --db ma.sqlite file ack report.txt.kqtf --ack ./<id>-ack.kqpb \
+  --slot ./usb=M.A
+\end{lstlisting}
+
+To send M.B's changes back, swap the roles and repeat steps 1 to 5. If both
+copies have moved on, the receiver ends up with two heads:
+
+\begin{lstlisting}
+# 6. on whoever received: join the heads, then settle any conflict
+keyquorum --db ma.sqlite file merge report.txt.kqtf --as M.A
+keyquorum --db ma.sqlite file review report.txt.kqtf
+keyquorum --db ma.sqlite file resolve report.txt.kqtf --keep right \
+  --as M.A --slot ./usb=M.A
+keyquorum --db ma.sqlite file sign report.txt.kqtf --as M.A --slot ./usb=M.A
+\end{lstlisting}
+
+A no-drive alternative to steps 1 to 5 is to carry the whole \file{.kqtf}
+and run \code{file import report.txt.kqtf --from theirs.kqtf --as M.B}. It
+skips the signature and trust check that a letter carries.
+
+\subsubsection*{When the API is available: the relay carries the files}
+
+A relay is a mailbox that stores sealed letters and cannot open them. It
+adds no security the letter lacks. It saves the two people from handing
+the files over and lets them act at different times. You need the relay's
+URL and API keys from its operator. Each key has one scope: an
+\emph{inbox push} key sends a letter or an answer, an \emph{inbox pull} key
+downloads what is waiting, so each person usually holds both.
+
+\begin{lstlisting}
+# 1. Once per person, on their own computer: store the relay URL and key
+#    (the key is prompted for when it is not on the command line)
+keyquorum --db ma.sqlite loadkey --url https://relay.example
+
+# 2. M.A's computer, M.A's drive in: seal the letter and upload it
+keyquorum --db ma.sqlite file share report.txt.kqtf --to M.B --as M.A \
+  --slot ./usb=M.A --push
+
+# 3. Later, M.B's computer: download what is waiting for M.B
+keyquorum --db mb.sqlite relay pull --output-dir ./inbox
+
+# 4. M.B's computer, M.B's drive in: open the letter, upload the answer
+keyquorum --db mb.sqlite file receive --letter ./inbox/<n>.kqpb \
+  --slot ./usb=M.B --push-ack --out report.txt.kqtf
+
+# 5. Later, M.A's computer: download the answer
+keyquorum --db ma.sqlite relay pull --output-dir ./answers
+
+# 6. M.A's computer, M.A's drive in: record the answer
+keyquorum --db ma.sqlite file ack report.txt.kqtf --ack ./answers/<n>.kqpb \
+  --slot ./usb=M.A
+\end{lstlisting}
+
+Sending changes back and settling conflicts work exactly as in the
+previous case (swap the roles, then the merge, review, resolve and sign
+commands above). \flag{--url} and \flag{--api-key} can be given on
+\code{share} and \code{receive} instead of using the stored key. These
+environment variables work too:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \code{KEYQUORUM_RELAY_URL}
+  \item \code{KEYQUORUM_RELAY_API_KEY}
+\end{itemize}
+
+Downloaded letters are named by the relay's own number (\code{<n>.kqpb}). The
+official client only talks to a relay that proves it holds a KeyQuorum-signed
+certificate. Everything else, including the sender's signature, the
+recipient-key check, the history comparison and the signed answer, is the
+same as without the relay.
+
+\begin{cautionBox}
+Without the relay a drive is needed only for the person who is signing or
+opening at that moment. The only cases that need two devices open together
+are moving or copying an identity between devices
+(\code{keyquorum transfer copy|move}), and the browser lab, which simulates
+everyone on one machine. A merge proposal, a file request and a change
+request all travel as letters the same way (see the two sections below).
+\end{cautionBox}
+
+\subsection{Copies, forks and merging}
+
+Two holders of a file can each extend it. \code{file import} brings another
+copy's revisions and proofs into yours: nothing is overwritten, and if both
+sides added revisions the file now has two heads. \code{file merge} then
+tries a conservative automatic merge of UTF-8 text, line by line, against
+the heads' nearest common ancestor:
+
+\begin{center}
+\begin{tabular}{@{}p{0.26\linewidth}p{0.68\linewidth}@{}}
+\toprule
+\textbf{Outcome} & \textbf{Meaning} \\
+\midrule
+\code{FastForward} & One head already contains the other. \\
+\code{AlreadyEquivalent} & Both heads hold the same content. \\
+\code{CleanMerge} & The edits do not touch the same lines; a new
+  two-parent revision is recorded. \\
+\code{RequiresHuman} & The edits overlap differently, or there is no single
+  common ancestor. \\
+\code{PolicyBlocked} & The file's policy turns automatic merging off
+  (\flag{track --no-auto-merge}). \\
+\code{UnsupportedContent} & The content is not UTF-8 text. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A merge revision never inherits its parents' signatures: it starts
+\emph{pending} and has to be signed (and countersigned where the policy
+says so) like any other revision. When a person has to decide,
+\code{file merge} records the conflict and names a reviewer: the most
+recent neutral prior owner of the file, else the most senior eligible
+owner, else (for a tie across sectors) the larger sector, else the nearest
+common senior ancestor. Only owners whose own revisions are trusted
+qualify, the authors of the conflicting edits never review their own
+collision, and if nobody qualifies the conflict is recorded as unresolved
+rather than guessed; then the scope owner or one of its ancestors decides.
+
+The reviewer, or one of their ancestors, settles the conflict with
+\code{file resolve}: keep one side as it is (\flag{--keep left} or
+\flag{--keep right}) or supply an edited result (\flag{--from}). The result
+is a new two-parent revision signed as the reviewer's own content and
+recorded as \code{CONFLICT_RESOLVED}; the file's rules then judge it like any
+other revision. \flag{--reject} instead refuses an untrusted proposed merge
+at the head (\code{MERGE_REJECTED}): the proposal stays in the history,
+\code{file sign} refuses it, and the resolution builds on it. A conflicting
+author can never decide.
+
+\begin{lstlisting}
+keyquorum file resolve report.txt.kqtf --keep left --as M.A --slot ./usb=M.A
+keyquorum file resolve report.txt.kqtf --from merged.txt --as M.A \
+  --slot ./usb=M.A
+keyquorum file resolve report.txt.kqtf --reject --as M.A --slot ./usb=M.A
+\end{lstlisting}
+
+\begin{lstlisting}
+keyquorum file import report.txt.kqtf --from their-copy.kqtf --as M.A
+keyquorum file merge report.txt.kqtf --as M.A
+keyquorum file review report.txt.kqtf
+keyquorum file diff report.txt.kqtf
+keyquorum file graph report.txt.kqtf
+\end{lstlisting}
+
+\code{file review} prints each side's changed lines with who wrote each
+line, the merge outcome and the reviewer. When the only head is a merge
+that waits to be signed, \code{file review} shows what each parent changed
+and what the merge changed (\code{LEFT PARENT}, \code{RIGHT PARENT},
+\code{MERGED}) with its trust state, and \code{file merge} opens the
+interactive review for it. Revisions are shown by their user
+label first, when they have one, then the generated label and the short id.
+A build with \flag{--features tui} adds \flag{review --interactive}: the same
+view in the terminal, with removed text on a red and added text on a green background, Vim-style keys and mouse hover to see who wrote a
+line. Press \code{za}, \code{zc} or \code{zo} to fold, close or open the change under the cursor
+(a folded change shows its first line and a count), and \code{zM} or \code{zR} to fold or open every change on the side.
+Two unchanged lines are shown on each side of a change, dimmed and marked as unchanged, and \code{c} hides or shows them; a fold hides them with the change, and the printed \code{file review} lists changed lines only. Press \code{Space} to pick the change under the cursor on either side,
+\code{:compose} to see the result (the common ancestor with the picked changes applied;
+picks that touch the same lines are refused), and \code{:edit} to change that
+result in \code{$VISUAL} or \code{$EDITOR}, in an owner-only temporary file that is
+removed afterwards. \code{:as LABEL} and \code{:slot CONTAINER=LABEL} (or
+\flag{--as} and \flag{--slot} on \code{review --interactive}) say who is acting;
+after that \code{:accept left}, \code{:accept right}, \code{:accept result},
+\code{:reject}, \code{:sign} and \code{:finalize} run the real \code{file resolve},
+\code{file sign} and \code{file finalize} with the terminal handed back for the
+passphrase, so the reviewer and scope rules are those commands', and the review
+then shows the history as it stands. \code{:accept result} settles the conflict when one waits for its reviewer; on a clean merge, which has no conflict, it checks the result in as a new signed revision (\code{file checkin}) on top of the merge. Press \code{/} to type a query and \code{Enter} to search; \code{n} and
+\code{N} repeat it forward and backward. Matching ignores case, looks for a
+substring in the active pane, and wraps around. On such a build,
+\code{file merge} opens it by itself when a person
+has to decide and the terminal is interactive. The review decides no trust
+and edits no history itself: every action above is the real command run
+as the label and slot you gave, and it is refused when that command would
+refuse you. Without \code{:as} and \code{:slot} the commands only name the
+CLI command to run.
+
+\begin{cautionBox}
+Commands replace a container under an exclusive \file{<name>.kqtf.lock}, and
+refuse to write if the container changed since the command read it; run the
+command again. If a command was killed and left the lock behind, the error
+names the lock file to remove.
+\end{cautionBox}
+
+\subsection{Terms for proposing a change}
+
+Three words describe someone asking for, or offering, a change to a file.
+Each names something this version does. A request only asks: it delivers
+nothing and changes nothing, and the answer to it only says yes or no. The
+file or the change itself always travels the ordinary way, as a letter
+(\code{file share}) whose revision is judged by the file's own rules.
+
+\begin{center}
+\begin{tabular}{@{}p{0.22\linewidth}p{0.72\linewidth}@{}}
+\toprule
+\textbf{Term} & \textbf{Meaning and how it works} \\
+\midrule
+\textbf{Merge proposal} & Prepared changes submitted for review: a merge
+  revision, made automatically from two heads or by an author outside the
+  file's scope, that stays \code{Pending} until the reviewer, the scope
+  owner or a bridge decides. The reviewer settles it with \code{file
+  resolve} or refuses it with \flag{--reject}. The manual also calls it a
+  proposed merge. \\
+\textbf{Change request} & Asking someone to change a file (``please change
+  this file''), before any change exists: \code{file request --change} with
+  a short message. The holder reads it (\code{file open-request}) and
+  answers accept or decline (\code{file answer-request}). \\
+\textbf{File request} & Asking the holder to send a file, usually one you do
+  not hold: \code{file request}. An accepted file request is served with
+  \code{file share}. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Use \emph{change request} for ``please change this file'' and \emph{merge
+proposal} once the author has already prepared the changes.
+
+\subsection{Asking for a file, or for a change}
+
+A request is a small signed letter (\file{.kqpb}) sealed to the holder, and
+the answer is another, sealed back to the requester. They travel exactly as
+in the previous section: as plain files you carry, or through the relay. The
+holder checks the requester's signature against the key their own store
+holds for that label, and the requester checks the holder's answer the same
+way. A request never opens as a delivery letter, or the other way round.
+
+What a history records, when a copy of the file is named: the request
+(\code{FILE_REQUESTED} or \code{CHANGE_REQUESTED}) with its id and kind, and
+the answer (\code{REQUEST_ANSWERED}) with the decision. The message of a
+change request is shown to the holder and is \emph{never} recorded. Opening
+the same request or answer twice records it once, and a request already
+answered one way cannot be answered the other.
+
+\subsubsection*{When the API is not available: you carry the files}
+
+The public keys of both people are exchanged and registered first (step 0
+in the previous section). M.B asks M.A:
+
+\begin{lstlisting}
+# 1. M.B's computer, M.B's drive in: ask for a file M.B does not hold yet
+keyquorum --db mb.sqlite file request --file-id <32 hex digits> \
+  --name report.txt --to M.A --as M.B --slot ./usb=M.B --output-dir ./requests
+#    or ask for a change to M.B's own copy (message up to 1024 bytes)
+keyquorum --db mb.sqlite file request report.txt.kqtf --change \
+  --message "the total in row 3 is wrong" --to M.A --as M.B \
+  --slot ./usb=M.B --output-dir ./requests
+
+# 2. Carry ./requests/<id>-request.kqpb to M.A (any channel)
+
+# 3. M.A's computer, M.A's drive in: read it; --file records it in M.A's copy
+keyquorum --db ma.sqlite file open-request --letter ./<id>-request.kqpb \
+  --slot ./usb=M.A --file report.txt.kqtf
+
+# 4. M.A's computer: answer (accept or decline); --file records the answer
+keyquorum --db ma.sqlite file answer-request --letter ./<id>-request.kqpb \
+  --decision accept --slot ./usb=M.A --file report.txt.kqtf --ack-dir ./answers
+
+# 5. Carry ./answers/<id>-answer.kqpb back to M.B (any channel)
+
+# 6. M.B's computer, M.B's drive in: read the answer (--file records it
+#    against the request M.B's copy shows it made)
+keyquorum --db mb.sqlite file open-answer --answer ./<id>-answer.kqpb \
+  --slot ./usb=M.B --file report.txt.kqtf
+\end{lstlisting}
+
+If M.A accepted a \emph{file request}, M.A now sends the file with the
+\code{file share} steps of the previous section. If M.A accepted a
+\emph{change request}, the change reaches M.A as a revision the ordinary
+way: M.B checks it in on their copy and sends it with \code{file share}, and
+it arrives as a merge proposal.
+
+\subsubsection*{When the API is available: the relay carries the files}
+
+Store the relay URL and key once per person (\code{loadkey}, as before). Only
+the commands that move a file change:
+
+\begin{lstlisting}
+# 1. M.B: the same file request commands, with --push in place of --output-dir
+keyquorum --db mb.sqlite file request --file-id <32 hex digits> \
+  --name report.txt --to M.A --as M.B --slot ./usb=M.B --push
+
+# 2. Later, M.A's computer: download what is waiting, then read the request
+keyquorum --db ma.sqlite relay pull --output-dir ./inbox
+keyquorum --db ma.sqlite file open-request --letter ./inbox/<n>.kqpb \
+  --slot ./usb=M.A --file report.txt.kqtf
+
+# 3. M.A answers and uploads the answer
+keyquorum --db ma.sqlite file answer-request --letter ./inbox/<n>.kqpb \
+  --decision accept --slot ./usb=M.A --file report.txt.kqtf --push-ack
+
+# 4. Later, M.B's computer: download the answer, then read it
+keyquorum --db mb.sqlite relay pull --output-dir ./answers
+keyquorum --db mb.sqlite file open-answer --answer ./answers/<n>.kqpb \
+  --slot ./usb=M.B --file report.txt.kqtf
+\end{lstlisting}
+
+\code{relay pull --import} lists a request or an answer and tells you which
+command opens it; it never imports one, because a request only asks.
+
+\subsection{History snapshots and the index}
+
+\code{file history} with \flag{--export} (or \code{file history export --out}) writes a \code{KQHS}
+snapshot: the event
+history alone, which verifies on its own. \code{file verify-snapshot}
+with \flag{--against} checks that a snapshot is a point in a file's history --- for
+example, what a partner held when they last answered. A snapshot of an older
+point is still valid; it proves a prefix, not that nothing came after.
+
+The store keeps \code{tracked_files}, \code{tracked_revisions} and
+\code{tracked_history_index} as a cache of metadata (no content, no trust
+decisions). \code{file list} reads it and \code{file reindex} rebuilds it
+from the containers, which remain the authority.
+
+\subsection{Expiry and tombstones}
+
+\code{file expire} lets the scope owner (or one of its ancestors) schedule
+when a tracked file's content ends, or end it now. Because this cannot be
+undone, naming the owner is not enough: the command signs a challenge with
+\flag{--slot} (or \flag{--signing-key-file}) and checks it against the key
+your store has registered for that label. The key is opened only for that
+proof and released before anything changes. When the time has passed,
+the next command that needs the content destroys \emph{every} retained
+revision's payload at once and records \code{FILE_EXPIRED} and
+\code{CONTENT_DESTROYED}. What remains is a tombstone: the revision graph,
+signatures and history still verify, no new revision can be added, and each
+later attempt to use the content is recorded as
+\code{EXPIRED_ACCESS_ATTEMPT} and refused. A container that is missing some
+payloads without a recorded destruction, or keeps any after one, fails
+verification.
+
+\begin{lstlisting}
+keyquorum file expire report.txt.kqtf --as M.A --at "2026-12-31 17:00" \
+  --slot ./usb=M.A
+keyquorum file expire report.txt.kqtf --as M.A --now --slot ./usb=M.A
+\end{lstlisting}
+
+\begin{cautionBox}
+Expiry destroys the content of \emph{this} container. Copies someone
+already holds --- a letter they accepted, a checkout they wrote out --- are
+their own files and are not reached.
+\end{cautionBox}
+
+\subsection{Signed events}
+
+The hash chain shows that no earlier event was changed, removed or
+reordered. Commands that already prove you hold your key --- \code{file
+rename}, \code{file expire} and \code{file resolve --reject} --- also sign
+the events they append (over \code{KQ-FILE-HISTORY-EVENT-v1}). \code{file history} marks such an event
+\code{[signed by ...]} where your store's key for that person verifies it,
+and \code{[signature not verified in this store]} where it does not. Other
+events are protected by the chain alone and are never shown as signed. An
+event signature says who recorded the event; it decides nothing about
+whether a revision is trusted.
+
+\subsection{Recording what happens at a gate}
+
+\code{file link} ties a quorum-protected file (\flag{--quorum-file}) or a
+password-locked file (\flag{--locked-file}) to a tracked file. From then on
+the CLI appends what happened at that gate to the tracked file's history:
+each unlock attempt and its outcome (with the labels presented on a quorum
+success), each share link created, redeemed or revoked (the share's id,
+never its token), and the tombstone when the gate's own expiry destroys its
+ciphertext. The gates themselves are unchanged and never read the link;
+recording happens after the gate has answered and cannot change it. An
+unlock that fails before reaching the gate (for example while shares are
+being collected) is not recorded.
+
+What is recorded is limited to what is safe to keep:
+
+\begin{itemize}
+  \item \textbf{Quorum unlocks:} counts and policy words only --- shares
+  presented, threshold, distinct devices, minimum devices, custody mode,
+  approval mode and parent approvals --- never a share or key.
+  \item \textbf{PIN checks:} only the outcome (\code{asked},
+  \code{verified}, \code{mismatch}, \code{locked} or \code{failed}); nothing
+  when no PIN applies. Never the PIN, its hash or the attempt count.
+  \item \textbf{Share links:} the share's id, never its token. A redemption
+  is recorded as \code{redeemer=UNKNOWN_BEARER}, because holding a token
+  proves nothing about who is holding it.
+\end{itemize}
+
+\subsection{Limits this version states}
+
+Two limits are stated on purpose, so this version does not claim stronger
+guarantees than it has.
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Historical authority is local key history.} The store
+  preserves which identity and signing key each label held, as observed
+  here. It does not establish complete generation-specific identity,
+  relationship or reviewer authority.
+  \item \textbf{Bridge disclosure awaits the owner's acceptance.} A
+  \code{satisfied_by} of \code{BRIDGE} or \code{BRIDGE_AND_SCOPE_OWNER}
+  reveals that a bridge approval took part in a decision. That stays in the
+  portable history and in any export. Whether to keep it is the owner's
+  policy decision.
+\end{itemize}
+
+The full architecture goes further than what is built. Today:
+
+\begin{itemize}
+  \item Tracking starts with \code{file track} or the first \code{file sign}
+  of a native file; nothing tracks a file on its own. A request for a file
+  or a change is recorded only in a copy you name, and never as a delivery.
+  \item A store keeps which topology generations it has held. Each command that
+  resolves a file's topology generation (track, check in, sign, merge and
+  the like, not a plain \code{verify}) also records which identity and
+  signing key each label under that tree holds now, as the first and last
+  generation it was observed in. A revision stamped with an older
+  generation is also checked against every key recorded for that label and
+  identity whose observed range covers it, in addition to the current key,
+  so it keeps its meaning after the label is reissued or reassigned. This is
+  the store's own key history, not a per-generation record of who held the
+  label: a generation between two observations counts as covered, the
+  current key is tried without proof it held the label then, a store that
+  never saw a key has no record of it, and nothing proves when a signature
+  was made.
+  \item Conflicts are settled a whole revision at a time (\flag{--keep} or
+  \flag{--from}), not hunk by hunk. The interactive review settles a conflict
+  from the terminal only through the same commands as the command line, and
+  a line has one recorded author in it: where several revisions on one side
+  touched it, only the last is shown.
+  \item Checkouts, signature checks and exports are recorded only when asked
+  (\flag{--record}), and only under the label \flag{--as} names; that label is
+  a claim, so the event is chained but never attested. Tampering is refused
+  when a file is opened rather than recorded in it.
+  \item Recording at gates is opt-in (\code{file link}) and best effort.
+\end{itemize}

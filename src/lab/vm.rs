@@ -467,6 +467,15 @@ impl Env for LabVm {
             })?)
     }
 
+    fn now_utc_precise(&self) -> Result<String> {
+        Ok(self
+            .relay
+            .conn
+            .query_row("SELECT strftime('%Y-%m-%d %H:%M:%f', 'now')", [], |row| {
+                row.get(0)
+            })?)
+    }
+
     fn open_db(&mut self, path: &Path) -> Result<Connection> {
         let path = self.resolve(path);
         // Every open of the same path attaches to the same named in-memory

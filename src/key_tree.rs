@@ -948,6 +948,22 @@ pub fn list_bridges(conn: &Connection, key_id: i64) -> Result<BridgeListing> {
     })
 }
 
+/// Every established (bound) bridge in this store, across all trees, as
+/// label pairs. Allowed-but-unbound whitelist entries are not bridges.
+pub fn established_bridge_pairs(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT a.label, b.label
+         FROM key_node_links l
+         JOIN key_nodes a ON a.id = l.node_a_id
+         JOIN key_nodes b ON b.id = l.node_b_id
+         WHERE a.is_active = 1 AND b.is_active = 1",
+    )?;
+    let pairs = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(pairs)
+}
+
 /// Whitelist both directions and establish the pairing. Node ids stay
 /// put across later secret refreshes, so this bind survives PSS / add /
 /// rebind as long as those operations UPDATE the same rows.
@@ -1900,11 +1916,51 @@ fn apply_public_tree_inner(
     for edge in &snapshot.links {
         add_bridge(conn, key_id, &edge.from, &edge.to)?;
     }
+    // Both sides of the change were held here: the generation being left
+    // and the one taking effect.
+    if let Some(previous) = conn
+        .query_row(
+            "SELECT public_generation FROM keys WHERE id = ?1",
+            params![key_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+    {
+        note_generation(conn, key_id, u64::try_from(previous).unwrap_or(0))?;
+    }
     conn.execute(
         "UPDATE keys SET public_generation = ?1 WHERE id = ?2",
         params![i64::from(snapshot.generation), key_id],
     )?;
+    note_generation(conn, key_id, u64::from(snapshot.generation))?;
     Ok(key_id)
+}
+
+/// Remember that this store held `generation` of tree `key_id`.
+pub fn note_generation(conn: &Connection, key_id: i64, generation: u64) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO tree_generations_seen (key_id, generation) VALUES (?1, ?2)",
+        params![
+            key_id,
+            i64::try_from(generation).map_err(|_| Error::InvalidTreeSpec)?
+        ],
+    )?;
+    Ok(())
+}
+
+/// Whether this store ever held `generation` of tree `key_id`.
+pub fn generation_seen(conn: &Connection, key_id: i64, generation: u64) -> Result<bool> {
+    let Ok(generation) = i64::try_from(generation) else {
+        return Ok(false);
+    };
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM tree_generations_seen WHERE key_id = ?1 AND generation = ?2",
+            params![key_id, generation],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
 }
 
 fn apply_public_node(conn: &Connection, key_id: i64, node: &PublicNode) -> Result<()> {

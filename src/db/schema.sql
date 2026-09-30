@@ -418,3 +418,117 @@ CREATE TABLE IF NOT EXISTS transfer_audit (
     detail                TEXT NOT NULL,
     created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+
+-- A rebuildable cache over `.kqtf` tracked files. The container is the
+-- authority for identity, revisions and history; these rows only make them
+-- listable and can be dropped and rebuilt from the containers at any time.
+-- They hold metadata only: never payload bytes, and no trust state (that
+-- depends on keys and changes).
+CREATE TABLE IF NOT EXISTS tracked_files (
+    file_id      BLOB PRIMARY KEY CHECK (length(file_id) = 16),
+    logical_name TEXT NOT NULL,
+    scope_root   TEXT,
+    history_root BLOB NOT NULL CHECK (length(history_root) = 32),
+    head_count   INTEGER NOT NULL CHECK (head_count >= 0),
+    event_count  INTEGER NOT NULL CHECK (event_count >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS tracked_revisions (
+    revision_id     BLOB PRIMARY KEY CHECK (length(revision_id) = 32),
+    file_id         BLOB NOT NULL REFERENCES tracked_files(file_id) ON DELETE CASCADE,
+    ordinal         INTEGER NOT NULL CHECK (ordinal >= 0),
+    parent_ids      BLOB NOT NULL,
+    generated_label TEXT NOT NULL,
+    user_label      TEXT,
+    author_label    TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    is_head         INTEGER NOT NULL CHECK (is_head IN (0, 1))
+);
+
+-- The cascade from tracked_files finds a file's revisions through this.
+CREATE INDEX IF NOT EXISTS tracked_revisions_by_file ON tracked_revisions (file_id);
+
+CREATE TABLE IF NOT EXISTS tracked_history_index (
+    file_id     BLOB NOT NULL REFERENCES tracked_files(file_id) ON DELETE CASCADE,
+    sequence    INTEGER NOT NULL CHECK (sequence >= 0),
+    event_type  TEXT NOT NULL,
+    outcome     TEXT NOT NULL,
+    revision_id BLOB,
+    actor_label TEXT,
+    occurred_at TEXT NOT NULL,
+    PRIMARY KEY (file_id, sequence)
+);
+
+-- Ties an existing protection gate (a quorum file or a password-locked
+-- file) to a tracked `.kqtf`, so the CLI can append what happened at the
+-- gate to that file's history. Deliberately no foreign key to the gate
+-- tables: a purged gate row must not take its link, and so the record of
+-- its expiry, with it. The gates never read this table.
+CREATE TABLE IF NOT EXISTS tracked_gate_links (
+    id              INTEGER PRIMARY KEY,
+    tracked_file_id BLOB NOT NULL,
+    gate            TEXT NOT NULL CHECK (gate IN ('quorum', 'password')),
+    gate_file_id    INTEGER NOT NULL,
+    -- The gate row's ciphertext path and creation time when linked: what
+    -- tells the linked file from a later one that was given the same id.
+    gate_ref        TEXT NOT NULL,
+    kqtf_path       TEXT NOT NULL,
+    linked_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (tracked_file_id, gate, gate_file_id)
+);
+
+CREATE INDEX IF NOT EXISTS tracked_gate_links_by_gate
+    ON tracked_gate_links (gate, gate_file_id);
+
+-- Tracked-file histories this store has authenticated: the revision and
+-- history root a sender signed in a letter this store accepted. Not a cache
+-- over `.kqtf` files (it is not rebuildable from them): it is what a later
+-- letter's history is compared against before anyone calls it newer.
+CREATE TABLE IF NOT EXISTS tracked_seen_roots (
+    file_id      BLOB NOT NULL CHECK (length(file_id) = 16),
+    revision_id  BLOB NOT NULL CHECK (length(revision_id) = 32),
+    history_root BLOB NOT NULL CHECK (length(history_root) = 32),
+    sender_label TEXT NOT NULL,
+    seen_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (file_id, revision_id, history_root, sender_label)
+);
+
+-- Topology generations this store has held for each tree: the one current
+-- when a file command ran, and both sides of every applied restructure. A
+-- tracked revision stamped with a generation this store never held is not
+-- judged against today's topology (see `file_history::policy`).
+CREATE TABLE IF NOT EXISTS tree_generations_seen (
+    key_id     INTEGER NOT NULL REFERENCES keys(id) ON DELETE CASCADE,
+    generation INTEGER NOT NULL CHECK (generation >= 0),
+    seen_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (key_id, generation)
+);
+
+-- Which identity and signing key this store saw holding each label, and for
+-- which topology generations of the tree (first through last observed).
+-- Recorded by every file command from this store's own key registry, so a
+-- revision stamped with an older generation can still be checked against the
+-- key its author held then, after the label was reissued or reassigned. A
+-- store that never ran a file command while a key was current has no
+-- evidence for it. See `authority::record_label_evidence`.
+CREATE TABLE IF NOT EXISTS label_authority_evidence (
+    scope_root      TEXT NOT NULL,
+    label           TEXT NOT NULL,
+    identity        BLOB NOT NULL CHECK (length(identity) = 16),
+    signing_public  BLOB NOT NULL CHECK (length(signing_public) = 32),
+    first_generation INTEGER NOT NULL CHECK (first_generation >= 0),
+    last_generation  INTEGER NOT NULL CHECK (last_generation >= first_generation),
+    PRIMARY KEY (scope_root, label, identity, signing_public)
+);
+
+-- Private-bridge approvals of tracked revisions, held only in this store:
+-- the KQBS artifact names the bridge, so it never travels in a `.kqtf`.
+-- `private_bridge::revision_approved` re-verifies each against the live
+-- bridge (same generation, signer still a member) every time it is asked.
+CREATE TABLE IF NOT EXISTS tracked_bridge_approvals (
+    revision_id BLOB NOT NULL CHECK (length(revision_id) = 32),
+    bridge_uid  TEXT NOT NULL,
+    artifact    BLOB NOT NULL,
+    recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (revision_id, bridge_uid)
+);

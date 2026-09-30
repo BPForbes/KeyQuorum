@@ -47,9 +47,11 @@ itself stays orchestration: `key_tree.rs` is the only place in the crate
 that ever mutates `key_nodes` (`adopt_reissued_hardware_key` sits next to
 `rebind_leaf`; `active_encryption_leaves` next to `active_leaves_for_hardware`;
 `load_for_visibility` backs `visible_labels` itself now, not just the
-restructure loop), `private_bridge.rs` owns the dotted-label hierarchy
-(`is_ancestor_or_self` next to `parent_node_label`) and bridge-roster
-queries (`bridge_notify_targets`), and `keys.rs` owns the hardware-key
+restructure loop), `authority.rs` owns the dotted-label hierarchy
+(`parent_node_label`, `is_ancestor_or_self`, `ancestry_distance`,
+`relationship`, `lowest_common_ancestor`, `direct_parent`;
+`private_bridge.rs` re-exports the first two), `private_bridge.rs` owns
+bridge-roster queries (`bridge_notify_targets`), and `keys.rs` owns the hardware-key
 registry (`active_keys_for`, `get_or_register`, `revoke_superseded`,
 `unrevoke_key`). A new authenticated-update primitive belongs in the
 module that owns the table it reads or writes, not in `org_update.rs`,
@@ -142,7 +144,179 @@ path-based functions are thin wrappers over `NativeStorage`; keep them.
 `KIND_FILE_DELIVERY` / `KIND_FILE_DELIVERY_ACK` `PACKAGE` letters, signed by
 the sender and answered with a signed accept/reject, both checked against
 the signing key the opening store has registered for the claimed label.
-The bridge inbox carries them like any other non-device letter.
+The bridge inbox carries them like any other non-device letter. Tracked
+files travel as `KIND_FILE_HISTORY` / `KIND_FILE_HISTORY_ACK` (15, 16) in the
+same module: the sender signs the header and the container's hash, and the
+container carries only the delivered revision and its ancestors
+(`TrackedFile::extract_revision`, which also keeps events that name no
+revision, such as a rename), so an untrusted newer revision never
+leaves. Both `file receive` and `deliver open` require the letter's recipient
+label to own the key that opened it (`deliver_cmd::require_recipient_key`). That signature authenticates transport only; the receiver judges
+the revision by the file's own policy (`keyquorum file receive`) and
+answers with a signed accept or reject. Receipt is idempotent by delivery id:
+receiving the same letter again (`--into` or the same `--out`) records nothing new and only reseals the answer.
+The letter's signed header also binds `content_proof`, the
+`policy::proof_descriptor` of the delivered revision (every proof the
+container holds for it, in order), which `select_shareable_revision` returns
+in `DeliveryDecision` and `file receive` recomputes from the container,
+refusing a mismatch. It names the proofs that travelled; it decides no trust.
+`KIND_FILE_HISTORY_SNAPSHOT` (17) carries a `KQHS` history snapshot (no content)
+to a label, its file id, root and event count signed by the sender (`file send-history`);
+`file open-history` checks the signature, the recipient key and the snapshot, and
+compares it with a local copy (`SAME`, `LOCAL_AHEAD`, `REMOTE_AHEAD`, `DIVERGED`). It is
+not answered. Every letter kind and answer in `file_delivery` opens through the same
+helpers (`open_kind`, `take_head`, `take_signature`, `verify_signed_by`), and
+`file_delivery::recipient_owns_key` is the one recipient-key check both commands use.
+Freshness is never assumed: `file_delivery::freshness` compares a letter's
+revision and signed history root with `tracked_seen_roots` (what this store
+accepted before for that file) and says `FIRST`, `REPLAYED`, `NEWER` (its
+event chain passes through every root accepted before, `TrackedFile::passes_through`,
+and it holds those revisions and adds one) or `NOT_NEWER`; `file
+receive` prints it and records it on `SHARE_DELIVERED`, then records the
+accepted root. That table is store state, not a cache over `.kqtf` files.
+`src/file_history.rs` owns the tracked-file container (`KQTF`, its own
+magic and version, not a sealed envelope) and the hash-chained event history
+that travels with it; SQLite may only index it. It frames and chains events
+and reuses `envelope`'s length-prefixed codec. It must not re-decide anything
+another module owns: signatures go through `signing`, ancestry through
+`authority`, quorum through `quorum`. Event type and outcome codes are wire
+format: append, never renumber. History never records secrets. Every detail key
+an event may carry is listed in `event::SAFE_DETAIL_KEYS`; `append` refuses any other, so a new
+producer adds its key there. The quorum gate records only counts and policy words (`shares`,
+`threshold`, `devices`, `minimum_devices`, `custody`, `approval`, `approvals`), and `file share`
+names a fallback's `candidate` and `fallback_reason`.
+`file_history/merge.rs` owns the automatic three-way text merge of divergent
+heads: UTF-8 text only, by line, against the nearest common ancestor. A merge
+is a new two-parent revision with no proofs, so it starts untrusted and goes
+through `policy`; overlapping edits, other content, a criss-cross history or
+a policy that disables it stop for a human. HCP seniority never chooses a
+winning line.
+`file_history/resolve.rs` picks the human reviewer for a conflict the merge
+could not settle (prior neutral owner, then seniority, sector size, common
+ancestor), from owners whose revisions are trusted under policy; conflicting
+authors never review their own collision, a private bridge is never named
+in history, and nothing is guessed when no one qualifies. `resolve_conflict`
+settles the open conflict (`open_conflict`: two diverged heads that need a
+person, or a sole head that is a rejected proposed merge) with a new revision
+by the reviewer: `KeepLeft`, `KeepRight` or `Edited` content, recorded as
+`CONFLICT_RESOLVED` (34). Only the selected reviewer or an ancestor of theirs
+may decide (`may_decide`); when no reviewer qualifies, the scope owner or an
+ancestor does; a conflicting author never does. `reject_merge` records
+`MERGE_REJECTED` (35) against an untrusted proposed merge at the head; the
+revision stays, `file sign` refuses it, and the resolution builds on it.
+`keyquorum file resolve --keep left|right | --from FILE | --reject` is the
+command: it signs the result as the reviewer's content signature, and the
+normal trust policy judges it. `file merge` opens the interactive review
+when a person must decide and the terminal is interactive (`Env::interactive`).
+`src/cli/file_cmd.rs` is the `keyquorum file` command layer over `file_history`
+(track, checkin, sign, countersign, rename, merge, review, graph, diff,
+checkout, status, history, verify). Signing a native file with `--scope` is
+the first content signature and starts tracking (the same steps as `track`);
+`rename` changes only `logical_name` and appends `FILE_RENAMED`, never the
+file or revision ids. `status` derives `current_revision_id` and
+`trusted_revision_id` from the store's keys; the container never stores them. A file's rules are fixed at
+`track` (`--owner-rule` and friends, checked by `FilePolicy::with_rules`; `policy`
+shows them and the hash); revisions are stamped to the millisecond through
+`Env::now_utc_precise`, while events keep whole seconds. It decides no
+trust: it calls `file_history` and prints the result. The `.kqtf` container
+carries its own policy; the store only supplies signing keys, through
+`StoreTrust`, which accepts a key only for the identity the store knows for
+that label (the enrolled identity from `transfer`, else one derived from the
+label). Containers are replaced by writing a sibling and renaming, under an exclusive `<file>.lock` and only if the file is still the one the command read (`save` refuses a changed file rather than overwrite it).
+`file_history/index.rs` keeps `tracked_files`, `tracked_revisions` and
+`tracked_history_index` as a rebuildable cache over `.kqtf` files: metadata
+only, no payload and no trust state, and `file reindex` restores it from the
+containers, which remain the authority.
+`src/cli/review_view.rs` is the review's view model and key handler (Vim keys,
+`/` search with `n`/`N` repeat, `:` commands, per-line provenance for the cursor
+or pointer) with no terminal and no dependencies; `keyquorum file review` prints from the same
+`ReviewView`. `src/cli/review_tui.rs` (feature `tui`, `ratatui`, native-only,
+refused by `build.rs` on wasm32) only draws it and reads keys and the mouse.
+It decides no trust and edits no history: `:sign`, `:accept`, `:reject` and
+`:finalize` run the real `file sign`, `file resolve` (or, for a result on a clean merge with no conflict, `file checkin`) and `file finalize`
+only after `:as`/`:slot` (or `review --as --slot`) name who is acting; the review
+never judges authority itself. It shows two unchanged context lines around each change (`ViewLine::context`; `c` toggles them, the printed review omits them). Hunks fold (`za`/`zc`/`zo`, `zM`/`zR`), `Space`
+picks a change, `:compose` applies the picked changes to the common ancestor
+(`file_history::apply_hunks`), and `:edit` opens the result in `$VISUAL`/`$EDITOR`.
+A clean merge waiting at the sole head opens the same review (`ReviewView::pending_merge`).
+`src/cli/gate_link.rs` ties a quorum-protected or password-locked file to a
+tracked `.kqtf` (`keyquorum file link --quorum-file|--locked-file`, table `tracked_gate_links`, deliberately without a
+foreign key to the gate so a purged gate keeps its link) and appends what
+happened at the gate to that file's history: the attempt and its outcome,
+the labels presented on success, and, when the TTL destroys the file,
+`FILE_EXPIRED`, `CONTENT_DESTROYED` and `EXPIRED_ACCESS_ATTEMPT`. The CLI
+calls it only after `quorum`, `locked_files` (PIN check included) or `sharing` (file share create, redeem, revoke; the share's id, never its token) has answered; the gates never read the link,
+recording is best-effort and cannot change an outcome, and no share,
+password, PIN or plaintext is ever recorded. A PIN check
+leaves only its outcome (`pin=asked|verified|mismatch|locked|failed`, none when no PIN applies), and a share-link
+redemption is recorded as `redeemer=UNKNOWN_BEARER`, since a token proves no identity.
+`file finalize` (scope owner or an ancestor, by slot) adds a `Finalization`
+proof (`ProofKind` 3, container v6, event `REVISION_FINALIZED` = 33) to a revision that is
+already trusted; `policy::is_finalized` and `latest_finalized_ancestor` derive it per store
+(never stored), and `status` shows it.
+The bridge-or-owner rule accepts a private bridge's signed approval of the
+revision itself (`keyquorum file bridge-approve`, `signing::file_bridge_approval_preimage`,
+a KQBS artifact kept only in this store's `tracked_bridge_approvals`, never in the
+`.kqtf`): `StoreTrust::revision_bridge_evidence` asks `private_bridge::revision_approved`,
+which re-verifies it against the live bridge (current generation, signer still a
+member) and accepts it only when the bridge's members reach from the author to the
+scope (`authority::bridge_connects`; supervisors do not count). A bridge merely
+existing between labels (a tree link or a roster) approves nothing; tree links are
+review-path evidence only (`bridge_between`).
+The stricter `author+bridge+owner` cross-branch rule requires that same live,
+revision-specific bridge approval and a countersignature by the file scope owner;
+neither approval can substitute for the other.
+A trusted cross-branch `POLICY_DECISION` records only `satisfied_by=BRIDGE`,
+`SCOPE_OWNER`, or `BRIDGE_AND_SCOPE_OWNER`; it never names a bridge id,
+generation, signer, member, or roster.
+A revision stamped with a topology generation this store never held (`tree_generations_seen`, recorded by every file
+command and on both sides of an applied restructure) is `Pending(MissingTopologyEvidence)`,
+never judged against today's topology; generation 0 means no published topology.
+Container v7 adds optional `EventProof`s after the events (the event's own actor
+signing `signing::file_history_event_preimage`), written only when one exists;
+`rename`, `expire` and `resolve --reject` sign the events they append, and
+`policy::event_attested` / `file history` report a signature only where this store's
+key for that actor verifies it. Unsigned events stay hash-chained, never attested. `file checkout`, `file verify` and `export tracked-file` append
+`REVISION_CHECKED_OUT` (36), `VERIFICATION_RUN` (37) and `HISTORY_EXPORTED` (38)
+only under `--record`, attributed only to the label `--as` names; that label is a
+claim, so the event is hash-chained and never attested. `label_authority_evidence` (owned by `authority`: `record_label_evidence`,
+`historical_signing_publics`) is what every file command records, from the store's own
+registry, of the identity and signing key each label held per topology generation;
+`TrustContext::historical_signing_publics` lets a revision or event stamped with an
+older generation verify against that key after a reissue. It is the store's own
+observation, never taken from a `.kqtf`.
+Terms for proposing a change: a **merge proposal** is prepared changes submitted for
+review (the pending merge revision and its reviewer resolution); a **change request**
+(ask someone to change a file, `file request --change`) and a **file request** (ask the
+holder to send a file, `file request`) are signed request letters (`KIND_FILE_REQUEST` 18,
+answered by `KIND_FILE_REQUEST_ANSWER` 19, `file_delivery::request`), opened with
+`file open-request` and answered with `file answer-request` / `file open-answer`. A request
+only asks: it delivers and changes nothing, `file share` serves an accepted file request,
+and a change arrives as an ordinary revision. `FILE_REQUESTED` (39), `CHANGE_REQUESTED` (40)
+and `REQUEST_ANSWERED` (41) record the id, kind and decision in a copy named with `--file`;
+a change request's message is shown to the holder and never recorded. This version states
+two limits: historical authority is local key history, not a complete generation-specific
+identity, relationship or reviewer-authority record, and `satisfied_by` discloses bridge
+participation in portable history pending the owner's acceptance.
+`file_history/expiry.rs` ends a tracked file: an `EXPIRY_SCHEDULED` event
+sets the time, and destruction removes every retained revision's payload at
+once (container v5 lets a payload be absent; v4 still decodes).
+`verify_structure` makes that all-or-nothing and recorded: a payload may be
+missing only when the chain holds this container's `CONTENT_DESTROYED` (one
+without a `gate` detail; a linked gate's purge names its gate and leaves the
+revisions alone), and then none may remain. The tombstone keeps the graph, proofs and history, verifies, takes no
+new revision, and is neither imported nor extracted. `keyquorum file expire`
+(scope owner or an ancestor, proven by signing a challenge with that label's registered key via `--slot`) schedules it or destroys now; commands that need
+content load through `load_live`, which destroys on the first touch after the
+time and records each later attempt as `EXPIRED_ACCESS_ATTEMPT`, attributed
+only to a label the command names. Copies already held elsewhere are their own
+files.
+`file_history/sync.rs` imports another copy of the same file (same id and
+policy, and it must verify): revisions and proofs are unioned, a fork stays as
+two heads, and the importer records one `HISTORY_IMPORTED` event in its own
+chain; two diverged event chains are never joined. `file_history/snapshot.rs`
+is `KQHS`, a verifiable event-history snapshot (its own magic, not a sealed
+envelope) that can be checked as a point in a file's history.
 
 `src/lab/` (feature `lab`) is KeyQuorum Lab, the public browser
 demonstration published from `lab/` to GitHub Pages and embedded by
@@ -190,6 +364,30 @@ genuinely reports `Possession::Ghost` for that label, not a UI-only flag. She st
 `legacy-migration-notes.txt`'s tree; `device::leaf_is_ghost` refuses her
 share the moment anyone presents it. `RequirementNode.ghost` (`view.rs`)
 is how the frontend marks it.
+
+`src/lab/state/history.rs` is the lab's tracked-file layer. `LabState::seed_tracked`
+builds three tracked files with real `keyquorum file` commands in Sarah's own
+store while every drive is connected: an unsigned newer edit whose sharing falls
+back to the last trusted revision, two edits that auto-merge, and two edits to
+one line that go to a named reviewer. The lab follows a registry of containers
+(those seeded, those the Activity page's buttons create, and any `.kqtf` a
+terminal command names) and `LabState::log` re-reads them before it records each
+action, appending unseen events as `ActivityView` entries (`kind == "history"`,
+with `fileId`, `revisionId`, `generatedLabel`, `historyRoot`,
+`finalizationState`, ...) beneath the action's own entry, which stays newest
+because tutorial gates read `activity[0]`. The Activity page's tracked-file
+buttons (track, check in signed or unsigned, sign, countersign, merge, review, resolve,
+verify, share, receive or refuse, record the answer, ask for a file or a change
+(`file request`, `--change`), accept or decline a request (`open-request` then `answer-request`),
+record a request's answer (`open-answer`), expire, view a revision,
+diff, export and check a snapshot, import another copy, link or unlink a quorum
+or password gate) each run one `keyquorum file` command as the active person against their own store with their own slot
+(a quorum gate is linked in the org store and a password gate in its owner's
+store, where each gate runs); letters and acknowledgements pass through `/srv/keyquorum/tracked/letters` and
+`acks`. `Snapshot::tracked_files` judges revisions with that store's
+`StoreTrust`; the lab adds no gate or rule of its own, event categories come
+from `HistoryEventType::category`, and entries without a history serialize
+exactly as before. The terminal does not expand `~` inside command arguments.
 
 ## Working conventions
 

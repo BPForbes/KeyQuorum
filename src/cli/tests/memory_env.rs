@@ -21,6 +21,13 @@ pub struct MemoryEnv {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     stores: HashMap<PathBuf, Connection>,
+    /// Answers for the next prompts, in order; after that, [`PASSPHRASE`].
+    pub prompts: std::collections::VecDeque<String>,
+    /// The clock (`yyyy-mm-dd hh:mm`); a fixed default when unset.
+    pub now: Option<String>,
+    /// Milliseconds the precise clock adds after the seconds (`"482"`);
+    /// none by default, so the precise clock equals [`MemoryEnv::now`].
+    pub millis: Option<String>,
 }
 
 impl Env for MemoryEnv {
@@ -41,7 +48,10 @@ impl Env for MemoryEnv {
     }
 
     fn prompt_secret(&mut self, _prompt: &str) -> Result<String> {
-        Ok(PASSPHRASE.to_string())
+        Ok(self
+            .prompts
+            .pop_front()
+            .unwrap_or_else(|| PASSPHRASE.to_string()))
     }
 
     fn var(&self, _name: &str) -> Option<String> {
@@ -53,7 +63,19 @@ impl Env for MemoryEnv {
     }
 
     fn now_utc(&self) -> Result<String> {
-        Ok("2026-09-27 00:00".into())
+        Ok(self
+            .now
+            .clone()
+            .unwrap_or_else(|| "2026-09-27 00:00".into()))
+    }
+
+    fn now_utc_precise(&self) -> Result<String> {
+        let now = self.now_utc()?;
+        Ok(match &self.millis {
+            Some(millis) if now.len() == 16 => format!("{now}:00.{millis}"),
+            Some(millis) => format!("{now}.{millis}"),
+            None => now,
+        })
     }
 
     fn open_db(&mut self, path: &Path) -> Result<Connection> {
@@ -69,6 +91,13 @@ impl Env for MemoryEnv {
 }
 
 impl MemoryEnv {
+    /// The store at `path`, once a command has opened it.
+    pub fn store(&self, path: &str) -> &Connection {
+        self.stores
+            .get(Path::new(path))
+            .expect("a command has opened this store")
+    }
+
     /// Run one `keyquorum` command line; returns its result and stdout.
     pub fn keyquorum(&mut self, line: &str) -> (Result<()>, String) {
         let cli = Cli::try_parse_from(line.split_whitespace()).expect("command line parses");
@@ -82,7 +111,7 @@ impl MemoryEnv {
         self.run(|| device_tool::run(cli))
     }
 
-    fn run(&mut self, f: impl FnOnce() -> Result<()>) -> (Result<()>, String) {
+    pub(super) fn run(&mut self, f: impl FnOnce() -> Result<()>) -> (Result<()>, String) {
         self.stdout.clear();
         let (result, env) = env::scoped(std::mem::take(self), f);
         *self = env;

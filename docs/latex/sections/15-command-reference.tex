@@ -145,6 +145,8 @@ command, and is never documented outside the crate's own source.
   recipient's public key. \\
 \code{export file} & Export a password-locked file, sealed to a
   recipient's public key. \\
+\code{export tracked-file} & Export a complete, structurally verified \file{.kqtf}
+  container, sealed to a recipient's public key. \\
 \code{share create-credential} & Create a time-limited, revocable share
   link for a vault credential. \\
 \code{share create-file} & Create a time-limited, revocable share link for
@@ -199,6 +201,53 @@ command, and is never documented outside the crate's own source.
 \bottomrule
 \end{tabular}
 \end{center}
+
+\subsection{Tracked files}
+
+See section~\ref{sec:file-history}.
+
+\begin{longtable}{@{}p{0.24\linewidth}p{0.70\linewidth}@{}}
+\toprule
+\textbf{Command} & \textbf{Purpose} \\
+\midrule
+\endhead
+\code{file track} & Start tracking a file: make its first revision, sign it as its author, and write \file{<file>.kqtf}. \flag{--no-auto-merge} sends every fork to a person. \flag{--owner-rule}, \flag{--descendants-rule}, \flag{--ancestors-rule} and \flag{--cross-branch-rule} set what each role must present (\code{forbidden}, \code{author}, \code{author+parent}, or for cross-branch \code{author+bridge-or-owner} / \code{author+bridge+owner}); rules that cannot be met are refused. \\
+\code{file policy} & Show the rules a tracked file's revisions are judged by and the policy hash every revision carries. \\
+\code{file checkin} & Check in a new revision from a native file (signed with \flag{--slot}, or \flag{--unsigned}). \\
+\code{file sign} & Sign a revision you authored (the current head unless \flag{--revision}). Given a native file that is not tracked, this first content signature starts tracking it, exactly as \code{file track} does; the scope is your own label unless \flag{--scope} names another. \\
+\code{file rename} & Change the name a tracked file is shown under. The scope owner or an ancestor proves the label with \flag{--slot}; the file id and every revision id stay the same and the old and new names are recorded. \\
+\code{file countersign} & Countersign a revision the author has signed. \\
+\code{file finalize} & Mark a trusted revision final (scope owner or an ancestor, by slot). Trust itself is unchanged, and each store decides finality from its own keys. \\
+\code{file send-history} & Seal this file's event history (a KQHS snapshot, no content) to a label, its root signed by you. \\
+\code{file open-history} & Open a history snapshot letter and compare it with your copy (\code{--against}). \\
+\code{file request} & Ask a holder for a file (\code{--file-id} and \code{--name}), or with \code{--change} and \code{--message} to change one you hold. Writes a sealed request (\code{--output-dir}) or uploads it (\code{--push}). \\
+\code{file open-request} & Open a request made of you; \code{--file} records it once in your copy. \\
+\code{file answer-request} & Accept or decline a request (\code{--decision}); \code{--file} records the answer once. An answer delivers nothing. \\
+\code{file open-answer} & Open the holder's answer; \code{--file} records it against the request your copy shows you made. \\
+\code{file bridge-approve} & As a member of a private bridge that reaches from the author to the scope, approve a revision with the bridge (kept in this store only). \\
+\code{file resolve} & As a conflict's reviewer, keep one side (\code{--keep left|right}) or supply the edited result (\code{--from}), signed as yours; \code{--reject} refuses a proposed merge. \\
+\code{file merge} & Merge two divergent heads automatically when the edits allow it; otherwise record the conflict and who must review it, and on a \flag{--features tui} build in an interactive terminal open the review. A merge is a new revision that stays untrusted until it is signed. \\
+\code{file review} & Show what each side of a fork changed, and who reviews a conflict. \flag{--interactive} needs a build with \flag{--features tui}. \\
+\code{file graph} & Show the revisions, their parents and their trust. \\
+\code{file diff} & Show the changed lines between two revisions of text. \\
+\code{file checkout} & Write a revision's native bytes to a new file; \flag{--record} appends an event. \\
+\code{file list} & List the tracked files this store has indexed (a cache; see \code{reindex}). \\
+\code{file reindex} & Rebuild index rows from tracked files. Every file is verified first; if any fails, nothing changes. \flag{--clear} also drops rows for files not named here. \\
+\code{file status} & Show the heads, their trust, what would be shared, and the current and latest trusted revision ids. \\
+\code{file history} & List the recorded events; \flag{--export} also writes a \code{KQHS} snapshot. \\
+\code{file history export} & The alternative spelling of \code{file history --export}: list the events and write a \code{KQHS} snapshot to \flag{--out}. \\
+\code{file history verify} & The alternative spelling of \code{file verify-snapshot} for a snapshot; given a tracked file it is \code{file verify}. \\
+\code{file verify-snapshot} & Check a history snapshot; with \flag{--against}, that it belongs to a file. \\
+\code{file import} & Bring another copy of the same file's revisions and proofs into this one. A fork is kept as two heads; nothing is overwritten. \\
+\code{file verify} & Verify the history chain and revision graph, and judge every revision. \\
+\code{file expire} & Schedule when this file's content is destroyed, or destroy it now; needs \flag{--slot} to prove you hold the owner label. Every retained revision's content goes at once; the history, the revision graph and every signature stay behind as a tombstone. \\
+\code{file link} & Record what happens at a quorum-protected or password-locked file's gate in this tracked file's history. The gate is unchanged and never depends on it. \\
+\code{file unlink} & Stop recording a gate in this tracked file's history. \\
+\code{file share} & Seal the head (or \flag{--revision}) to another label as a \file{.kqpb} letter, or its most recently stored trusted ancestor when it is not trusted. Trusted work on another branch is never substituted, and nothing is sent when no ancestor is trusted. \\
+\code{file receive} & Open a tracked-file letter addressed to you. The sender is checked as the transport; the delivered revision is then judged by the file's own policy and accepted only if it is trusted here. Prints and records how the history compares with what this store accepted before (\code{FIRST}, \code{REPLAYED}, \code{NEWER}, \code{NOT_NEWER}); receiving the same letter again records nothing new. \\
+\code{file ack} & Record an acknowledgement sealed back to you in your copy's history. \\
+\bottomrule
+\end{longtable}
 
 \subsection{Device transfer}
 

@@ -41,10 +41,22 @@ pub trait Env: Any {
     /// The current UTC time, as `provider::system_now_utc` formats it, for
     /// certificate checks.
     fn now_utc(&self) -> Result<String>;
+    /// The current UTC time with sub-second precision, for tracked-file
+    /// revisions. Defaults to [`Env::now_utc`], so a fixed test clock stays
+    /// fixed.
+    fn now_utc_precise(&self) -> Result<String> {
+        self.now_utc()
+    }
     /// Open (creating if needed) the organization store at `path`.
     fn open_db(&mut self, path: &Path) -> Result<Connection>;
     /// Hand a store opened by [`Env::open_db`] back when the command ends.
     fn close_db(&mut self, path: &Path, conn: Connection);
+    /// Whether a person is at a terminal (standard input and output both
+    /// attached), so a command may open an interactive view. Tests and the
+    /// lab are never interactive.
+    fn interactive(&self) -> bool {
+        false
+    }
 }
 
 /// The real process: terminal, `std::fs`, and SQLite files on disk.
@@ -130,12 +142,22 @@ impl Env for NativeEnv {
         crate::provider::system_now_utc()
     }
 
+    fn now_utc_precise(&self) -> Result<String> {
+        crate::provider::system_now_utc_millis()
+    }
+
     fn open_db(&mut self, path: &Path) -> Result<Connection> {
         crate::db::open(path.to_str().ok_or(Error::InvalidPath)?)
     }
 
     fn close_db(&mut self, _path: &Path, conn: Connection) {
         drop(conn);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn interactive(&self) -> bool {
+        use std::io::IsTerminal;
+        std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
     }
 }
 
@@ -264,6 +286,10 @@ pub fn confirm_passphrase(first_prompt: &str, second_prompt: &str) -> Result<Str
 }
 
 /// `std::env::var` for the current environment.
+pub fn interactive() -> bool {
+    with(|env| env.interactive())
+}
+
 pub fn var(name: &str) -> std::result::Result<String, std::env::VarError> {
     with(|env| env.var(name)).ok_or(std::env::VarError::NotPresent)
 }
@@ -387,6 +413,10 @@ pub fn provider_root() -> [u8; 32] {
 
 pub fn now_utc() -> Result<String> {
     with(|env| env.now_utc())
+}
+
+pub fn now_utc_precise() -> Result<String> {
+    with(|env| env.now_utc_precise())
 }
 
 /// Hand `f` the current environment's stdout as a writer.

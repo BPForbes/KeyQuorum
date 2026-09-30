@@ -135,17 +135,8 @@ pub fn run(conn: &Connection, command: DeliverCommand) -> Result<()> {
                     .map(|n| n.to_string_lossy().into_owned())
                     .ok_or_else(|| usage("--file has no file name; pass --name"))?,
             };
-            let (signing_secret, encryption_public) = match (slot, signing_key_file) {
-                (Some(slot), None) => {
-                    let secrets = super::open_slot_secrets(&slot)?;
-                    (secrets.signing_secret, secrets.encryption_public)
-                }
-                (None, Some(path)) => (
-                    Zeroizing::new(read_key_array_32(&path)?),
-                    private_bridge::encryption_public_for_label(conn, None, &as_label)?,
-                ),
-                _ => return Err(usage("pass --slot or --signing-key-file")),
-            };
+            let (signing_secret, encryption_public) =
+                sender_keys(conn, slot, signing_key_file, &as_label)?;
             let recipient = registered_encryption_key(conn, &to)?;
             let sealed = file_delivery::seal_letter(&file_delivery::Outgoing {
                 sender_label: &as_label,
@@ -182,6 +173,7 @@ pub fn run(conn: &Connection, command: DeliverCommand) -> Result<()> {
             let bytes = env::read(&file)?;
             let secrets = recipient_secrets(slot, share_file, signing_key_file)?;
             let letter = file_delivery::open_letter(conn, &secrets.encryption, &bytes)?;
+            require_recipient_key(conn, &letter.recipient_label, &secrets.encryption)?;
             errln!(
                 "From {} to {}: {} ({} bytes), signature verified",
                 letter.sender_label,
@@ -234,10 +226,30 @@ pub fn run(conn: &Connection, command: DeliverCommand) -> Result<()> {
     Ok(())
 }
 
+/// The sender's signing secret and the encryption key answers come back to.
+pub(super) fn sender_keys(
+    conn: &Connection,
+    slot: Option<String>,
+    signing_key_file: Option<PathBuf>,
+    as_label: &str,
+) -> Result<(Zeroizing<[u8; 32]>, [u8; 32])> {
+    match (slot, signing_key_file) {
+        (Some(slot), None) => {
+            let secrets = super::open_slot_secrets(&slot)?;
+            Ok((secrets.signing_secret, secrets.encryption_public))
+        }
+        (None, Some(path)) => Ok((
+            Zeroizing::new(read_key_array_32(&path)?),
+            private_bridge::encryption_public_for_label(conn, None, as_label)?,
+        )),
+        _ => Err(usage("pass --slot or --signing-key-file")),
+    }
+}
+
 /// A sealed `.kqpb` addressed by its delivery id.
-struct Letter {
-    name: String,
-    bytes: Vec<u8>,
+pub(super) struct Letter {
+    pub(super) name: String,
+    pub(super) bytes: Vec<u8>,
 }
 
 impl Envelope for Letter {
@@ -251,7 +263,7 @@ impl Envelope for Letter {
 }
 
 /// Write the letter to `output_dir`, upload it, or both.
-fn carry(
+pub(super) fn carry(
     conn: &Connection,
     letter: &Letter,
     output_dir: Option<&Path>,
@@ -278,7 +290,24 @@ fn carry(
     Ok(())
 }
 
-fn registered_encryption_key(conn: &Connection, label: &str) -> Result<[u8; 32]> {
+/// The recipient label in a letter is the sender's claim. It must name the
+/// key that opened the letter, or a delivery, and the answer to it, would be
+/// credited to a label that took no part.
+pub(super) fn require_recipient_key(
+    conn: &Connection,
+    recipient_label: &str,
+    opened_with: &[u8; 32],
+) -> Result<()> {
+    if crate::file_delivery::recipient_owns_key(conn, recipient_label, opened_with)? {
+        Ok(())
+    } else {
+        Err(usage(&format!(
+            "the letter names {recipient_label} as recipient, but this store has no encryption key for that label matching the key that opened it"
+        )))
+    }
+}
+
+pub(super) fn registered_encryption_key(conn: &Connection, label: &str) -> Result<[u8; 32]> {
     let key = keys::active_keys_for(conn, label, KeyType::Encryption)?
         .into_iter()
         .next()
@@ -293,12 +322,12 @@ fn registered_encryption_key(conn: &Connection, label: &str) -> Result<[u8; 32]>
         .map_err(|_| Error::InvalidPublicKey)
 }
 
-struct RecipientSecrets {
-    encryption: Zeroizing<[u8; 32]>,
-    signing: Zeroizing<[u8; 32]>,
+pub(super) struct RecipientSecrets {
+    pub(super) encryption: Zeroizing<[u8; 32]>,
+    pub(super) signing: Zeroizing<[u8; 32]>,
 }
 
-fn recipient_secrets(
+pub(super) fn recipient_secrets(
     slot: Option<String>,
     share_file: Option<String>,
     signing_key_file: Option<PathBuf>,

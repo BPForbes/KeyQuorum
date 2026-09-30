@@ -1,0 +1,231 @@
+//! Bringing another copy of the same tracked file's history into this one.
+//!
+//! Two holders of a file each extend it; when one sends theirs, the other
+//! imports it. Revisions and proofs are unioned: nothing existing is
+//! rewritten, a fork is kept as two heads rather than resolved by time or
+//! by whichever copy arrived last, and the import is refused whole if the
+//! incoming copy fails verification or is not the same file under the same
+//! policy. Proofs are stored, not trusted: signatures are checked against
+//! keys by `policy`, as for any proof.
+//!
+//! Each copy's event chain is its own hash chain, and two diverged chains
+//! cannot be joined into one. The importer records a single
+//! `HISTORY_IMPORTED` event (with the source's history root and what was
+//! added) in its own chain; the other side's events stay in its own
+//! container and can be checked from a `HistorySnapshot`.
+
+use super::container::TrackedFile;
+use super::event::{EventDetails, HistoryEventType, HistoryOutcome, NewEvent};
+use super::proof::RevisionProof;
+use super::proof::MAX_PROOFS_PER_SLOT;
+use super::revision::StoredRevision;
+use super::verify::verify_structure;
+use crate::error::{Error, Result};
+use std::collections::{HashMap, HashSet};
+
+/// How the incoming copy relates to the local one, by revisions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistoryRelation {
+    /// Both hold the same revisions.
+    Identical,
+    /// The local copy already has everything the incoming one has.
+    LocalAhead,
+    /// The incoming copy has everything local has, and more: a fast-forward.
+    RemoteAhead,
+    /// Each has revisions the other lacks: the union has more than one head.
+    Diverged,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryMerge {
+    pub relation: HistoryRelation,
+    pub revisions_added: usize,
+    pub proofs_added: usize,
+}
+
+/// Who imported, and when, for the recorded event.
+#[derive(Clone, Debug)]
+pub struct ImportContext {
+    pub actor_identity: Option<[u8; 16]>,
+    pub actor_label: String,
+    pub occurred_at: String,
+    pub topology_generation: u64,
+}
+
+impl TrackedFile {
+    /// A copy holding only `revision_id`, its ancestors, their proofs, and
+    /// the events recorded before the first one that does not name a kept
+    /// revision (an event naming no revision, such as an import, can
+    /// describe newer ones, so it ends the prefix too). This is what a sender delivers when a newer revision is
+    /// not trusted: the newer revision's content and proofs never leave.
+    /// The events kept are a prefix of the chain, so the copy verifies and
+    /// its root is its own.
+    pub fn extract_revision(&self, revision_id: &[u8; 32]) -> Result<TrackedFile> {
+        if self.is_destroyed() {
+            return Err(Error::FileExpired);
+        }
+        verify_structure(self)?;
+        let graph = self.graph();
+        graph.get(revision_id).ok_or(Error::InvalidTrackedFile)?;
+        let kept = graph.ancestor_set(revision_id);
+        let keep = |id: &[u8; 32]| kept.contains(id);
+        let revisions: Vec<_> = self
+            .revisions
+            .iter()
+            .filter(|stored| keep(&stored.revision.revision_id))
+            .cloned()
+            .collect();
+        let proofs = self
+            .proofs
+            .iter()
+            .filter(|proof| keep(&proof.revision_id))
+            .cloned()
+            .collect();
+        let events = self
+            .events
+            .iter()
+            // An event that names a revision travels only if that revision
+            // does. A rename names none and only says which name a file
+            // had, so it travels too. Any other event without a revision
+            // (an import, a fork notice) can describe newer revisions, so
+            // it ends the copied prefix, as the hash chain cannot skip it.
+            .take_while(|event| match event.revision_id.as_ref() {
+                Some(id) => keep(id),
+                None => event.event_type == HistoryEventType::FileRenamed,
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        // The kept events are an unchanged prefix, so their proofs still
+        // name the same hashes and travel with them.
+        let event_proofs = self
+            .event_proofs
+            .iter()
+            .filter(|proof| (proof.sequence as usize) < events.len())
+            .cloned()
+            .collect();
+        let pruned = TrackedFile {
+            file_id: self.file_id,
+            logical_name: self.logical_name.clone(),
+            revisions,
+            proofs,
+            events,
+            event_proofs,
+            policy: self.policy.clone(),
+        };
+        verify_structure(&pruned)?;
+        Ok(pruned)
+    }
+
+    /// Import `other`'s revisions and proofs into this file. Refused, with
+    /// nothing changed, unless both copies verify, name the same file id,
+    /// and carry the same policy. Importing what is already here changes
+    /// nothing and records nothing.
+    pub fn merge_history(
+        &mut self,
+        other: &TrackedFile,
+        context: &ImportContext,
+    ) -> Result<HistoryMerge> {
+        if self.file_id != other.file_id || self.policy != other.policy {
+            return Err(Error::InvalidTrackedFile);
+        }
+        // An expired copy on either side has no content to bring in or to
+        // receive it; its tombstone is not merged with live content.
+        if self.is_destroyed() || other.is_destroyed() {
+            return Err(Error::FileExpired);
+        }
+        verify_structure(self)?;
+        verify_structure(other)?;
+        self.atomically(|file| file.merge_history_steps(other, context))
+    }
+
+    fn merge_history_steps(
+        &mut self,
+        other: &TrackedFile,
+        context: &ImportContext,
+    ) -> Result<HistoryMerge> {
+        // One id index per side, built once: the loops below are linear.
+        let local: HashMap<[u8; 32], &StoredRevision> = self
+            .revisions
+            .iter()
+            .map(|stored| (stored.revision.revision_id, stored))
+            .collect();
+        let remote: HashSet<[u8; 32]> = other
+            .revisions
+            .iter()
+            .map(|stored| stored.revision.revision_id)
+            .collect();
+        let other_new = other
+            .revisions
+            .iter()
+            .filter(|stored| !local.contains_key(&stored.revision.revision_id))
+            .count();
+        let local_new = self
+            .revisions
+            .iter()
+            .filter(|stored| !remote.contains(&stored.revision.revision_id))
+            .count();
+        let relation = match (local_new, other_new) {
+            (0, 0) => HistoryRelation::Identical,
+            (_, 0) => HistoryRelation::LocalAhead,
+            (0, _) => HistoryRelation::RemoteAhead,
+            _ => HistoryRelation::Diverged,
+        };
+
+        // `other` is stored parents-first, so each new revision's parents
+        // are already here when it is added. Nothing is pushed until the
+        // whole pass has agreed with what is already held.
+        let mut incoming: Vec<StoredRevision> = Vec::new();
+        for stored in &other.revisions {
+            match local.get(&stored.revision.revision_id) {
+                Some(existing) if *existing == stored => {}
+                Some(_) => return Err(Error::InvalidTrackedFile),
+                None => incoming.push(stored.clone()),
+            }
+        }
+        drop(local);
+        let revisions_added = incoming.len();
+        self.revisions.extend(incoming);
+        // Competing proofs for a slot are all kept (up to the slot cap):
+        // an unverified import must not displace or block a valid one.
+        type Slot = ([u8; 32], u8, String);
+        let slot_of =
+            |p: &RevisionProof| -> Slot { (p.revision_id, p.kind as u8, p.signer_label.clone()) };
+        let mut held: HashMap<Slot, Vec<[u8; 64]>> = HashMap::new();
+        for p in &self.proofs {
+            held.entry(slot_of(p)).or_default().push(p.signature);
+        }
+        let mut proofs_added = 0;
+        for proof in &other.proofs {
+            let signatures = held.entry(slot_of(proof)).or_default();
+            if !signatures.contains(&proof.signature) && signatures.len() < MAX_PROOFS_PER_SLOT {
+                signatures.push(proof.signature);
+                self.proofs.push(proof.clone());
+                proofs_added += 1;
+            }
+        }
+        verify_structure(self)?;
+
+        if revisions_added > 0 || proofs_added > 0 {
+            let details = EventDetails::new()
+                .with("from_history_root", &hex::encode(other.history_root()))
+                .with("relation", &format!("{relation:?}"))
+                .with("revisions_added", &revisions_added.to_string())
+                .with("proofs_added", &proofs_added.to_string());
+            self.append(NewEvent {
+                revision_id: None,
+                occurred_at: context.occurred_at.clone(),
+                actor_identity: context.actor_identity,
+                actor_label: Some(context.actor_label.clone()),
+                topology_generation: Some(context.topology_generation),
+                event_type: HistoryEventType::HistoryImported,
+                outcome: HistoryOutcome::Success,
+                details,
+            })?;
+        }
+        Ok(HistoryMerge {
+            relation,
+            revisions_added,
+            proofs_added,
+        })
+    }
+}
