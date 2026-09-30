@@ -240,6 +240,12 @@ pub enum FileCommand {
         /// last trusted one
         #[arg(long, conflicts_with = "revision")]
         shareable: bool,
+        /// Record this checkout in the file's history
+        #[arg(long)]
+        record: bool,
+        /// With --record: the label to attribute it to (else no one)
+        #[arg(long = "as", requires = "record")]
+        as_label: Option<String>,
     },
     /// List the tracked files this store has indexed (a cache; see `reindex`)
     List,
@@ -280,7 +286,15 @@ pub enum FileCommand {
         as_label: String,
     },
     /// Verify the history chain and revision graph, and judge every revision
-    Verify { kqtf: PathBuf },
+    Verify {
+        kqtf: PathBuf,
+        /// Record this check and its result in the file's history
+        #[arg(long)]
+        record: bool,
+        /// With --record: the label to attribute it to (else no one)
+        #[arg(long = "as", requires = "record")]
+        as_label: Option<String>,
+    },
     /// Schedule when this file's content is destroyed, or destroy it now.
     /// Every retained revision's content goes at once; the history, the
     /// revision graph and every signature stay behind as a tombstone.
@@ -624,7 +638,16 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             out,
             revision,
             shareable,
-        } => checkout(conn, &kqtf, &out, revision, shareable),
+            record,
+            as_label,
+        } => checkout(
+            conn,
+            &kqtf,
+            &out,
+            revision,
+            shareable,
+            record.then_some(as_label.as_deref()),
+        ),
         FileCommand::List => list(conn),
         FileCommand::Reindex { kqtf, clear } => reindex(conn, &kqtf, clear),
         FileCommand::Status { kqtf } => status(conn, &kqtf),
@@ -635,7 +658,11 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             from,
             as_label,
         } => import(conn, &kqtf, &from, &as_label),
-        FileCommand::Verify { kqtf } => verify(conn, &kqtf),
+        FileCommand::Verify {
+            kqtf,
+            record,
+            as_label,
+        } => verify(conn, &kqtf, record.then_some(as_label.as_deref())),
         FileCommand::Expire {
             kqtf,
             as_label,
@@ -2401,7 +2428,9 @@ fn sign_events_since(
     Ok(())
 }
 
-fn verify(conn: &Connection, kqtf: &Path) -> Result<()> {
+/// `record`: `Some(actor)` appends a `VERIFICATION_RUN` event, attributed to
+/// `actor` when the command names one.
+fn verify(conn: &Connection, kqtf: &Path, record: Option<Option<&str>>) -> Result<()> {
     let file = load(kqtf)?;
     let root = verify_tracked_file(&file)?;
     let policy = policy_of(&file)?;
@@ -2416,12 +2445,37 @@ fn verify(conn: &Connection, kqtf: &Path) -> Result<()> {
             file.revisions().len()
         );
     }
-    let mut denied = 0;
+    let (mut trusted, mut pending, mut denied) = (0, 0, 0);
     for stored in file.revisions() {
         let id = stored.revision.revision_id;
         let state = evaluate_revision_trust(&file, &id, policy, &ctx)?;
-        denied += usize::from(matches!(state, TrustState::Denied(_)));
+        match state {
+            TrustState::Trusted => trusted += 1,
+            TrustState::Pending(_) => pending += 1,
+            TrustState::Denied(_) => denied += 1,
+        }
         outln!("  {} {}", short(&id), trust_text(state));
+    }
+    if let Some(actor) = record {
+        let details = EventDetails::new()
+            .with("revisions", &file.revisions().len().to_string())
+            .with("trusted", &trusted.to_string())
+            .with("pending", &pending.to_string())
+            .with("denied", &denied.to_string());
+        let outcome = if denied > 0 {
+            HistoryOutcome::Failure
+        } else {
+            HistoryOutcome::Success
+        };
+        record_access(
+            conn,
+            kqtf,
+            HistoryEventType::VerificationRun,
+            outcome,
+            None,
+            actor,
+            details,
+        )?;
     }
     if denied > 0 {
         return Err(Error::InvalidTrackedFile);
@@ -2894,8 +2948,9 @@ fn checkout(
     out: &Path,
     revision: Option<String>,
     shareable: bool,
+    record: Option<Option<&str>>,
 ) -> Result<()> {
-    let file = load_live(conn, kqtf, None, "checkout")?;
+    let file = load_live(conn, kqtf, record.flatten(), "checkout")?;
     let id = if shareable {
         let policy = policy_of(&file)?;
         let head = pick_revision(&file, None)?;
@@ -2920,6 +2975,53 @@ fn checkout(
         short(&id),
         out.display()
     );
+    if let Some(actor) = record {
+        let details =
+            EventDetails::new().with("shareable", if shareable { "true" } else { "false" });
+        record_access(
+            conn,
+            kqtf,
+            HistoryEventType::RevisionCheckedOut,
+            HistoryOutcome::Success,
+            Some(id),
+            actor,
+            details,
+        )?;
+    }
+    Ok(())
+}
+
+/// Append one access event (a checkout, a verification run or an export) to
+/// the container at `kqtf`. These commands read a file, so recording is
+/// opt-in (`--record`), and the event names an actor only when the command
+/// was given `--as`; the label is a claim, not a proof, so the event is
+/// hash-chained but never attested.
+pub(super) fn record_access(
+    conn: &Connection,
+    kqtf: &Path,
+    kind: HistoryEventType,
+    outcome: HistoryOutcome,
+    revision_id: Option<[u8; 32]>,
+    actor: Option<&str>,
+    details: EventDetails,
+) -> Result<()> {
+    let mut file = load(kqtf)?;
+    let generation = match file.policy() {
+        Some(policy) => Some(generation_for(conn, &policy.scope_root)?),
+        None => None,
+    };
+    file.append(NewEvent {
+        revision_id,
+        occurred_at: utc_instant()?,
+        actor_identity: actor.map(|label| identity_for(conn, label)).transpose()?,
+        actor_label: actor.map(str::to_string),
+        topology_generation: generation,
+        event_type: kind,
+        outcome,
+        details,
+    })?;
+    save(kqtf, &file)?;
+    index_after(conn, &file);
     Ok(())
 }
 

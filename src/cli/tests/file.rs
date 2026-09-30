@@ -1304,6 +1304,67 @@ fn export_tracked_file_seals_the_complete_binary_kqtf() {
     assert_eq!(&plaintext[2 + name_len..], original);
 }
 
+#[test]
+fn checkout_verify_and_export_record_an_event_only_when_asked() {
+    let mut env = org();
+    track(&mut env, "M.A", "M.A");
+    let events = |env: &mut MemoryEnv| ok(env, &format!("history {KQTF}")).lines().count();
+    let before = events(&mut env);
+
+    // Reading a file records nothing by default.
+    ok(&mut env, &format!("checkout {KQTF} --out /work/plain.txt"));
+    ok(&mut env, &format!("verify {KQTF}"));
+    assert_eq!(events(&mut env), before);
+
+    // --record appends one event; --as attributes it, otherwise no one.
+    ok(
+        &mut env,
+        &format!("checkout {KQTF} --out /work/rec.txt --record --as M.A.1"),
+    );
+    ok(&mut env, &format!("verify {KQTF} --record"));
+    let recipient = crypto_box::SecretKey::generate(&mut rand::rngs::OsRng);
+    env.fs
+        .write_new(
+            Path::new("/keys/recipient.pub"),
+            hex::encode(recipient.public_key().as_bytes()).as_bytes(),
+        )
+        .unwrap();
+    ok_keyquorum(
+        &mut env,
+        &format!(
+            "export tracked-file {KQTF} --recipient-key-file /keys/recipient.pub \
+             --output /work/rec.kqxb --record --as M.A"
+        ),
+    );
+
+    let history = ok(&mut env, &format!("history {KQTF}"));
+    let line = |kind: &str| {
+        history
+            .lines()
+            .find(|l| l.contains(kind))
+            .unwrap_or_else(|| panic!("{kind}: {history}"))
+            .to_string()
+    };
+    let checkout = line("RevisionCheckedOut");
+    assert!(
+        checkout.contains("M.A.1") && checkout.contains("shareable=false"),
+        "{checkout}"
+    );
+    let verified = line("VerificationRun");
+    for detail in ["revisions=1", "trusted=1", "pending=0", "denied=0"] {
+        assert!(verified.contains(detail), "{verified}");
+    }
+    assert!(!verified.contains("M.A"), "unattributed: {verified}");
+    let exported = line("HistoryExported");
+    assert!(
+        exported.contains("bundle_type=3") && exported.contains("M.A"),
+        "{exported}"
+    );
+    assert_eq!(events(&mut env), before + 3);
+    // The exported bundle is the container as it was sent, before the event.
+    assert!(ok(&mut env, &format!("verify {KQTF}")).contains("verify"));
+}
+
 // ---- tracked delivery ------------------------------------------------------
 
 pub(super) fn dir_file(env: &MemoryEnv, dir: &str) -> String {

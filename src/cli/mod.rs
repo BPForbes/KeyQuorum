@@ -36,7 +36,7 @@ mod gate_link;
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
 mod review_tui;
 mod review_view;
-use crate::file_history::HistoryEventType;
+use crate::file_history::{EventDetails, HistoryEventType, HistoryOutcome};
 use gate_link::Gate;
 #[cfg(feature = "provider")]
 pub mod host_args;
@@ -747,6 +747,12 @@ pub enum ExportCommand {
         recipient_key_file: PathBuf,
         #[arg(long)]
         output: PathBuf,
+        /// Record this export in the source file's history
+        #[arg(long)]
+        record: bool,
+        /// With --record: the label to attribute it to (else no one)
+        #[arg(long = "as", requires = "record")]
+        as_label: Option<String>,
     },
 }
 
@@ -2154,6 +2160,8 @@ fn run_export(conn: &Connection, command: ExportCommand) -> Result<()> {
             file,
             recipient_key_file,
             output,
+            record,
+            as_label,
         } => {
             let recipient_public_key = read_key_array_32(&recipient_key_file)?;
             // KQTF is a binary container. Keep it as bytes; the exporter
@@ -2166,6 +2174,19 @@ fn run_export(conn: &Connection, command: ExportCommand) -> Result<()> {
                 file.display(),
                 output.display()
             );
+            if record {
+                // The bundle above holds the container as it was sent; the
+                // event lands in the sender's copy only.
+                file_cmd::record_access(
+                    conn,
+                    &file,
+                    HistoryEventType::HistoryExported,
+                    HistoryOutcome::Success,
+                    None,
+                    as_label.as_deref(),
+                    EventDetails::new().with("bundle_type", "3"),
+                )?;
+            }
         }
     }
     Ok(())

@@ -56,6 +56,9 @@ pub enum HistoryEventType {
     RevisionFinalized = 33,
     ConflictResolved = 34,
     MergeRejected = 35,
+    RevisionCheckedOut = 36,
+    VerificationRun = 37,
+    HistoryExported = 38,
 }
 
 impl HistoryEventType {
@@ -65,7 +68,12 @@ impl HistoryEventType {
     pub fn category(self) -> &'static str {
         use HistoryEventType as E;
         match self {
-            E::TrackingStarted | E::HistoryImported | E::GateLinked | E::FileRenamed => "file",
+            E::TrackingStarted
+            | E::HistoryImported
+            | E::GateLinked
+            | E::FileRenamed
+            | E::RevisionCheckedOut
+            | E::HistoryExported => "file",
             E::EditCheckedIn
             | E::RevisionFinalized
             | E::RevisionSigned
@@ -81,7 +89,8 @@ impl HistoryEventType {
             | E::ContentDestroyed
             | E::ExpiredAccessAttempt
             | E::ExpiryScheduled
-            | E::TamperDetected => "security",
+            | E::TamperDetected
+            | E::VerificationRun => "security",
             E::ShareAttempted
             | E::ShareDelivered
             | E::ShareLinkCreated
@@ -137,6 +146,9 @@ impl HistoryEventType {
             33 => Self::RevisionFinalized,
             34 => Self::ConflictResolved,
             35 => Self::MergeRejected,
+            36 => Self::RevisionCheckedOut,
+            37 => Self::VerificationRun,
+            38 => Self::HistoryExported,
             _ => return Err(Error::InvalidTrackedFile),
         })
     }
@@ -182,9 +194,11 @@ pub const SAFE_DETAIL_KEYS: &[&str] = &[
     "base",
     "base_revision",
     "by",
+    "bundle_type",
     "candidate",
     "container_hash",
     "custody",
+    "denied",
     "decision",
     "delivery_id",
     "devices",
@@ -199,6 +213,7 @@ pub const SAFE_DETAIL_KEYS: &[&str] = &[
     "left",
     "minimum_devices",
     "operation",
+    "pending",
     "pin",
     "presented",
     "proofs_added",
@@ -210,6 +225,7 @@ pub const SAFE_DETAIL_KEYS: &[&str] = &[
     "reviewer",
     "revision_a",
     "revision_b",
+    "revisions",
     "revisions_added",
     "revisions_destroyed",
     "resolution",
@@ -218,11 +234,13 @@ pub const SAFE_DETAIL_KEYS: &[&str] = &[
     "selection_rule",
     "satisfied_by",
     "share",
+    "shareable",
     "shares",
     "state",
     "threshold",
     "to",
     "trust_state",
+    "trusted",
 ];
 
 impl EventDetails {

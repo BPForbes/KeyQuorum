@@ -226,7 +226,7 @@ See section~\ref{sec:file-history}.
 \code{file review} & Show what each side of a fork changed, and who reviews a conflict. \flag{--interactive} needs a build with \flag{--features tui}. \\
 \code{file graph} & Show the revisions, their parents and their trust. \\
 \code{file diff} & Show the changed lines between two revisions of text. \\
-\code{file checkout} & Write a revision's native bytes to a new file. \\
+\code{file checkout} & Write a revision's native bytes to a new file; \flag{--record} appends an event. \\
 \code{file list} & List the tracked files this store has indexed (a cache; see \code{reindex}). \\
 \code{file reindex} & Rebuild index rows from tracked files. Every file is verified first; if any fails, nothing changes. \flag{--clear} also drops rows for files not named here. \\
 \code{file status} & Show the heads, their trust, what would be shared, and the current and latest trusted revision ids. \\

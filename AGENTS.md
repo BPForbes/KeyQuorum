@@ -272,7 +272,10 @@ Container v7 adds optional `EventProof`s after the events (the event's own actor
 signing `signing::file_history_event_preimage`), written only when one exists;
 `rename`, `expire` and `resolve --reject` sign the events they append, and
 `policy::event_attested` / `file history` report a signature only where this store's
-key for that actor verifies it. Unsigned events stay hash-chained, never attested.
+key for that actor verifies it. Unsigned events stay hash-chained, never attested. `file checkout`, `file verify` and `export tracked-file` append
+`REVISION_CHECKED_OUT` (36), `VERIFICATION_RUN` (37) and `HISTORY_EXPORTED` (38)
+only under `--record`, attributed only to the label `--as` names; that label is a
+claim, so the event is hash-chained and never attested.
 `file_history/expiry.rs` ends a tracked file: an `EXPIRY_SCHEDULED` event
 sets the time, and destruction removes every retained revision's payload at
 once (container v5 lets a payload be absent; v4 still decodes).

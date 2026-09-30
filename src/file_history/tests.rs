@@ -215,20 +215,26 @@ fn a_stale_stored_root_is_rejected() {
 
 #[test]
 fn every_event_code_decodes_to_itself_and_the_next_one_is_unknown() {
-    // Codes are wire format: 1..=35 are assigned, nothing renumbered.
-    for code in 1u8..=35 {
+    // Codes are wire format: 1..=38 are assigned, nothing renumbered.
+    for code in 1u8..=38 {
         let kind = event::HistoryEventType::from_u8(code).unwrap();
         assert_eq!(kind as u8, code);
     }
     assert_eq!(HistoryEventType::ConflictResolved as u8, 34);
     assert_eq!(HistoryEventType::MergeRejected as u8, 35);
-    assert!(event::HistoryEventType::from_u8(36).is_err());
+    assert_eq!(HistoryEventType::RevisionCheckedOut as u8, 36);
+    assert_eq!(HistoryEventType::VerificationRun as u8, 37);
+    assert_eq!(HistoryEventType::HistoryExported as u8, 38);
+    assert!(event::HistoryEventType::from_u8(39).is_err());
     assert!(event::HistoryEventType::from_u8(0).is_err());
     // The new conflict events round-trip through a container.
     let mut file = tracked_file();
     for kind in [
         HistoryEventType::ConflictResolved,
         HistoryEventType::MergeRejected,
+        HistoryEventType::RevisionCheckedOut,
+        HistoryEventType::VerificationRun,
+        HistoryEventType::HistoryExported,
     ] {
         file.append(new_event(kind, None)).unwrap();
     }
