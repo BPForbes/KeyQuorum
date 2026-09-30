@@ -10,7 +10,9 @@
 // and by the tests; `ReviewView` is what `keyquorum file review` prints too.
 #![cfg_attr(not(feature = "tui"), allow(dead_code))]
 
-use crate::file_history::{diff_hunks, diff_text, ChangeKind, DiffHunk, MergeBase, TrackedFile};
+use crate::file_history::{
+    apply_hunks, diff_hunks, diff_text, ChangeKind, DiffHunk, MergeBase, TrackedFile,
+};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -303,6 +305,9 @@ pub enum Effect {
     None,
     Quit,
     Message(String),
+    /// Let the person edit this text in their editor; the shell hands the
+    /// result back through [`ReviewState::set_edited`].
+    Edit(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -324,11 +329,15 @@ pub struct ReviewState {
     pending_z: bool,
     /// Hunks folded to a single line, per side.
     folded: Vec<HashSet<usize>>,
+    /// Changes picked to build a result from, per side.
+    picked: Vec<HashSet<usize>>,
+    /// The text the person edited; it replaces the picked changes.
+    edited: Option<String>,
 }
 
 const HELP: &str = "j/k move · gg/G ends · Ctrl-d/u page · Tab or h/l switch side · \
-/ search · n/N repeat · za/zc/zo fold a change · zM/zR fold or open all · \
-:q quit · hover a line for who wrote it";
+/ search · n/N repeat · za/zc/zo fold a change · zM/zR fold or open all · Space pick a change · \
+:compose :edit :q quit · hover a line for who wrote it";
 
 /// The commands the interface does not perform, and what to run.
 fn guidance(command: &str) -> Option<&'static str> {
@@ -362,6 +371,8 @@ impl ReviewState {
             pending_g: false,
             pending_z: false,
             folded: vec![HashSet::new(); panes],
+            picked: vec![HashSet::new(); panes],
+            edited: None,
         }
     }
 
@@ -418,6 +429,78 @@ impl ReviewState {
         // A cursor inside a fold moves to the fold's line.
         let index = self.cursor();
         self.move_to(index);
+    }
+
+    /// Whether the change at line `index` of `pane` is picked.
+    pub fn is_picked(&self, pane: usize, index: usize) -> bool {
+        self.view.panes[pane]
+            .lines
+            .get(index)
+            .is_some_and(|line| self.picked[pane].contains(&line.hunk))
+    }
+
+    /// How many changes are picked across both sides.
+    pub fn picked_count(&self) -> usize {
+        self.picked.iter().map(HashSet::len).sum()
+    }
+
+    fn toggle_pick(&mut self) -> Effect {
+        let pane = &self.view.panes[self.pane];
+        if pane.hunks.is_empty() || self.view.base_text.is_none() {
+            return Effect::Message("nothing to pick: this side has no line changes".to_string());
+        }
+        let Some(hunk) = self.hunk_at_cursor() else {
+            return Effect::None;
+        };
+        if !self.picked[self.pane].remove(&hunk) {
+            self.picked[self.pane].insert(hunk);
+        }
+        Effect::Message(format!(
+            "{} change(s) picked; :compose shows the result",
+            self.picked_count()
+        ))
+    }
+
+    /// The text the person has settled on: what they edited, else the
+    /// common ancestor with the picked changes applied. Never a decision:
+    /// the result is only ever handed to `file resolve`.
+    pub fn compose(&self) -> Result<String, String> {
+        if let Some(text) = &self.edited {
+            return Ok(text.clone());
+        }
+        let Some(base) = &self.view.base_text else {
+            return Err("no single UTF-8 common ancestor to build a result from".to_string());
+        };
+        if self.picked_count() == 0 {
+            return Err("nothing picked: Space picks the change under the cursor".to_string());
+        }
+        let chosen: Vec<&DiffHunk> = self
+            .view
+            .panes
+            .iter()
+            .zip(&self.picked)
+            .flat_map(|(pane, picked)| picked.iter().filter_map(|hunk| pane.hunks.get(*hunk)))
+            .collect();
+        apply_hunks(base, &chosen)
+            .ok_or_else(|| "the picked changes overlap: unpick one of them".to_string())
+    }
+
+    /// What `:edit` opens: the current result if there is one, else the
+    /// common ancestor.
+    fn edit_text(&self) -> Result<String, String> {
+        match self.compose() {
+            Ok(text) => Ok(text),
+            Err(_) => self
+                .view
+                .base_text
+                .clone()
+                .ok_or_else(|| "no UTF-8 common ancestor to edit".to_string()),
+        }
+    }
+
+    /// Take the text an editor returned as the result.
+    pub fn set_edited(&mut self, text: String) {
+        self.edited = Some(text);
     }
 
     fn fold_key(&mut self, key: Key) -> Effect {
@@ -517,6 +600,7 @@ impl ReviewState {
         }
         match key {
             Key::Char('z') => self.pending_z = true,
+            Key::Char(' ') => return self.toggle_pick(),
             Key::Char('j') | Key::Down => self.step(1),
             Key::Char('k') | Key::Up => self.step(-1),
             Key::Char('g') if was_g => self.move_to(0),
@@ -561,6 +645,27 @@ impl ReviewState {
                     "" => Effect::None,
                     "q" | "quit" => Effect::Quit,
                     "help" | "h" => Effect::Message(HELP.to_string()),
+                    "compose" => Effect::Message(match self.compose() {
+                        Ok(text) => format!(
+                            "result: {} line(s) from {}",
+                            text.split_inclusive('\n').count(),
+                            if self.edited.is_some() {
+                                "your edit".to_string()
+                            } else {
+                                format!("{} picked change(s)", self.picked_count())
+                            }
+                        ),
+                        Err(reason) => reason,
+                    }),
+                    "edit" => match self.edit_text() {
+                        Ok(text) => Effect::Edit(text),
+                        Err(reason) => Effect::Message(reason),
+                    },
+                    "unpick" => {
+                        self.picked.iter_mut().for_each(HashSet::clear);
+                        self.edited = None;
+                        Effect::Message("picks and edit cleared".to_string())
+                    }
                     other => Effect::Message(match guidance(other) {
                         Some(text) => text.to_string(),
                         None => format!("unknown command: {other}"),

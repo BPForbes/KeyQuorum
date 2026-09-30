@@ -271,3 +271,112 @@ fn a_search_match_inside_a_fold_opens_it() {
     assert_eq!(state.cursor(), 2);
     assert_eq!(state.visible(0), vec![0, 1, 2, 3]);
 }
+
+/// Base "a b c d\n" as four lines; LEFT changes line 2 (b -> B), RIGHT
+/// changes line 4 (d -> D) and, overlapping LEFT, line 2 (b -> bb).
+fn pickable() -> ReviewState {
+    let hunk = |start: usize, end: usize, text: &str| DiffHunk {
+        start,
+        end,
+        lines: vec![text.to_string()],
+    };
+    let at = |number: usize, hunk: usize, text: &str| ViewLine {
+        kind: ChangeKind::Added,
+        number,
+        text: text.to_string(),
+        hunk,
+        provenance: "M.A rev a".to_string(),
+    };
+    ReviewState::new(ReviewView {
+        title: "t".to_string(),
+        base_text: Some("a\nb\nc\nd\n".to_string()),
+        panes: vec![
+            Pane {
+                heading: "LEFT".to_string(),
+                lines: vec![at(2, 0, "B")],
+                hunks: vec![hunk(1, 2, "B\n")],
+                ..Default::default()
+            },
+            Pane {
+                heading: "RIGHT".to_string(),
+                lines: vec![at(2, 0, "bb"), at(4, 1, "D")],
+                hunks: vec![hunk(1, 2, "bb\n"), hunk(3, 4, "D\n")],
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    })
+}
+
+#[test]
+fn space_picks_changes_from_both_sides_and_compose_applies_them() {
+    let mut state = pickable();
+    assert!(state.compose().unwrap_err().contains("nothing picked"));
+    // LEFT's change, then RIGHT's second change.
+    assert_eq!(
+        state.handle(Key::Char(' ')),
+        Effect::Message("1 change(s) picked; :compose shows the result".to_string())
+    );
+    keys(&mut state, "lj");
+    state.handle(Key::Char(' '));
+    assert_eq!(state.picked_count(), 2);
+    assert!(state.is_picked(0, 0) && state.is_picked(1, 1) && !state.is_picked(1, 0));
+    assert_eq!(state.compose().unwrap(), "a\nB\nc\nD\n");
+    // Space again unpicks.
+    state.handle(Key::Char(' '));
+    assert_eq!(state.compose().unwrap(), "a\nB\nc\nd\n");
+}
+
+#[test]
+fn overlapping_picks_are_refused_and_unpick_clears_everything() {
+    let mut state = pickable();
+    state.handle(Key::Char(' '));
+    keys(&mut state, "l");
+    state.handle(Key::Char(' '));
+    assert!(state.compose().unwrap_err().contains("overlap"));
+    for c in ":unpick".chars() {
+        state.handle(Key::Char(c));
+    }
+    assert_eq!(
+        state.handle(Key::Enter),
+        Effect::Message("picks and edit cleared".to_string())
+    );
+    assert_eq!(state.picked_count(), 0);
+}
+
+#[test]
+fn edit_opens_the_current_result_and_the_edit_becomes_the_result() {
+    let mut state = pickable();
+    let run = |state: &mut ReviewState, command: &str| {
+        state.handle(Key::Char(':'));
+        for c in command.chars() {
+            state.handle(Key::Char(c));
+        }
+        state.handle(Key::Enter)
+    };
+    // Nothing picked: the editor starts from the common ancestor.
+    assert_eq!(
+        run(&mut state, "edit"),
+        Effect::Edit("a\nb\nc\nd\n".to_string())
+    );
+    state.handle(Key::Char(' '));
+    assert_eq!(
+        run(&mut state, "edit"),
+        Effect::Edit("a\nB\nc\nd\n".to_string())
+    );
+    state.set_edited("a\nB\nC\nd\n".to_string());
+    assert_eq!(state.compose().unwrap(), "a\nB\nC\nd\n");
+    assert!(matches!(
+        run(&mut state, "compose"),
+        Effect::Message(text) if text.contains("your edit")
+    ));
+}
+
+#[test]
+fn a_side_with_no_line_changes_has_nothing_to_pick() {
+    let mut state = hunked();
+    assert!(matches!(
+        state.handle(Key::Char(' ')),
+        Effect::Message(text) if text.contains("nothing to pick")
+    ));
+}

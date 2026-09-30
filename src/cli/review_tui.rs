@@ -62,8 +62,12 @@ fn draw(frame: &mut Frame, state: &ReviewState, message: &str, layouts: &mut Lay
                         ChangeKind::Removed => ('-', Color::Red),
                         ChangeKind::Added => ('+', Color::Green),
                     };
+                    let picked = if state.is_picked(i, index) { '*' } else { ' ' };
                     let mut spans = vec![
-                        Span::styled(format!("{mark} {:>4} ", l.number), Style::new().fg(color)),
+                        Span::styled(
+                            format!("{picked}{mark} {:>4} ", l.number),
+                            Style::new().fg(color),
+                        ),
                         Span::raw(l.text.clone()),
                     ];
                     if let Some(hidden) = state.fold_hidden(i, index) {
@@ -151,6 +155,41 @@ fn shown_line(state: &ReviewState, pane: usize, row: usize) -> Option<usize> {
     state.visible(pane).get(row).copied()
 }
 
+/// Hand `text` to the person's editor (`$VISUAL`, `$EDITOR`, else `vi`) in a
+/// private file, with the terminal given back for the duration, and read
+/// the result. The file holds file content, so it is created owner-only and
+/// removed afterwards.
+fn edit_externally(
+    terminal: &mut ratatui::DefaultTerminal,
+    text: &str,
+) -> std::result::Result<String, String> {
+    use rand::RngCore;
+    let mut random = [0u8; 8];
+    rand::rngs::OsRng.fill_bytes(&mut random);
+    let path = std::env::temp_dir().join(format!("keyquorum-review-{}.txt", hex::encode(random)));
+    crate::locked_files::write_owner_only(&path, text.as_bytes())
+        .map_err(|error| format!("could not prepare the edit: {error}"))?;
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".to_string());
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    ratatui::restore();
+    let status = std::process::Command::new(&editor).arg(&path).status();
+    *terminal = ratatui::init();
+    let _ = execute!(std::io::stdout(), EnableMouseCapture);
+    let outcome = match status {
+        Ok(status) if status.success() => std::fs::read(&path)
+            .map_err(|error| format!("could not read the edit: {error}"))
+            .and_then(|bytes| {
+                String::from_utf8(bytes).map_err(|_| "the edit is not UTF-8 text".to_string())
+            }),
+        Ok(_) => Err(format!("{editor} did not finish cleanly: edit discarded")),
+        Err(error) => Err(format!("could not run {editor}: {error}")),
+    };
+    let _ = std::fs::remove_file(&path);
+    outcome
+}
+
 /// Run the review until the user quits. The terminal is restored on every
 /// exit path.
 pub fn run(view: ReviewView) -> Result<()> {
@@ -173,6 +212,15 @@ pub fn run(view: ReviewView) -> Result<()> {
                     match state.handle(key) {
                         Effect::Quit => return Ok(()),
                         Effect::Message(text) => message = text,
+                        Effect::Edit(text) => {
+                            message = match edit_externally(&mut terminal, &text) {
+                                Ok(edited) => {
+                                    state.set_edited(edited);
+                                    "edited: :compose to check the result".to_string()
+                                }
+                                Err(reason) => reason,
+                            }
+                        }
                         Effect::None => {}
                     }
                 }

@@ -489,3 +489,26 @@ fn diff_gives_up_on_oversized_inputs() {
     let new: String = (0..3000).map(|i| format!("new {i}\n")).collect();
     assert_eq!(diff_text(&old, &new), None);
 }
+
+#[test]
+fn diff_hunks_and_apply_hunks_round_trip_and_refuse_overlaps() {
+    use crate::file_history::{apply_hunks, diff_hunks};
+    let base = "a\nb\nc\nd\n";
+    let left = diff_hunks(base, "a\nB\nc\nd\n").unwrap();
+    let right = diff_hunks(base, "a\nb\nc\nD\ne\n").unwrap();
+    assert_eq!((left[0].start, left[0].end), (1, 2));
+    // Applying every change of one side gives that side's text.
+    let all: Vec<_> = right.iter().collect();
+    assert_eq!(apply_hunks(base, &all).unwrap(), "a\nb\nc\nD\ne\n");
+    // Changes to different lines from both sides combine, in any order.
+    let both = [&right[0], &left[0]];
+    assert_eq!(apply_hunks(base, &both).unwrap(), "a\nB\nc\nD\ne\n");
+    // The same base line changed twice cannot be applied.
+    let clash = diff_hunks(base, "a\nbb\nc\nd\n").unwrap();
+    assert_eq!(apply_hunks(base, &[&left[0], &clash[0]]), None);
+    // Nothing chosen leaves the base; the changes' line numbers agree with
+    // `diff_text`.
+    assert_eq!(apply_hunks(base, &[]).unwrap(), base);
+    let lines = diff_text(base, "a\nB\nc\nd\n").unwrap();
+    assert!(lines.iter().all(|l| l.hunk == 0));
+}
