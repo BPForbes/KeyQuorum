@@ -1253,4 +1253,94 @@ export const TUTORIALS: TutorialModule[] = [
       },
     ],
   },
+  {
+    id: "history-requests",
+    category: "history",
+    title: "5 · Ask for a file or a change",
+    summary: "Ask Alice for a change to a tracked file, watch her accept, and record her signed answer in Sarah's history.",
+    steps: [
+      {
+        title: "Pick the file to ask about",
+        body: (
+          <p>
+            You're Sarah. In <strong>Tracked files</strong>, pick <code>budget.txt</code>. A <strong>request</strong>{" "}
+            is a signed letter that only <em>asks</em>: it delivers nothing and changes nothing.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="tracked-select"]', '[data-testid="tracked-files"]'],
+        ensure: composeEnsures(ensureActiveUser("sarah"), ensureDrivesConnected("sarah", "alice")),
+      },
+      {
+        title: "Try it: ask Alice for a change",
+        body: (
+          <p>
+            Under <strong>Ask</strong>, choose <strong>Alice</strong> for <strong>a change to this file</strong>, type a
+            message and press <strong>Send request</strong>. The message is shown to Alice and never recorded in the
+            history; the request's id and kind are.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="history-request"]'],
+        ensure: composeEnsures(ensureActiveUser("sarah"), ensureDrivesConnected("sarah", "alice")),
+        requiredKind: "history-request",
+        isDone: (_snapshot, latest) => latest?.outcome === "granted" && latest.title.startsWith("Ask Alice for a change"),
+        remember: (snapshot) => ({ requestId: snapshot.trackedRequests[snapshot.trackedRequests.length - 1]?.id }),
+      },
+      {
+        title: "Try it: become Alice",
+        body: <p>Click <strong>Alice</strong>&rsquo;s chip in the Active user bar. Only her key can open the request.</p>,
+        target: () => ['[aria-label="Switch user"]'],
+        requiredKind: "user",
+        isDone: (snapshot) => snapshot.activeUser.id === "alice",
+      },
+      {
+        title: "Try it: accept the request",
+        body: (
+          <p>
+            Under <strong>Requests for a file or a change</strong>, read Sarah's message and press{" "}
+            <strong>Accept request for budget.txt</strong>. Accepting only says yes: a change arrives later as an
+            ordinary revision, and a file is sent with <strong>Share file</strong>.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="tracked-requests"]'],
+        requiredKind: "history-answer-request",
+        isDone: (snapshot, latest, memory) =>
+          latest?.outcome === "granted" &&
+          snapshot.trackedRequests.find((request) => request.id === memory.requestId)?.status === "accepted",
+      },
+      {
+        title: "Try it: back to Sarah",
+        body: <p>Switch back to <strong>Sarah</strong>. Alice's signed answer is waiting for her.</p>,
+        target: () => ['[aria-label="Switch user"]'],
+        requiredKind: "user",
+        isDone: (snapshot) => snapshot.activeUser.id === "sarah",
+      },
+      {
+        title: "Try it: record the answer",
+        body: (
+          <p>
+            Press <strong>Record the request answer</strong>. Sarah's copy checks Alice's signature and that the answer
+            matches a request it made, then records it once.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-testid="tracked-requests"]'],
+        requiredKind: "history-open-answer",
+        isDone: (_snapshot, latest) => latest?.outcome === "granted",
+      },
+      {
+        title: "The request is in the history",
+        body: (
+          <p>
+            Open <strong>Full activity log</strong>: <em>Change requested</em> and <em>Request answered</em> are events
+            in <code>budget.txt</code>'s own chain, with the id, kind and decision only.
+          </p>
+        ),
+        tab: "activity",
+        target: () => ['[data-panel="activity"] details.log'],
+      },
+    ],
+  },
 ];

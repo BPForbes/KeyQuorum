@@ -437,6 +437,37 @@ test.describe("guided tutorials", () => {
     await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible();
   });
 
+  test("history part 5 asks for a change and records the answer", async ({ page }) => {
+    await loadLab(page);
+    await startModule(page, "5 · Ask for a file or a change");
+    const panel = page.getByTestId("tracked-files");
+    await expect(page.getByRole("heading", { name: "Pick the file to ask about" })).toBeVisible();
+    await expect(page.getByTestId("active-user-name")).toHaveText("Sarah");
+    await panel.getByTestId("tracked-select").selectOption({ label: "budget.txt — /srv/keyquorum/tracked/budget.txt.kqtf" });
+    await page.getByRole("button", { name: "Next" }).click();
+
+    await expect(page.getByRole("heading", { name: "Try it: ask Alice for a change" })).toBeVisible();
+    const card = panel.getByTestId("tracked-file");
+    await card.getByLabel("Ask").selectOption("alice");
+    await card.getByLabel("for", { exact: true }).selectOption("change");
+    await card.getByLabel("Request message").fill("Please round the totals");
+    await card.getByRole("button", { name: "Send request" }).click();
+
+    await expect(page.getByRole("heading", { name: "Try it: become Alice" })).toBeVisible({ timeout: 3_000 });
+    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /Alice/ }).click();
+    await expect(page.getByRole("heading", { name: "Try it: accept the request" })).toBeVisible({ timeout: 3_000 });
+    await panel.getByTestId("tracked-requests").getByRole("button", { name: "Accept request for budget.txt" }).click();
+
+    await expect(page.getByRole("heading", { name: "Try it: back to Sarah" })).toBeVisible({ timeout: 3_000 });
+    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /Sarah/ }).click();
+    await expect(page.getByRole("heading", { name: "Try it: record the answer" })).toBeVisible({ timeout: 3_000 });
+    await panel.getByTestId("tracked-requests").getByRole("button", { name: "Record the request answer" }).click();
+
+    await expect(page.getByRole("heading", { name: "The request is in the history" })).toBeVisible({ timeout: 3_000 });
+    await page.getByRole("button", { name: "Finish" }).click();
+    await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible();
+  });
+
   test("history part 4 links a gate, records an unlock, and expires the file", async ({ page }) => {
     await loadLab(page);
     await startModule(page, "4 · Gate links & expiry");
