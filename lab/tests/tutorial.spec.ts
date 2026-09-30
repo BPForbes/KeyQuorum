@@ -16,7 +16,7 @@ test.describe("guided tutorials", () => {
       ["Identities & drives", 5],
       ["Files & unlocking", 5],
       ["Mailbox: sending & receiving", 3],
-      ["File history", 4],
+      ["File history", 5],
     ] as const) {
       const category = page.getByRole("region", { name: heading });
       await expect(category).toBeVisible();
