@@ -32,7 +32,10 @@ pub use event::{
     NewEvent, SAFE_DETAIL_KEYS,
 };
 pub use expiry::ExpiryContext;
-pub use merge::{diff_text, AutoMerge, AutoMergeOutcome, ChangeKind, LineChange};
+pub use merge::{
+    apply_hunks, diff_hunks, diff_text, AutoMerge, AutoMergeOutcome, ChangeKind, DiffHunk,
+    LineChange,
+};
 pub use policy::{
     current_revision, evaluate_revision_trust, event_attested, finalized_checkpoints, is_finalized,
     latest_finalized_ancestor, latest_trusted_revision, proof_descriptor,

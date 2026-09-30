@@ -5,6 +5,7 @@ fn line(kind: ChangeKind, number: usize, text: &str, who: &str) -> ViewLine {
         kind,
         number,
         text: text.to_string(),
+        hunk: 0,
         provenance: who.to_string(),
     }
 }
@@ -17,11 +18,13 @@ fn view() -> ReviewView {
             .map(|i| line(ChangeKind::Added, i + 1, &format!("l{i}"), who))
             .collect(),
         note: None,
+        ..Default::default()
     };
     ReviewView {
         title: "plan.txt — merge review".to_string(),
         status: Vec::new(),
         panes: vec![pane("LEFT", "M.A rev a", 25), pane("RIGHT", "M.B rev b", 2)],
+        ..Default::default()
     }
 }
 
@@ -200,4 +203,71 @@ fn search_reports_absent_patterns_and_can_be_cancelled() {
     keys(&mut s, "discarded");
     s.handle(Key::Esc);
     assert_eq!((s.mode, s.command.as_str()), (Mode::Normal, ""));
+}
+
+/// One side with two changes: lines 0-2 are hunk 0, line 3 is hunk 1.
+fn hunked() -> ReviewState {
+    let at = |number: usize, hunk: usize| ViewLine {
+        kind: ChangeKind::Added,
+        number,
+        text: format!("line {number}"),
+        hunk,
+        provenance: "M.A rev a".to_string(),
+    };
+    ReviewState::new(ReviewView {
+        title: "plan.txt — merge review".to_string(),
+        panes: vec![Pane {
+            heading: "LEFT".to_string(),
+            lines: vec![at(1, 0), at(2, 0), at(3, 0), at(9, 1)],
+            ..Default::default()
+        }],
+        ..Default::default()
+    })
+}
+
+#[test]
+fn zc_folds_a_change_to_one_line_and_the_cursor_steps_over_it() {
+    let mut state = hunked();
+    keys(&mut state, "jzc");
+    assert_eq!(
+        state.visible(0),
+        vec![0, 3],
+        "hunk 0 shows only its first line"
+    );
+    assert_eq!(state.cursor(), 0, "the cursor moved to the fold");
+    assert_eq!(state.fold_hidden(0, 0), Some(2));
+    assert_eq!(state.fold_hidden(0, 3), None);
+    keys(&mut state, "j");
+    assert_eq!(state.cursor(), 3, "j skips the hidden lines");
+    keys(&mut state, "k");
+    assert_eq!(state.cursor(), 0);
+}
+
+#[test]
+fn zo_za_zM_and_zR_open_toggle_and_fold_every_change() {
+    let mut state = hunked();
+    keys(&mut state, "zM");
+    assert_eq!(state.visible(0), vec![0, 3]);
+    keys(&mut state, "zR");
+    assert_eq!(state.visible(0), vec![0, 1, 2, 3]);
+    keys(&mut state, "za");
+    assert_eq!(state.visible(0), vec![0, 3]);
+    keys(&mut state, "za");
+    assert_eq!(state.visible(0), vec![0, 1, 2, 3]);
+    keys(&mut state, "zczo");
+    assert_eq!(state.visible(0), vec![0, 1, 2, 3]);
+    // z then anything else cancels and is not a fold command.
+    keys(&mut state, "zx");
+    assert_eq!(state.visible(0), vec![0, 1, 2, 3]);
+}
+
+#[test]
+fn a_search_match_inside_a_fold_opens_it() {
+    let mut state = hunked();
+    keys(&mut state, "zM");
+    state.handle(Key::Char('/'));
+    keys(&mut state, "line 3");
+    state.handle(Key::Enter);
+    assert_eq!(state.cursor(), 2);
+    assert_eq!(state.visible(0), vec![0, 1, 2, 3]);
 }

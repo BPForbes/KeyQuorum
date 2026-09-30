@@ -8,6 +8,7 @@ fn state() -> ReviewState {
         kind,
         number,
         text: text.to_string(),
+        hunk: 0,
         provenance: who.to_string(),
     };
     ReviewState::new(ReviewView {
@@ -25,14 +26,17 @@ fn state() -> ReviewState {
                     line(ChangeKind::Added, 2, "new total", "M.A rev a"),
                 ],
                 note: None,
+                ..Default::default()
             },
             Pane {
                 heading: "RIGHT".into(),
                 revision: "M.B rev b".into(),
                 lines: Vec::new(),
                 note: Some("not UTF-8 text: no line view".into()),
+                ..Default::default()
             },
         ],
+        ..Default::default()
     })
 }
 
@@ -121,4 +125,17 @@ fn keys_map_and_unknown_ones_are_ignored() {
         Some(Key::BackTab)
     );
     assert_eq!(key_of(KeyCode::F(5), KeyModifiers::NONE), None);
+}
+
+#[test]
+fn a_folded_change_is_drawn_as_its_first_line_and_a_count() {
+    let mut state = state();
+    // Both lines of the first side are one change (hunk 0).
+    for key in ['z', 'c'] {
+        state.handle(Key::Char(key));
+    }
+    let (text, _) = render(&state, "");
+    assert!(text.contains("old total"), "{text}");
+    assert!(text.contains("▸1 folded"), "{text}");
+    assert!(!text.contains("new total"), "{text}");
 }

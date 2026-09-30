@@ -53,17 +53,26 @@ fn draw(frame: &mut Frame, state: &ReviewState, message: &str, layouts: &mut Lay
         let items: Vec<ListItem> = if pane.lines.is_empty() {
             vec![ListItem::new(pane.note.clone().unwrap_or_default())]
         } else {
-            pane.lines
-                .iter()
-                .map(|l| {
+            state
+                .visible(i)
+                .into_iter()
+                .map(|index| {
+                    let l = &pane.lines[index];
                     let (mark, color) = match l.kind {
                         ChangeKind::Removed => ('-', Color::Red),
                         ChangeKind::Added => ('+', Color::Green),
                     };
-                    ListItem::new(Line::from(vec![
+                    let mut spans = vec![
                         Span::styled(format!("{mark} {:>4} ", l.number), Style::new().fg(color)),
                         Span::raw(l.text.clone()),
-                    ]))
+                    ];
+                    if let Some(hidden) = state.fold_hidden(i, index) {
+                        spans.push(Span::styled(
+                            format!(" ▸{hidden} folded"),
+                            Style::new().fg(Color::DarkGray),
+                        ));
+                    }
+                    ListItem::new(Line::from(spans))
                 })
                 .collect()
         };
@@ -76,7 +85,14 @@ fn draw(frame: &mut Frame, state: &ReviewState, message: &str, layouts: &mut Lay
                     .title(pane.heading.as_str()),
             )
             .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
-        let selected = (active && !pane.lines.is_empty()).then(|| state.cursor());
+        let selected = (active && !pane.lines.is_empty())
+            .then(|| {
+                state
+                    .visible(i)
+                    .iter()
+                    .position(|shown| *shown == state.cursor())
+            })
+            .flatten();
         layouts.lists[i].select(selected);
         frame.render_stateful_widget(list, columns[i], &mut layouts.lists[i]);
     }
@@ -130,6 +146,11 @@ fn line_at(layouts: &Layouts, pane: usize, column: u16, row: u16) -> Option<usiz
     inside.then(|| (row - area.y - 1) as usize + layouts.lists[pane].offset())
 }
 
+/// The line index behind the list row `row` of `pane`, past any folds.
+fn shown_line(state: &ReviewState, pane: usize, row: usize) -> Option<usize> {
+    state.visible(pane).get(row).copied()
+}
+
 /// Run the review until the user quits. The terminal is restored on every
 /// exit path.
 pub fn run(view: ReviewView) -> Result<()> {
@@ -156,7 +177,8 @@ pub fn run(view: ReviewView) -> Result<()> {
                     }
                 }
                 Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::Moved) => {
-                    let index = line_at(&layouts, state.pane, mouse.column, mouse.row);
+                    let index = line_at(&layouts, state.pane, mouse.column, mouse.row)
+                        .and_then(|row| shown_line(&state, state.pane, row));
                     state.hover(index);
                 }
                 _ => {}

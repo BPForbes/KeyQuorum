@@ -10,7 +10,7 @@
 // and by the tests; `ReviewView` is what `keyquorum file review` prints too.
 #![cfg_attr(not(feature = "tui"), allow(dead_code))]
 
-use crate::file_history::{diff_text, ChangeKind, MergeBase, TrackedFile};
+use crate::file_history::{diff_hunks, diff_text, ChangeKind, DiffHunk, MergeBase, TrackedFile};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,23 +19,32 @@ pub struct ViewLine {
     /// 1-based, in the old text for a removal and the new text for an add.
     pub number: usize,
     pub text: String,
+    /// Which change on this side the line belongs to (counting from 0): a
+    /// removal and the additions that replace it are one hunk.
+    pub hunk: usize,
     /// Who authored the revision this side's change belongs to.
     pub provenance: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pane {
     pub heading: String,
     pub revision: String,
     pub lines: Vec<ViewLine>,
+    /// This side's changes to the common ancestor, by `ViewLine::hunk`; the
+    /// ones a person can pick from when composing a result.
+    pub hunks: Vec<DiffHunk>,
     /// Why there are no lines, when there are none to show.
     pub note: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReviewView {
     pub title: String,
     pub panes: Vec<Pane>,
+    /// The common ancestor's text, when there is a single one and it is
+    /// UTF-8: what the picked hunks are applied to.
+    pub base_text: Option<String>,
     /// Merge outcome and who reviews it: filled by the caller from
     /// `file_history` (it needs the store's keys), empty until then.
     pub status: Vec<String>,
@@ -162,6 +171,10 @@ fn blame(file: &TrackedFile, base: &[u8; 32], head: &[u8; 32]) -> Option<Blame> 
 /// replay cannot place).
 fn side_pane(file: &TrackedFile, base: Option<[u8; 32]>, side: &str, id: &[u8; 32]) -> Pane {
     let provenance = describe(file, id);
+    let hunks = match base.map(|base| (text(file, &base), text(file, id))) {
+        Some((Some(old), Some(new))) => diff_hunks(&old, &new).unwrap_or_default(),
+        _ => Vec::new(),
+    };
     let (lines, note) = match base {
         None => (
             Vec::new(),
@@ -191,6 +204,7 @@ fn side_pane(file: &TrackedFile, base: Option<[u8; 32]>, side: &str, id: &[u8; 3
                                 kind: c.kind,
                                 number: c.line,
                                 text: c.text.trim_end_matches('\n').to_string(),
+                                hunk: c.hunk,
                                 provenance: who(c),
                             })
                             .collect(),
@@ -209,6 +223,7 @@ fn side_pane(file: &TrackedFile, base: Option<[u8; 32]>, side: &str, id: &[u8; 3
         heading: side.to_string(),
         revision: provenance,
         lines,
+        hunks,
         note,
     }
 }
@@ -231,6 +246,7 @@ impl ReviewView {
         };
         Some(Self {
             title: format!("{} — merge review", file.logical_name),
+            base_text: base.and_then(|base| text(file, &base)),
             panes: vec![
                 side_pane(file, base, "LEFT", left),
                 side_pane(file, base, "RIGHT", right),
@@ -254,6 +270,7 @@ impl ReviewView {
         };
         Some(Self {
             title: format!("{} — merge review", file.logical_name),
+            base_text: base.and_then(|base| text(file, &base)),
             panes: vec![
                 side_pane(file, base, "LEFT PARENT", left),
                 side_pane(file, base, "RIGHT PARENT", right),
@@ -304,10 +321,14 @@ pub struct ReviewState {
     pub command: String,
     search: Option<String>,
     pending_g: bool,
+    pending_z: bool,
+    /// Hunks folded to a single line, per side.
+    folded: Vec<HashSet<usize>>,
 }
 
 const HELP: &str = "j/k move · gg/G ends · Ctrl-d/u page · Tab or h/l switch side · \
-/ search · n/N repeat · :q quit · hover a line for who wrote it";
+/ search · n/N repeat · za/zc/zo fold a change · zM/zR fold or open all · \
+:q quit · hover a line for who wrote it";
 
 /// The commands the interface does not perform, and what to run.
 fn guidance(command: &str) -> Option<&'static str> {
@@ -339,6 +360,8 @@ impl ReviewState {
             command: String::new(),
             search: None,
             pending_g: false,
+            pending_z: false,
+            folded: vec![HashSet::new(); panes],
         }
     }
 
@@ -346,18 +369,115 @@ impl ReviewState {
         self.view.panes[self.pane].lines.len()
     }
 
+    /// The lines of `pane` that are shown: all of them, except that a folded
+    /// change shows only its first line.
+    pub fn visible(&self, pane: usize) -> Vec<usize> {
+        let lines = &self.view.panes[pane].lines;
+        let mut shown = Vec::with_capacity(lines.len());
+        let mut previous: Option<usize> = None;
+        for (index, line) in lines.iter().enumerate() {
+            let starts = previous != Some(line.hunk);
+            previous = Some(line.hunk);
+            if starts || !self.folded[pane].contains(&line.hunk) {
+                shown.push(index);
+            }
+        }
+        shown
+    }
+
+    /// How many lines the fold at `index` hides, when that line is the
+    /// first of a folded change.
+    pub fn fold_hidden(&self, pane: usize, index: usize) -> Option<usize> {
+        let lines = &self.view.panes[pane].lines;
+        let hunk = lines.get(index)?.hunk;
+        if !self.folded[pane].contains(&hunk) || (index > 0 && lines[index - 1].hunk == hunk) {
+            return None;
+        }
+        Some(
+            lines[index + 1..]
+                .iter()
+                .take_while(|l| l.hunk == hunk)
+                .count(),
+        )
+    }
+
+    /// The change the cursor is in.
+    fn hunk_at_cursor(&self) -> Option<usize> {
+        self.view.panes[self.pane]
+            .lines
+            .get(self.cursor())
+            .map(|line| line.hunk)
+    }
+
+    fn set_fold(&mut self, hunk: usize, fold: bool) {
+        if fold {
+            self.folded[self.pane].insert(hunk);
+        } else {
+            self.folded[self.pane].remove(&hunk);
+        }
+        // A cursor inside a fold moves to the fold's line.
+        let index = self.cursor();
+        self.move_to(index);
+    }
+
+    fn fold_key(&mut self, key: Key) -> Effect {
+        let all: HashSet<usize> = self.view.panes[self.pane]
+            .lines
+            .iter()
+            .map(|line| line.hunk)
+            .collect();
+        match key {
+            Key::Char('M') => {
+                self.folded[self.pane] = all;
+                let index = self.cursor();
+                self.move_to(index);
+            }
+            Key::Char('R') => self.folded[self.pane].clear(),
+            Key::Char(c @ ('c' | 'o' | 'a')) => {
+                let Some(hunk) = self.hunk_at_cursor() else {
+                    return Effect::None;
+                };
+                let fold = match c {
+                    'c' => true,
+                    'o' => false,
+                    _ => !self.folded[self.pane].contains(&hunk),
+                };
+                self.set_fold(hunk, fold);
+            }
+            _ => {}
+        }
+        Effect::None
+    }
+
     pub fn cursor(&self) -> usize {
         self.cursors[self.pane]
     }
 
+    /// Put the cursor on line `index`, or on the fold that hides it.
     fn move_to(&mut self, index: usize) {
+        let visible = self.visible(self.pane);
         let last = self.lines().saturating_sub(1);
-        self.cursors[self.pane] = index.min(last);
+        let index = index.min(last);
+        self.cursors[self.pane] = visible
+            .iter()
+            .rev()
+            .find(|shown| **shown <= index)
+            .or(visible.first())
+            .copied()
+            .unwrap_or(0);
     }
 
+    /// Move `by` shown lines, so a fold counts as one.
     fn step(&mut self, by: isize) {
-        let target = self.cursor() as isize + by;
-        self.move_to(target.max(0) as usize);
+        let visible = self.visible(self.pane);
+        let at = visible
+            .iter()
+            .position(|shown| *shown >= self.cursor())
+            .unwrap_or(visible.len().saturating_sub(1));
+        let target = (at as isize + by).clamp(0, visible.len().saturating_sub(1) as isize);
+        if let Some(index) = visible.get(target as usize) {
+            self.cursors[self.pane] = *index;
+        }
     }
 
     fn switch(&mut self, forward: bool) {
@@ -392,7 +512,11 @@ impl ReviewState {
 
     fn normal_key(&mut self, key: Key) -> Effect {
         let was_g = std::mem::take(&mut self.pending_g);
+        if std::mem::take(&mut self.pending_z) {
+            return self.fold_key(key);
+        }
         match key {
+            Key::Char('z') => self.pending_z = true,
             Key::Char('j') | Key::Down => self.step(1),
             Key::Char('k') | Key::Up => self.step(-1),
             Key::Char('g') if was_g => self.move_to(0),
@@ -496,6 +620,9 @@ impl ReviewState {
                 .then_some(index)
         });
         if let Some(index) = found {
+            // A match inside a fold opens it.
+            let hunk = self.view.panes[self.pane].lines[index].hunk;
+            self.folded[self.pane].remove(&hunk);
             self.move_to(index);
             self.hover = None;
             return Effect::None;

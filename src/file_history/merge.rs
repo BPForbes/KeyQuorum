@@ -170,6 +170,65 @@ pub struct LineChange {
     pub kind: ChangeKind,
     pub line: usize,
     pub text: String,
+    /// Which change this line belongs to, counting from 0 in the order of
+    /// [`diff_hunks`]: a removal and the additions replacing it share one.
+    pub hunk: usize,
+}
+
+/// One change from `old` to `new`: the old lines `start..end` (0-based, end
+/// exclusive) become `lines`, which keep their line endings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiffHunk {
+    pub start: usize,
+    pub end: usize,
+    pub lines: Vec<String>,
+}
+
+/// The changes from `old` to `new`, in order. `None` when the inputs are too
+/// large to compare.
+pub fn diff_hunks(old: &str, new: &str) -> Option<Vec<DiffHunk>> {
+    let old_lines: Vec<&str> = old.split_inclusive('\n').collect();
+    let new_lines: Vec<&str> = new.split_inclusive('\n').collect();
+    Some(
+        hunks(&old_lines, &new_lines)?
+            .into_iter()
+            .map(|hunk| DiffHunk {
+                start: hunk.start,
+                end: hunk.end,
+                lines: hunk.lines.iter().map(|line| line.to_string()).collect(),
+            })
+            .collect(),
+    )
+}
+
+/// `base` with the chosen changes applied. `None` when two of them touch the
+/// same base lines (they cannot both be taken) or one lies past the end.
+pub fn apply_hunks(base: &str, chosen: &[&DiffHunk]) -> Option<String> {
+    let base_lines: Vec<&str> = base.split_inclusive('\n').collect();
+    let mut ordered: Vec<&DiffHunk> = chosen.to_vec();
+    ordered.sort_by_key(|hunk| (hunk.start, hunk.end));
+    let mut out = String::new();
+    let mut at = 0usize;
+    let mut previous: Option<&DiffHunk> = None;
+    for hunk in ordered {
+        if let Some(prior) = previous {
+            let both_insertions = prior.start == prior.end && hunk.start == hunk.end;
+            if hunk.start < prior.end || (both_insertions && hunk.start == prior.start) {
+                return None;
+            }
+        }
+        if hunk.end > base_lines.len() || hunk.start < at {
+            return None;
+        }
+        base_lines[at..hunk.start]
+            .iter()
+            .for_each(|l| out.push_str(l));
+        hunk.lines.iter().for_each(|l| out.push_str(l));
+        at = hunk.end;
+        previous = Some(hunk);
+    }
+    base_lines[at..].iter().for_each(|l| out.push_str(l));
+    Some(out)
 }
 
 /// The lines that differ between `old` and `new`, in order, removals before
@@ -177,15 +236,15 @@ pub struct LineChange {
 /// when the inputs are too large to compare.
 pub fn diff_text(old: &str, new: &str) -> Option<Vec<LineChange>> {
     let old_lines: Vec<&str> = old.split_inclusive('\n').collect();
-    let new_lines: Vec<&str> = new.split_inclusive('\n').collect();
     let mut out = Vec::new();
     let mut shift: isize = 0;
-    for hunk in hunks(&old_lines, &new_lines)? {
+    for (index, hunk) in diff_hunks(old, new)?.into_iter().enumerate() {
         for (offset, text) in old_lines[hunk.start..hunk.end].iter().enumerate() {
             out.push(LineChange {
                 kind: ChangeKind::Removed,
                 line: hunk.start + offset + 1,
                 text: text.to_string(),
+                hunk: index,
             });
         }
         let new_start = (hunk.start as isize + shift) as usize;
@@ -194,6 +253,7 @@ pub fn diff_text(old: &str, new: &str) -> Option<Vec<LineChange>> {
                 kind: ChangeKind::Added,
                 line: new_start + offset + 1,
                 text: text.to_string(),
+                hunk: index,
             });
         }
         shift += hunk.lines.len() as isize - (hunk.end - hunk.start) as isize;
