@@ -2399,6 +2399,13 @@ fn request(
     carry(conn, &letter, output_dir.as_deref(), push, url, api_key)
 }
 
+/// The revision a request names, only if this copy holds it: a holder who
+/// received an older shared revision may not have the requester's newest
+/// one, and an event may only name a revision its own container contains.
+fn revision_held(copy: &TrackedFile, revision: Option<[u8; 32]>) -> Option<[u8; 32]> {
+    revision.filter(|id| copy.graph().get(id).is_some())
+}
+
 fn check_same_file(file: &TrackedFile, file_id: [u8; 16]) -> Result<()> {
     if file.file_id == file_id {
         Ok(())
@@ -2450,7 +2457,7 @@ fn open_request(
         // holder's copy.
         copy.append(event(
             request_event_type(request.kind),
-            request.base_revision,
+            revision_held(&copy, request.base_revision),
             &utc_instant()?,
             identity_for(conn, &request.requester_label)?,
             &request.requester_label,
@@ -2503,7 +2510,7 @@ fn answer_request(
                 };
                 copy.append(event(
                     HistoryEventType::RequestAnswered,
-                    request.base_revision,
+                    revision_held(&copy, request.base_revision),
                     &utc_instant()?,
                     identity_for(conn, &request.holder_label)?,
                     &request.holder_label,

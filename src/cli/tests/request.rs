@@ -307,3 +307,43 @@ fn track_other(env: &mut MemoryEnv) {
         ),
     );
 }
+
+#[test]
+fn a_holder_with_an_older_copy_still_records_a_change_request() {
+    let mut env = holder_and_requester();
+    let bytes = env.fs.read(Path::new(KQTF)).unwrap();
+    env.fs.write_new(Path::new("/work/b.kqtf"), &bytes).unwrap();
+    // The requester's copy moves ahead; the holder never gets that revision.
+    env.fs
+        .write_new(Path::new("/work/edited.txt"), b"a newer line\n")
+        .unwrap();
+    ok(
+        &mut env,
+        "checkin /work/b.kqtf --from /work/edited.txt --as M.A --unsigned",
+    );
+    ok(
+        &mut env,
+        &format!(
+            "request /work/b.kqtf --change --message please-update --to M.A --as M.B --slot {} --output-dir /req",
+            slot("M.B")
+        ),
+    );
+    let letter = only(&env, "/req");
+    let opened = ok(
+        &mut env,
+        &format!(
+            "open-request --letter {letter} --slot {} --file {KQTF}",
+            slot("M.A")
+        ),
+    );
+    assert!(opened.contains("Recorded in"), "{opened}");
+    ok(&mut env, &format!("verify {KQTF}"));
+    ok(
+        &mut env,
+        &format!(
+            "answer-request --letter {letter} --decision accept --slot {} --file {KQTF} --ack-dir /ans",
+            slot("M.A")
+        ),
+    );
+    ok(&mut env, &format!("verify {KQTF}"));
+}
