@@ -2318,6 +2318,21 @@ fn doctor_is_green_for_a_seeded_person_and_names_a_missing_drive() {
     assert!(text.contains("cannot be opened"), "{text}");
     assert!(text.contains("plug the device in"), "{text}");
     assert_ne!(red.message, "Everything checks out");
+    // A FIX line is shown as a failure and an ok line as a pass, never the
+    // other way round.
+    assert!(
+        red.trace
+            .iter()
+            .any(|step| step.status == StepStatus::Fail && step.text.contains("FIX")),
+        "{text}"
+    );
+    assert!(
+        red.trace
+            .iter()
+            .filter(|step| step.status == StepStatus::Pass)
+            .all(|step| !step.text.contains("FIX")),
+        "{text}"
+    );
 }
 
 #[test]

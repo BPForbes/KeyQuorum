@@ -2349,7 +2349,19 @@ impl LabState {
     pub fn doctor(&mut self) -> Result<Outcome> {
         let line = format!("keyquorum --db {} doctor", self.actor().store());
         let run = self.run(&line);
-        let trace = transcript(&run, true);
+        // Doctor prints one verdict per line (`ok`, `FIX`, a `->` hint, `info`);
+        // show each as what it says rather than as a passed step.
+        let mut trace = vec![TraceStep::info(format!("$ {line}"))];
+        for text in run.stdout_text().lines() {
+            let trimmed = text.trim_start();
+            trace.push(if trimmed.starts_with("ok ") {
+                TraceStep::pass(text.to_string())
+            } else if trimmed.starts_with("FIX ") {
+                TraceStep::fail(text.to_string())
+            } else {
+                TraceStep::info(text.to_string())
+            });
+        }
         let message = if run.ok {
             "Everything checks out".to_string()
         } else {
