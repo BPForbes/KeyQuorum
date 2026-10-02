@@ -406,6 +406,140 @@ fn you_cannot_send_a_file_you_cannot_open() {
     assert!(snap(&state).sent.is_empty());
 }
 
+#[test]
+fn receiving_pulls_first_and_shows_both_commands() {
+    let mut state = lab();
+    state.send("architecture.md", "david").unwrap();
+    let relay_id = snap(&state).sent[0].relay_id;
+    state.switch_user("david").unwrap();
+    state.set_drive("david", true).unwrap();
+    assert!(state.receive(relay_id, true).unwrap().ok);
+    let command = snap(&state).activity[0].command.clone().unwrap();
+    assert!(command.contains("inbox list --dir"), "{command}");
+    assert!(
+        command.contains(&format!("inbox open {relay_id}")),
+        "{command}"
+    );
+}
+
+#[test]
+fn an_acknowledgement_is_collected_when_the_senders_drive_comes_back() {
+    let mut state = lab();
+    state.send("architecture.md", "david").unwrap();
+    let relay_id = snap(&state).sent[0].relay_id;
+    state.switch_user("david").unwrap();
+    state.set_drive("david", true).unwrap();
+    assert!(state.receive(relay_id, true).unwrap().ok);
+
+    // Alice returns without her drive: the answer waits, sealed to her key.
+    state.set_drive("alice", false).unwrap();
+    state.switch_user("alice").unwrap();
+    let waiting = snap(&state);
+    assert_eq!(waiting.sent[0].status, "delivered");
+    assert_eq!(waiting.pending_acks, 1);
+
+    // Plugging her drive in opens it; there is no refresh to click.
+    state.set_drive("alice", true).unwrap();
+    let done = snap(&state);
+    assert_eq!(done.sent[0].status, "acknowledged");
+    assert_eq!(done.pending_acks, 0);
+}
+
+#[test]
+fn the_terminal_opens_a_letter_by_id_or_every_new_one() {
+    let mut state = lab();
+    state.send("architecture.md", "david").unwrap();
+    state.send("project-roadmap.md", "david").unwrap();
+    state.switch_user("david").unwrap();
+    state.set_drive("david", true).unwrap();
+    let (outcome, _) = terminal::run(&mut state, "inbox open 999").unwrap();
+    assert!(!outcome.ok);
+    let (outcome, _) = terminal::run(&mut state, "inbox open").unwrap();
+    assert!(outcome.ok);
+    let inbox = snap(&state).inbox;
+    assert_eq!(inbox.len(), 2);
+    assert!(
+        inbox.iter().all(|item| item.status == "received"),
+        "{inbox:?}"
+    );
+    let (_, output) = terminal::run(&mut state, "doctor").unwrap();
+    assert!(!output.is_empty(), "doctor answers in the lab terminal");
+}
+
+#[test]
+fn a_tracked_answer_is_recorded_when_the_sender_returns() {
+    let mut state = lab();
+    state.switch_user("sarah").unwrap();
+    ok(state.history_track("notes.txt", "a\n"));
+    ok(state.history_share(NOTES, "alice"));
+    state.switch_user("alice").unwrap();
+    let letter = snap(&state).tracked_letters[0].id;
+    ok(state.history_receive(letter, true));
+    assert!(!snap(&state).tracked_letters[0].ack_recorded);
+
+    // Signing back in as Sarah (her drive is in) records Alice's answer with
+    // the real `file ack`, and the button's own action then has nothing to do.
+    let back = state.switch_user("sarah").unwrap();
+    assert!(
+        snap(&state).tracked_letters[0].ack_recorded,
+        "{}",
+        said(&back)
+    );
+    let again = state.history_ack(letter).unwrap();
+    assert!(again.ok);
+    assert_eq!(again.message, "That answer is already recorded");
+}
+
+#[test]
+fn a_tracked_request_answer_is_recorded_when_the_requester_returns() {
+    let mut state = lab();
+    state.switch_user("sarah").unwrap();
+    ok(state.history_track("notes.txt", "a\n"));
+    ok(state.history_share(NOTES, "alice"));
+    state.switch_user("alice").unwrap();
+    let letter = snap(&state).tracked_letters[0].id;
+    ok(state.history_receive(letter, true));
+    state.switch_user("sarah").unwrap();
+    ok(state.history_request(NOTES, "alice", true, "tighten the intro"));
+    let request = snap(&state).tracked_requests[0].id;
+    state.switch_user("alice").unwrap();
+    ok(state.history_answer_request(request, true));
+    assert!(!snap(&state).tracked_requests[0].answer_recorded);
+    state.switch_user("sarah").unwrap();
+    assert!(snap(&state).tracked_requests[0].answer_recorded);
+}
+
+#[test]
+fn create_and_register_leaf_provisions_with_a_typed_passphrase_and_registers() {
+    let mut state = lab();
+    state.set_drive("bob", true).unwrap();
+    state.set_drive("spare", true).unwrap();
+    let outcome = state
+        .create_and_register_leaf("spare", "M.S.3", "M.S", "my own passphrase")
+        .unwrap();
+    assert!(outcome.ok, "{}", said(&outcome));
+    let text = said(&outcome);
+    assert!(
+        text.contains("keyquorum-device provision") || text.contains("slot M.S.3"),
+        "{text}"
+    );
+    let tree = snap(&state).tree;
+    assert!(tree.nodes.iter().any(|node| node.label == "M.S.3"));
+
+    // A refused provision (empty passphrase) registers nothing.
+    let mut state = lab();
+    state.set_drive("spare", true).unwrap();
+    let refused = state
+        .create_and_register_leaf("spare", "M.S.3", "M.S", "")
+        .unwrap();
+    assert!(!refused.ok);
+    assert!(!snap(&state)
+        .tree
+        .nodes
+        .iter()
+        .any(|node| node.label == "M.S.3"));
+}
+
 // ----- date properties: expiry -----------------------------------------
 
 #[test]

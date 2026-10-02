@@ -68,7 +68,7 @@ test.describe("guided tutorials", () => {
     await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible();
   });
 
-  test("the mailbox module's receive gate ignores a denied attempt and an unrelated refresh", async ({ page }) => {
+  test("the mailbox module's receive gate ignores a refresh until the letter is really received", async ({ page }) => {
     await loadLab(page);
     await page.getByRole("button", { name: "Tutorials & Documentation" }).click();
     await page
@@ -84,27 +84,26 @@ test.describe("guided tutorials", () => {
     await page.getByRole("button", { name: "Send…" }).click();
     await page.getByLabel("Recipient").selectOption("david");
     await page.getByRole("button", { name: "Send", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Try it: become the recipient" })).toBeVisible({ timeout: 3_000 });
 
-    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /David/ }).click();
+    // The next step puts David at the keyboard with his USB in, so there is no
+    // "become the recipient" or "insert the USB" step to click through.
     await expect(page.getByRole("heading", { name: "Try it: receive the letter" })).toBeVisible({ timeout: 3_000 });
+    await expect(page.getByTestId("active-user-name")).toHaveText("David");
+    await expect(page.getByRole("button", { name: "Eject David's USB" })).toBeVisible();
 
-    // David's own drive is not inserted here, so Receive is denied — this
-    // must NOT satisfy the gate (the bug Codex flagged: kind === "receive"
-    // alone also matches a denied attempt and the inbox-refresh button).
-    const letter = page.locator("[data-testid^=inbox-]").first();
-    await letter.getByRole("button", { name: /^Receive/ }).click();
-    await expect(page.locator(".lab-status")).toHaveText("Insert your USB to open the letter");
+    // A refresh logs a receive/info entry, which must NOT satisfy the gate.
+    await page.getByTestId("mailbox-refresh").click();
     await expect(page.getByRole("heading", { name: "Try it: receive the letter" })).toBeVisible();
     await expect(page.getByText("Waiting for you to try it…")).toBeVisible();
 
-    // A real, successful receive does satisfy it.
-    await page.getByRole("button", { name: "Insert David's USB" }).click();
-    await letter.getByRole("button", { name: /^Receive/ }).click();
-    await expect(page.getByRole("heading", { name: "Sent and acknowledged" })).toBeVisible({ timeout: 3_000 });
+    // A real, successful receive does.
+    await page.getByRole("button", { name: /^Inbox/ }).click();
+    await page.locator("[data-testid^=inbox-]").first().getByRole("button", { name: /^Receive/ }).click();
+    await expect(page.getByRole("heading", { name: "Try it: back to the sender" })).toBeVisible({ timeout: 3_000 });
 
-    await page.getByRole("button", { name: "Finish" }).click();
-    await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible();
+    // Signing back in as Alice opens David's answer by itself.
+    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /Alice/ }).click();
+    await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible({ timeout: 3_000 });
   });
 
   test("a send made before the module starts does not satisfy its send gate", async ({ page }) => {
@@ -137,7 +136,7 @@ test.describe("guided tutorials", () => {
     await page.getByRole("button", { name: "Send…" }).click();
     await page.getByLabel("Recipient").selectOption("david");
     await page.getByRole("button", { name: "Send", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Try it: become the recipient" })).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Try it: receive the letter" })).toBeVisible({
       timeout: 3_000,
     });
   });
@@ -200,7 +199,7 @@ test.describe("guided tutorials", () => {
     await expect(page.getByLabel("Recipient")).toContainText("David");
     await page.getByLabel("Recipient").selectOption("david");
     await page.getByRole("button", { name: "Send", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Try it: become the recipient" })).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Try it: receive the letter" })).toBeVisible({
       timeout: 3_000,
     });
   });
@@ -300,12 +299,9 @@ test.describe("guided tutorials", () => {
     await page.getByRole("button", { name: "Send…" }).click();
     await page.getByLabel("Recipient").selectOption("david");
     await page.getByRole("button", { name: "Send", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Try it: become the recipient" })).toBeVisible({
-      timeout: 3_000,
-    });
-
-    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /David/ }).click();
+    // David is made active, with his USB in, by the next step itself.
     await expect(page.getByRole("heading", { name: "Try it: reject the letter" })).toBeVisible({ timeout: 3_000 });
+    await expect(page.getByTestId("active-user-name")).toHaveText("David");
     await page
       .locator("[data-testid^=inbox-]")
       .first()
@@ -315,12 +311,8 @@ test.describe("guided tutorials", () => {
       timeout: 3_000,
     });
 
+    // Signing back in as Alice collects the rejection; there is nothing to refresh.
     await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /Alice/ }).click();
-    await expect(page.getByRole("heading", { name: "Try it: collect the acknowledgement" })).toBeVisible({
-      timeout: 3_000,
-    });
-    await page.getByRole("button", { name: /^Sent/ }).click();
-    await page.getByTestId("mailbox-refresh").click();
     await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible({ timeout: 3_000 });
   });
 
@@ -399,16 +391,13 @@ test.describe("guided tutorials", () => {
     await expect(card.locator(".tutorial-body")).toHaveCount(0);
   });
 
-  test("history part 2 hands a file to Alice and records her answer", async ({ page }) => {
+  test("history part 2 hands a file to Alice and her answer is recorded when Sarah returns", async ({ page }) => {
     await loadLab(page);
     await startModule(page, "2 · Hand a file over");
     const panel = page.getByTestId("tracked-files");
-    await expect(page.getByRole("heading", { name: "Pick the file to hand over" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Try it: share it with Alice" })).toBeVisible();
     await expect(page.getByTestId("active-user-name")).toHaveText("Sarah");
     await panel.getByTestId("tracked-select").selectOption({ label: "budget.txt — /srv/keyquorum/tracked/budget.txt.kqtf" });
-    await page.getByRole("button", { name: "Next" }).click();
-
-    await expect(page.getByRole("heading", { name: "Try it: share it with Alice" })).toBeVisible();
     const card = panel.getByTestId("tracked-file");
     // Sharing with someone else does not satisfy this step.
     await card.getByLabel("Share with").selectOption("morgan");
@@ -417,15 +406,15 @@ test.describe("guided tutorials", () => {
     await card.getByLabel("Share with").selectOption("alice");
     await card.getByRole("button", { name: "Share file" }).click();
 
-    await expect(page.getByRole("heading", { name: "Try it: become Alice" })).toBeVisible({ timeout: 3_000 });
-    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /Alice/ }).click();
+    // Alice is made active by the next step, so there is no "become Alice" click.
     await expect(page.getByRole("heading", { name: "Try it: accept the letter" })).toBeVisible({ timeout: 3_000 });
+    await expect(page.getByTestId("active-user-name")).toHaveText("Alice");
     await panel.getByTestId("tracked-letters").locator('li[data-status="waiting"]').getByRole("button", { name: "Accept budget.txt" }).click();
 
     await expect(page.getByRole("heading", { name: "Try it: back to Sarah" })).toBeVisible({ timeout: 3_000 });
     await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /Sarah/ }).click();
-    await expect(page.getByRole("heading", { name: "Try it: record the answer" })).toBeVisible({ timeout: 3_000 });
-    await panel.getByTestId("tracked-letters").getByRole("button", { name: "Record the answer" }).click();
+    // Her answer is recorded as she signs in: no "Record the answer" step.
+    await expect(panel.getByTestId("tracked-letters")).toContainText("answer recorded");
 
     await expect(page.getByRole("heading", { name: "The hand-off is in the history" })).toBeVisible({ timeout: 3_000 });
     await page.getByRole("button", { name: "Finish" }).click();
@@ -436,11 +425,8 @@ test.describe("guided tutorials", () => {
     await loadLab(page);
     await startModule(page, "3 · Merges & conflicts");
     const panel = page.getByTestId("tracked-files");
-    await expect(page.getByRole("heading", { name: "A merge that happened on its own" })).toBeVisible();
-    await panel.getByTestId("tracked-select").selectOption({ label: "forecast.txt — /srv/keyquorum/tracked/forecast.txt.kqtf" });
-    await page.getByRole("button", { name: "Next" }).click();
-
     await expect(page.getByRole("heading", { name: "Try it: see what the merge changed" })).toBeVisible();
+    await panel.getByTestId("tracked-select").selectOption({ label: "forecast.txt — /srv/keyquorum/tracked/forecast.txt.kqtf" });
     const card = panel.getByTestId("tracked-file");
     await card.locator("li[data-trust]").last().getByRole("button", { name: /^Diff revision/ }).click();
     await page.getByRole("button", { name: "Close" }).click();
@@ -463,31 +449,26 @@ test.describe("guided tutorials", () => {
     await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible();
   });
 
-  test("history part 5 asks for a change and records the answer", async ({ page }) => {
+  test("history part 5 asks for a change and the answer is recorded when Sarah returns", async ({ page }) => {
     await loadLab(page);
     await startModule(page, "5 · Ask for a file or a change");
     const panel = page.getByTestId("tracked-files");
-    await expect(page.getByRole("heading", { name: "Pick the file to ask about" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Try it: ask Alice for a change" })).toBeVisible();
     await expect(page.getByTestId("active-user-name")).toHaveText("Sarah");
     await panel.getByTestId("tracked-select").selectOption({ label: "budget.txt — /srv/keyquorum/tracked/budget.txt.kqtf" });
-    await page.getByRole("button", { name: "Next" }).click();
-
-    await expect(page.getByRole("heading", { name: "Try it: ask Alice for a change" })).toBeVisible();
     const card = panel.getByTestId("tracked-file");
     await card.getByLabel("Ask").selectOption("alice");
     await card.getByLabel("for", { exact: true }).selectOption("change");
     await card.getByLabel("Request message").fill("Please round the totals");
     await card.getByRole("button", { name: "Send request" }).click();
 
-    await expect(page.getByRole("heading", { name: "Try it: become Alice" })).toBeVisible({ timeout: 3_000 });
-    await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /Alice/ }).click();
     await expect(page.getByRole("heading", { name: "Try it: accept the request" })).toBeVisible({ timeout: 3_000 });
+    await expect(page.getByTestId("active-user-name")).toHaveText("Alice");
     await panel.getByTestId("tracked-requests").getByRole("button", { name: "Accept request for budget.txt" }).click();
 
     await expect(page.getByRole("heading", { name: "Try it: back to Sarah" })).toBeVisible({ timeout: 3_000 });
     await page.getByRole("group", { name: "Switch user" }).getByRole("button", { name: /Sarah/ }).click();
-    await expect(page.getByRole("heading", { name: "Try it: record the answer" })).toBeVisible({ timeout: 3_000 });
-    await panel.getByTestId("tracked-requests").getByRole("button", { name: "Record the request answer" }).click();
+    await expect(panel.getByTestId("tracked-requests")).toContainText("answer recorded");
 
     await expect(page.getByRole("heading", { name: "The request is in the history" })).toBeVisible({ timeout: 3_000 });
     await page.getByRole("button", { name: "Finish" }).click();

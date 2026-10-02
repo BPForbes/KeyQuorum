@@ -127,8 +127,8 @@ test.describe("desktop lab", () => {
     await switchUser(page, "Alice");
     await page.getByRole("button", { name: /^Sent \(1\)/ }).click();
     await expect(page.locator("[data-testid^=sent-]")).toContainText("awaiting acknowledgement");
+    // Plugging her drive in opens the answer by itself; there is no refresh to click.
     await page.getByRole("button", { name: "Insert Alice's USB" }).click();
-    await page.getByRole("button", { name: "Check relay for acknowledgements" }).click();
     await expect(page.locator("[data-testid^=sent-]")).toContainText("Acknowledged by recipient");
   });
 
@@ -299,10 +299,10 @@ test.describe("desktop lab", () => {
     await expect(panel.getByTestId("tracked-letters")).toContainText("accepted");
     await expect(panel.getByTestId("tracked-select")).toContainText("/home/alice/tracked/plan.txt.kqtf");
 
-    // Back as Sarah, record Alice's answer.
+    // Back as Sarah (her drive is in), Alice's answer is recorded as she signs in.
     await switchUser(page, "Sarah");
-    await panel.getByTestId("tracked-letters").getByRole("button", { name: "Record the answer" }).click();
     await expect(panel.getByTestId("tracked-letters")).toContainText("answer recorded");
+    await expect(panel.getByTestId("tracked-letters").getByRole("button", { name: "Record the answer" })).toHaveCount(0);
 
     // Ask Alice for a change; a request only asks, and her answer only says yes or no.
     await card.getByLabel("Ask").selectOption("alice");
@@ -315,7 +315,6 @@ test.describe("desktop lab", () => {
     await panel.getByTestId("tracked-requests").getByRole("button", { name: "Accept request for plan.txt" }).click();
     await expect(panel.getByTestId("tracked-requests")).toContainText("accepted");
     await switchUser(page, "Sarah");
-    await panel.getByTestId("tracked-requests").getByRole("button", { name: "Record the request answer" }).click();
     await expect(panel.getByTestId("tracked-requests")).toContainText("answer recorded");
     await expect(page.locator('[data-panel="activity"] [data-event="ChangeRequested"]').first()).toBeVisible();
     await expect(page.locator('[data-panel="activity"] [data-event="RequestAnswered"]').first()).toBeVisible();

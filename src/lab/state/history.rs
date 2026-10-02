@@ -122,7 +122,7 @@ fn named_containers(line: &str) -> Vec<String> {
 impl LabState {
     /// The active person's own store, where every slot's public keys are
     /// registered: the one their `keyquorum file` commands run against.
-    fn own_store(&self) -> String {
+    pub(in crate::lab) fn own_store(&self) -> String {
         self.actor().store()
     }
 
@@ -1106,6 +1106,13 @@ impl LabState {
                 vec![],
             ));
         };
+        if self.letters[index].ack_recorded {
+            return Ok(Outcome::done(
+                true,
+                "That answer is already recorded",
+                vec![],
+            ));
+        }
         let Some(ack) = self.letters[index].ack.clone() else {
             return Ok(Outcome::done(
                 false,
@@ -1135,6 +1142,40 @@ impl LabState {
             self.letters[index].ack_recorded = true;
         }
         Ok(outcome)
+    }
+
+    /// The answers waiting for the active person, recorded with the same
+    /// `file ack` and `file open-answer` the buttons run. Only while their
+    /// slot is in; otherwise the answers stay waiting.
+    pub(in crate::lab) fn record_waiting_answers(&mut self) -> Vec<TraceStep> {
+        let me = self.actor().id.clone();
+        if !self.slot_connected(&self.actor().label.clone()) {
+            return Vec::new();
+        }
+        let letters: Vec<i64> = self
+            .letters
+            .iter()
+            .filter(|l| l.from_user == me && l.ack.is_some() && !l.ack_recorded)
+            .map(|l| l.id)
+            .collect();
+        let requests: Vec<i64> = self
+            .requests
+            .iter()
+            .filter(|r| r.from_user == me && r.answer.is_some() && !r.answer_recorded)
+            .map(|r| r.id)
+            .collect();
+        let mut trace = Vec::new();
+        for id in letters {
+            if let Ok(outcome) = self.history_ack(id) {
+                trace.extend(outcome.trace);
+            }
+        }
+        for id in requests {
+            if let Ok(outcome) = self.history_open_answer(id) {
+                trace.extend(outcome.trace);
+            }
+        }
+        trace
     }
 
     /// `keyquorum file request`: ask another person for a file, or for a
@@ -1276,6 +1317,13 @@ impl LabState {
                 vec![],
             ));
         };
+        if self.requests[index].answer_recorded {
+            return Ok(Outcome::done(
+                true,
+                "That answer is already recorded",
+                vec![],
+            ));
+        }
         let Some(answer) = self.requests[index].answer.clone() else {
             return Ok(Outcome::done(
                 false,

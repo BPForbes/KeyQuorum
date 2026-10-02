@@ -582,6 +582,9 @@ function Requests({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
                 Record the request answer
               </button>
             ) : null}
+            {request.to === me && request.status !== "waiting" && !request.answerRecorded ? (
+              <span className="muted small"> · {request.fromName} records your answer when they are signed in with their USB</span>
+            ) : null}
             {request.answerRecorded ? <span className="muted small"> · answer recorded</span> : null}
           </li>
         ))}
@@ -615,6 +618,9 @@ function Letters({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
               <button type="button" className="btn small-btn" onClick={() => act((client) => client.historyAck(letter.id))}>
                 Record the answer
               </button>
+            ) : null}
+            {letter.to === me && letter.status !== "waiting" && !letter.ackRecorded ? (
+              <span className="muted small"> · {letter.fromName} records your answer when they are signed in with their USB</span>
             ) : null}
             {letter.ackRecorded ? <span className="muted small"> · answer recorded</span> : null}
           </li>

@@ -128,6 +128,10 @@ export class LabClient {
     return this.call(this.lab.register_leaf(driveId, slotLabel, parentLabel));
   }
 
+  createAndRegisterLeaf(driveId: string, slotLabel: string, parentLabel: string, passphrase: string): ActionResult {
+    return this.call(this.lab.create_and_register_leaf(driveId, slotLabel, parentLabel, passphrase));
+  }
+
   reissueKey(nodeLabel: string, toDriveId: string, passphrase: string): ActionResult {
     return this.call(this.lab.reissue_key(nodeLabel, toDriveId, passphrase));
   }

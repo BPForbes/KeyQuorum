@@ -265,6 +265,21 @@ impl KeyQuorumLab {
         to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
     }
 
+    /// Provision a slot with a typed passphrase and register it as a new leaf
+    /// in one action.
+    pub fn create_and_register_leaf(
+        &mut self,
+        drive_id: &str,
+        slot_label: &str,
+        parent_label: &str,
+        passphrase: &str,
+    ) -> std::result::Result<String, JsError> {
+        let outcome =
+            self.state
+                .create_and_register_leaf(drive_id, slot_label, parent_label, passphrase);
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
     /// Reissue a node's hardware key onto a freshly provisioned replacement
     /// token, authorized by the lab's one org-update authority label.
     pub fn reissue_key(

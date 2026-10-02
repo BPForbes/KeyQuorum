@@ -24,6 +24,15 @@ export function Mailbox({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
       <h2 id="mailbox-heading" className="panel-title">
         Inbox and sent
       </h2>
+      <div className="button-row">
+        <button type="button" className="btn" data-testid="mailbox-refresh" onClick={() => act((client) => client.refreshInbox())}>
+          Check mail
+        </button>
+        <span className="muted small">
+          Switching users, inserting your USB and receiving a letter all check the relay too, so this is only needed
+          to look again.
+        </span>
+      </div>
       <div className="segmented" role="group" aria-label="Mailbox view">
         <button type="button" aria-pressed={view === "inbox"} onClick={() => setView("inbox")}>
           Inbox ({snapshot.inbox.length})
@@ -72,12 +81,9 @@ export function Mailbox({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
           {snapshot.pendingAcks > 0 ? (
             <p className="notice">
               {snapshot.pendingAcks} acknowledgement{snapshot.pendingAcks > 1 ? "s are" : " is"} waiting at the relay,
-              sealed to your key. Insert your USB so <code>keyquorum inbox open</code> can open them.
+              sealed to your key. Insert your USB and <code>keyquorum inbox open</code> opens them for you.
             </p>
           ) : null}
-          <button type="button" className="btn" data-testid="mailbox-refresh" onClick={() => act((client) => client.refreshInbox())}>
-            Check relay for acknowledgements
-          </button>
           {snapshot.sent.length === 0 ? <p className="empty">Nothing sent yet.</p> : null}
           <ul className="mail-list">
             {snapshot.sent.map((item) => (

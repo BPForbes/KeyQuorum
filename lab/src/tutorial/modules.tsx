@@ -312,7 +312,7 @@ export const TUTORIALS: TutorialModule[] = [
     id: "mailbox",
     category: "mailbox",
     title: "Mailbox: sending & receiving",
-    summary: "Seal a file to someone else, then switch identity and receive it.",
+    summary: "Seal a file to someone else, receive it as them, and watch the acknowledgement arrive on its own.",
     steps: [
       {
         title: "Try it: send a file",
@@ -336,28 +336,17 @@ export const TUTORIALS: TutorialModule[] = [
         remember: (snapshot) => ({ relayId: snapshot.sent[snapshot.sent.length - 1]?.relayId }),
       },
       {
-        title: "Try it: become the recipient",
-        body: (
-          <p>
-            Click <strong>David</strong>&rsquo;s chip in the Active user bar to act as him — only his own key can open
-            a letter sealed to him.
-          </p>
-        ),
-        target: () => ['[aria-label="Switch user"]'],
-        ensure: ensureActiveUserIsNot("david", "alice"),
-        requiredKind: "user",
-        isDone: (snapshot) => snapshot.activeUser.id === "david",
-      },
-      {
         title: "Try it: receive the letter",
         body: (
           <p>
-            Switch to the <strong>Inbox</strong> tab and press <strong>Receive</strong> on the sealed letter waiting
-            there.
+            You are now <strong>David</strong> with his USB in &mdash; only his key can open a letter sealed to him. In
+            the <strong>Inbox</strong> tab press <strong>Receive</strong> on the sealed letter. It checks the relay
+            first, so there is nothing to refresh.
           </p>
         ),
         tab: "mailbox",
         target: () => ['[data-testid^="inbox-"]', '[data-panel="mailbox"]'],
+        ensure: composeEnsures(ensureActiveUser("david"), ensureDrivesConnected("david")),
         isDone: (snapshot, latest, memory) => {
           if (!wasReceived(latest)) return false;
           const relayId = memory.relayId;
@@ -366,15 +355,26 @@ export const TUTORIALS: TutorialModule[] = [
         },
       },
       {
-        title: "Sent and acknowledged",
+        title: "Try it: back to the sender",
         body: (
           <p>
-            Back on the sender's side, the <strong>Sent</strong> view (inside the Inbox tab) tracks whether a
-            delivery is still awaiting the recipient's signed acknowledgement.
+            Click <strong>Alice</strong>&rsquo;s chip. Her USB is in, so signing in opens David&rsquo;s signed answer by
+            itself (<code>keyquorum inbox open</code>); the <strong>Sent</strong> view then reads{" "}
+            <em>Acknowledged by recipient</em>.
           </p>
         ),
         tab: "mailbox",
-        target: () => ['[data-panel="mailbox"]'],
+        target: () => ['[aria-label="Switch user"]'],
+        ensure: composeEnsures(ensureActiveUserIsNot("alice", "david"), ensureDrivesConnected("alice")),
+        requiredKind: "user",
+        isDone: (snapshot, _latest, memory) => {
+          const relayId = memory.relayId;
+          return (
+            snapshot.activeUser.id === "alice" &&
+            typeof relayId === "number" &&
+            snapshot.sent.find((item) => item.relayId === relayId)?.status === "acknowledged"
+          );
+        },
       },
     ],
   },
@@ -434,21 +434,13 @@ export const TUTORIALS: TutorialModule[] = [
     id: "identity-enrollment",
     category: "identities",
     title: "Provision & register a leaf",
-    summary: "Provision a fresh device slot, then register it in the organization tree.",
+    summary: "Mint a fresh device slot and register it in the organization tree in one step.",
     steps: [
       {
-        title: "Provision first",
-        body: <p>In <strong>Create a new key</strong>, choose an inserted drive, a new dotted label, and a passphrase. Provisioning mints keys on the device but does not yet grant an organization role.</p>,
+        title: "Create and register in one step",
+        body: <p>In <strong>Create and register a new leaf</strong>, choose an inserted drive, a new dotted label, a passphrase and a parent node. One action mints the keys on the device (<code>keyquorum-device provision</code>), registers both, binds the container and adds that exact slot below the parent, resharing with the active siblings the CLI can collect.</p>,
         tab: "security",
-        target: () => ['[data-testid="provision-slot"]'],
-        requiredKind: "provision",
-        isDone: (_snapshot, latest) => latest?.kind === "provision" && latest.outcome === "granted",
-      },
-      {
-        title: "Register the leaf separately",
-        body: <p>Use <strong>Register a new leaf</strong> after provisioning. Registration binds the container and adds that exact slot below a selected split node, resharing with the active siblings the CLI can collect.</p>,
-        tab: "security",
-        target: () => ['[data-testid="register-leaf"]'],
+        target: () => ['[data-testid="create-register-leaf"]'],
         requiredKind: "register-leaf",
         isDone: (_snapshot, latest) => latest?.kind === "register-leaf" && latest.outcome === "granted",
       },
@@ -827,7 +819,7 @@ export const TUTORIALS: TutorialModule[] = [
     id: "mailbox-decisions",
     category: "mailbox",
     title: "Reject & acknowledge",
-    summary: "Exercise the rejection path and explicitly refresh a sender's acknowledgement state.",
+    summary: "Exercise the rejection path and see the sender learn of it without refreshing anything.",
     steps: [
       {
         title: "Try it: send a letter to reject",
@@ -846,18 +838,11 @@ export const TUTORIALS: TutorialModule[] = [
         remember: (snapshot) => ({ relayId: snapshot.sent[snapshot.sent.length - 1]?.relayId }),
       },
       {
-        title: "Try it: become the recipient",
-        body: <p>Switch to <strong>David</strong>, then insert David&rsquo;s USB if it is not already connected. His key is required to authenticate and answer the letter.</p>,
-        target: () => ['[aria-label="Switch user"]'],
-        ensure: ensureDrivesConnected("david"),
-        requiredKind: "user",
-        isDone: (snapshot) => snapshot.activeUser.id === "david",
-      },
-      {
         title: "Try it: reject the letter",
-        body: <p>Press <strong>Reject</strong> on the new letter. Rejection opens and authenticates the envelope, records no received file, and sends a signed acknowledgement.</p>,
+        body: <p>You are now <strong>David</strong>, with his USB in. Press <strong>Reject</strong> on the new letter. Rejection opens and authenticates the envelope, records no received file, and sends a signed acknowledgement.</p>,
         tab: "mailbox",
         target: () => ['[data-testid^="inbox-"]', '[data-panel="mailbox"]'],
+        ensure: composeEnsures(ensureActiveUser("david"), ensureDrivesConnected("david")),
         requiredKind: "receive",
         isDone: (snapshot, latest, memory) => {
           const relayId = memory.relayId;
@@ -867,26 +852,18 @@ export const TUTORIALS: TutorialModule[] = [
       },
       {
         title: "Try it: return to the sender",
-        body: <p>Switch back to <strong>Alice</strong>, the sender of this module&rsquo;s letter.</p>,
-        target: () => ['[aria-label="Switch user"]'],
-        requiredKind: "user",
-        isDone: (snapshot) => snapshot.activeUser.id === "alice",
-      },
-      {
-        title: "Try it: collect the acknowledgement",
-        body: <p>Select <strong>Sent</strong>, then click <strong>Check relay for acknowledgements</strong>. Refresh is a real relay action, not an automatic tutorial shortcut.</p>,
+        body: <p>Switch back to <strong>Alice</strong>. Her USB is in, so David&rsquo;s signed rejection is opened for her as she signs in; <strong>Sent</strong> reads <em>Rejected by recipient</em>.</p>,
         tab: "mailbox",
-        target: () => ['[data-testid="mailbox-refresh"]', '[data-panel="mailbox"]'],
-        requiredKind: "receive",
-        isDone: (snapshot, latest, memory) => {
-          if (latest?.kind !== "receive" || latest.outcome !== "info") return false;
+        target: () => ['[aria-label="Switch user"]'],
+        ensure: composeEnsures(ensureActiveUserIsNot("alice", "david"), ensureDrivesConnected("alice")),
+        requiredKind: "user",
+        isDone: (snapshot, _latest, memory) => {
           const relayId = memory.relayId;
-          if (typeof relayId !== "number") return false;
-          // The refresh itself only logs "Inbox up to date" / "N new
-          // envelope(s)" either way; what actually confirms the sender saw
-          // David's rejection is this module's own letter turning up
-          // "rejected" on the Sent side, not just that some refresh ran.
-          return snapshot.sent.find((item) => item.relayId === relayId)?.status === "rejected";
+          return (
+            snapshot.activeUser.id === "alice" &&
+            typeof relayId === "number" &&
+            snapshot.sent.find((item) => item.relayId === relayId)?.status === "rejected"
+          );
         },
       },
     ],
@@ -1007,57 +984,37 @@ export const TUTORIALS: TutorialModule[] = [
     id: "history-hand-off",
     category: "history",
     title: "2 · Hand a file over",
-    summary: "Share a tracked file with Alice, accept it as her, then record her signed answer back in Sarah's history.",
+    summary: "Share a tracked file with Alice, accept it as her, and see her signed answer recorded in Sarah's history when Sarah returns.",
     steps: [
-      {
-        title: "Pick the file to hand over",
-        body: (
-          <p>
-            You're Sarah. In <strong>Tracked files</strong>, pick <code>budget.txt</code>. Its newest edit was never
-            signed, so the line under the revisions says which revision would actually be sent.
-          </p>
-        ),
-        tab: "activity",
-        target: () => ['[data-testid="tracked-select"]', '[data-testid="tracked-files"]'],
-        ensure: composeEnsures(ensureActiveUser("sarah"), ensureDrivesConnected("sarah", "alice")),
-      },
       {
         title: "Try it: share it with Alice",
         body: (
           <p>
-            Under <strong>Share with</strong>, choose <strong>Alice</strong> and press <strong>Share file</strong>. The
-            letter is sealed to Alice's key and signed by Sarah; only the trusted revision goes in it.
+            You're Sarah. In <strong>Tracked files</strong>, pick <code>budget.txt</code>; its newest edit was never
+            signed, so the line under the revisions says which revision would actually be sent. Under{" "}
+            <strong>Share with</strong>, choose <strong>Alice</strong> and press <strong>Share file</strong>. The letter
+            is sealed to Alice's key and signed by Sarah; only the trusted revision goes in it.
           </p>
         ),
         tab: "activity",
-        target: () => ['[data-testid="history-share"]'],
+        target: () => ['[data-testid="tracked-select"]', '[data-testid="history-share"]', '[data-testid="tracked-files"]'],
         ensure: composeEnsures(ensureActiveUser("sarah"), ensureDrivesConnected("sarah", "alice")),
         requiredKind: "history-share",
         isDone: (_snapshot, latest) => latest?.outcome === "granted" && latest.title.endsWith("with Alice"),
         remember: (snapshot) => ({ letterId: snapshot.trackedLetters[snapshot.trackedLetters.length - 1]?.id }),
       },
       {
-        title: "Try it: become Alice",
-        body: (
-          <p>
-            Click <strong>Alice</strong>&rsquo;s chip in the Active user bar. Only her key can open a letter sealed to
-            her.
-          </p>
-        ),
-        target: () => ['[aria-label="Switch user"]'],
-        requiredKind: "user",
-        isDone: (snapshot) => snapshot.activeUser.id === "alice",
-      },
-      {
         title: "Try it: accept the letter",
         body: (
           <p>
-            Under <strong>Tracked-file letters</strong>, press <strong>Accept budget.txt</strong>. Alice's store checks
-            Sarah's signature, then judges the revision by the file's own policy before keeping a copy.
+            You are now <strong>Alice</strong>. Under <strong>Tracked-file letters</strong>, press{" "}
+            <strong>Accept budget.txt</strong>. Alice's store checks Sarah's signature, then judges the revision by the
+            file's own policy before keeping a copy.
           </p>
         ),
         tab: "activity",
         target: () => ['[data-testid="tracked-letters"]', '[data-testid="tracked-files"]'],
+        ensure: composeEnsures(ensureActiveUser("alice"), ensureDrivesConnected("sarah", "alice")),
         requiredKind: "history-receive",
         isDone: (snapshot, latest, memory) =>
           latest?.outcome === "granted" &&
@@ -1065,23 +1022,19 @@ export const TUTORIALS: TutorialModule[] = [
       },
       {
         title: "Try it: back to Sarah",
-        body: <p>Switch back to <strong>Sarah</strong>. Alice's signed answer is waiting for her.</p>,
-        target: () => ['[aria-label="Switch user"]'],
-        requiredKind: "user",
-        isDone: (snapshot) => snapshot.activeUser.id === "sarah",
-      },
-      {
-        title: "Try it: record the answer",
         body: (
           <p>
-            Press <strong>Record the answer</strong> on the letter. Sarah's copy checks Alice's signature and that the
-            answer is for this delivery, then records it once.
+            Switch back to <strong>Sarah</strong>. Her USB is in, so Alice's signed answer is recorded in her copy as she
+            signs in (<code>keyquorum file ack</code>): the letter reads <em>answer recorded</em>.
           </p>
         ),
         tab: "activity",
-        target: () => ['[data-testid="tracked-letters"]'],
-        requiredKind: "history-ack",
-        isDone: (_snapshot, latest) => latest?.outcome === "granted",
+        target: () => ['[aria-label="Switch user"]'],
+        ensure: composeEnsures(ensureActiveUserIsNot("sarah", "alice"), ensureDrivesConnected("sarah", "alice")),
+        requiredKind: "user",
+        isDone: (snapshot, _latest, memory) =>
+          snapshot.activeUser.id === "sarah" &&
+          snapshot.trackedLetters.find((letter) => letter.id === memory.letterId)?.ackRecorded === true,
       },
       {
         title: "The hand-off is in the history",
@@ -1103,23 +1056,13 @@ export const TUTORIALS: TutorialModule[] = [
     summary: "Sign a merge that happened on its own, then see who has to review a conflict it could not settle.",
     steps: [
       {
-        title: "A merge that happened on its own",
-        body: (
-          <p>
-            You're Sarah. Pick <code>forecast.txt</code>. Two people edited different lines, so the edits merged into a
-            new revision with <strong>two parents</strong>. It is <strong>pending</strong>: a merge never inherits its
-            parents' signatures.
-          </p>
-        ),
-        tab: "activity",
-        target: () => ['[data-testid="tracked-select"]', '[data-testid="tracked-files"]'],
-        ensure: composeEnsures(ensureActiveUser("sarah"), ensureDrivesConnected("sarah")),
-      },
-      {
         title: "Try it: see what the merge changed",
         body: (
           <p>
-            Press <strong>Diff</strong> on the newest revision to see the lines it changed against its first parent.
+            You're Sarah. Pick <code>forecast.txt</code>: two people edited different lines, so the edits merged into a
+            new revision with <strong>two parents</strong>, and it is <strong>pending</strong> &mdash; a merge never
+            inherits its parents' signatures. Press <strong>Diff</strong> on the newest revision to see the lines it
+            changed against its first parent.
           </p>
         ),
         tab: "activity",
@@ -1257,54 +1200,38 @@ export const TUTORIALS: TutorialModule[] = [
     id: "history-requests",
     category: "history",
     title: "5 · Ask for a file or a change",
-    summary: "Ask Alice for a change to a tracked file, watch her accept, and record her signed answer in Sarah's history.",
+    summary: "Ask Alice for a change to a tracked file, watch her accept, and see her signed answer recorded in Sarah's history when Sarah returns.",
     steps: [
-      {
-        title: "Pick the file to ask about",
-        body: (
-          <p>
-            You're Sarah. In <strong>Tracked files</strong>, pick <code>budget.txt</code>. A <strong>request</strong>{" "}
-            is a signed letter that only <em>asks</em>: it delivers nothing and changes nothing.
-          </p>
-        ),
-        tab: "activity",
-        target: () => ['[data-testid="tracked-select"]', '[data-testid="tracked-files"]'],
-        ensure: composeEnsures(ensureActiveUser("sarah"), ensureDrivesConnected("sarah", "alice")),
-      },
       {
         title: "Try it: ask Alice for a change",
         body: (
           <p>
-            Under <strong>Ask</strong>, choose <strong>Alice</strong> for <strong>a change to this file</strong>, type a
-            message and press <strong>Send request</strong>. The message is shown to Alice and never recorded in the
-            history; the request's id and kind are.
+            You're Sarah. In <strong>Tracked files</strong>, pick <code>budget.txt</code>. A <strong>request</strong> is
+            a signed letter that only <em>asks</em>: it delivers nothing and changes nothing. Under <strong>Ask</strong>,
+            choose <strong>Alice</strong> for <strong>a change to this file</strong>, type a message and press{" "}
+            <strong>Send request</strong>. The message is shown to Alice and never recorded in the history; the
+            request's id and kind are.
           </p>
         ),
         tab: "activity",
-        target: () => ['[data-testid="history-request"]'],
+        target: () => ['[data-testid="tracked-select"]', '[data-testid="history-request"]', '[data-testid="tracked-files"]'],
         ensure: composeEnsures(ensureActiveUser("sarah"), ensureDrivesConnected("sarah", "alice")),
         requiredKind: "history-request",
         isDone: (_snapshot, latest) => latest?.outcome === "granted" && latest.title.startsWith("Ask Alice for a change"),
         remember: (snapshot) => ({ requestId: snapshot.trackedRequests[snapshot.trackedRequests.length - 1]?.id }),
       },
       {
-        title: "Try it: become Alice",
-        body: <p>Click <strong>Alice</strong>&rsquo;s chip in the Active user bar. Only her key can open the request.</p>,
-        target: () => ['[aria-label="Switch user"]'],
-        requiredKind: "user",
-        isDone: (snapshot) => snapshot.activeUser.id === "alice",
-      },
-      {
         title: "Try it: accept the request",
         body: (
           <p>
-            Under <strong>Requests for a file or a change</strong>, read Sarah's message and press{" "}
-            <strong>Accept request for budget.txt</strong>. Accepting only says yes: a change arrives later as an
-            ordinary revision, and a file is sent with <strong>Share file</strong>.
+            You are now <strong>Alice</strong>. Under <strong>Requests for a file or a change</strong>, read Sarah's
+            message and press <strong>Accept request for budget.txt</strong>. Accepting only says yes: a change arrives
+            later as an ordinary revision, and a file is sent with <strong>Share file</strong>.
           </p>
         ),
         tab: "activity",
         target: () => ['[data-testid="tracked-requests"]'],
+        ensure: composeEnsures(ensureActiveUser("alice"), ensureDrivesConnected("sarah", "alice")),
         requiredKind: "history-answer-request",
         isDone: (snapshot, latest, memory) =>
           latest?.outcome === "granted" &&
@@ -1312,23 +1239,19 @@ export const TUTORIALS: TutorialModule[] = [
       },
       {
         title: "Try it: back to Sarah",
-        body: <p>Switch back to <strong>Sarah</strong>. Alice's signed answer is waiting for her.</p>,
-        target: () => ['[aria-label="Switch user"]'],
-        requiredKind: "user",
-        isDone: (snapshot) => snapshot.activeUser.id === "sarah",
-      },
-      {
-        title: "Try it: record the answer",
         body: (
           <p>
-            Press <strong>Record the request answer</strong>. Sarah's copy checks Alice's signature and that the answer
-            matches a request it made, then records it once.
+            Switch back to <strong>Sarah</strong>. Her USB is in, so Alice's signed answer is checked against the request
+            she made and recorded as she signs in (<code>keyquorum file open-answer</code>).
           </p>
         ),
         tab: "activity",
-        target: () => ['[data-testid="tracked-requests"]'],
-        requiredKind: "history-open-answer",
-        isDone: (_snapshot, latest) => latest?.outcome === "granted",
+        target: () => ['[aria-label="Switch user"]'],
+        ensure: composeEnsures(ensureActiveUserIsNot("sarah", "alice"), ensureDrivesConnected("sarah", "alice")),
+        requiredKind: "user",
+        isDone: (snapshot, _latest, memory) =>
+          snapshot.activeUser.id === "sarah" &&
+          snapshot.trackedRequests.find((request) => request.id === memory.requestId)?.answerRecorded === true,
       },
       {
         title: "The request is in the history",

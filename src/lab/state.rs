@@ -939,8 +939,7 @@ impl LabState {
             )),
         ];
         let message = format!("Switched to {} ({})", user.name, user.label);
-        let (mail_trace, _) = self.check_mail();
-        trace.extend(mail_trace);
+        trace.extend(self.settle_mail_and_answers());
         self.log("user", "info", &message, trace.clone(), None);
         Ok(Outcome::done(true, message, trace))
     }
@@ -973,6 +972,8 @@ impl LabState {
             let list = self.run(&format!("keyquorum-device list {mount}"));
             commands.push(list.line.clone());
             trace.extend(transcript(&list, true));
+            // Answers sealed to this person's slot can be opened now.
+            trace.extend(self.settle_mail_and_answers());
         } else {
             trace.push(TraceStep::info(format!(
                 "{name} unmounted from {mount}; its slots can no longer unwrap shares or sign"
@@ -2142,6 +2143,38 @@ impl LabState {
         slot_label: &str,
         parent_label: &str,
     ) -> Result<Outcome> {
+        self.register_leaf_with(drive_id, slot_label, parent_label, None)
+    }
+
+    /// Provision a slot and register it as a leaf in one action: the same
+    /// `keyquorum-device provision` then the register, bind and `add` steps
+    /// of [`LabState::register_leaf`], with the passphrase just typed.
+    pub fn create_and_register_leaf(
+        &mut self,
+        drive_id: &str,
+        slot_label: &str,
+        parent_label: &str,
+        passphrase: &str,
+    ) -> Result<Outcome> {
+        let provisioned = self.provision_slot(drive_id, slot_label, passphrase)?;
+        if !provisioned.ok {
+            return Ok(provisioned);
+        }
+        let mut registered =
+            self.register_leaf_with(drive_id, slot_label, parent_label, Some(passphrase))?;
+        let mut trace = provisioned.trace;
+        trace.append(&mut registered.trace);
+        registered.trace = trace;
+        Ok(registered)
+    }
+
+    fn register_leaf_with(
+        &mut self,
+        drive_id: &str,
+        slot_label: &str,
+        parent_label: &str,
+        passphrase: Option<&str>,
+    ) -> Result<Outcome> {
         if slot_label.trim().is_empty() {
             return Ok(Outcome::done(false, "A leaf label is required", vec![]));
         }
@@ -2236,7 +2269,14 @@ impl LabState {
             ),
             add_line,
         ];
+        // `device bind` asks for the slot's passphrase (twice); a slot just
+        // created with a typed passphrase answers with that one.
+        if let Some(passphrase) = passphrase {
+            self.vm_mut()
+                .stage_secrets([passphrase.to_string(), passphrase.to_string()]);
+        }
         let (runs, ok) = self.run_all(&lines);
+        self.vm_mut().clear_pending_secrets();
         trace.extend(transcripts(&runs, true));
         let message = if ok {
             format!("Registered {slot_label} on {drive_name} as a new leaf under {parent_label}")
@@ -2933,6 +2973,18 @@ impl LabState {
         (trace, arrived)
     }
 
+    /// What happens by itself when a person is present with their slot in:
+    /// the relay is checked (`inbox list`), acknowledgements to their
+    /// deliveries are opened (`inbox open`), and answers to the tracked
+    /// files and requests they sent are recorded (`file ack`, `file
+    /// open-answer`). Each is the real command, shown in the transcript;
+    /// deciding to accept or refuse something stays a click.
+    fn settle_mail_and_answers(&mut self) -> Vec<TraceStep> {
+        let (mut trace, _) = self.check_mail();
+        trace.extend(self.record_waiting_answers());
+        trace
+    }
+
     fn mail_ids(&self, dir: &Path) -> Vec<i64> {
         self.vm()
             .list(dir)
@@ -2981,6 +3033,13 @@ impl LabState {
             "{} letter #{relay_id}",
             if accept { "Receive" } else { "Reject" }
         );
+        // Pull first, as `inbox open` itself does, so a letter that arrived
+        // since the last refresh can still be received.
+        let pull = self.run(&format!(
+            "keyquorum --db {store} inbox list --dir {}",
+            mail_dir.display()
+        ));
+        let mut pulled = transcript(&pull, true);
         if self.letter_kind(&mail_dir, relay_id) != Some(envelope::KIND_FILE_DELIVERY) {
             return Ok(Outcome::done(
                 false,
@@ -3007,7 +3066,9 @@ impl LabState {
             if accept { "" } else { " --reject" }
         );
         let run = self.run(&line);
-        let trace = transcript(&run, true);
+        pulled.extend(transcript(&run, true));
+        let trace = pulled;
+        let line = format!("{}\n{line}", pull.line);
         if !run.ok {
             let message = if self.slot_connected(&label) {
                 format!(
@@ -3058,6 +3119,8 @@ impl LabState {
         } else {
             format!("Transfer rejected: {file_name}")
         };
+        let mut trace = trace;
+        trace.extend(self.settle_mail_and_answers());
         self.log(
             "receive",
             if accept { "granted" } else { "info" },
