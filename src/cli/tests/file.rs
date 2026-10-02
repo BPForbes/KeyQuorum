@@ -1879,7 +1879,6 @@ fn only_the_addressed_recipient_can_open_and_a_stale_ack_matches_nothing() {
     assert!(result.is_err(), "the receiver never sent that delivery");
 }
 
-#[cfg(feature = "legacy-tests")]
 #[test]
 fn a_recipient_that_cannot_trust_the_revision_refuses_it_and_says_so() {
     let mut env = delivering();
@@ -2572,7 +2571,6 @@ fn rules_no_ancestor_can_meet_are_refused_but_a_root_scope_has_no_ancestors() {
     );
 }
 
-#[cfg(feature = "legacy-tests")]
 #[test]
 fn deliver_open_also_requires_the_named_recipient_to_own_the_opening_key() {
     use crate::file_delivery::{seal_letter, Outgoing};
