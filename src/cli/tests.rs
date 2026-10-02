@@ -5,5 +5,6 @@ mod gate_link;
 mod memory_env;
 mod parse;
 mod pin;
+mod profile;
 mod request;
 mod split;

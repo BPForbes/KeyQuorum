@@ -33,6 +33,7 @@ pub mod device_tool;
 pub mod env;
 pub(crate) mod file_cmd;
 mod gate_link;
+mod profile;
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
 mod review_tui;
 mod review_view;
@@ -53,9 +54,15 @@ const PIN_TTL_SECONDS: i64 = 3600;
     version
 )]
 pub struct Cli {
-    /// Path to the KeyQuorum SQLite database
-    #[arg(long, global = true, default_value = "keyquorum.sqlite")]
-    pub db: PathBuf,
+    /// Path to the KeyQuorum SQLite database (or KEYQUORUM_DB; default
+    /// keyquorum.sqlite)
+    #[arg(long, global = true)]
+    pub db: Option<PathBuf>,
+
+    /// Do not read or write the caches (recent parameters, relay trust
+    /// checks, verified facts) for this command; or KEYQUORUM_NO_CACHE
+    #[arg(long, global = true)]
+    pub no_cache: bool,
 
     #[command(subcommand)]
     pub command: Command,
@@ -392,6 +399,37 @@ pub enum Command {
     Device {
         #[command(subcommand)]
         command: device_cmd::DeviceCommand,
+    },
+    /// Set, change or show the defaults commands use when a flag is left out:
+    /// who you are, which device holds your slot, which relay. Pointers only;
+    /// no passphrase, key or bearer is stored.
+    Use {
+        /// Your label (defaults to the slot label the first time)
+        #[arg(long)]
+        label: Option<String>,
+        /// Your slot label in the device container
+        #[arg(long)]
+        slot: Option<String>,
+        /// The device container directory that holds the slot
+        #[arg(long)]
+        device: Option<PathBuf>,
+        /// The relay you normally use
+        #[arg(long)]
+        url: Option<String>,
+        /// Turn the caches on or off (off also empties them)
+        #[arg(long, value_enum)]
+        cache: Option<profile::CacheSwitch>,
+        /// Print the stored defaults (the default when nothing is set)
+        #[arg(long)]
+        show: bool,
+        /// Forget every stored default
+        #[arg(long, conflicts_with_all = ["label", "slot", "device", "url", "cache", "show"])]
+        clear: bool,
+    },
+    /// Inspect or empty the short-lived caches
+    Cache {
+        #[command(subcommand)]
+        command: profile::CacheCommand,
     },
     /// Provider mailbox host (capability build). Hidden from --help.
     #[cfg(feature = "provider")]
@@ -877,6 +915,27 @@ pub enum PinCommand {
     },
 }
 
+/// The personal database to open: `--db`, else `KEYQUORUM_DB`, else
+/// `keyquorum.sqlite`. The variable only selects which database; it holds
+/// no setting itself.
+pub fn resolve_db(explicit: Option<&Path>) -> PathBuf {
+    if let Some(path) = explicit {
+        return path.to_path_buf();
+    }
+    match env::var("KEYQUORUM_DB") {
+        Ok(path) if !path.is_empty() => PathBuf::from(path),
+        _ => PathBuf::from("keyquorum.sqlite"),
+    }
+}
+
+/// Run one parsed command line: resolve the database (`--db`,
+/// `KEYQUORUM_DB`, `keyquorum.sqlite`) and apply `--no-cache`.
+pub fn run_cli(cli: Cli) -> Result<()> {
+    let db_path = resolve_db(cli.db.as_deref());
+    let _scope = profile::RunScope::enter(cli.no_cache);
+    run(&db_path, cli.command)
+}
+
 /// Run one parsed command against the store at `db_path`. The provider
 /// `host` subcommand is served by the binary and never reaches here.
 pub fn run(db_path: &Path, command: Command) -> Result<()> {
@@ -898,6 +957,27 @@ fn run_in_store(conn: &mut Connection, command: Command) -> Result<()> {
     match command {
         Command::Vault { command } => run_vault(conn, command)?,
         Command::Access { command } => run_access(conn, command)?,
+        Command::Use {
+            label,
+            slot,
+            device,
+            url,
+            cache,
+            show,
+            clear,
+        } => profile::run_use(
+            conn,
+            profile::UseArgs {
+                label,
+                slot,
+                device,
+                url,
+                cache,
+                show,
+                clear,
+            },
+        )?,
+        Command::Cache { command } => profile::run_cache(conn, command)?,
         Command::Generate { .. }
         | Command::Register { .. }
         | Command::List
@@ -1301,6 +1381,8 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
         | Command::Relay { .. }
         | Command::Loadkey { .. }
         | Command::Device { .. }
+        | Command::Use { .. }
+        | Command::Cache { .. }
         | Command::Transfer { .. } => unreachable!("non-tree commands are dispatched in run()"),
         #[cfg(feature = "provider")]
         Command::Host { .. } => unreachable!("non-tree commands are dispatched in run()"),
@@ -2216,19 +2298,67 @@ fn persist_checked_key(
     )
 }
 
+/// The revocation list the environment points at, and the digest of the file
+/// it came from (of nothing when there is none).
+fn revocation_list(root: &[u8; 32]) -> Result<(std::collections::HashSet<String>, String)> {
+    use sha2::{Digest, Sha256};
+    match env::var("KEYQUORUM_PROVIDER_KRL")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        Some(path) => {
+            let bytes = env::read(Path::new(&path))?;
+            let digest = hex::encode(Sha256::digest(&bytes));
+            Ok((provider::verify_revocation_list(root, &bytes)?, digest))
+        }
+        None => Ok((Default::default(), hex::encode(Sha256::digest([])))),
+    }
+}
+
 /// Official clients verify a KeyQuorum-signed provider certificate before
 /// sending a bearer. A modified relay cannot skip this check.
 fn authenticate_official_relay(url: &str) -> Result<provider::Certificate> {
     let now = env::now_utc()?;
     let root = env::provider_root();
-    let revoked = match env::var("KEYQUORUM_PROVIDER_KRL")
-        .ok()
-        .filter(|s| !s.is_empty())
-    {
-        Some(path) => provider::verify_revocation_list(&root, &env::read(Path::new(&path))?)?,
-        None => Default::default(),
-    };
-    relay::authenticate_provider(&env::EnvRelay, url, &root, &now, &revoked)
+    let (revoked, _) = revocation_list(&root)?;
+    let cert = relay::authenticate_provider(&env::EnvRelay, url, &root, &now, &revoked)?;
+    profile::mark_relay_proven(url);
+    Ok(cert)
+}
+
+/// The identity check for a command that presents only a stored key. A check
+/// that passed for this relay in the last 15 minutes, against the same
+/// revocation list and stored key hash, stands in for a new challenge; so does
+/// one this command already ran. Anything else, and every new bearer, runs the
+/// full challenge. Only a passed check is ever remembered.
+fn authenticate_relay_for_stored_key(conn: &Connection, url: &str, key_hash: &str) -> Result<()> {
+    if profile::relay_proven(url) {
+        return Ok(());
+    }
+    let root = env::provider_root();
+    let (_, krl_digest) = revocation_list(&root)?;
+    let now = env::now_utc()?;
+    let cached = profile::caching(conn);
+    if cached && db::cache::relay_trust_hit(conn, url, &krl_digest, key_hash, &now)? {
+        profile::mark_relay_proven(url);
+        return Ok(());
+    }
+    let cert = authenticate_official_relay(url)?;
+    if cached {
+        let fingerprint = format!("{}:{}", cert.provider_id, cert.serial);
+        let _ = db::cache::store_relay_trust(
+            conn,
+            &db::cache::RelayTrust {
+                relay_url: url,
+                cert_fingerprint: &fingerprint,
+                krl_digest: &krl_digest,
+                key_hash,
+                cert_not_after: &cert.expires_at,
+            },
+            &now,
+        );
+    }
+    Ok(())
 }
 
 fn resolve_relay_url(
@@ -2249,6 +2379,11 @@ fn resolve_relay_url(
         }
         _ => {
             let stored = db::relay_credential::get_for_scope(conn, scope.as_str())?;
+            let preferred = db::profile::get(conn, db::profile::DEFAULT_RELAY_URL)?;
+            if let Some(url) = preferred.filter(|_| stored.len() != 1) {
+                relay::validate_relay_url(&url)?;
+                return Ok(url);
+            }
             match stored.as_slice() {
                 [one] => {
                     relay::validate_relay_url(&one.relay_url)?;
@@ -2304,7 +2439,6 @@ pub(crate) fn resolve_relay_auth(
     required: relay::ApiKeyScope,
 ) -> Result<(String, String)> {
     let url = resolve_relay_url(conn, explicit_url, required)?;
-    authenticate_official_relay(&url)?;
     let provided = explicit_key.filter(|s| !s.is_empty()).or_else(|| {
         match env::var("KEYQUORUM_RELAY_API_KEY") {
             Ok(key) if !key.is_empty() => Some(key),
@@ -2313,6 +2447,10 @@ pub(crate) fn resolve_relay_auth(
     });
 
     if let Some(token) = provided {
+        // A bearer not yet stored always meets the full challenge first.
+        if !profile::relay_proven(&url) {
+            authenticate_official_relay(&url)?;
+        }
         let check = relay::check_key(&env::EnvRelay, &url, &token)?;
         if !check.valid {
             return Err(Error::InvalidApiKey);
@@ -2326,8 +2464,10 @@ pub(crate) fn resolve_relay_auth(
 
     match db::relay_credential::get(conn, &url, required.as_str())? {
         Some(stored) => {
+            authenticate_relay_for_stored_key(conn, &url, &stored.key_hash)?;
             let check = relay::check_key_hash(&env::EnvRelay, &url, &stored.key_hash)?;
             if !check.valid {
+                db::cache::forget_relay_trust(conn, &url)?;
                 db::relay_credential::delete(conn, &url, required.as_str())?;
                 return Err(Error::RelayRequest(format!(
                     "stored API key for {} is no longer valid; run `keyquorum loadkey`",
@@ -2337,10 +2477,15 @@ pub(crate) fn resolve_relay_auth(
             db::relay_credential::touch_checked(conn, &url, required.as_str())?;
             Ok((url, stored.token))
         }
-        None => Err(Error::RelayRequest(format!(
-            "no stored API key for {}; run `keyquorum loadkey` or pass --api-key",
-            required.as_str()
-        ))),
+        None => {
+            if !profile::relay_proven(&url) {
+                authenticate_official_relay(&url)?;
+            }
+            Err(Error::RelayRequest(format!(
+                "no stored API key for {}; run `keyquorum loadkey` or pass --api-key",
+                required.as_str()
+            )))
+        }
     }
 }
 
@@ -2362,6 +2507,8 @@ fn loadkey_in_store(conn: &Connection, api_key: Option<String>, url: Option<Stri
         }
     };
     relay::validate_relay_url(&url)?;
+    // `loadkey` always meets the full challenge, and drops any cached pass.
+    db::cache::forget_relay_trust(conn, &url)?;
     authenticate_official_relay(&url)?;
     let token = match api_key.filter(|s| !s.is_empty()) {
         Some(token) => token,
@@ -3090,9 +3237,11 @@ fn open_slot_secrets(entry: &str) -> Result<device::SlotSecrets> {
     if path.is_empty() || label.is_empty() {
         return Err(usage("--slot must be container=label"));
     }
-    let container = env::fs(|fs| device::open_in(fs, Path::new(path)))?;
-    let passphrase = env::prompt_passphrase(&format!("Passphrase for {label}: "))?;
-    env::fs(|fs| device::open_slot_in(fs, &container, label, &passphrase))
+    profile::slot_secrets(entry, || {
+        let container = env::fs(|fs| device::open_in(fs, Path::new(path)))?;
+        let passphrase = env::prompt_passphrase(&format!("Passphrase for {label}: "))?;
+        env::fs(|fs| device::open_slot_in(fs, &container, label, &passphrase))
+    })
 }
 
 fn add_slot_shares(

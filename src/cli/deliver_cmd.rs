@@ -6,7 +6,9 @@
 //! and answers with a signed accept/reject sealed back to the sender.
 
 use super::env::{self, errln, outln};
+use super::profile;
 use super::{read_key_array_32, resolve_relay_auth, usage, write_delivery_packages, Envelope};
+use crate::db;
 use crate::device::SlotSecrets;
 use crate::error::{Error, Result};
 use crate::keys::{self, KeyType};
@@ -29,15 +31,12 @@ pub enum DeliverCommand {
         /// Recipient label (its encryption key must be registered here)
         #[arg(long)]
         to: String,
-        /// Your label
+        /// Your label (default: from `keyquorum use`)
         #[arg(long = "as")]
-        as_label: String,
-        /// Your identity slot, container=label (signs the letter)
-        #[arg(
-            long = "slot",
-            required_unless_present = "signing_key_file",
-            conflicts_with = "signing_key_file"
-        )]
+        as_label: Option<String>,
+        /// Your identity slot, container=label (signs the letter; default:
+        /// from `keyquorum use`)
+        #[arg(long = "slot", conflicts_with = "signing_key_file")]
         slot: Option<String>,
         /// Your signing private key file, instead of --slot
         #[arg(long)]
@@ -59,15 +58,12 @@ pub enum DeliverCommand {
     /// Open a letter addressed to you: verify the sender, keep the file, and
     /// seal a signed acknowledgement back to them
     Open {
-        /// The delivery letter (.kqpb)
+        /// The delivery letter (.kqpb); default: the one opened a moment ago
         #[arg(long)]
-        file: PathBuf,
-        /// Your identity slot, container=label (unseals and signs the answer)
-        #[arg(
-            long = "slot",
-            required_unless_present = "share_file",
-            conflicts_with_all = ["share_file", "signing_key_file"]
-        )]
+        file: Option<PathBuf>,
+        /// Your identity slot, container=label (unseals and signs the answer;
+        /// default: from `keyquorum use`)
+        #[arg(long = "slot", conflicts_with_all = ["share_file", "signing_key_file"])]
         slot: Option<String>,
         /// Your encryption private key file, instead of --slot
         #[arg(long, requires = "signing_key_file")]
@@ -97,15 +93,11 @@ pub enum DeliverCommand {
     },
     /// Check an acknowledgement sealed back to you
     Ack {
-        /// The acknowledgement (.kqpb)
+        /// The acknowledgement (.kqpb); default: the one checked a moment ago
         #[arg(long)]
-        file: PathBuf,
-        /// Your identity slot, container=label
-        #[arg(
-            long = "slot",
-            required_unless_present = "share_file",
-            conflicts_with = "share_file"
-        )]
+        file: Option<PathBuf>,
+        /// Your identity slot, container=label (default: from `keyquorum use`)
+        #[arg(long = "slot", conflicts_with = "share_file")]
         slot: Option<String>,
         /// Your encryption private key file, instead of --slot
         #[arg(long)]
@@ -134,6 +126,19 @@ pub fn run(conn: &Connection, command: DeliverCommand) -> Result<()> {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .ok_or_else(|| usage("--file has no file name; pass --name"))?,
+            };
+            let (as_label, slot) = match &signing_key_file {
+                Some(_) => (
+                    as_label
+                        .or(db::profile::get(conn, db::profile::DEFAULT_LABEL)?)
+                        .ok_or_else(|| usage("pass --as, or set a default with `keyquorum use`"))?,
+                    None,
+                ),
+                None => {
+                    let identity =
+                        profile::resolve_identity(conn, as_label.as_deref(), slot.as_deref())?;
+                    (identity.label, Some(identity.slot))
+                }
             };
             let (signing_secret, encryption_public) =
                 sender_keys(conn, slot, signing_key_file, &as_label)?;
@@ -170,6 +175,19 @@ pub fn run(conn: &Connection, command: DeliverCommand) -> Result<()> {
             url,
             api_key,
         } => {
+            let typed = file.is_some();
+            let file = profile::recent_or(
+                conn,
+                "deliver-open:file",
+                file.map(|f| f.display().to_string()),
+                false,
+            )?
+            .map(PathBuf::from)
+            .ok_or_else(|| usage("--file is required"))?;
+            let slot = match share_file {
+                Some(_) => slot,
+                None => Some(profile::resolve_identity(conn, None, slot.as_deref())?.slot),
+            };
             let bytes = env::read(&file)?;
             let secrets = recipient_secrets(slot, share_file, signing_key_file)?;
             let letter = file_delivery::open_letter(conn, &secrets.encryption, &bytes)?;
@@ -206,12 +224,28 @@ pub fn run(conn: &Connection, command: DeliverCommand) -> Result<()> {
                 bytes: file_delivery::seal_ack(&letter, &secrets.signing, accepted)?,
             };
             carry(conn, &ack, ack_dir.as_deref(), push_ack, url, api_key)?;
+            if typed {
+                profile::remember(conn, "deliver-open:file", &file.display().to_string());
+            }
         }
         DeliverCommand::Ack {
             file,
             slot,
             share_file,
         } => {
+            let typed = file.is_some();
+            let file = profile::recent_or(
+                conn,
+                "deliver-ack:file",
+                file.map(|f| f.display().to_string()),
+                false,
+            )?
+            .map(PathBuf::from)
+            .ok_or_else(|| usage("--file is required"))?;
+            let slot = match share_file {
+                Some(_) => slot,
+                None => Some(profile::resolve_identity(conn, None, slot.as_deref())?.slot),
+            };
             let bytes = env::read(&file)?;
             let secret = super::encryption_secret_from(share_file.as_deref(), slot.as_deref())?;
             let ack = file_delivery::open_ack(conn, &secret, &bytes)?;
@@ -221,6 +255,9 @@ pub fn run(conn: &Connection, command: DeliverCommand) -> Result<()> {
                 if ack.accepted { "accepted" } else { "rejected" },
                 ack.recipient_label
             );
+            if typed {
+                profile::remember(conn, "deliver-ack:file", &file.display().to_string());
+            }
         }
     }
     Ok(())
