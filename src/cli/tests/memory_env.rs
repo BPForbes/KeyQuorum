@@ -43,6 +43,8 @@ pub struct TestRelay {
     root_public: [u8; 32],
     /// How many `POST /provider-identity` challenges commands have made.
     pub identity_challenges: usize,
+    /// Make uploads (`POST /inbox`) fail as a dropped connection would.
+    pub fail_uploads: bool,
 }
 
 pub const RELAY_URL: &str = "https://relay.test";
@@ -81,6 +83,9 @@ impl Env for MemoryEnv {
         };
         if request.url.path() == "/provider-identity" {
             relay.identity_challenges += 1;
+        }
+        if relay.fail_uploads && request.method == "POST" && request.url.path() == "/inbox" {
+            return Err(Error::RelayRequest("connection reset".into()));
         }
         Ok(relay::service::dispatch(
             &relay.conn,
@@ -127,6 +132,13 @@ impl Env for MemoryEnv {
 impl MemoryEnv {
     /// An environment whose relay is [`RELAY_URL`], answered in process.
     pub fn with_relay() -> Self {
+        let mut env = MemoryEnv::default();
+        env.attach_relay();
+        env
+    }
+
+    /// Give this environment a relay at [`RELAY_URL`].
+    pub fn attach_relay(&mut self) {
         let conn = relay::open_in_memory().expect("relay database");
         let (root_private, root_public) = keys::generate_signing_keypair();
         let (relay_private, relay_public) = provider::generate_relay_identity();
@@ -143,10 +155,9 @@ impl MemoryEnv {
             },
         )
         .expect("test certificate");
-        let mut env = MemoryEnv::default();
-        env.vars
+        self.vars
             .insert("KEYQUORUM_RELAY_URL".into(), RELAY_URL.into());
-        env.relay = Some(TestRelay {
+        self.relay = Some(TestRelay {
             conn,
             identity: ProviderIdentity {
                 certificate,
@@ -154,8 +165,8 @@ impl MemoryEnv {
             },
             root_public,
             identity_challenges: 0,
+            fail_uploads: false,
         });
-        env
     }
 
     /// Mint a relay key of `scope` (inbox push needs no recipient).

@@ -6,6 +6,7 @@ mod inbox;
 mod memory_env;
 mod parse;
 mod pin;
+mod produce;
 mod profile;
 mod request;
 mod split;

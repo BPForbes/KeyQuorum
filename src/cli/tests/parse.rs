@@ -300,7 +300,10 @@ fn top_level_tree_and_bridge_parse() {
     assert!(Cli::try_parse_from(["keyquorum", "tree", "publish", "1"]).is_ok());
     assert!(Cli::try_parse_from(["keyquorum", "tree", "fetch", "1"]).is_ok());
     assert!(Cli::try_parse_from(["keyquorum", "tree", "fetch", "--label", "master"]).is_ok());
-    assert!(Cli::try_parse_from(["keyquorum", "tree", "fetch"]).is_err());
+    // With no id and no label, `fetch` uses the one tree the store holds
+    // (and says so if it holds none or several), decided when it runs.
+    assert!(Cli::try_parse_from(["keyquorum", "tree", "fetch"]).is_ok());
+    assert!(Cli::try_parse_from(["keyquorum", "tree", "publish"]).is_ok());
     assert!(
         Cli::try_parse_from(["keyquorum", "tree", "project", "1", "--as-node", "M.S.2"]).is_err()
     );

@@ -288,18 +288,21 @@ pub enum Command {
         /// they already hold for that label.
         #[arg(long = "as")]
         as_node: String,
-        /// Ed25519 private key file for --as
+        /// Ed25519 private key file for --as (or sign with --slot)
+        #[arg(long, conflicts_with = "slot")]
+        signing_key_file: Option<PathBuf>,
+        /// Container slot that signs for --as: container=label (default: the
+        /// device from `keyquorum use`, opened as the --as label)
         #[arg(long)]
-        signing_key_file: PathBuf,
+        slot: Option<String>,
         /// Also retire the replaced ENCRYPTION key in every store that
         /// applies this. A replaced signing key is always retired,
         /// regardless of this flag — it doubles as an authorization
         /// identity, and leaving two active would make that ambiguous.
         #[arg(long)]
         revoke_previous: bool,
-        /// Directory for the per-recipient `.kqpb` envelopes
-        #[arg(long)]
-        output_dir: PathBuf,
+        #[command(flatten)]
+        delivery: Box<ProducerDelivery>,
     },
     /// Print the authenticated organization updates this store has applied
     Updates {
@@ -334,8 +337,10 @@ pub enum Command {
         /// Local member label
         #[arg(long)]
         node: String,
-        #[arg(long)]
-        signing_key_file: PathBuf,
+        /// Your Ed25519 signing private key (not needed with --slot, which
+        /// holds it)
+        #[arg(long, required_unless_present = "slot")]
+        signing_key_file: Option<PathBuf>,
         /// Encryption private key that unwraps this store's sealed bridge secret
         #[arg(long, required_unless_present = "slot", conflicts_with = "slot")]
         share_file: Option<String>,
@@ -490,7 +495,8 @@ pub struct TreeArgs {
 pub enum TreeCommand {
     /// Upload this store's public topology (no sealed shares) to the relay
     Publish {
-        key_id: i64,
+        /// Local key id to publish (default: every split tree in this store)
+        key_id: Option<i64>,
         /// Relay base URL (or KEYQUORUM_RELAY_URL)
         #[arg(long)]
         url: Option<String>,
@@ -508,13 +514,15 @@ pub enum TreeCommand {
         /// of are reported and left without an envelope.
         #[arg(long = "as")]
         as_node: String,
-        /// Ed25519 private key file for --as. A container slot uses
-        /// `tree countersign` instead.
+        /// Ed25519 private key file for --as (or sign with --slot)
+        #[arg(long, conflicts_with = "slot")]
+        signing_key_file: Option<PathBuf>,
+        /// Container slot that signs for --as: container=label (default: the
+        /// device from `keyquorum use`, opened as the --as label)
         #[arg(long)]
-        signing_key_file: PathBuf,
-        /// Directory for the per-recipient `.kqpb` envelopes
-        #[arg(long)]
-        output_dir: PathBuf,
+        slot: Option<String>,
+        #[command(flatten)]
+        delivery: Box<ProducerDelivery>,
     },
     /// Countersign a pending restructure. Pass a key file, or a container slot.
     Countersign {
@@ -528,17 +536,19 @@ pub enum TreeCommand {
         device: Option<PathBuf>,
         #[arg(long, requires = "device")]
         slot: Option<String>,
-        #[arg(long)]
-        output_dir: PathBuf,
+        #[command(flatten)]
+        delivery: Box<ProducerDelivery>,
     },
     /// Download the slice this pull key is allowed to see and merge it here.
     /// Inbox pull also applies this slice automatically; use fetch to refresh
     /// topology without downloading envelopes.
     Fetch {
-        /// Local key id to update. Default: match the published tree label.
+        /// Local key id to update. Default: match the published tree label,
+        /// or the only split tree this store holds.
         key_id: Option<i64>,
         /// Published `keys.label` when this store has no local key id yet
-        #[arg(long, required_unless_present = "key_id")]
+        /// (default: the only split tree this store holds)
+        #[arg(long)]
         label: Option<String>,
         /// Relay base URL (or KEYQUORUM_RELAY_URL)
         #[arg(long)]
@@ -580,9 +590,8 @@ pub enum PrivateBridgeCommand {
         /// Local node whose sealed copy stays in this database
         #[arg(long = "self")]
         self_node: Option<String>,
-        /// Directory for per-recipient .kqpb packages
-        #[arg(long)]
-        output_dir: PathBuf,
+        #[command(flatten)]
+        delivery: Box<ProducerDelivery>,
         #[arg(long)]
         label: Option<String>,
     },
@@ -636,8 +645,8 @@ pub enum PrivateBridgeCommand {
             conflicts_with = "share_file"
         )]
         slot: Option<String>,
-        #[arg(long)]
-        output_dir: PathBuf,
+        #[command(flatten)]
+        delivery: Box<ProducerDelivery>,
     },
 }
 
@@ -1008,7 +1017,11 @@ fn run_in_store(conn: &mut Connection, command: Command) -> Result<()> {
             signature_out,
         } => {
             let encryption_sk = encryption_secret_from(share_file.as_deref(), slot.as_deref())?;
-            let signing_sk = zeroize::Zeroizing::new(read_key_array_32(&signing_key_file)?);
+            let signing_sk = match (&signing_key_file, slot.as_deref()) {
+                (Some(file), _) => zeroize::Zeroizing::new(read_key_array_32(file)?),
+                (None, Some(slot)) => open_slot_secrets(slot)?.signing_secret,
+                (None, None) => return Err(usage("pass --signing-key-file or --slot")),
+            };
             let message = env::read(&message_file)?;
             let artifact = private_bridge::sign_message(
                 conn,
@@ -1086,6 +1099,180 @@ fn run_file(conn: &Connection, command: file_cmd::FileCommand) -> Result<()> {
         legacy::notice(old, instead);
     }
     Ok(())
+}
+
+/// The signing key for `as_node`: a key file, or the signing half of a slot
+/// (`--slot`, else the profile's device opened as that label).
+fn signing_secret_for(
+    conn: &Connection,
+    as_node: &str,
+    file: Option<&Path>,
+    slot: Option<&str>,
+) -> Result<zeroize::Zeroizing<[u8; 32]>> {
+    if let Some(file) = file {
+        return Ok(zeroize::Zeroizing::new(read_key_array_32(file)?));
+    }
+    let identity = profile::resolve_identity(conn, Some(as_node), slot)?;
+    Ok(open_slot_secrets(&identity.slot)?.signing_secret)
+}
+
+/// Upload sealed packages, attaching this store's public trees to the first
+/// so the relay's topology stays current. Prints one line per package.
+fn push_packages(
+    conn: &Connection,
+    url: &str,
+    api_key: &str,
+    items: &[(String, Vec<u8>)],
+    expires: Option<&str>,
+) -> Result<()> {
+    let trees = export_local_public_trees(conn)?;
+    for (index, (name, bytes)) in items.iter().enumerate() {
+        let attach_trees = !trees.is_empty() && index == 0;
+        let accepted = if expires.is_some() || attach_trees {
+            let trees = if attach_trees { trees.as_slice() } else { &[] };
+            relay::push_inbox_with_trees_until(&env::EnvRelay, url, api_key, bytes, trees, expires)?
+        } else {
+            relay::push_inbox(&env::EnvRelay, url, api_key, bytes)?
+        };
+        outln!(
+            "{name} -> id {} ({})",
+            accepted.id,
+            accepted.recipient_fingerprint
+        );
+    }
+    if !trees.is_empty() {
+        outln!(
+            "Updated relay public-tree context ({} tree{})",
+            trees.len(),
+            if trees.len() == 1 { "" } else { "s" }
+        );
+    }
+    Ok(())
+}
+
+/// Where a command that writes sealed envelopes sends them: a directory, the
+/// relay, or both. A change is always saved before anything is uploaded.
+#[derive(Args)]
+pub struct ProducerDelivery {
+    /// Directory for the per-recipient `.kqpb` envelopes (with --push and no
+    /// directory they are staged in ./outbox and removed once uploaded)
+    #[arg(long, required_unless_present = "push")]
+    output_dir: Option<PathBuf>,
+    /// Upload the envelopes to the relay after the change is saved
+    /// (inbox.push key), instead of a separate `relay push`
+    #[arg(long)]
+    push: bool,
+    /// Relay base URL (default: `keyquorum use --url`)
+    #[arg(long, requires = "push")]
+    url: Option<String>,
+    /// Push-scope API key (default: a key from `loadkey`)
+    #[arg(long, requires = "push")]
+    api_key: Option<String>,
+    /// Expire uploaded envelopes at UTC `yyyy-mm-dd hh:mm`
+    #[arg(long, requires = "push")]
+    expires: Option<String>,
+}
+
+/// What `deliver_commit_push` did with the envelopes.
+pub(crate) struct Delivered {
+    paths: Vec<PathBuf>,
+    /// The relay they were uploaded to, if they were.
+    uploaded_to: Option<String>,
+    /// Whether the files are still on disk.
+    kept: bool,
+}
+
+impl Delivered {
+    fn report(&self) {
+        if self.kept {
+            for path in &self.paths {
+                outln!("Wrote {}", path.display());
+            }
+        }
+        self.report_upload();
+    }
+
+    /// Only the upload line, for commands that list where each envelope went.
+    fn report_upload(&self) {
+        if let Some(url) = &self.uploaded_to {
+            outln!(
+                "Uploaded {} envelope{} to {url}",
+                self.paths.len(),
+                if self.paths.len() == 1 { "" } else { "s" }
+            );
+        }
+    }
+
+    /// Where package `index` ended up, for a per-recipient listing.
+    fn location(&self, index: usize) -> String {
+        match (self.kept, self.paths.get(index), &self.uploaded_to) {
+            (true, Some(path), _) => path.display().to_string(),
+            (_, _, Some(url)) => format!("uploaded to {url}"),
+            _ => String::new(),
+        }
+    }
+}
+
+/// Write the envelopes, commit, then upload. The order matters: the files go
+/// first so a failed commit takes them away again (the command can simply be
+/// run once more), and the upload goes last because it cannot be undone. If
+/// the upload fails the change stays saved and the files stay on disk, with
+/// the command that finishes the job.
+fn deliver_commit_push(
+    conn: &Connection,
+    delivery: &ProducerDelivery,
+    packages: &[impl Envelope],
+    commit: impl FnOnce() -> Result<()>,
+) -> Result<Delivered> {
+    // Prove the relay and the key before anything is written or committed.
+    let auth = if delivery.push {
+        if let Some(expires) = delivery.expires.as_deref() {
+            locked_files::require_future_expires_utc(conn, expires)?;
+        }
+        Some(resolve_relay_auth(
+            conn,
+            delivery.url.clone(),
+            delivery.api_key.clone(),
+            relay::ApiKeyScope::InboxPush,
+        )?)
+    } else {
+        None
+    };
+    let staged = delivery.output_dir.is_none();
+    let dir = delivery
+        .output_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("outbox"));
+    let paths = deliver_then_commit(&dir, packages, commit)?;
+    let Some((url, api_key)) = auth else {
+        return Ok(Delivered {
+            paths,
+            uploaded_to: None,
+            kept: true,
+        });
+    };
+    let items: Vec<(String, Vec<u8>)> = paths
+        .iter()
+        .zip(packages)
+        .map(|(path, package)| (path.display().to_string(), package.bytes().to_vec()))
+        .collect();
+    if let Err(err) = push_packages(conn, &url, &api_key, &items, delivery.expires.as_deref()) {
+        return Err(Error::RelayRequest(format!(
+            "the change is saved, but the upload failed: {err}. The envelopes are in {0}; \
+             upload them with `keyquorum relay push --dir {0}`",
+            dir.display()
+        )));
+    }
+    if staged {
+        for path in &paths {
+            let _ = env::remove_file(path);
+        }
+    }
+    Ok(Delivered {
+        paths,
+        uploaded_to: Some(url),
+        kept: !staged,
+    })
 }
 
 fn run_vault(conn: &Connection, command: VaultCommand) -> Result<()> {
@@ -1365,8 +1552,9 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
             signing_public_key_file,
             as_node,
             signing_key_file,
+            slot,
             revoke_previous,
-            output_dir,
+            delivery,
         } => run_reissue(
             conn,
             ReissueArgs {
@@ -1376,8 +1564,9 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
                 signing_public_key_file,
                 as_node,
                 signing_key_file,
+                slot,
                 revoke_previous,
-                output_dir,
+                delivery,
             },
         )?,
         Command::Updates { since } => {
@@ -1428,30 +1617,38 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
             url,
             api_key,
         }) => {
-            let snapshot = key_tree::export_public_tree(conn, key_id)?;
+            let snapshots = match key_id {
+                Some(key_id) => vec![key_tree::export_public_tree(conn, key_id)?],
+                None => export_local_public_trees(conn)?,
+            };
+            if snapshots.is_empty() {
+                return Err(usage("no split tree in this store to publish"));
+            }
             let (url, api_key) = resolve_relay_auth(conn, url, api_key, relay::ApiKeyScope::Admin)?;
-            let stored = relay::publish_tree(&env::EnvRelay, &url, &api_key, &snapshot)?;
-            outln!(
-                "Published {} (generation {}, {} nodes)",
-                stored.label,
-                stored.generation,
-                stored.nodes.len()
-            );
+            for snapshot in snapshots {
+                let stored = relay::publish_tree(&env::EnvRelay, &url, &api_key, &snapshot)?;
+                outln!(
+                    "Published {} (generation {}, {} nodes)",
+                    stored.label,
+                    stored.generation,
+                    stored.nodes.len()
+                );
+            }
         }
         Some(TreeCommand::Restructure {
             key_id,
             as_node,
             signing_key_file,
-            output_dir,
+            slot,
+            delivery,
         }) => {
-            let signing_sk = zeroize::Zeroizing::new(read_key_array_32(&signing_key_file)?);
+            let signing_sk =
+                signing_secret_for(conn, &as_node, signing_key_file.as_deref(), slot.as_deref())?;
             let planned = org_update::plan_tree_restructure(conn, key_id, &as_node, &signing_sk)?;
-            let written = deliver_then_commit(&output_dir, &planned.packages, || {
+            let delivered = deliver_commit_push(conn, &delivery, &planned.packages, || {
                 org_update::commit_planned_tree_restructure(conn, &planned).map(|_| ())
             })?;
-            for path in written {
-                outln!("Wrote {}", path.display());
-            }
+            delivered.report();
             if planned.needs_countersign {
                 let parent = planned.countersigner_label.as_deref().unwrap_or("parent");
                 outln!(
@@ -1483,7 +1680,7 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
             signing_key_file,
             device,
             slot,
-            output_dir,
+            delivery,
         }) => {
             let signing_sk = zeroize::Zeroizing::new(signing_secret_from(
                 signing_key_file.as_deref(),
@@ -1492,12 +1689,10 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
             )?);
             let planned =
                 org_update::plan_restructure_countersign(conn, key_id, &as_node, &signing_sk)?;
-            let written = deliver_then_commit(&output_dir, &planned.packages, || {
+            let delivered = deliver_commit_push(conn, &delivery, &planned.packages, || {
                 org_update::commit_planned_countersign(conn, &planned).map(|_| ())
             })?;
-            for path in written {
-                outln!("Wrote {}", path.display());
-            }
+            delivered.report();
             outln!(
                 "{} countersigned generation {}",
                 as_node,
@@ -1510,12 +1705,17 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
             url,
             api_key,
         }) => {
-            let label = match (label, key_id) {
-                (Some(label), _) => label,
-                (None, Some(id)) => key_tree::tree_label(conn, id)?,
-                (None, None) => {
-                    return Err(usage("tree fetch requires a key id or --label"));
-                }
+            let (label, key_id) = match (label, key_id) {
+                (Some(label), key_id) => (label, key_id),
+                (None, Some(id)) => (key_tree::tree_label(conn, id)?, Some(id)),
+                (None, None) => match key_tree::list_trees(conn)?.as_slice() {
+                    [only] => (key_tree::tree_label(conn, only.key_id)?, Some(only.key_id)),
+                    _ => {
+                        return Err(usage(
+                            "tree fetch needs a key id or --label (this store does not hold exactly one tree)",
+                        ));
+                    }
+                },
             };
             let (url, api_key) =
                 resolve_relay_auth(conn, url, api_key, relay::ApiKeyScope::InboxPull)?;
@@ -1574,9 +1774,10 @@ pub struct ReissueArgs {
     encryption_public_key_file: Option<PathBuf>,
     signing_public_key_file: Option<PathBuf>,
     as_node: String,
-    signing_key_file: PathBuf,
+    signing_key_file: Option<PathBuf>,
+    slot: Option<String>,
     revoke_previous: bool,
-    output_dir: PathBuf,
+    delivery: Box<ProducerDelivery>,
 }
 
 fn run_reissue(conn: &Connection, args: ReissueArgs) -> Result<()> {
@@ -1590,7 +1791,12 @@ fn run_reissue(conn: &Connection, args: ReissueArgs) -> Result<()> {
         .as_deref()
         .map(read_key_array_32)
         .transpose()?;
-    let signing_sk = zeroize::Zeroizing::new(read_key_array_32(&args.signing_key_file)?);
+    let signing_sk = signing_secret_for(
+        conn,
+        &args.as_node,
+        args.signing_key_file.as_deref(),
+        args.slot.as_deref(),
+    )?;
 
     let planned = org_update::plan_key_reissue(
         conn,
@@ -1602,12 +1808,10 @@ fn run_reissue(conn: &Connection, args: ReissueArgs) -> Result<()> {
         &args.as_node,
         &signing_sk,
     )?;
-    let written = deliver_then_commit(&args.output_dir, &planned.packages, || {
+    let delivered = deliver_commit_push(conn, &args.delivery, &planned.packages, || {
         org_update::commit_planned_key_reissue(conn, &planned).map(|_| ())
     })?;
-    for path in written {
-        outln!("Wrote {}", path.display());
-    }
+    delivered.report();
     outln!(
         "Reissue {} for {} authorized by {} ({} envelope{})",
         planned.sequence(),
@@ -1639,7 +1843,7 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
             members,
             supervisors,
             self_node,
-            output_dir,
+            delivery,
             label,
         } => {
             let member_parties = resolve_parties(conn, Some(key_id), &members, true)?;
@@ -1676,9 +1880,10 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
                 &supervisor_parties,
                 self_node.as_deref(),
             )?;
-            let written = deliver_then_commit(&output_dir, &planned.created.packages, || {
-                private_bridge::commit_planned_creation(conn, &planned)
-            })?;
+            let delivered =
+                deliver_commit_push(conn, &delivery, &planned.created.packages, || {
+                    private_bridge::commit_planned_creation(conn, &planned)
+                })?;
             let created = &planned.created;
             outln!(
                 "Created private bridge {} (generation {}). Notify {} store(s):",
@@ -1686,9 +1891,15 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
                 created.generation,
                 created.packages.len()
             );
-            for (pkg, path) in created.packages.iter().zip(&written) {
-                outln!("  {} ({:?}) -> {}", pkg.label, pkg.role, path.display());
+            for (index, pkg) in created.packages.iter().enumerate() {
+                outln!(
+                    "  {} ({:?}) -> {}",
+                    pkg.label,
+                    pkg.role,
+                    delivered.location(index)
+                );
             }
+            delivered.report_upload();
         }
         PrivateBridgeCommand::List { key_id } => {
             let listing = private_bridge::list(conn, key_id)?;
@@ -1756,13 +1967,14 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
             node,
             share_file,
             slot,
-            output_dir,
+            delivery,
         } => {
             let sk = encryption_secret_from(share_file.as_deref(), slot.as_deref())?;
             let planned = private_bridge::plan_remove_member(conn, &uid, &member, &node, &sk)?;
-            let written = deliver_then_commit(&output_dir, &planned.outcome.packages, || {
-                private_bridge::commit_planned_removal(conn, &planned)
-            })?;
+            let delivered =
+                deliver_commit_push(conn, &delivery, &planned.outcome.packages, || {
+                    private_bridge::commit_planned_removal(conn, &planned)
+                })?;
             let outcome = &planned.outcome;
             if outcome.destroyed {
                 outln!("Destroyed private bridge {uid}");
@@ -1773,9 +1985,15 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
                 );
             }
             outln!("Deliver these packages to each store:");
-            for (pkg, path) in outcome.packages.iter().zip(&written) {
-                outln!("  {} ({:?}) -> {}", pkg.label, pkg.role, path.display());
+            for (index, pkg) in outcome.packages.iter().enumerate() {
+                outln!(
+                    "  {} ({:?}) -> {}",
+                    pkg.label,
+                    pkg.role,
+                    delivered.location(index)
+                );
             }
+            delivered.report_upload();
         }
     }
     Ok(())
@@ -2580,48 +2798,20 @@ fn relay_in_store(conn: &Connection, command: RelayCommand) -> Result<()> {
             }
             let (url, api_key) =
                 resolve_relay_auth(conn, url, api_key, relay::ApiKeyScope::InboxPush)?;
-            let trees = export_local_public_trees(conn)?;
-            let mut uploaded = 0usize;
+            let mut items = Vec::new();
             for path in env::read_dir(&dir)? {
                 if path.extension().and_then(|s| s.to_str()) != Some("kqpb") {
                     continue;
                 }
-                let bytes = env::read(&path)?;
-                let attach_trees = !trees.is_empty() && uploaded == 0;
-                let accepted = if expires.is_some() || attach_trees {
-                    let trees = if attach_trees { trees.as_slice() } else { &[] };
-                    relay::push_inbox_with_trees_until(
-                        &env::EnvRelay,
-                        &url,
-                        &api_key,
-                        &bytes,
-                        trees,
-                        expires.as_deref(),
-                    )?
-                } else {
-                    relay::push_inbox(&env::EnvRelay, &url, &api_key, &bytes)?
-                };
-                outln!(
-                    "{} -> id {} ({})",
-                    path.display(),
-                    accepted.id,
-                    accepted.recipient_fingerprint
-                );
-                uploaded += 1;
+                items.push((path.display().to_string(), env::read(&path)?));
             }
-            if uploaded == 0 {
+            if items.is_empty() {
                 return Err(Error::RelayRequest(format!(
                     "no .kqpb files in {}",
                     dir.display()
                 )));
             }
-            if !trees.is_empty() {
-                outln!(
-                    "Updated relay public-tree context ({} tree{})",
-                    trees.len(),
-                    if trees.len() == 1 { "" } else { "s" }
-                );
-            }
+            push_packages(conn, &url, &api_key, &items, expires.as_deref())?;
         }
         RelayCommand::Pull {
             import,
