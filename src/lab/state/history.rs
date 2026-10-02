@@ -984,7 +984,7 @@ impl LabState {
         Ok(outcome)
     }
 
-    /// `keyquorum file share`: seal the newest trusted revision to another
+    /// `keyquorum send` of a tracked file: seal the newest trusted revision to another
     /// person. The letter is left in the shared letters folder for them.
     pub fn history_share(&mut self, path: &str, to_user: &str) -> Result<Outcome> {
         let Some(kqtf) = self.tracked_path(path) else {
@@ -1006,8 +1006,8 @@ impl LabState {
         };
         let who = self.actor().label.clone();
         let line = format!(
-            "{} share {} --to {to_label} --as {who} --slot {slot} --output-dir {LETTERS_DIR}",
-            self.file_line(),
+            "keyquorum --db {} send {} --to {to_label} --as {who} --slot {slot} --output-dir {LETTERS_DIR}",
+            self.actor().store(),
             quote(&kqtf.display().to_string()),
         );
         let name = self.tracked_name(&kqtf);

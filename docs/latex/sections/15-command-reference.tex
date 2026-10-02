@@ -177,6 +177,26 @@ command, and is never documented outside the crate's own source.
 \end{tabular}
 \end{center}
 
+\subsection{Defaults, setup and caches}
+
+\begin{center}
+\begin{tabular}{@{}p{0.24\linewidth}p{0.70\linewidth}@{}}
+\toprule
+\textbf{Command} & \textbf{Purpose} \\
+\midrule
+\code{setup} & Create the device container, provision your slot, register
+  and bind its keys, optionally load a relay key, and store the defaults.
+  Safe to run again. \\
+\code{doctor} & Read-only check of what is missing before a task will work,
+  with the command that fixes each thing. \\
+\code{use} & Set, change, show (\flag{--show}) or clear (\flag{--clear}) the
+  stored defaults: label, slot, device container, relay, cache setting. \\
+\code{cache} & \code{cache clear} empties the short-lived caches;
+  \code{cache status} shows what is held. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
 \subsection{Delivery and the mailbox relay}
 
 \begin{center}
@@ -184,15 +204,19 @@ command, and is never documented outside the crate's own source.
 \toprule
 \textbf{Command} & \textbf{Purpose} \\
 \midrule
-\code{deliver send} & Seal a file to a registered label, signed with your
-  signing key. \\
-\code{deliver open} & Open a letter addressed to you: verify the sender,
+\code{send} & Seal a file (or a tracked file's newest trusted revision) to a
+  registered label and upload it, or write it to \file{./outbox}. \\
+\code{inbox} & Pull what is waiting for you from the relay and list it.
+  \code{inbox open} opens each letter and posts the signed answer. \\
+\code{deliver send} & (Legacy; use \code{send}.) Seal a file to a registered
+  label, signed with your signing key. \\
+\code{deliver open} & (Legacy; use \code{inbox open}.) Open a letter addressed to you: verify the sender,
   keep (or \flag{--reject}) the file, and seal a signed acknowledgement
   back. \\
-\code{deliver ack} & Check an acknowledgement sealed back to you. \\
+\code{deliver ack} & (Legacy; use \code{inbox open}.) Check an acknowledgement sealed back to you. \\
 \code{relay push} & Upload every \file{.kqpb} in a directory to the relay;
   also replaces public-tree documents from trees stored in \flag{--db}. \\
-\code{relay pull} & Download envelopes and the public-tree slice for a
+\code{relay pull} & (Legacy for letters; use \code{inbox}.) Download envelopes and the public-tree slice for a
   pull key; \flag{--import} installs each envelope into \flag{--db}
   directly. \\
 \code{loadkey} & Check a relay API key with \code{POST /keycheck} and

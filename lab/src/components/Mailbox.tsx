@@ -36,8 +36,8 @@ export function Mailbox({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
       {view === "inbox" ? (
         <>
           <p className="small muted">
-            Letters <code>keyquorum relay pull</code> fetched into <code>~/mail</code>. The relay only knows the recipient
-            key, so sender and file stay hidden until <code>keyquorum deliver open</code> unseals a letter with your
+            Letters <code>keyquorum inbox</code> fetched into <code>~/mail</code>. The relay only knows the recipient
+            key, so sender and file stay hidden until <code>keyquorum inbox open</code> unseals a letter with your
             slot.
           </p>
           {snapshot.inbox.length === 0 ? <p className="empty">No letters sealed to you.</p> : null}
@@ -72,7 +72,7 @@ export function Mailbox({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
           {snapshot.pendingAcks > 0 ? (
             <p className="notice">
               {snapshot.pendingAcks} acknowledgement{snapshot.pendingAcks > 1 ? "s are" : " is"} waiting at the relay,
-              sealed to your key. Insert your USB so <code>keyquorum deliver ack</code> can open them.
+              sealed to your key. Insert your USB so <code>keyquorum inbox open</code> can open them.
             </p>
           ) : null}
           <button type="button" className="btn" data-testid="mailbox-refresh" onClick={() => act((client) => client.refreshInbox())}>

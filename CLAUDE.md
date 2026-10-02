@@ -389,6 +389,40 @@ store, where each gate runs); letters and acknowledgements pass through `/srv/ke
 from `HistoryEventType::category`, and entries without a history serialize
 exactly as before. The terminal does not expand `~` inside command arguments.
 
+The everyday commands (`src/cli/{profile,send,inbox,setup,doctor}.rs`: `use`,
+`cache`, `send`, `inbox`, `setup`, `doctor`) add no rule of their own. `send`
+builds the command `deliver send` or `file share` would, and `inbox open` calls
+those commands' own handlers (`deliver_cmd::run`, `file_cmd::run`,
+`org_update::import_any`) and judges nothing; a letter that asks for a decision
+(a request), or an answer, snapshot or device letter, is listed with the command
+that opens it and never guessed. The `profile`, `recent_params`,
+`relay_trust_cache`, `verified_cache` and `inbox_letters` tables hold no secret
+(no passphrase, key, bearer or plaintext). The three caches share one flat
+`db::cache::TTL_MINUTES` (15), are never an input to a signature, quorum,
+custody, approval, freshness or trust decision, and turn off with `--no-cache`,
+`KEYQUORUM_NO_CACHE` or `use --cache off`; the relay trust entry is bound to the
+revocation list, the stored key hash and the certificate expiry, never records a
+failure, and `loadkey` always runs the full challenge. A left-out flag resolves
+explicit argument, then recent parameter, then profile, then the command's own
+behaviour or error, and a command that acts outward or cannot be undone (`send`,
+`--push`, `transfer move`, `revoke`, `expire`) never takes its target from a
+recent parameter. A slot's passphrase is prompted once per command
+(`cli::profile::RunScope`), held in memory and zeroized when it ends. The
+producers (`reissue`, `tree restructure`, `tree countersign`,
+`bridge private create`, `bridge private remove-member`) upload with `--push`
+through `deliver_commit_push`: prove the relay and key, write the envelopes,
+commit, then upload, so a failed commit still removes the files and a failed
+upload leaves the change saved with the files in place and the retry command in
+the error. `deliver send|open|ack`, `file share|receive|ack` and `relay pull`
+are legacy: they behave as before and a stderr note names the replacement. The
+everyday commands are dispatched from `cli::run`, outside `run_in_store`, and
+take boxed option structs, because debug-build test threads have little stack;
+keep new commands out of that frame.
+The lab's mailbox runs `send` and `inbox` with an explicit `--slot` (a slot moves
+between drives, and an explicit flag beats the profile) and keeps the output lines
+it parses (`(delivery <id>)`, `Relay stored letter`, `From X to Y`, `Delivery <id>
+accepted|rejected`) stable.
+
 ## Working conventions
 
 - Keep changes minimal and scoped to what's requested — don't scaffold unrelated

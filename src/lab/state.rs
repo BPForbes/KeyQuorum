@@ -2756,7 +2756,7 @@ impl LabState {
 
     // ----- delivery -------------------------------------------------------
 
-    /// Send a file with `keyquorum deliver send --push`. A quorum-locked
+    /// Send a file with `keyquorum send` (which pushes to the relay). A quorum-locked
     /// file is first opened to a temporary file with `access quorum
     /// --state 1 --output` (so only someone who can open it can send it),
     /// which is removed afterward.
@@ -2808,7 +2808,7 @@ impl LabState {
             }
         };
         lines.push(format!(
-            "keyquorum --db {store} deliver send --file {} --name {} --to {to_label} --as {me_label} --slot {slot} --push",
+            "keyquorum --db {store} send {} --name {} --to {to_label} --as {me_label} --slot {slot}",
             quote(&source.display().to_string()),
             quote(&name)
         ));
@@ -2856,21 +2856,20 @@ impl LabState {
         Ok(Outcome::done(true, message, trace))
     }
 
-    /// Check the relay with `keyquorum relay pull`, then check any new
-    /// acknowledgements with `keyquorum deliver ack` (which needs the
+    /// Check the relay with `keyquorum inbox list`, then check any new
+    /// acknowledgements with `keyquorum inbox open` (which needs the
     /// active user's slot inserted). Returns the trace and how many new
     /// envelopes arrived.
     fn check_mail(&mut self) -> (Vec<TraceStep>, usize) {
         let user = self.actor();
         let (me, store, mail_dir) = (user.id.clone(), user.store(), user.mail_dir());
         let before = self.mail_ids(&mail_dir);
-        let mut line = format!(
-            "keyquorum --db {store} relay pull --output-dir {}",
+        // The store remembers where the last pull stopped, so no cursor is
+        // passed.
+        let line = format!(
+            "keyquorum --db {store} inbox list --dir {}",
             mail_dir.display()
         );
-        if let Some(last) = before.iter().max() {
-            line.push_str(&format!(" --after {last}"));
-        }
         let pull = self.run(&line);
         let mut trace = transcript(&pull, true);
         let arrived = self.mail_ids(&mail_dir).len() - before.len();
@@ -2901,7 +2900,7 @@ impl LabState {
         };
         for id in acks {
             let run = self.run(&format!(
-                "keyquorum --db {store} deliver ack --file {}/{id}.kqpb --slot {slot}",
+                "keyquorum --db {store} inbox open {id} --dir {} --slot {slot}",
                 mail_dir.display()
             ));
             trace.extend(transcript(&run, true));
@@ -2967,7 +2966,7 @@ impl LabState {
         Ok(Outcome::done(true, message, trace))
     }
 
-    /// Open (or reject) a letter with `keyquorum deliver open`, which
+    /// Open (or reject) a letter with `keyquorum inbox open`, which
     /// verifies the sender and pushes a signed answer back.
     pub fn receive(&mut self, relay_id: i64, accept: bool) -> Result<Outcome> {
         let user = self.actor();
@@ -3002,13 +3001,10 @@ impl LabState {
         }
         let slot = self.own_slot_arg().unwrap_or_default();
         let line = format!(
-            "keyquorum --db {store} deliver open --file {}/{relay_id}.kqpb --slot {slot} {} --push-ack",
+            "keyquorum --db {store} inbox open {relay_id} --dir {} --slot {slot} --save-dir {}{}",
             mail_dir.display(),
-            if accept {
-                format!("--save-dir {}", received.display())
-            } else {
-                "--reject".to_string()
-            }
+            received.display(),
+            if accept { "" } else { " --reject" }
         );
         let run = self.run(&line);
         let trace = transcript(&run, true);

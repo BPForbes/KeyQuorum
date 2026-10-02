@@ -122,3 +122,30 @@ fn recent_values_are_not_filled_in_for_outward_commands() {
     let found = recent_or(&conn, "send:to", None, true).unwrap();
     assert_eq!(found, None);
 }
+
+#[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
+#[test]
+fn the_review_starts_as_the_profile_and_asks_when_there_is_none() {
+    let conn = conn_with_profile();
+    assert_eq!(
+        review_identity(&conn, (None, None)),
+        (Some("alice".into()), Some("/usb/alice=alice".into()))
+    );
+    // A label given on the line keeps the profile's device.
+    assert_eq!(
+        review_identity(&conn, (Some("alice.2".into()), None)),
+        (Some("alice.2".into()), Some("/usb/alice=alice.2".into()))
+    );
+    // An explicit slot is never replaced.
+    assert_eq!(
+        review_identity(&conn, (Some("bob".into()), Some("/usb/bob=bob".into()))),
+        (Some("bob".into()), Some("/usb/bob=bob".into()))
+    );
+    // No profile: nothing is guessed, and `:as` / `:slot` ask.
+    let empty = open_in_memory().unwrap();
+    assert_eq!(review_identity(&empty, (None, None)), (None, None));
+    assert_eq!(
+        review_identity(&empty, (Some("bob".into()), None)),
+        (Some("bob".into()), None)
+    );
+}

@@ -22,12 +22,48 @@ complete index of every \code{keyquorum} and \code{keyquorum-device}
 command and subcommand. \code{keyquorum <command> --help} still has the
 full, current flag list for any one command.
 
+\subsection{Quick start}
+
+Most tasks are one command once you have an identity. \code{setup} creates it
+and \code{use} remembers it, so later commands can leave \flag{--as},
+\flag{--slot} and \flag{--url} out; a flag you type always wins.
+
+\begin{lstlisting}
+keyquorum setup --device ./usb --label alice --url https://relay.example.com
+keyquorum doctor --to bob
+keyquorum send report.pdf --to bob
+keyquorum inbox
+keyquorum inbox open
+\end{lstlisting}
+
+\code{setup} creates the device container if it is missing, provisions your
+slot, registers its encryption and signing keys, binds the slot, loads the relay
+key and runs \code{use}. It can be run again; a step that is already done is
+skipped. \code{doctor} reads only and prints, for each missing thing, the
+command that fixes it. \code{use --show} prints the stored defaults, which are
+pointers only (label, slot, container path, relay URL, cache setting): no
+passphrase, key or bearer is stored there.
+
+A left-out flag resolves, in order, from the flag you typed, a recent
+parameter, the stored default, and then the command's own behaviour or error.
+The environment variable \code{KEYQUORUM\_DB} chooses the database when
+\flag{--db} is not given.
+
+Three short-lived caches are fresh for 15 minutes: parameters you just used (for
+the same command only, and never a recipient or any target of an outward or
+destructive command), a relay identity check that just passed (never a failure,
+and \code{loadkey} always runs the full check), and facts \code{doctor} already
+looked up. Every reuse is announced on standard error. Turn them off with
+\flag{--no-cache}, \code{KEYQUORUM\_NO\_CACHE=1} or \code{use --cache off};
+\code{cache clear} empties them.
+
 \subsection{The local database}
 
 Most commands read and write a local SQLite database that holds your split
 trees, registered keys, and (for a relay-connected identity) a sealed copy
 of your mailbox bearer. Pass \flag{--db} to point at a specific file; when
-omitted, commands use a default database in the current directory. Running
+omitted, commands use \code{KEYQUORUM\_DB} if it is set, and otherwise a
+default database in the current directory. Running
 the same commands against different \flag{--db} files is how one machine
 can hold several independent identities (for example \file{alice.sqlite}
 and \file{bob.sqlite} in the walkthroughs throughout this manual).

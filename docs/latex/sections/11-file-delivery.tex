@@ -1,12 +1,35 @@
 \section{Sending a file}
 
-\code{deliver} seals one file to another label. You sign it with your
+\code{send} seals one file to another label. You sign it with your
 signing key and seal it to the encryption key your store has registered for
 the recipient. The recipient opens it: that step verifies your signature
 against the signing key their store holds for you. They then answer with a
 signed accept or reject, sealed back to you. Letters and answers are
-ordinary \file{.kqpb} envelopes that \code{relay push} / \code{relay pull}
-carry.
+ordinary \file{.kqpb} envelopes carried by the relay.
+
+\begin{lstlisting}
+keyquorum send report.pdf --to M.A
+keyquorum inbox
+keyquorum inbox open
+\end{lstlisting}
+
+The first line is yours: the letter is uploaded when a relay is set up, and
+otherwise written to \file{./outbox} (\flag{--offline} or \flag{--output-dir}
+force that). The next two are the recipient's: \code{inbox} lists what is
+waiting, and \code{inbox open} opens each letter, keeps the file in
+\file{./received}, and uploads the signed answer. Run \code{inbox open} again as
+the sender to read the answer. \flag{--reject} refuses a file and says so in the
+answer; \flag{--ack-dir} writes answers to a directory instead of uploading them.
+
+\code{inbox} keeps the letters it pulled in \file{./inbox} (\flag{--dir}), remembers
+where it stopped, and opens each letter once. It opens file deliveries, answers
+to your deliveries, tracked files, and bridge and organization updates. A letter
+that asks for a decision (a file or change request), an answer to a request, a
+history snapshot, an acknowledgement of a tracked file and a device letter are
+listed with the command that opens them and left for a person.
+
+The single-purpose commands still work as they did and print a note on standard
+error naming what replaces them; they will be retired.
 
 \begin{lstlisting}
 keyquorum deliver send --file report.pdf --to M.A --as M.S.1 \
@@ -14,17 +37,8 @@ keyquorum deliver send --file report.pdf --to M.A --as M.S.1 \
 keyquorum --db david.sqlite relay pull --output-dir ./mail
 keyquorum --db david.sqlite deliver open --file ./mail/7.kqpb \
   --slot ./usb=M.A --save-dir ./received --push-ack
-
-# The acknowledgement is sealed back to the sender -- pull it into the
-# sender's own store (a different mailbox than David's ./mail above)
-# before answering it.
-keyquorum relay pull --output-dir ./mail
 keyquorum deliver ack --file ./mail/8.kqpb --slot ./usb=M.S.1
 \end{lstlisting}
-
-\flag{--output-dir} / \flag{--ack-dir} write the envelope to disk instead of
-(or as well as) \flag{--push} / \flag{--push-ack}. \flag{--reject} refuses
-the file and says so in the answer.
 
 To send a file whose revisions and signatures should travel with it, and
 where an unsigned newer edit must never go out, track it instead and use

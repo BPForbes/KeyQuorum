@@ -3438,6 +3438,7 @@ fn review_interactive(
     let view = review_view_of(conn, kqtf)?.ok_or_else(|| {
         usage("nothing to review: the history has neither two heads nor one merge head")
     })?;
+    let who = super::profile::review_identity(conn, who);
     super::review_tui::run(view, who, &mut |action, as_label, slot| {
         review_action(conn, kqtf, action, as_label, slot)
     })

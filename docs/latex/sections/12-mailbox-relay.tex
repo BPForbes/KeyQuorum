@@ -14,6 +14,7 @@ export KEYQUORUM_RELAY_URL=https://relay.example.com
 # Load once; omit the key so it is prompted (stays out of shell history).
 keyquorum loadkey --url https://relay.example.com
 keyquorum relay push --dir ./bridge-packages
+keyquorum inbox open
 keyquorum relay pull --output-dir ./inbox
 keyquorum --db alice.sqlite relay pull --import --share-file alice.key
 # --api-key still works for scripts and is stored after a successful check.

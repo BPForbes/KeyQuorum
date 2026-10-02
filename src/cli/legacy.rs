@@ -11,6 +11,7 @@ pub(crate) fn notice(old: &str, instead: &str) {
 }
 
 pub(crate) const SEND: &str = "keyquorum send <file> --to <label>";
-pub(crate) const OPEN: &str = "keyquorum inbox open";
+pub(crate) const OPEN: &str =
+    "keyquorum inbox open (it fetches letters from your relay, opens them and posts the answers in one step)";
 pub(crate) const PULL: &str =
     "keyquorum inbox (to list) or keyquorum inbox open (to open and answer)";

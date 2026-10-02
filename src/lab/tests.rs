@@ -712,7 +712,7 @@ fn an_unknown_recipient_is_a_usage_error_from_the_cli() {
     let mut state = lab();
     let (outcome, output) = terminal::run(
         &mut state,
-        "keyquorum deliver send --file /srv/keyquorum/public/company-handbook.txt --to M.Z --as M.S.1 --slot /media/alice-usb=M.S.1 --push",
+        "keyquorum send /srv/keyquorum/public/company-handbook.txt --to M.Z --as M.S.1 --slot /media/alice-usb=M.S.1",
     )
     .unwrap();
     assert!(!outcome.ok);

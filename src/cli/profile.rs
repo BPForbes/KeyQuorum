@@ -179,6 +179,23 @@ pub(crate) fn resolve_identity(
     })
 }
 
+/// Who the interactive review starts as: what was given, and what is missing
+/// from the profile. With no profile the review asks for `:as` and `:slot`.
+#[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
+pub(crate) fn review_identity(
+    conn: &Connection,
+    who: (Option<String>, Option<String>),
+) -> (Option<String>, Option<String>) {
+    let (label, slot) = who;
+    if slot.is_some() {
+        return (label, slot);
+    }
+    match resolve_identity(conn, label.as_deref(), None) {
+        Ok(identity) => (label.or(Some(identity.label)), Some(identity.slot)),
+        Err(_) => (label, None),
+    }
+}
+
 /// The label and slot of someone who signs: from `--slot`/`--as` and the
 /// profile, or, with a `--signing-key-file`, just the label (there is no slot).
 pub(crate) fn resolve_signer(
