@@ -1,11 +1,9 @@
-# Legacy checks: the broad `--all-features` gates and the tests of deprecated
-# verbs (`--features legacy-tests`) that the everyday workflows no longer run.
+# Legacy checks: the broad `--all-features` build and test run, which includes
+# the tests of deprecated verbs behind the `legacy-tests` feature.
 #
-# Every job here is SKIPPED by default. A pull request shows them as skipped
-# unless it carries the `legacy` label; anyone can also run them on demand from
-# Actions -> Legacy checks -> Run workflow. Nothing here publishes or notifies:
-# deploying the lab and telling the portfolio stay in deploy-lab.yml and
-# notify-portfolio.yml.
+# The job is SKIPPED by default. A pull request shows it as skipped unless it
+# carries the `legacy` label; anyone can also run it from Actions -> Legacy
+# checks -> Run workflow. It never publishes or notifies.
 
 name: Legacy checks
 
@@ -25,38 +23,11 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  legacy-compile:
-    name: legacy compile
+  legacy:
+    name: legacy
     if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'legacy')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --locked --all-targets --all-features
-
-  legacy-setup:
-    name: legacy setup
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'legacy')
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Legacy-verb tests for setup, send and inbox
-        run: cargo test --locked --features provider,lab,tui,legacy-tests --lib -- cli::tests::legacy cli::tests::send cli::tests::inbox cli::tests::setup
-
-  legacy-test:
-    name: legacy test
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'legacy')
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
@@ -65,16 +36,3 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - run: cargo nextest run --locked --all-targets --all-features --no-fail-fast
-
-  legacy-deploy:
-    name: legacy deploy gate
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'legacy')
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-      - name: The native gate deploy-lab.yml used before it narrowed its features
-        run: cargo test --locked --all-targets --all-features
