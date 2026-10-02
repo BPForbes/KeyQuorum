@@ -22,6 +22,7 @@ use crate::{
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use env::{errln, out, outln};
+use rand::RngCore;
 use rusqlite::Connection;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -1264,10 +1265,17 @@ fn deliver_commit_push(
         None
     };
     let staged = delivery.output_dir.is_none();
-    let dir = delivery
-        .output_dir
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("outbox"));
+    let dir = match &delivery.output_dir {
+        Some(dir) => dir.clone(),
+        None => {
+            // A failed upload must have a retry target containing only this
+            // operation. Reusing the shared outbox could send unrelated
+            // offline letters when the person follows the recovery command.
+            let mut id = [0u8; 8];
+            rand::rngs::OsRng.fill_bytes(&mut id);
+            PathBuf::from("outbox").join(format!("retry-{}", hex::encode(id)))
+        }
+    };
     let paths = deliver_then_commit(&dir, packages, commit)?;
     let Some((url, api_key)) = auth else {
         return Ok(Delivered {
@@ -2645,43 +2653,51 @@ fn authenticate_relay_for_stored_key(conn: &Connection, url: &str, key_hash: &st
     Ok(())
 }
 
-fn resolve_relay_url(
+fn configured_relay_url(
     conn: &Connection,
     explicit: Option<String>,
     scope: relay::ApiKeyScope,
-) -> Result<String> {
+) -> Result<Option<String>> {
     if let Some(url) = explicit.filter(|s| !s.is_empty()) {
         let url = db::relay_credential::normalize_url(&url);
         relay::validate_relay_url(&url)?;
-        return Ok(url);
+        return Ok(Some(url));
     }
     match env::var("KEYQUORUM_RELAY_URL") {
         Ok(url) if !url.is_empty() => {
             let url = db::relay_credential::normalize_url(&url);
             relay::validate_relay_url(&url)?;
-            Ok(url)
+            Ok(Some(url))
         }
         _ => {
-            let stored = db::relay_credential::get_for_scope(conn, scope.as_str())?;
             let preferred = db::profile::get(conn, db::profile::DEFAULT_RELAY_URL)?;
-            if let Some(url) = preferred.filter(|_| stored.len() != 1) {
+            if let Some(url) = preferred {
                 relay::validate_relay_url(&url)?;
-                return Ok(url);
+                return Ok(Some(url));
             }
+            let stored = db::relay_credential::get_for_scope(conn, scope.as_str())?;
             match stored.as_slice() {
                 [one] => {
                     relay::validate_relay_url(&one.relay_url)?;
-                    Ok(one.relay_url.clone())
+                    Ok(Some(one.relay_url.clone()))
                 }
-                [] => Err(Error::RelayRequest(
-                    "relay URL required (--url or KEYQUORUM_RELAY_URL)".into(),
-                )),
+                [] => Ok(None),
                 _ => Err(Error::RelayRequest(
                     "multiple stored relay URLs; pass --url".into(),
                 )),
             }
         }
     }
+}
+
+fn resolve_relay_url(
+    conn: &Connection,
+    explicit: Option<String>,
+    scope: relay::ApiKeyScope,
+) -> Result<String> {
+    configured_relay_url(conn, explicit, scope)?.ok_or_else(|| {
+        Error::RelayRequest("relay URL required (--url or KEYQUORUM_RELAY_URL)".into())
+    })
 }
 
 /// Every device letter for this pull key, following `next_after` until the

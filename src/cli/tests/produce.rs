@@ -83,6 +83,9 @@ fn without_push_nothing_is_uploaded() {
 #[test]
 fn a_failed_upload_leaves_the_change_saved_the_files_in_place_and_says_how_to_finish() {
     let mut env = org_on_a_relay();
+    env.fs
+        .write_new(Path::new("outbox/unrelated.kqpb"), b"unrelated")
+        .unwrap();
     env.relay.as_mut().unwrap().fail_uploads = true;
     let (result, _) = env.keyquorum(&format!("keyquorum {DB} {CREATE} --push"));
     let message = result.unwrap_err().to_string();
@@ -91,15 +94,27 @@ fn a_failed_upload_leaves_the_change_saved_the_files_in_place_and_says_how_to_fi
         "{message}"
     );
     assert!(
-        message.contains("keyquorum relay push --dir outbox"),
+        message.contains("keyquorum relay push --dir outbox/retry-"),
         "{message}"
     );
     assert!(!bridges(&mut env).contains("(no private bridges)"), "saved");
-    assert_eq!(staged(&env).len(), 4, "kept for the retry");
+    assert!(env.fs.exists(Path::new("outbox/unrelated.kqpb")));
+
+    let retry_dir = message
+        .split("keyquorum relay push --dir ")
+        .nth(1)
+        .and_then(|tail| tail.split('`').next())
+        .expect("retry directory in error");
+    assert_eq!(
+        env.fs.list(Path::new(retry_dir)).unwrap().len(),
+        4,
+        "only this operation is kept for the retry"
+    );
 
     env.relay.as_mut().unwrap().fail_uploads = false;
-    let out = ok(&mut env, "relay push --dir outbox");
+    let out = ok(&mut env, &format!("relay push --dir {retry_dir}"));
     assert!(out.contains("-> id"), "{out}");
+    assert!(env.fs.exists(Path::new("outbox/unrelated.kqpb")));
 }
 
 #[test]

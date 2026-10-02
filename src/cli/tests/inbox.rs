@@ -203,6 +203,41 @@ fn send_without_a_relay_writes_to_the_outbox_and_offline_forces_it() {
 }
 
 #[test]
+fn send_reports_invalid_relay_configuration_instead_of_going_offline() {
+    let mut env = two_people_on_a_relay();
+    let (result, out) = env.keyquorum(&format!(
+        "{ALICE} send /home/alice/note.txt --to bob --url not-a-url"
+    ));
+    assert!(result.is_err());
+    assert!(!out.contains("Wrote outbox/"), "{out}");
+    assert!(!stderr(&env).contains("no relay is set up"));
+}
+
+#[test]
+fn the_profile_relay_wins_over_a_single_credential_for_another_relay() {
+    let mut env = two_people_on_a_relay();
+    run(
+        &mut env,
+        &format!("{ALICE} use --url https://preferred.test"),
+    );
+    let conn = env.store("/home/alice/keyquorum.sqlite");
+    assert_eq!(
+        super::super::configured_relay_url(conn, None, ApiKeyScope::InboxPush).unwrap(),
+        Some("https://preferred.test".into())
+    );
+}
+
+#[test]
+fn letter_paths_are_namespaced_by_relay() {
+    let dir = Path::new("inbox");
+    let first = super::super::inbox::letter_path(dir, "https://one.test", 1);
+    let second = super::super::inbox::letter_path(dir, "https://two.test", 1);
+    assert_ne!(first, second);
+    assert_eq!(first.file_name().unwrap(), "1.kqpb");
+    assert_eq!(second.file_name().unwrap(), "1.kqpb");
+}
+
+#[test]
 fn a_tracked_file_goes_through_file_share_not_deliver() {
     let mut env = two_people_on_a_relay();
     // The magic is what picks the sender; this is not a valid container, so

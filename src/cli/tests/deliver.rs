@@ -227,6 +227,29 @@ fn a_recent_letter_is_reused_for_the_same_command_until_it_goes_stale() {
 }
 
 #[test]
+fn pushing_an_acknowledgement_never_reuses_a_recent_letter() {
+    let mut env = two_people();
+    use_defaults(&mut env);
+    env.keyquorum(&format!(
+        "{ALICE_DB} deliver send --file /home/alice/note.txt --to bob --output-dir /outbox"
+    ))
+    .0
+    .unwrap();
+    let letter = only_file(&env, "/outbox");
+    env.keyquorum(&format!(
+        "{BOB_DB} deliver open --file {letter} --reject --ack-dir /acks"
+    ))
+    .0
+    .unwrap();
+
+    let (result, _) = env.keyquorum(&format!("{BOB_DB} deliver open --reject --push-ack"));
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("--file is required"));
+}
+
+#[test]
 fn no_cache_ignores_a_recent_letter() {
     let mut env = two_people();
     use_defaults(&mut env);

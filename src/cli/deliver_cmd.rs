@@ -160,7 +160,7 @@ pub fn run(conn: &Connection, command: DeliverCommand) -> Result<()> {
                 conn,
                 "deliver-open:file",
                 file.map(|f| f.display().to_string()),
-                false,
+                push_ack,
             )?
             .map(PathBuf::from)
             .ok_or_else(|| usage("--file is required"))?;
