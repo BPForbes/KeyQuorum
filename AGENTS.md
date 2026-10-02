@@ -482,3 +482,5 @@ files, so treat it as security-sensitive:
 
 This repo also carries `CLAUDE.md` (Claude) and `.cursorrules` (Cursor). Keep guidance
 consistent across these files when updating one.
+
+- Legacy checks: tests of deprecated verbs (`deliver`, `file receive|ack`, `relay pull` spellings) sit behind the `legacy-tests` feature and the `legacy` workflow (`.github/workflows/legacy.yml`), whose jobs are skipped by default and run on the `legacy` PR label or a manual dispatch. `--all-features` includes them; the everyday CI gate is `--features provider,lab,tui`.

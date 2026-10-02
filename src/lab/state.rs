@@ -3116,24 +3116,44 @@ impl LabState {
         trace
     }
 
-    fn mail_ids(&self, dir: &Path) -> Vec<i64> {
-        self.vm()
-            .list(dir)
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|path| {
-                path.file_name()?
+    /// Every pulled letter under `dir` with its path. `inbox list` keeps each
+    /// relay's letters in a subdirectory named for the relay; the lab has one
+    /// relay, so it looks one level down (and at `dir` itself).
+    fn mail_files(&self, dir: &Path) -> Vec<(i64, PathBuf)> {
+        let vm = self.vm();
+        let mut found = Vec::new();
+        for path in vm.list(dir).unwrap_or_default() {
+            let children = if vm.is_file(&path) {
+                vec![path]
+            } else {
+                vm.list(&path).unwrap_or_default()
+            };
+            found.extend(children.into_iter().filter_map(|path| {
+                let id = path
+                    .file_name()?
                     .to_str()?
                     .strip_suffix(".kqpb")?
                     .parse()
-                    .ok()
-            })
-            .collect()
+                    .ok()?;
+                Some((id, path))
+            }));
+        }
+        found
+    }
+
+    fn mail_ids(&self, dir: &Path) -> Vec<i64> {
+        self.mail_files(dir).into_iter().map(|(id, _)| id).collect()
+    }
+
+    fn mail_path(&self, dir: &Path, id: i64) -> Option<PathBuf> {
+        self.mail_files(dir)
+            .into_iter()
+            .find_map(|(found, path)| (found == id).then_some(path))
     }
 
     /// The public kind byte in an envelope's header (not its contents).
     fn letter_kind(&self, dir: &Path, id: i64) -> Option<u8> {
-        let bytes = self.vm().read(&dir.join(format!("{id}.kqpb"))).ok()?;
+        let bytes = self.vm().read(&self.mail_path(dir, id)?).ok()?;
         envelope::kind(&bytes).ok()
     }
 
@@ -3526,7 +3546,7 @@ impl LabState {
                         .into(),
                         bytes: self
                             .vm()
-                            .read(&mail_dir.join(format!("{id}.kqpb")))
+                            .read(&self.mail_path(&mail_dir, id).unwrap_or_default())
                             .map(|bytes| bytes.len())
                             .unwrap_or(0),
                         from: opened.map(|opened| self.describe_label(&opened.from)),

@@ -295,6 +295,7 @@ fn a_tracked_file_goes_through_file_share_not_deliver() {
         .contains("--revision applies only"));
 }
 
+#[cfg(feature = "legacy-tests")]
 #[test]
 fn legacy_commands_say_what_replaces_them_on_stderr_only() {
     let mut env = two_people_on_a_relay();

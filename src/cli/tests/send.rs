@@ -139,8 +139,9 @@ fn unlock_flags_without_a_quorum_file_are_refused() {
         .contains("apply only with --quorum-file"));
 }
 
+#[cfg(feature = "legacy-tests")]
 #[test]
-fn the_snapshot_verbs_have_one_home_and_the_old_spellings_say_so() {
+fn legacy_snapshot_spellings_point_to_the_one_shot_verbs() {
     use super::file::{ok as file_ok, org, track, KQTF};
     let mut env = org();
     track(&mut env, "M.A", "M.A");
