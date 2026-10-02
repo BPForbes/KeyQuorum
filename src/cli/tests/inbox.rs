@@ -262,6 +262,8 @@ fn an_unhandled_legacy_letter_remains_openable_after_namespacing() {
         env.fs.read(Path::new("received/note.txt")).unwrap(),
         b"lunch at noon"
     );
+    assert!(env.fs.exists(&namespaced), "legacy letter was migrated");
+    assert!(!env.fs.exists(Path::new("inbox/1.kqpb")));
 }
 
 #[test]
