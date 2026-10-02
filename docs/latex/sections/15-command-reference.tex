@@ -207,7 +207,10 @@ command, and is never documented outside the crate's own source.
 \code{send} & Seal a file (or a tracked file's newest trusted revision) to a
   registered label and upload it, or write it to \file{./outbox}. \flag{--quorum-file} sends a quorum-protected file unlocked in memory. \\
 \code{inbox} & Pull what is waiting for you from the relay and list it.
-  \code{inbox open} opens each letter and posts the signed answer. \\
+  \code{inbox open} opens each letter and posts the signed answer;
+  with a letter id it also takes \flag{--into}/\flag{--out} (a tracked file),
+  \flag{--file} (the copy an acknowledgement, request answer or snapshot
+  concerns) and \flag{--accept}/\flag{--decline} (a request). \\
 \code{deliver send} & (Legacy; use \code{send}.) Seal a file to a registered
   label, signed with your signing key. \\
 \code{deliver open} & (Legacy; use \code{inbox open}.) Open a letter addressed to you: verify the sender,

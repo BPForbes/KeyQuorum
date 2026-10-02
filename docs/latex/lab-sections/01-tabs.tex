@@ -83,8 +83,10 @@ seeded state.}
 Everything that is not the hardware-key quorum tree or a file: locking a
 note with a password (and optionally a PIN), exporting a file or credential
 as a portable sealed bundle, minting a time-limited share link,
-creating a key on an inserted drive and registering it as a new leaf in one
-step (\textbf{Create and register a new leaf}; the separate provision and
+\textbf{Check my setup} (\code{keyquorum doctor} for you, with
+\textbf{Use my current drive} and \textbf{Bind my slot} for the fixes it
+names), creating a key on an inserted drive and registering it as a new leaf in
+one step (\textbf{Create and register a new leaf}; the separate provision and
 register forms stay under \emph{Separate steps}), signing or verifying with a private sign bridge you belong to, and,
 further down, read-only device logs and relay counters for the in-process
 mailbox this lab runs against.
@@ -120,7 +122,9 @@ own store and their own drive's slot; each button runs one real
   revision id stay the same.
   \item \textbf{Share file} with another person. The line above the button
   says which revision would go --- the head, or the last trusted revision
-  when the head is pending. The recipient \textbf{Accept}s or
+  when the head is pending. The letter, and every answer, travels through
+  the relay (\code{send}, then \code{inbox open}); no shared folder is
+  involved. The recipient \textbf{Accept}s or
   \textbf{Refuse}s the letter (into their own copy); the sender's copy
   records the answer by itself (\code{file ack}) when the sender is next
   signed in with their USB inserted. \textbf{Record the answer} appears only

@@ -372,13 +372,13 @@ with `fileId`, `revisionId`, `generatedLabel`, `historyRoot`,
 because tutorial gates read `activity[0]`. The Activity page's tracked-file
 buttons (track, check in signed or unsigned, sign, countersign, merge, review, resolve,
 verify, share, receive or refuse, record the answer, ask for a file or a change
-(`file request`, `--change`), accept or decline a request (`open-request` then `answer-request`),
-record a request's answer (`open-answer`), expire, view a revision,
+(`file request`, `--change`), accept or decline a request (`inbox open <id> --accept|--decline`),
+record a request's answer (`inbox open <id> --file`), expire, view a revision,
 diff, export and check a snapshot, import another copy, link or unlink a quorum
 or password gate) each run one `keyquorum file` command as the active person against their own store with their own slot
 (a quorum gate is linked in the org store and a password gate in its owner's
-store, where each gate runs); letters and acknowledgements pass through `/srv/keyquorum/tracked/letters` and
-`acks`. `Snapshot::tracked_files` judges revisions with that store's
+store, where each gate runs); letters and answers travel through the relay (`send`, then `inbox open <id>` with
+`--into`, `--out`, `--file`, `--accept` or `--decline`), never a shared folder. `Snapshot::tracked_files` judges revisions with that store's
 `StoreTrust`; the lab adds no gate or rule of its own, event categories come
 from `HistoryEventType::category`, and entries without a history serialize
 exactly as before. The terminal does not expand `~` inside command arguments.
@@ -389,9 +389,13 @@ The everyday commands (`src/cli/{profile,send,inbox,setup,doctor}.rs`: `use`,
 `cache`, `send`, `inbox`, `setup`, `doctor`) add no rule of their own. `send`
 builds the command `deliver send` or `file share` would, and `inbox open` calls
 those commands' own handlers (`deliver_cmd::run`, `file_cmd::run`,
-`org_update::import_any`) and judges nothing; a letter that asks for a decision
-(a request), or an answer, snapshot or device letter, is listed with the command
-that opens it and never guessed. The `profile`, `recent_params`,
+`org_update::import_any`) and judges nothing; `inbox open <id>` takes `--into`/`--out`
+(a tracked file), `--file` (the copy an acknowledgement, request answer, request or snapshot
+concerns) and `--accept`/`--decline` (a request); the copy is always named by the person, never chosen
+from the letter (its file id is the sender's claim, and the handlers refuse a wrong copy). The
+sweep (`inbox open` with no id) leaves acknowledgements, requests and request answers, and device
+letters, listed with the command that opens them. `inbox --api-key` is the pull key; answers upload with
+the stored push key. The `profile`, `recent_params`,
 `relay_trust_cache`, `verified_cache` and `inbox_letters` tables hold no secret
 (no passphrase, key, bearer or plaintext). The three caches share one flat
 `db::cache::TTL_MINUTES` (15), are never an input to a signature, quorum,
@@ -420,10 +424,11 @@ it parses (`(delivery <id>)`, `Relay stored letter`, `From X to Y`, `Delivery <i
 accepted|rejected`) stable. Switching user, inserting a drive and receiving a letter
 settle mail in the lab (`LabState::settle_mail_and_answers`: `inbox list`, `inbox open`
 for answers, then `file ack` / `file open-answer` for the tracked files and requests
-the person sent, only while their slot is in); the lab's quorum-file send still
-unlocks to a temporary file because the file and the sender's keys live in
-different stores. `send --quorum-file` unlocks through the same
-`unlock_quorum_file` as `access quorum --state 1`.
+the person sent, only while their slot is in); a quorum file is sent by one
+`send --quorum-file` run against the org store (it holds the file's shares and its own push key),
+unlocking through the same `unlock_quorum_file` as `access quorum --state 1`, so nothing is written to disk.
+Each seeded person has `use` and `device bind` run for their own slot (re-run for the owner by
+`move_slot`), and the lab can run `doctor`, `use` and `device bind` for the active person.
 
 - Keep changes minimal and scoped to what's asked. Don't add speculative abstractions,
   unrelated tooling, or unfinished scaffolding.

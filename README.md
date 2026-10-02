@@ -692,6 +692,13 @@ keyquorum inbox open                          # M.A: save it and answer
 keyquorum inbox open                          # you: read the answer
 ```
 
+Tracked-file letters use the same two commands. `inbox open ID` takes the copy a letter concerns as an
+option, because a letter never picks a local file (its file id is the sender's claim): `--into FILE` merges a
+tracked file into your copy and `--out FILE` writes a new one, `--file FILE` records an acknowledgement or a
+request answer in your copy (or compares a history snapshot with it), and `--accept` or `--decline` answers a
+request. These options need a letter id. `inbox` uses your stored relay keys; `--api-key` there is a pull key,
+and answers upload with your stored push key.
+
 A quorum-protected file goes with `send --quorum-file ID` (plus `--unlock-slot`,
 `--unlock-share-file` and `--approve`, the same shares `access quorum --state 1`
 takes): it is unlocked in memory, never written to disk, and a refused unlock

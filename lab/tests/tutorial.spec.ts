@@ -13,7 +13,7 @@ test.describe("guided tutorials", () => {
     await page.getByRole("button", { name: "Tutorials & Documentation" }).click();
 
     for (const [heading, workflowCount] of [
-      ["Identities & drives", 5],
+      ["Identities & drives", 6],
       ["Files & unlocking", 5],
       ["Mailbox: sending & receiving", 3],
       ["File history", 5],
@@ -419,6 +419,23 @@ test.describe("guided tutorials", () => {
     await expect(page.getByRole("heading", { name: "The hand-off is in the history" })).toBeVisible({ timeout: 3_000 });
     await page.getByRole("button", { name: "Finish" }).click();
     await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible();
+  });
+
+  test("the check-your-setup module reads doctor, fixes the drive and reads it again", async ({ page }) => {
+    await loadLab(page);
+    await startModule(page, "Check your setup");
+    await expect(page.getByRole("heading", { name: "Try it: see what is missing" })).toBeVisible();
+    // The step itself unplugs Alice's USB, so doctor has something to say.
+    await expect(page.getByTestId("active-user-name")).toHaveText("Alice");
+    await expect(page.getByRole("button", { name: "Insert Alice's USB" })).toBeVisible();
+
+    // A green check does not satisfy "see what is missing".
+    await page.getByTestId("doctor-run").click();
+    await expect(page.getByRole("heading", { name: "Try it: plug the drive back in" })).toBeVisible({ timeout: 3_000 });
+    await page.getByRole("button", { name: "Insert Alice's USB" }).click();
+    await expect(page.getByRole("heading", { name: "Try it: check again" })).toBeVisible({ timeout: 3_000 });
+    await page.getByTestId("doctor-run").click();
+    await expect(page.getByRole("heading", { name: "Module complete" })).toBeVisible({ timeout: 3_000 });
   });
 
   test("history part 3 signs a merge and reviews a conflict", async ({ page }) => {

@@ -132,6 +132,30 @@ test.describe("desktop lab", () => {
     await expect(page.locator("[data-testid^=sent-]")).toContainText("Acknowledged by recipient");
   });
 
+  test("Check my setup runs doctor, names the fix, and goes green once it is done", async ({ page }) => {
+    await loadLab(page);
+    const doctor = page.getByTestId("doctor");
+    await doctor.getByTestId("doctor-run").click();
+    await expect(doctor.getByTestId("doctor-result")).toContainText("Everything checks out");
+    await expect(doctor.getByTestId("doctor-result")).toContainText("acting as M.S.1");
+
+    // Alice's USB is out: doctor says so and names what to do.
+    await page.getByRole("button", { name: "Eject Alice's USB" }).click();
+    await doctor.getByTestId("doctor-run").click();
+    await expect(doctor.getByTestId("doctor-result")).toContainText("cannot be opened");
+    await expect(doctor.getByTestId("doctor-result")).toContainText("plug the device in");
+
+    await page.getByRole("button", { name: "Insert Alice's USB" }).click();
+    await doctor.getByTestId("doctor-run").click();
+    await expect(doctor.getByTestId("doctor-result")).toContainText("Everything checks out");
+
+    // The fixes it names are one button each, and each is a real command.
+    await doctor.getByTestId("doctor-use").click();
+    await expect(doctor.getByTestId("doctor-result")).toContainText("keyquorum --db /home/alice/keyquorum.sqlite use --device");
+    await doctor.getByTestId("doctor-bind").click();
+    await expect(doctor.getByTestId("doctor-result")).toContainText("device bind");
+  });
+
   test("parent approval needs the manager's drive to sign the unlock", async ({ page }) => {
     await loadLab(page);
     await page.getByRole("button", { name: "Eject Sarah's USB" }).click();

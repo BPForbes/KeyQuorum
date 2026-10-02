@@ -128,6 +128,18 @@ export class LabClient {
     return this.call(this.lab.register_leaf(driveId, slotLabel, parentLabel));
   }
 
+  doctor(): ActionResult {
+    return this.call(this.lab.doctor());
+  }
+
+  useCurrentDrive(): ActionResult {
+    return this.call(this.lab.use_current_drive());
+  }
+
+  bindSlot(): ActionResult {
+    return this.call(this.lab.bind_slot());
+  }
+
   createAndRegisterLeaf(driveId: string, slotLabel: string, parentLabel: string, passphrase: string): ActionResult {
     return this.call(this.lab.create_and_register_leaf(driveId, slotLabel, parentLabel, passphrase));
   }

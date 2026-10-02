@@ -431,6 +431,58 @@ export const TUTORIALS: TutorialModule[] = [
     ],
   },
   {
+    id: "check-setup",
+    category: "identities",
+    title: "Check your setup",
+    summary: "Ask doctor what is missing for you, fix it with one action, and check again.",
+    steps: [
+      {
+        title: "Try it: see what is missing",
+        body: (
+          <p>
+            You are Alice, and her USB has just been unplugged. In <strong>Security</strong> press{" "}
+            <strong>Check my setup</strong>. <code>keyquorum doctor</code> only reads: it lists what works and, for
+            each thing that does not, the command that fixes it.
+          </p>
+        ),
+        tab: "security",
+        target: () => ['[data-testid="doctor-run"]', '[data-testid="doctor"]'],
+        ensure: composeEnsures(ensureActiveUser("alice"), ensureDriveDisconnected("alice")),
+        requiredKind: "doctor",
+        isDone: (_snapshot, latest) =>
+          latest?.kind === "doctor" && latest.trace.some((step) => step.text.includes("cannot be opened")),
+      },
+      {
+        title: "Try it: plug the drive back in",
+        body: (
+          <p>
+            Doctor said to plug the device in. On the <strong>USB devices</strong> tab press{" "}
+            <strong>Insert Alice&rsquo;s USB</strong>.
+          </p>
+        ),
+        tab: "usb",
+        target: () => ['[data-testid="drive-alice"]'],
+        requiredKind: "usb",
+        isDone: (snapshot) => snapshot.drives.find((drive) => drive.id === "alice")?.connected === true,
+      },
+      {
+        title: "Try it: check again",
+        body: (
+          <p>
+            Press <strong>Check my setup</strong> again. It is the same command, so the only thing that changed is
+            your setup. If it ever names a default or a binding, the buttons beside it (<strong>Use my current drive</strong>,{" "}
+            <strong>Bind my slot</strong>) run those fixes.
+          </p>
+        ),
+        tab: "security",
+        target: () => ['[data-testid="doctor-run"]', '[data-testid="doctor"]'],
+        requiredKind: "doctor",
+        isDone: (_snapshot, latest) =>
+          latest?.kind === "doctor" && latest.trace.some((step) => step.text.includes("Everything checks out")),
+      },
+    ],
+  },
+  {
     id: "identity-enrollment",
     category: "identities",
     title: "Provision & register a leaf",

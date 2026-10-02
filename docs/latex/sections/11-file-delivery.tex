@@ -28,6 +28,16 @@ that asks for a decision (a file or change request), an answer to a request, a
 history snapshot, an acknowledgement of a tracked file and a device letter are
 listed with the command that opens them and left for a person.
 
+Tracked-file letters use the same two commands. \code{inbox open ID} takes the
+copy a letter concerns as an option, because a letter never picks a local file
+(its file id is only the sender's claim, and the handlers refuse a copy that
+does not match): \flag{--into} merges a tracked file into your copy,
+\flag{--out} writes a new one, \flag{--file} records an acknowledgement or a
+request answer in your copy (or compares a history snapshot with it), and
+\flag{--accept} or \flag{--decline} answers a request. These options belong to
+one letter, so they need its id; the sweep leaves acknowledgements, requests
+and request answers listed with the command that opens them.
+
 A quorum-protected file is sent without being unlocked to disk first:
 \code{send --quorum-file ID} takes the shares \code{access quorum --state 1}
 takes (\flag{--unlock-slot}, \flag{--unlock-share-file}, \flag{--approve}),

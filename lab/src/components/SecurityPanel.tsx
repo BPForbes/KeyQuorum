@@ -2,6 +2,7 @@ import { useId, useState } from "react";
 import type { Act } from "../App";
 import type { ActionResult, FileShareView, PasswordFileView, Snapshot } from "../api/types";
 import { formatUtc } from "../explorerTypes";
+import { Trace } from "./ActivityPanel";
 import { FileViewer } from "./FileViewer";
 
 /** Lock a note as a password-protected file with a password (and optional PIN) the person types themselves. */
@@ -373,6 +374,39 @@ function ShareLinks({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
   );
 }
 
+/**
+ * `keyquorum doctor` for the active person, and the two commands it most often
+ * tells them to run (`use`, `device bind`). Each button is one real command.
+ */
+function CheckSetup({ act }: { act: Act }) {
+  const [result, setResult] = useState<ActionResult | null>(null);
+  const run = (call: (client: Parameters<Parameters<Act>[0]>[0]) => ActionResult) => {
+    const outcome = act(call);
+    if (outcome) setResult(outcome);
+  };
+  return (
+    <div className="check-setup">
+      <div className="button-row">
+        <button type="button" className="btn btn-primary" data-testid="doctor-run" onClick={() => run((client) => client.doctor())}>
+          Check my setup
+        </button>
+        <button type="button" className="btn" data-testid="doctor-use" onClick={() => run((client) => client.useCurrentDrive())}>
+          Use my current drive
+        </button>
+        <button type="button" className="btn" data-testid="doctor-bind" onClick={() => run((client) => client.bindSlot())}>
+          Bind my slot
+        </button>
+      </div>
+      {result ? (
+        <div data-testid="doctor-result">
+          <p className={`small ${result.ok ? "muted" : "viewer-denied-title"}`}>{result.message}</p>
+          <Trace steps={result.trace} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /** One form for the whole enrollment: provision a slot under a typed passphrase and add it as a leaf. */
 function CreateAndRegisterForm({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
   const id = useId();
@@ -693,6 +727,16 @@ export function SecurityPanel({ snapshot, act }: { snapshot: Snapshot; act: Act 
             redemption, not identity — anyone given the token can use it below.
           </p>
           <ShareLinks snapshot={snapshot} act={act} />
+        </div>
+
+        <div data-testid="doctor">
+          <h3>Check my setup</h3>
+          <p className="small muted">
+            <code>keyquorum doctor</code> says what is missing for you and the command that fixes it. The buttons beside it run those
+            fixes (<code>keyquorum use</code>, <code>keyquorum device bind</code>). Creating an identity from scratch
+            (<code>keyquorum setup</code>) is the <strong>Create and register a new leaf</strong> form below.
+          </p>
+          <CheckSetup act={act} />
         </div>
 
         <div data-testid="create-register-leaf">
