@@ -162,6 +162,19 @@ pub(super) fn letter_path(dir: &Path, url: &str, id: i64) -> PathBuf {
     relay_dir(dir, url).join(format!("{id}.kqpb"))
 }
 
+/// Locate a pulled letter, including files written before inboxes were
+/// namespaced by relay. Existing database rows advance the pull cursor, so a
+/// legacy file must remain openable rather than waiting for a redownload that
+/// will never happen.
+fn stored_letter_path(dir: &Path, url: &str, id: i64) -> PathBuf {
+    let namespaced = letter_path(dir, url, id);
+    if env::exists(&namespaced) {
+        namespaced
+    } else {
+        dir.join(format!("{id}.kqpb"))
+    }
+}
+
 /// Fetch every letter after the newest one this store has, keep each in
 /// `dir`, and merge any public-tree slices. Returns the relay used.
 fn pull(conn: &Connection, opts: &InboxOpts) -> Result<String> {
@@ -251,7 +264,7 @@ fn open_letter(
     id: i64,
     kind: u8,
 ) -> Result<bool> {
-    let path = letter_path(&args.opts.dir, url, id);
+    let path = stored_letter_path(&args.opts.dir, url, id);
     let push_answer = args.ack_dir.is_none();
     match kind {
         envelope::KIND_FILE_DELIVERY => deliver_cmd::run(

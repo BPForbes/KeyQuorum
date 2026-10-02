@@ -238,6 +238,33 @@ fn letter_paths_are_namespaced_by_relay() {
 }
 
 #[test]
+fn an_unhandled_legacy_letter_remains_openable_after_namespacing() {
+    let mut env = two_people_on_a_relay();
+    run(
+        &mut env,
+        &format!("{ALICE} send /home/alice/note.txt --to bob"),
+    );
+    run(&mut env, &format!("{BOB} inbox"));
+
+    // Simulate upgrading after the old inbox implementation downloaded and
+    // recorded this letter at `<dir>/<id>.kqpb`.
+    let namespaced = super::super::inbox::letter_path(Path::new("inbox"), RELAY_URL, 1);
+    env.fs
+        .rename(&namespaced, Path::new("inbox/1.kqpb"))
+        .unwrap();
+
+    let opened = run(&mut env, &format!("{BOB} inbox open"));
+    assert!(
+        opened.contains("Saved note.txt to received/note.txt"),
+        "{opened}"
+    );
+    assert_eq!(
+        env.fs.read(Path::new("received/note.txt")).unwrap(),
+        b"lunch at noon"
+    );
+}
+
+#[test]
 fn a_tracked_file_goes_through_file_share_not_deliver() {
     let mut env = two_people_on_a_relay();
     // The magic is what picks the sender; this is not a valid container, so
