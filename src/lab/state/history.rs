@@ -1145,7 +1145,7 @@ impl LabState {
     }
 
     /// The answers waiting for the active person, recorded with the same
-    /// `file ack` and `file open-answer` the buttons run. Only while their
+    /// `inbox open <id> --file` the buttons run. Only while their
     /// slot is in; otherwise the answers stay waiting.
     pub(in crate::lab) fn record_waiting_answers(&mut self) -> Vec<TraceStep> {
         let me = self.actor().id.clone();

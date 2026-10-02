@@ -118,6 +118,38 @@ fn a_failed_upload_leaves_the_change_saved_the_files_in_place_and_says_how_to_fi
 }
 
 #[test]
+fn a_partial_upload_failure_does_not_resend_what_the_relay_already_accepted() {
+    let mut env = org_on_a_relay();
+    env.relay.as_mut().unwrap().fail_uploads_after = Some(1);
+    let (result, _) = env.keyquorum(&format!("keyquorum {DB} {CREATE} --push"));
+    let message = result.unwrap_err().to_string();
+    let retry_dir = message
+        .split("keyquorum relay push --dir ")
+        .nth(1)
+        .and_then(|tail| tail.split('`').next())
+        .expect("retry directory in error");
+    assert_eq!(
+        env.fs.list(Path::new(retry_dir)).unwrap().len(),
+        3,
+        "the one the relay accepted is gone, so a retry cannot send it twice"
+    );
+
+    env.relay.as_mut().unwrap().fail_uploads_after = None;
+    let out = ok(&mut env, &format!("relay push --dir {retry_dir}"));
+    assert_eq!(out.matches("-> id").count(), 3, "{out}");
+}
+
+#[test]
+fn a_named_output_dir_is_kept_and_the_error_lists_what_is_left() {
+    let mut env = org_on_a_relay();
+    env.relay.as_mut().unwrap().fail_uploads_after = Some(1);
+    let (result, _) = env.keyquorum(&format!("keyquorum {DB} {CREATE} --push --output-dir /out"));
+    let message = result.unwrap_err().to_string();
+    assert!(message.contains("still to send"), "{message}");
+    assert_eq!(env.fs.list(Path::new("/out")).unwrap().len(), 4, "kept");
+}
+
+#[test]
 fn a_relay_that_cannot_be_trusted_stops_the_command_before_anything_changes() {
     let mut env = org_on_a_relay();
     let (result, _) = env.keyquorum(&format!(

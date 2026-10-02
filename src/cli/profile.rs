@@ -290,7 +290,7 @@ pub(crate) fn run_use(conn: &Connection, args: UseOpts) -> Result<()> {
         || args.device.is_some()
         || args.url.is_some()
         || args.cache.is_some();
-    if !changing || args.show {
+    if !changing {
         return show(conn);
     }
 

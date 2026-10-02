@@ -135,6 +135,28 @@ fn doctor_finds_an_unregistered_recipient_and_an_unplugged_device() {
 }
 
 #[test]
+fn doctor_does_not_call_a_slot_bound_when_the_placement_is_another_device() {
+    let mut env = MemoryEnv::default();
+    ok(
+        &mut env,
+        &format!("{DB} setup --device /usb/alice --label alice"),
+    );
+    let db = DB.trim_start_matches("keyquorum --db ");
+    let (_, out) = env.keyquorum(&format!("{DB} doctor --no-cache"));
+    assert!(out.contains("the slot is bound to its device"), "{out}");
+
+    env.store(db)
+        .execute(
+            "UPDATE device_placements SET device_id = x'00000000000000000000000000000001'",
+            [],
+        )
+        .unwrap();
+    let (result, out) = env.keyquorum(&format!("{DB} doctor --no-cache"));
+    assert!(result.is_err(), "{out}");
+    assert!(!out.contains("the slot is bound to its device"), "{out}");
+}
+
+#[test]
 fn doctor_remembers_a_passed_slot_check_until_the_container_changes() {
     let mut env = MemoryEnv::default();
     env.now = Some("2026-10-02 12:00".into());

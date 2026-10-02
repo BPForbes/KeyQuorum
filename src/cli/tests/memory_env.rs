@@ -45,6 +45,8 @@ pub struct TestRelay {
     pub identity_challenges: usize,
     /// Make uploads (`POST /inbox`) fail as a dropped connection would.
     pub fail_uploads: bool,
+    /// Let this many uploads through, then fail every later one.
+    pub fail_uploads_after: Option<usize>,
 }
 
 pub const RELAY_URL: &str = "https://relay.test";
@@ -84,8 +86,18 @@ impl Env for MemoryEnv {
         if request.url.path() == "/provider-identity" {
             relay.identity_challenges += 1;
         }
-        if relay.fail_uploads && request.method == "POST" && request.url.path() == "/inbox" {
-            return Err(Error::RelayRequest("connection reset".into()));
+        if request.method == "POST" && request.url.path() == "/inbox" {
+            let out_of_uploads = match relay.fail_uploads_after.as_mut() {
+                Some(0) => true,
+                Some(left) => {
+                    *left -= 1;
+                    false
+                }
+                None => false,
+            };
+            if relay.fail_uploads || out_of_uploads {
+                return Err(Error::RelayRequest("connection reset".into()));
+            }
         }
         Ok(relay::service::dispatch(
             &relay.conn,
@@ -166,6 +178,7 @@ impl MemoryEnv {
             root_public,
             identity_challenges: 0,
             fail_uploads: false,
+            fail_uploads_after: None,
         });
     }
 

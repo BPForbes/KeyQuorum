@@ -226,6 +226,11 @@ fn pull(conn: &Connection, opts: &InboxOpts) -> Result<String> {
             let path = letter_path(&opts.dir, &url, item.id);
             if !env::exists(&path) {
                 env::write_new(&path, &bytes)?;
+            } else if env::read(&path)? != bytes {
+                return Err(Error::RelayRequest(format!(
+                    "{} holds a different letter; use a separate --dir for this store",
+                    path.display()
+                )));
             }
             db::inbox::record(conn, &url, item.id, kind)?;
         }
@@ -395,7 +400,7 @@ fn open(conn: &Connection, args: OpenArgs) -> Result<()> {
             l.kind != envelope::KIND_FILE_DELIVERY && l.kind != envelope::KIND_FILE_HISTORY
         })
     {
-        errln!("note: --reject applies to delivered files only");
+        errln!("note: --reject applies to delivered files and tracked files only");
     }
     let slot = profile::resolve_identity(conn, None, args.opts.slot.as_deref())?.slot;
     if args.ack_dir.is_some() {

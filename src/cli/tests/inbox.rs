@@ -238,6 +238,23 @@ fn letter_paths_are_namespaced_by_relay() {
 }
 
 #[test]
+fn a_different_letter_already_at_the_path_is_refused_not_recorded() {
+    let mut env = two_people_on_a_relay();
+    run(
+        &mut env,
+        &format!("{ALICE} send /home/alice/note.txt --to bob"),
+    );
+    // Another store sharing the default --dir already left a letter 1 here.
+    let path = super::super::inbox::letter_path(Path::new("inbox"), RELAY_URL, 1);
+    env.fs.write_new(&path, b"someone else's letter").unwrap();
+
+    let (result, _) = env.keyquorum(&format!("{BOB} inbox"));
+    let message = result.unwrap_err().to_string();
+    assert!(message.contains("holds a different letter"), "{message}");
+    assert_eq!(env.fs.read(&path).unwrap(), b"someone else's letter");
+}
+
+#[test]
 fn an_unhandled_legacy_letter_remains_openable_after_namespacing() {
     let mut env = two_people_on_a_relay();
     run(

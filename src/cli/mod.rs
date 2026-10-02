@@ -1150,6 +1150,7 @@ fn push_packages(
     api_key: &str,
     items: &[(String, Vec<u8>)],
     expires: Option<&str>,
+    mut on_accepted: impl FnMut(usize),
 ) -> Result<()> {
     let trees = export_local_public_trees(conn)?;
     for (index, (name, bytes)) in items.iter().enumerate() {
@@ -1165,6 +1166,7 @@ fn push_packages(
             accepted.id,
             accepted.recipient_fingerprint
         );
+        on_accepted(index);
     }
     if !trees.is_empty() {
         outln!(
@@ -1289,17 +1291,44 @@ fn deliver_commit_push(
         .zip(packages)
         .map(|(path, package)| (path.display().to_string(), package.bytes().to_vec()))
         .collect();
-    if let Err(err) = push_packages(conn, &url, &api_key, &items, delivery.expires.as_deref()) {
+    // Each envelope the relay accepts is dropped from a staged directory at
+    // once, so a retry (`relay push --dir`) never sends one twice. A directory
+    // the person named is left alone, and the error lists what is still to send.
+    let mut accepted = vec![false; paths.len()];
+    let pushed = push_packages(
+        conn,
+        &url,
+        &api_key,
+        &items,
+        delivery.expires.as_deref(),
+        |index| {
+            accepted[index] = true;
+            if staged {
+                let _ = env::remove_file(&paths[index]);
+            }
+        },
+    );
+    if let Err(err) = pushed {
+        let left: Vec<String> = paths
+            .iter()
+            .zip(&accepted)
+            .filter(|(_, done)| !**done)
+            .map(|(path, _)| path.display().to_string())
+            .collect();
+        let retry = if staged {
+            format!(
+                "the envelopes still to send are in {0}; upload them with `keyquorum relay push --dir {0}`",
+                dir.display()
+            )
+        } else {
+            format!(
+                "the relay already has the others; still to send: {}",
+                left.join(", ")
+            )
+        };
         return Err(Error::RelayRequest(format!(
-            "the change is saved, but the upload failed: {err}. The envelopes are in {0}; \
-             upload them with `keyquorum relay push --dir {0}`",
-            dir.display()
+            "the change is saved, but the upload failed: {err}. {retry}"
         )));
-    }
-    if staged {
-        for path in &paths {
-            let _ = env::remove_file(path);
-        }
     }
     Ok(Delivered {
         paths,
@@ -2862,7 +2891,7 @@ fn relay_in_store(conn: &Connection, command: RelayCommand) -> Result<()> {
                     dir.display()
                 )));
             }
-            push_packages(conn, &url, &api_key, &items, expires.as_deref())?;
+            push_packages(conn, &url, &api_key, &items, expires.as_deref(), |_| {})?;
         }
         RelayCommand::Pull {
             import,

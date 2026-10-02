@@ -36,6 +36,18 @@ fn use_stores_pointers_and_shows_them() {
 }
 
 #[test]
+fn use_show_with_changing_flags_still_stores_them() {
+    let mut env = alice();
+    let out = run(
+        &mut env,
+        &format!("keyquorum --db {DB} use --device /usb/alice --slot alice --show"),
+    );
+    assert!(out.contains("default_slot_label = alice"), "{out}");
+    let shown = run(&mut env, &format!("keyquorum --db {DB} use --show"));
+    assert!(shown.contains("default_container = /usb/alice"), "{shown}");
+}
+
+#[test]
 fn use_refuses_a_slot_the_container_does_not_hold() {
     let mut env = alice();
     let (ok, _) = env.keyquorum(&format!(

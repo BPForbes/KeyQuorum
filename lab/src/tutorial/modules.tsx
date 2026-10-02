@@ -1077,7 +1077,7 @@ export const TUTORIALS: TutorialModule[] = [
         body: (
           <p>
             Switch back to <strong>Sarah</strong>. Her USB is in, so Alice's signed answer is recorded in her copy as she
-            signs in (<code>keyquorum file ack</code>): the letter reads <em>answer recorded</em>.
+            signs in (<code>keyquorum inbox open</code>): the letter reads <em>answer recorded</em>.
           </p>
         ),
         tab: "activity",
@@ -1294,7 +1294,7 @@ export const TUTORIALS: TutorialModule[] = [
         body: (
           <p>
             Switch back to <strong>Sarah</strong>. Her USB is in, so Alice's signed answer is checked against the request
-            she made and recorded as she signs in (<code>keyquorum file open-answer</code>).
+            she made and recorded as she signs in (<code>keyquorum inbox open</code>).
           </p>
         ),
         tab: "activity",

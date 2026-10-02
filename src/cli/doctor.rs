@@ -125,8 +125,9 @@ fn check_identity(conn: &Connection, report: &mut Report) -> Result<()> {
         .ok()
         .map(|key| {
             conn.query_row(
-                "SELECT 1 FROM device_placements WHERE hardware_key_id = ?1",
-                [key.id],
+                "SELECT 1 FROM device_placements
+                 WHERE hardware_key_id = ?1 AND device_id = ?2",
+                rusqlite::params![key.id, opened.device_id().as_slice()],
                 |_| Ok(()),
             )
             .is_ok()
