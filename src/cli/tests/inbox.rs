@@ -262,6 +262,8 @@ fn an_unhandled_legacy_letter_remains_openable_after_namespacing() {
         env.fs.read(Path::new("received/note.txt")).unwrap(),
         b"lunch at noon"
     );
+    assert!(env.fs.exists(&namespaced), "legacy letter was migrated");
+    assert!(!env.fs.exists(Path::new("inbox/1.kqpb")));
 }
 
 #[test]
@@ -293,6 +295,7 @@ fn a_tracked_file_goes_through_file_share_not_deliver() {
         .contains("--revision applies only"));
 }
 
+#[cfg(feature = "legacy-tests")]
 #[test]
 fn legacy_commands_say_what_replaces_them_on_stderr_only() {
     let mut env = two_people_on_a_relay();

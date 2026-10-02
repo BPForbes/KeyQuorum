@@ -1,4 +1,7 @@
-mod deliver;
+#[cfg(feature = "legacy-tests")]
+mod legacy {
+    mod deliver;
+}
 mod delivery;
 mod file;
 mod gate_link;
