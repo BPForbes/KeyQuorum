@@ -1107,6 +1107,16 @@ fn run_file(conn: &Connection, command: file_cmd::FileCommand) -> Result<()> {
         file_cmd::FileCommand::Share { .. } => Some(("file share", legacy::SEND)),
         file_cmd::FileCommand::Receive { .. } => Some(("file receive", legacy::OPEN)),
         file_cmd::FileCommand::Ack { .. } => Some(("file ack", legacy::OPEN)),
+        file_cmd::FileCommand::VerifySnapshot { .. } => Some((
+            "file verify-snapshot",
+            "keyquorum file history verify <snapshot> [--against FILE]",
+        )),
+        file_cmd::FileCommand::History {
+            export: Some(_), ..
+        } => Some((
+            "file history --export",
+            "keyquorum file history export <file> --out <snapshot>",
+        )),
         _ => None,
     };
     file_cmd::run(conn, command)?;
@@ -2264,6 +2274,127 @@ fn run_access_password(conn: &Connection, args: AccessPasswordArgs) -> Result<()
     Ok(())
 }
 
+/// The unlock half of `access quorum --state 1`, shared with `send
+/// --quorum-file`: purge an expired file, collect the presented shares,
+/// check custody and parent approval, reconstruct, decrypt, and record the
+/// attempt at the file's gate. Returns the plaintext; the caller decides
+/// where it goes, and a failure leaves exactly what the command always left.
+fn unlock_quorum_file(
+    conn: &Connection,
+    id: i64,
+    share_files: &[String],
+    slots: &[String],
+    approves: &[String],
+    verbose: bool,
+) -> Result<Vec<u8>> {
+    // Before anything else: an expired file is destroyed on the
+    // first unlock attempt, whether or not the presented shares
+    // would have reconstructed it (see quorum::unlock_file_with_approval).
+    gate_link::note_if_gone(Gate::Quorum, conn, id);
+    if let Err(err) = quorum::purge_if_expired_in(&mut env::EnvStorage, conn, id) {
+        gate_link::record_unlock(Gate::Quorum, conn, id, Some(&err), &[]);
+        return Err(err);
+    }
+    let file_status = quorum::status(conn, id)?;
+    let shares = collect_shares(conn, &file_status.tree.root, share_files, slots)?;
+    // What the gate's history may say about this attempt: counts and
+    // the policy it ran under, never a share, key or device secret.
+    let policy = device::custody_policy(conn, file_status.tree.key_id)?;
+    let mut safe = vec![
+        ("shares", shares.len().to_string()),
+        (
+            "threshold",
+            file_status
+                .tree
+                .root
+                .threshold
+                .map_or_else(|| "-".to_string(), |t| t.to_string()),
+        ),
+        ("custody", policy.mode.as_str().to_string()),
+        (
+            "minimum_devices",
+            policy.minimum_physical_devices.to_string(),
+        ),
+        ("approval", policy.unlock_approval.as_str().to_string()),
+    ];
+    if verbose {
+        let mut leaves = Vec::new();
+        collect_leaves(&file_status.tree.root, &mut leaves);
+        let unwrapped: Vec<&str> = leaves
+            .iter()
+            .filter(|(node_id, _, _)| shares.contains_key(node_id))
+            .map(|(_, _, label)| label.as_str())
+            .collect();
+        errln!(
+            "Shares unwrapped: {}",
+            if unwrapped.is_empty() {
+                "none".to_string()
+            } else {
+                unwrapped.join(", ")
+            }
+        );
+    }
+    let presented = match key_tree::reconstruct_presented(conn, file_status.tree.key_id, &shares) {
+        Ok(presented) => presented,
+        Err(err) => {
+            quorum::record_unlock_failure(conn, id, &err)?;
+            gate_link::record_unlock_with(Gate::Quorum, conn, id, Some(&err), &[], &safe);
+            return Err(err);
+        }
+    };
+    safe.push(("devices", presented.devices.len().to_string()));
+    if verbose {
+        let used: Vec<&str> = presented
+            .leaves
+            .iter()
+            .map(|leaf| leaf.leaf_label.as_str())
+            .collect();
+        errln!("Threshold met using: {}", used.join(", "));
+        errln!(
+            "Physical devices: {} (minimum {}) — {}",
+            presented.devices.len(),
+            policy.minimum_physical_devices,
+            device::format_presentation(&presented.devices)
+        );
+    }
+    let grants = match approval_grants(id, file_status.tree.key_id, &presented.devices, approves) {
+        Ok(grants) => grants,
+        Err(err) => {
+            let mut secret = presented.secret;
+            secret.zeroize();
+            quorum::record_unlock_failure(conn, id, &err)?;
+            safe.push(("approvals", "missing".to_string()));
+            gate_link::record_unlock_with(Gate::Quorum, conn, id, Some(&err), &[], &safe);
+            return Err(err);
+        }
+    };
+    safe.push(("approvals", grants.len().to_string()));
+    if verbose {
+        for grant in &grants {
+            errln!(
+                "Parent approval: {} signed for {}",
+                grant.countersigner_label,
+                grant.leaf_label
+            );
+        }
+    }
+    let presented_labels: Vec<String> = presented
+        .leaves
+        .iter()
+        .map(|leaf| leaf.leaf_label.clone())
+        .collect();
+    let unlocked = quorum::complete_unlock_in(&mut env::EnvStorage, conn, id, presented, &grants);
+    gate_link::record_unlock_with(
+        Gate::Quorum,
+        conn,
+        id,
+        unlocked.as_ref().err(),
+        &presented_labels,
+        &safe,
+    );
+    unlocked
+}
+
 fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()> {
     if args.status {
         let id = require(args.id, "id")?;
@@ -2338,127 +2469,14 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
         }
         Some(1) => {
             let id = require(args.id, "id")?;
-            // Before anything else: an expired file is destroyed on the
-            // first unlock attempt, whether or not the presented shares
-            // would have reconstructed it (see quorum::unlock_file_with_approval).
-            gate_link::note_if_gone(Gate::Quorum, conn, id);
-            if let Err(err) = quorum::purge_if_expired_in(&mut env::EnvStorage, conn, id) {
-                gate_link::record_unlock(Gate::Quorum, conn, id, Some(&err), &[]);
-                return Err(err);
-            }
-            let file_status = quorum::status(conn, id)?;
-            let shares =
-                collect_shares(conn, &file_status.tree.root, &args.share_files, &args.slots)?;
-            // What the gate's history may say about this attempt: counts and
-            // the policy it ran under, never a share, key or device secret.
-            let policy = device::custody_policy(conn, file_status.tree.key_id)?;
-            let mut safe = vec![
-                ("shares", shares.len().to_string()),
-                (
-                    "threshold",
-                    file_status
-                        .tree
-                        .root
-                        .threshold
-                        .map_or_else(|| "-".to_string(), |t| t.to_string()),
-                ),
-                ("custody", policy.mode.as_str().to_string()),
-                (
-                    "minimum_devices",
-                    policy.minimum_physical_devices.to_string(),
-                ),
-                ("approval", policy.unlock_approval.as_str().to_string()),
-            ];
-            if args.verbose {
-                let mut leaves = Vec::new();
-                collect_leaves(&file_status.tree.root, &mut leaves);
-                let unwrapped: Vec<&str> = leaves
-                    .iter()
-                    .filter(|(node_id, _, _)| shares.contains_key(node_id))
-                    .map(|(_, _, label)| label.as_str())
-                    .collect();
-                errln!(
-                    "Shares unwrapped: {}",
-                    if unwrapped.is_empty() {
-                        "none".to_string()
-                    } else {
-                        unwrapped.join(", ")
-                    }
-                );
-            }
-            let presented =
-                match key_tree::reconstruct_presented(conn, file_status.tree.key_id, &shares) {
-                    Ok(presented) => presented,
-                    Err(err) => {
-                        quorum::record_unlock_failure(conn, id, &err)?;
-                        gate_link::record_unlock_with(
-                            Gate::Quorum,
-                            conn,
-                            id,
-                            Some(&err),
-                            &[],
-                            &safe,
-                        );
-                        return Err(err);
-                    }
-                };
-            safe.push(("devices", presented.devices.len().to_string()));
-            if args.verbose {
-                let used: Vec<&str> = presented
-                    .leaves
-                    .iter()
-                    .map(|leaf| leaf.leaf_label.as_str())
-                    .collect();
-                errln!("Threshold met using: {}", used.join(", "));
-                errln!(
-                    "Physical devices: {} (minimum {}) — {}",
-                    presented.devices.len(),
-                    policy.minimum_physical_devices,
-                    device::format_presentation(&presented.devices)
-                );
-            }
-            let grants = match approval_grants(
-                id,
-                file_status.tree.key_id,
-                &presented.devices,
-                &args.approves,
-            ) {
-                Ok(grants) => grants,
-                Err(err) => {
-                    let mut secret = presented.secret;
-                    secret.zeroize();
-                    quorum::record_unlock_failure(conn, id, &err)?;
-                    safe.push(("approvals", "missing".to_string()));
-                    gate_link::record_unlock_with(Gate::Quorum, conn, id, Some(&err), &[], &safe);
-                    return Err(err);
-                }
-            };
-            safe.push(("approvals", grants.len().to_string()));
-            if args.verbose {
-                for grant in &grants {
-                    errln!(
-                        "Parent approval: {} signed for {}",
-                        grant.countersigner_label,
-                        grant.leaf_label
-                    );
-                }
-            }
-            let presented_labels: Vec<String> = presented
-                .leaves
-                .iter()
-                .map(|leaf| leaf.leaf_label.clone())
-                .collect();
-            let unlocked =
-                quorum::complete_unlock_in(&mut env::EnvStorage, conn, id, presented, &grants);
-            gate_link::record_unlock_with(
-                Gate::Quorum,
+            let plaintext = unlock_quorum_file(
                 conn,
                 id,
-                unlocked.as_ref().err(),
-                &presented_labels,
-                &safe,
-            );
-            let plaintext = unlocked?;
+                &args.share_files,
+                &args.slots,
+                &args.approves,
+                args.verbose,
+            )?;
             match args.output {
                 Some(path) => env::write_new(&path, &plaintext)?,
                 None => env::stdout_bytes(&plaintext)?,

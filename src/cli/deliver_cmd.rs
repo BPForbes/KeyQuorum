@@ -126,29 +126,21 @@ pub fn run(conn: &Connection, command: DeliverCommand) -> Result<()> {
                     .map(|n| n.to_string_lossy().into_owned())
                     .ok_or_else(|| usage("--file has no file name; pass --name"))?,
             };
-            let (as_label, slot) =
-                profile::resolve_signer(conn, as_label, slot, signing_key_file.as_deref())?;
-            let (signing_secret, encryption_public) =
-                sender_keys(conn, slot, signing_key_file, &as_label)?;
-            let recipient = registered_encryption_key(conn, &to)?;
-            let sealed = file_delivery::seal_letter(&file_delivery::Outgoing {
-                sender_label: &as_label,
-                sender_signing_secret: &signing_secret,
-                sender_encryption_public: &encryption_public,
-                recipient_label: &to,
-                recipient_encryption_public: &recipient,
-                file_name: &file_name,
-                contents: &contents,
-            })?;
-            let letter = Letter {
-                name: hex::encode(sealed.delivery_id),
-                bytes: sealed.bytes,
-            };
-            outln!(
-                "Sealed {file_name} to {to} (delivery {})",
-                hex::encode(sealed.delivery_id)
-            );
-            carry(conn, &letter, output_dir.as_deref(), push, url, api_key)?;
+            seal_and_carry(
+                conn,
+                Outbound {
+                    contents: &contents,
+                    file_name: &file_name,
+                    to: &to,
+                    as_label,
+                    slot,
+                    signing_key_file,
+                    output_dir,
+                    push,
+                    url,
+                    api_key,
+                },
+            )?;
         }
         DeliverCommand::Open {
             file,
@@ -249,6 +241,60 @@ pub fn run(conn: &Connection, command: DeliverCommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// One file, sealed to one label and carried: written to a directory,
+/// uploaded, or both. `deliver send` reads the file and `send --quorum-file`
+/// unlocks it; either way the bytes arrive here and nothing touches disk.
+pub(super) struct Outbound<'a> {
+    pub(super) contents: &'a [u8],
+    pub(super) file_name: &'a str,
+    pub(super) to: &'a str,
+    pub(super) as_label: Option<String>,
+    pub(super) slot: Option<String>,
+    pub(super) signing_key_file: Option<PathBuf>,
+    pub(super) output_dir: Option<PathBuf>,
+    pub(super) push: bool,
+    pub(super) url: Option<String>,
+    pub(super) api_key: Option<String>,
+}
+
+#[inline(never)]
+pub(super) fn seal_and_carry(conn: &Connection, out: Outbound<'_>) -> Result<()> {
+    let Outbound {
+        contents,
+        file_name,
+        to,
+        as_label,
+        slot,
+        signing_key_file,
+        output_dir,
+        push,
+        url,
+        api_key,
+    } = out;
+    let (as_label, slot) =
+        profile::resolve_signer(conn, as_label, slot, signing_key_file.as_deref())?;
+    let (signing_secret, encryption_public) = sender_keys(conn, slot, signing_key_file, &as_label)?;
+    let recipient = registered_encryption_key(conn, to)?;
+    let sealed = file_delivery::seal_letter(&file_delivery::Outgoing {
+        sender_label: &as_label,
+        sender_signing_secret: &signing_secret,
+        sender_encryption_public: &encryption_public,
+        recipient_label: to,
+        recipient_encryption_public: &recipient,
+        file_name,
+        contents,
+    })?;
+    let letter = Letter {
+        name: hex::encode(sealed.delivery_id),
+        bytes: sealed.bytes,
+    };
+    outln!(
+        "Sealed {file_name} to {to} (delivery {})",
+        hex::encode(sealed.delivery_id)
+    );
+    carry(conn, &letter, output_dir.as_deref(), push, url, api_key)
 }
 
 /// The sender's signing secret and the encryption key answers come back to.

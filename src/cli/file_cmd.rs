@@ -404,8 +404,8 @@ pub enum FileCommand {
     },
     /// Show the heads, their trust, and what would be shared
     Status { kqtf: PathBuf },
-    /// List the recorded events; `history export` and `history verify` are
-    /// the snapshot forms of `--export` and `verify-snapshot`
+    /// List the recorded events. `history export` and `history verify` are the
+    /// one home for snapshots (`--export` and `verify-snapshot` are legacy)
     #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
     History {
         #[arg(required = true)]
@@ -416,7 +416,8 @@ pub enum FileCommand {
         #[command(subcommand)]
         action: Option<HistoryAction>,
     },
-    /// Check a history snapshot; with --against, that it belongs to a file
+    /// (Legacy: use `file history verify`.) Check a history snapshot; with
+    /// --against, that it belongs to a file
     VerifySnapshot {
         snapshot: PathBuf,
         /// A tracked file the snapshot must be a point in the history of
