@@ -511,6 +511,11 @@ impl LabState {
         // everyone then loads theirs with `keyquorum loadkey`.
         let admin = self.issue_api_key(ApiKeyScope::Admin, None, "org admin")?;
         run(self, format!("keyquorum --db {ORG_DB} loadkey {admin}"))?;
+        // The org store also sends: a quorum file is unlocked there (its
+        // wrapped shares live nowhere else), so `send --quorum-file` runs
+        // against it with its own push key.
+        let org_push = self.issue_api_key(ApiKeyScope::InboxPush, None, "org push")?;
+        run(self, format!("keyquorum --db {ORG_DB} loadkey {org_push}"))?;
         for index in 0..self.users.len() {
             let (id, label, store) = {
                 let user = &self.users[index];
@@ -521,6 +526,17 @@ impl LabState {
             let pull = self.issue_api_key(ApiKeyScope::InboxPull, Some(fingerprint), &id)?;
             for token in [push, pull] {
                 run(self, format!("keyquorum --db {store} loadkey {token}"))?;
+            }
+            // Where this person's own slot lives is their default, so
+            // `doctor` can say whether their setup is whole.
+            if let Some(mount) = self
+                .drive_holding(&label)
+                .map(|d| d.mount.display().to_string())
+            {
+                run(
+                    self,
+                    format!("keyquorum --db {store} use --device {mount} --slot {label}"),
+                )?;
             }
             // Everyone's public keys, so letters can be sealed to them and
             // their signatures checked.
@@ -536,6 +552,17 @@ impl LabState {
                         )?;
                     }
                 }
+            }
+            // Binding follows the keys being registered: this person's own
+            // slot now belongs to the device it sits on.
+            if let Some(mount) = self
+                .drive_holding(&label)
+                .map(|d| d.mount.display().to_string())
+            {
+                run(
+                    self,
+                    format!("keyquorum --db {store} device bind {mount} --slot {label}"),
+                )?;
             }
         }
 
@@ -1038,7 +1065,7 @@ impl LabState {
                 vec![],
             ));
         }
-        let lines = [
+        let mut lines = vec![
             format!(
                 "keyquorum-device relocate --from {} --to {} --label {label}",
                 from.display(),
@@ -1049,6 +1076,19 @@ impl LabState {
                 to.display()
             ),
         ];
+        // The slot's owner keeps their own defaults and binding pointing at
+        // the drive it now sits on.
+        if let Some(owner) = self.user_by_label(label) {
+            let store = owner.store();
+            lines.push(format!(
+                "keyquorum --db {store} use --device {} --slot {label}",
+                to.display()
+            ));
+            lines.push(format!(
+                "keyquorum --db {store} device bind {} --slot {label}",
+                to.display()
+            ));
+        }
         let (runs, ok) = self.run_all(&lines);
         let mut trace = transcripts(&runs, true);
         let message = if ok {
@@ -1198,19 +1238,17 @@ impl LabState {
     /// The unlock command for a quorum file: every inserted slot that
     /// holds a share of it, and, when the file needs parent approval, each
     /// holder's parent whose slot is inserted too. The command decides.
-    fn unlock_line(
-        &self,
-        file_id: i64,
-        key_id: i64,
-        output: Option<&Path>,
-    ) -> Result<(String, Vec<String>)> {
-        let leaves = self.leaves(key_id)?;
-        let mut line =
-            format!("keyquorum --db {ORG_DB} access quorum --state 1 --id {file_id} --verbose");
+    /// The shares this person can present for a file's key tree: one slot
+    /// flag per leaf whose drive is inserted (`--slot` for `access quorum`,
+    /// `--unlock-slot` for `send --quorum-file`) and, when the policy asks
+    /// for a parent's approval, the `--approve` pairs. Also returns the
+    /// leaves presented.
+    fn unlock_flags(&self, key_id: i64, slot_flag: &str) -> Result<(String, Vec<String>)> {
+        let mut flags = String::new();
         let mut presented = Vec::new();
-        for leaf in &leaves {
+        for leaf in &self.leaves(key_id)? {
             if let Some(drive) = self.drive_holding(leaf).filter(|drive| drive.connected) {
-                line.push_str(&format!(" --slot {}={leaf}", drive.mount.display()));
+                flags.push_str(&format!(" {slot_flag} {}={leaf}", drive.mount.display()));
                 presented.push(leaf.clone());
             }
         }
@@ -1220,13 +1258,26 @@ impl LabState {
                     continue;
                 };
                 if let Some(drive) = self.drive_holding(parent).filter(|drive| drive.connected) {
-                    line.push_str(&format!(
+                    flags.push_str(&format!(
                         " --approve {leaf}={}>{parent}",
                         drive.mount.display()
                     ));
                 }
             }
         }
+        Ok((flags, presented))
+    }
+
+    fn unlock_line(
+        &self,
+        file_id: i64,
+        key_id: i64,
+        output: Option<&Path>,
+    ) -> Result<(String, Vec<String>)> {
+        let mut line =
+            format!("keyquorum --db {ORG_DB} access quorum --state 1 --id {file_id} --verbose");
+        let (flags, presented) = self.unlock_flags(key_id, "--slot")?;
+        line.push_str(&flags);
         if let Some(output) = output {
             line.push_str(&format!(
                 " --output {}",
@@ -2293,6 +2344,81 @@ impl LabState {
         Ok(Outcome::done(ok, message, trace))
     }
 
+    /// `keyquorum doctor`: what is missing for the active person, and the
+    /// command that fixes each thing. Reads only.
+    pub fn doctor(&mut self) -> Result<Outcome> {
+        let line = format!("keyquorum --db {} doctor", self.actor().store());
+        let run = self.run(&line);
+        let trace = transcript(&run, true);
+        let message = if run.ok {
+            "Everything checks out".to_string()
+        } else {
+            run.error().unwrap_or("Problems found").to_string()
+        };
+        self.log(
+            "doctor",
+            "info",
+            "Check my setup",
+            trace.clone(),
+            Some(line),
+        );
+        Ok(Outcome::done(true, message, trace))
+    }
+
+    /// `keyquorum use`: make the drive the active person's slot sits on
+    /// their default.
+    pub fn use_current_drive(&mut self) -> Result<Outcome> {
+        let Some(slot) = self.own_slot_arg() else {
+            return Ok(Outcome::done(
+                false,
+                "You have no slot on any drive",
+                vec![],
+            ));
+        };
+        let (mount, label) = slot.rsplit_once('=').unwrap_or((&slot, ""));
+        let line = format!(
+            "keyquorum --db {} use --device {mount} --slot {label}",
+            self.actor().store()
+        );
+        self.setup_command("use", "Use my current drive as my default", line)
+    }
+
+    /// `keyquorum device bind`: tie the active person's slot to the device it
+    /// sits on, in their own store.
+    pub fn bind_slot(&mut self) -> Result<Outcome> {
+        let Some(slot) = self.own_slot_arg() else {
+            return Ok(Outcome::done(
+                false,
+                "You have no slot on any drive",
+                vec![],
+            ));
+        };
+        let (mount, label) = slot.rsplit_once('=').unwrap_or((&slot, ""));
+        let line = format!(
+            "keyquorum --db {} device bind {mount} --slot {label}",
+            self.actor().store()
+        );
+        self.setup_command("bind", "Bind my slot to its device", line)
+    }
+
+    fn setup_command(&mut self, kind: &str, title: &str, line: String) -> Result<Outcome> {
+        let run = self.run(&line);
+        let trace = transcript(&run, true);
+        let message = if run.ok {
+            title.to_string()
+        } else {
+            format!("{title}: {}", run.error().unwrap_or("failed"))
+        };
+        self.log(
+            kind,
+            if run.ok { "granted" } else { "denied" },
+            title,
+            trace.clone(),
+            Some(line),
+        );
+        Ok(Outcome::done(run.ok, message, trace))
+    }
+
     /// Read-only: `keyquorum-device list` for an inserted drive's
     /// container, shown as an opened "file" so the existing viewer can
     /// display it. Nothing is decided here; this is what a real desktop's
@@ -2821,11 +2947,17 @@ impl LabState {
             ));
         };
 
-        let mut lines = Vec::new();
-        let mut temporary = None;
-        let (source, name) = if let Some(path) = self.received_path(file_key) {
+        let (line, name) = if let Some(path) = self.received_path(file_key) {
             let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
-            (path, name.unwrap_or_default())
+            let name = name.unwrap_or_default();
+            (
+                format!(
+                    "keyquorum --db {store} send {} --name {} --to {to_label} --as {me_label} --slot {slot}",
+                    quote(&path.display().to_string()),
+                    quote(&name)
+                ),
+                name,
+            )
         } else {
             let Some(index) = self.file_index(file_key) else {
                 return Ok(Outcome::done(
@@ -2836,35 +2968,34 @@ impl LabState {
             };
             let name = self.files[index].name.clone();
             match &self.files[index].kind {
-                FileKind::Public { path } => (path.clone(), name),
+                FileKind::Public { path } => (
+                    format!(
+                        "keyquorum --db {store} send {} --name {} --to {to_label} --as {me_label} --slot {slot}",
+                        quote(&path.display().to_string()),
+                        quote(&name)
+                    ),
+                    name,
+                ),
+                // A quorum file is unlocked where its shares are (the org
+                // store), by the shares of whichever drives are inserted, and
+                // sealed in memory: nothing is written to disk.
                 FileKind::Quorum { file_id, key_id } => {
                     let (file_id, key_id) = (*file_id, *key_id);
-                    let temp = self.actor().home().join(".outgoing").join(&name);
-                    let (line, _) = self.unlock_line(file_id, key_id, Some(&temp))?;
-                    lines.push(line);
-                    temporary = Some(temp.clone());
-                    (temp, name)
+                    let (flags, _) = self.unlock_flags(key_id, "--unlock-slot")?;
+                    (
+                        format!(
+                            "keyquorum --db {ORG_DB} send --quorum-file {file_id} --name {} --to {to_label} --as {me_label} --slot {slot}{flags}",
+                            quote(&name)
+                        ),
+                        name,
+                    )
                 }
             }
         };
-        lines.push(format!(
-            "keyquorum --db {store} send {} --name {} --to {to_label} --as {me_label} --slot {slot}",
-            quote(&source.display().to_string()),
-            quote(&name)
-        ));
+        let lines = [line];
         let (runs, ok) = self.run_all(&lines);
-        let mut trace = transcripts(&runs, false);
-        let mut commands = lines_run(&runs);
-        if let Some(temp) = &temporary {
-            if self.vm().exists(temp) {
-                self.remove_file(temp)?;
-                commands.push_str(&format!("\nrm {}", quote(&temp.display().to_string())));
-                trace.push(TraceStep::info(format!(
-                    "Removed the temporary plaintext {}",
-                    temp.display()
-                )));
-            }
-        }
+        let trace = transcripts(&runs, false);
+        let commands = lines_run(&runs);
         let title = format!("Send {name} to {to_name}");
         if !ok {
             let message = format!("{title}: {}", last_error(&runs));

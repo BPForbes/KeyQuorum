@@ -3,6 +3,7 @@ mod delivery;
 mod file;
 mod gate_link;
 mod inbox;
+mod inbox_files;
 mod memory_env;
 mod parse;
 mod pin;

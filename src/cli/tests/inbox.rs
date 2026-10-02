@@ -306,16 +306,11 @@ fn a_letter_that_asks_for_a_decision_is_listed_and_left_for_a_person() {
 
     let listed = run(&mut env, &format!("{BOB} inbox"));
     assert!(listed.contains("file or change request"), "{listed}");
-    assert!(
-        listed.contains("keyquorum file open-request --request inbox/"),
-        "{listed}"
-    );
+    assert!(listed.contains("keyquorum inbox open"), "{listed}");
+    assert!(listed.contains("--accept"), "{listed}");
 
     let opened = run(&mut env, &format!("{BOB} inbox open"));
-    assert!(
-        opened.contains("open with `keyquorum file open-request"),
-        "{opened}"
-    );
+    assert!(opened.contains("--accept"), "{opened}");
     // Left for a person, so it is still waiting afterwards.
     let again = run(&mut env, &format!("{BOB} inbox"));
     assert!(again.contains("file or change request"), "{again}");

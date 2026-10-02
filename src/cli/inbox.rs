@@ -41,7 +41,8 @@ pub struct InboxOpts {
     /// Relay base URL (or `keyquorum use --url`, or KEYQUORUM_RELAY_URL)
     #[arg(long)]
     pub url: Option<String>,
-    /// Pull-scope API key (or a key from `loadkey`)
+    /// Pull-scope API key for this pull (or a key from `loadkey`). Answers are
+    /// uploaded with your stored push key
     #[arg(long)]
     pub api_key: Option<String>,
 }
@@ -72,6 +73,35 @@ pub struct OpenArgs {
     /// Write answers here instead of uploading them
     #[arg(long)]
     pub ack_dir: Option<PathBuf>,
+    /// One tracked-file letter: merge it into this copy of the file
+    #[arg(long, conflicts_with = "out")]
+    pub into: Option<PathBuf>,
+    /// One tracked-file letter: write it as a new copy here
+    /// (default: <save-dir>/<id>.kqtf)
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+    /// One letter: the copy of the tracked file it concerns. An answer to your
+    /// tracked file or request is recorded in it; a request is recorded in it;
+    /// a history snapshot is compared with it. A letter never picks this
+    #[arg(long)]
+    pub file: Option<PathBuf>,
+    /// One request letter: say yes (a decision is never guessed)
+    #[arg(long, conflicts_with = "decline")]
+    pub accept: bool,
+    /// One request letter: say no
+    #[arg(long)]
+    pub decline: bool,
+}
+
+impl OpenArgs {
+    /// Options that name a file or a decision belong to one letter.
+    fn names_a_target(&self) -> bool {
+        self.into.is_some()
+            || self.out.is_some()
+            || self.file.is_some()
+            || self.accept
+            || self.decline
+    }
 }
 
 #[derive(Subcommand)]
@@ -99,17 +129,25 @@ fn kind_name(kind: u8) -> &'static str {
     }
 }
 
-/// The command that opens a kind `inbox open` leaves alone, if there is one.
-fn manual_command(kind: u8) -> Option<&'static str> {
+/// What a person does to open a letter `inbox open` cannot open alone: it
+/// needs a copy of a file or a decision only they can give.
+fn manual_hint(kind: u8, id: i64) -> Option<String> {
     match kind {
-        envelope::KIND_FILE_HISTORY_ACK => Some("keyquorum file ack <file.kqtf> --ack"),
-        envelope::KIND_FILE_HISTORY_SNAPSHOT => Some("keyquorum file open-history --letter"),
-        envelope::KIND_FILE_REQUEST => Some("keyquorum file open-request --request"),
-        envelope::KIND_FILE_REQUEST_ANSWER => Some("keyquorum file open-answer --answer"),
+        envelope::KIND_FILE_HISTORY_ACK => Some(format!(
+            "keyquorum inbox open {id} --file <your copy of the file.kqtf>"
+        )),
+        envelope::KIND_FILE_REQUEST_ANSWER => Some(format!(
+            "keyquorum inbox open {id} [--file <your copy of the file.kqtf>]"
+        )),
+        envelope::KIND_FILE_REQUEST => Some(format!(
+            "keyquorum inbox open {id} --accept   (or --decline)"
+        )),
         envelope::KIND_DEVICE_TRANSFER
         | envelope::KIND_DEVICE_TRANSFER_ACK
         | envelope::KIND_DEVICE_RELOCATE
-        | envelope::KIND_DEVICE_RELOCATE_ACK => Some("keyquorum transfer relay-collect"),
+        | envelope::KIND_DEVICE_RELOCATE_ACK => {
+            Some("keyquorum transfer relay-collect".to_string())
+        }
         _ => None,
     }
 }
@@ -183,12 +221,11 @@ fn list(conn: &Connection, opts: &InboxOpts) -> Result<()> {
         return Ok(());
     }
     for letter in letters.iter().filter(|l| l.status != db::inbox::HANDLED) {
-        match manual_command(letter.kind) {
-            Some(command) => outln!(
-                "{}  {}  (open with `{command} {}`)",
+        match manual_hint(letter.kind, letter.id) {
+            Some(hint) => outln!(
+                "{}  {}  (open with `{hint}`)",
                 letter.id,
-                kind_name(letter.kind),
-                letter_path(&opts.dir, letter.id).display()
+                kind_name(letter.kind)
             ),
             None => outln!("{}  {}", letter.id, kind_name(letter.kind)),
         }
@@ -217,7 +254,7 @@ fn open_letter(conn: &Connection, args: &OpenArgs, slot: &str, id: i64, kind: u8
                 ack_dir: args.ack_dir.clone(),
                 push_ack: push_answer,
                 url: args.opts.url.clone().filter(|_| push_answer),
-                api_key: args.opts.api_key.clone().filter(|_| push_answer),
+                api_key: None,
             },
         )?,
         envelope::KIND_FILE_DELIVERY_ACK => deliver_cmd::run(
@@ -235,16 +272,57 @@ fn open_letter(conn: &Connection, args: &OpenArgs, slot: &str, id: i64, kind: u8
                 slot: Some(slot.to_string()),
                 share_file: None,
                 signing_key_file: None,
-                into: None,
-                out: Some(args.save_dir.join(format!("{id}.kqtf"))),
+                out: match &args.into {
+                    Some(_) => None,
+                    None => Some(
+                        args.out
+                            .clone()
+                            .unwrap_or_else(|| args.save_dir.join(format!("{id}.kqtf"))),
+                    ),
+                },
+                into: args.into.clone(),
                 reject: args.reject,
                 ack_dir: args.ack_dir.clone(),
                 push_ack: push_answer,
                 url: args.opts.url.clone().filter(|_| push_answer),
-                api_key: args.opts.api_key.clone().filter(|_| push_answer),
+                api_key: None,
             },
         )?,
-        kind if manual_command(kind).is_some() => return Ok(false),
+        envelope::KIND_FILE_HISTORY_ACK => match &args.file {
+            Some(copy) => file_cmd::inbox::ack(conn, copy, &path, slot)?,
+            None => return Ok(false),
+        },
+        // An answer is opened for one letter; the sweep leaves it for a person
+        // who can say which copy to record it in. A requester who kept no copy
+        // can still read it by naming the letter.
+        envelope::KIND_FILE_REQUEST_ANSWER => {
+            if args.file.is_none() && args.id.is_none() {
+                return Ok(false);
+            }
+            file_cmd::inbox::answer(conn, &path, slot, args.file.clone())?
+        }
+        envelope::KIND_FILE_HISTORY_SNAPSHOT => {
+            file_cmd::inbox::snapshot(conn, &path, slot, args.file.clone())?
+        }
+        envelope::KIND_FILE_REQUEST => {
+            if !(args.accept || args.decline) {
+                return Ok(false);
+            }
+            file_cmd::inbox::request(
+                conn,
+                &path,
+                slot,
+                args.accept,
+                args.file.clone(),
+                (
+                    args.ack_dir.clone(),
+                    push_answer,
+                    args.opts.url.clone().filter(|_| push_answer),
+                    None,
+                ),
+            )?
+        }
+        kind if manual_hint(kind, id).is_some() => return Ok(false),
         _ => {
             let bytes = env::read(&path)?;
             let secret = encryption_secret_from(None, Some(slot))?;
@@ -255,6 +333,11 @@ fn open_letter(conn: &Connection, args: &OpenArgs, slot: &str, id: i64, kind: u8
 }
 
 fn open(conn: &Connection, args: OpenArgs) -> Result<()> {
+    if args.id.is_none() && args.names_a_target() {
+        return Err(usage(
+            "--into, --out, --file, --accept and --decline name one letter's file or decision; give the letter's id",
+        ));
+    }
     let url = pull(conn, &args.opts)?;
     let wanted: Vec<_> = db::inbox::list(conn, &url)?
         .into_iter()
@@ -289,12 +372,11 @@ fn open(conn: &Connection, args: OpenArgs) -> Result<()> {
         match open_letter(conn, &args, &slot, letter.id, letter.kind) {
             Ok(true) => db::inbox::mark_handled(conn, &url, letter.id)?,
             Ok(false) => {
-                if let Some(command) = manual_command(letter.kind) {
+                if let Some(hint) = manual_hint(letter.kind, letter.id) {
                     outln!(
-                        "{}  {}: open with `{command} {}`",
+                        "{}  {}: open with `{hint}`",
                         letter.id,
-                        kind_name(letter.kind),
-                        letter_path(&args.opts.dir, letter.id).display()
+                        kind_name(letter.kind)
                     );
                 }
             }

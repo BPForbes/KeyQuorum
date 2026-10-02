@@ -13,10 +13,6 @@ use crate::file_history::{
     latest_trusted_revision, select_shareable_revision, HistoryOutcome, TrackedFile, TrustState,
 };
 
-/// Where tracked-file letters and acknowledgements are handed over: a
-/// shared folder standing in for the relay or a USB stick.
-const LETTERS_DIR: &str = "/srv/keyquorum/tracked/letters";
-const ACKS_DIR: &str = "/srv/keyquorum/tracked/acks";
 /// How much of a revision's text the snapshot carries for the edit box.
 const TEXT_LIMIT: usize = 4096;
 
@@ -42,8 +38,10 @@ pub(in crate::lab) struct TrackedLetter {
     to_user: String,
     /// The sender's container, where their acknowledgement is recorded.
     sender_kqtf: PathBuf,
-    letter: PathBuf,
-    ack: Option<PathBuf>,
+    /// The letter's id at the relay, which `inbox open` takes.
+    relay_id: i64,
+    /// The recipient's answer, once they have given one.
+    ack_relay_id: Option<i64>,
     status: LetterStatus,
     ack_recorded: bool,
 }
@@ -66,8 +64,8 @@ pub(in crate::lab) struct TrackedRequest {
     to_user: String,
     /// The requester's container, where the answer is recorded.
     requester_kqtf: PathBuf,
-    letter: PathBuf,
-    answer: Option<PathBuf>,
+    relay_id: i64,
+    answer_relay_id: Option<i64>,
     opened: bool,
     status: RequestStatus,
     answer_recorded: bool,
@@ -95,7 +93,7 @@ fn trust_word(state: &TrustState) -> &'static str {
     }
 }
 
-/// The paths a `keyquorum file` line names as containers: every `.kqtf`
+/// The paths a `keyquorum file`, `send` or `inbox open` line names as containers: every `.kqtf`
 /// argument, plus the `<file>.kqtf` that `file track <file>` writes when no
 /// `--out` is given.
 fn named_containers(line: &str) -> Vec<String> {
@@ -156,7 +154,9 @@ impl LabState {
 
     /// Follow any container a command line names.
     pub(super) fn register_from_command(&mut self, line: &str) {
-        if !line.contains(" file ") {
+        // `file ...`, and the one-shot commands that name a container too:
+        // `send <file>.kqtf`, and `inbox open ... --into/--out/--file <file>.kqtf`.
+        if !(line.contains(" file ") || line.contains(" inbox open ") || line.contains(" send ")) {
             return;
         }
         // Resolved exactly as the command itself resolved them.
@@ -985,7 +985,7 @@ impl LabState {
     }
 
     /// `keyquorum send` of a tracked file: seal the newest trusted revision to another
-    /// person. The letter is left in the shared letters folder for them.
+    /// person; the letter goes to the relay for them.
     pub fn history_share(&mut self, path: &str, to_user: &str) -> Result<Outcome> {
         let Some(kqtf) = self.tracked_path(path) else {
             return Ok(Self::unknown_tracked(path));
@@ -1006,7 +1006,7 @@ impl LabState {
         };
         let who = self.actor().label.clone();
         let line = format!(
-            "keyquorum --db {} send {} --to {to_label} --as {who} --slot {slot} --output-dir {LETTERS_DIR}",
+            "keyquorum --db {} send {} --to {to_label} --as {who} --slot {slot}",
             self.actor().store(),
             quote(&kqtf.display().to_string()),
         );
@@ -1016,7 +1016,7 @@ impl LabState {
             &format!("Share {name} with {to_name}"),
             line,
         );
-        if let Some(letter) = written_path(&run) {
+        if let Some(relay_id) = relay_id_of(&run) {
             let id = self.next_letter_id;
             self.next_letter_id += 1;
             self.letters.push(TrackedLetter {
@@ -1025,8 +1025,8 @@ impl LabState {
                 from_user: self.actor().id.clone(),
                 to_user: to_id,
                 sender_kqtf: kqtf,
-                letter,
-                ack: None,
+                relay_id,
+                ack_relay_id: None,
                 status: LetterStatus::Waiting,
                 ack_recorded: false,
             });
@@ -1049,23 +1049,23 @@ impl LabState {
         let Some(slot) = self.own_slot_arg() else {
             return Ok(self.no_slot());
         };
-        let (letter, file_name) = {
+        let (relay_id, file_name) = {
             let letter = &self.letters[index];
-            (letter.letter.clone(), letter.file_name.clone())
+            (letter.relay_id, letter.file_name.clone())
         };
         let home = self.actor().home();
         let mut line = format!(
-            "{} receive --letter {} --slot {slot} --ack-dir {ACKS_DIR}",
-            self.file_line(),
-            quote(&letter.display().to_string()),
+            "keyquorum --db {} inbox open {relay_id} --dir {} --slot {slot}",
+            self.own_store(),
+            self.actor().mail_dir().display(),
         );
         if accept {
-            let file_id = self
+            let existing = self
                 .tracked_views()
                 .into_iter()
                 .find(|view| view.name == file_name && Path::new(&view.path).starts_with(&home))
                 .map(|view| view.path);
-            match file_id {
+            match existing {
                 Some(existing) => line.push_str(&format!(" --into {}", quote(&existing))),
                 None => {
                     let out = home.join("tracked").join(format!("{file_name}.kqtf"));
@@ -1086,7 +1086,7 @@ impl LabState {
             // answer it wrote says which.
             let accepted = accept && !run.stderr.contains("Refused");
             let letter = &mut self.letters[index];
-            letter.ack = written_path(&run);
+            letter.ack_relay_id = relay_id_of(&run);
             letter.status = if accepted {
                 LetterStatus::Accepted
             } else {
@@ -1113,7 +1113,7 @@ impl LabState {
                 vec![],
             ));
         }
-        let Some(ack) = self.letters[index].ack.clone() else {
+        let Some(ack_relay_id) = self.letters[index].ack_relay_id else {
             return Ok(Outcome::done(
                 false,
                 "That letter has not been answered yet",
@@ -1128,10 +1128,10 @@ impl LabState {
             (letter.sender_kqtf.clone(), letter.file_name.clone())
         };
         let line = format!(
-            "{} ack {} --ack {} --slot {slot}",
-            self.file_line(),
+            "keyquorum --db {} inbox open {ack_relay_id} --dir {} --slot {slot} --file {}",
+            self.own_store(),
+            self.actor().mail_dir().display(),
             quote(&kqtf.display().to_string()),
-            quote(&ack.display().to_string()),
         );
         let (outcome, run) = self.history_command(
             "history-ack",
@@ -1155,13 +1155,13 @@ impl LabState {
         let letters: Vec<i64> = self
             .letters
             .iter()
-            .filter(|l| l.from_user == me && l.ack.is_some() && !l.ack_recorded)
+            .filter(|l| l.from_user == me && l.ack_relay_id.is_some() && !l.ack_recorded)
             .map(|l| l.id)
             .collect();
         let requests: Vec<i64> = self
             .requests
             .iter()
-            .filter(|r| r.from_user == me && r.answer.is_some() && !r.answer_recorded)
+            .filter(|r| r.from_user == me && r.answer_relay_id.is_some() && !r.answer_recorded)
             .map(|r| r.id)
             .collect();
         let mut trace = Vec::new();
@@ -1206,7 +1206,7 @@ impl LabState {
         };
         let who = self.actor().label.clone();
         let mut line = format!(
-            "{} request {} --to {to_label} --as {who} --slot {slot} --output-dir {LETTERS_DIR}",
+            "{} request {} --to {to_label} --as {who} --slot {slot} --push",
             self.file_line(),
             quote(&kqtf.display().to_string()),
         );
@@ -1224,7 +1224,7 @@ impl LabState {
             &format!("Ask {to_name} for a {kind} on {name}"),
             line,
         );
-        if let Some(letter) = written_path(&run) {
+        if let Some(relay_id) = relay_id_of(&run) {
             let id = self.next_request_id;
             self.next_request_id += 1;
             self.requests.push(TrackedRequest {
@@ -1235,8 +1235,8 @@ impl LabState {
                 from_user: self.actor().id.clone(),
                 to_user: to_id,
                 requester_kqtf: kqtf,
-                letter,
-                answer: None,
+                relay_id,
+                answer_relay_id: None,
                 opened: false,
                 status: RequestStatus::Waiting,
                 answer_recorded: false,
@@ -1245,7 +1245,7 @@ impl LabState {
         Ok(outcome)
     }
 
-    /// `keyquorum file open-request` then `answer-request`: the holder reads
+    /// `keyquorum inbox open --accept|--decline`: the holder reads
     /// the request, it is recorded in their copy of the file when they have
     /// one, and a signed accept or decline goes back.
     pub fn history_answer_request(&mut self, request_id: i64, accept: bool) -> Result<Outcome> {
@@ -1259,9 +1259,9 @@ impl LabState {
         let Some(slot) = self.own_slot_arg() else {
             return Ok(self.no_slot());
         };
-        let (letter, file_name) = {
+        let (relay_id, file_name) = {
             let request = &self.requests[index];
-            (request.letter.clone(), request.file_name.clone())
+            (request.relay_id, request.file_name.clone())
         };
         let home = self.actor().home();
         let copy = self
@@ -1270,24 +1270,11 @@ impl LabState {
             .find(|view| view.name == file_name && Path::new(&view.path).starts_with(&home))
             .map(|view| format!(" --file {}", quote(&view.path)))
             .unwrap_or_default();
-        let letter_arg = quote(&letter.display().to_string());
-        let open = format!(
-            "{} open-request --letter {letter_arg} --slot {slot}{copy}",
-            self.file_line()
-        );
-        let (outcome, run) = self.history_command(
-            "history-open-request",
-            &format!("Read the request for {file_name}"),
-            open,
-        );
-        if !run.ok {
-            return Ok(outcome);
-        }
-        self.requests[index].opened = true;
-        let decision = if accept { "accept" } else { "decline" };
+        let decision = if accept { "--accept" } else { "--decline" };
         let line = format!(
-            "{} answer-request --letter {letter_arg} --decision {decision} --slot {slot}{copy} --ack-dir {ACKS_DIR}",
-            self.file_line()
+            "keyquorum --db {} inbox open {relay_id} --dir {} --slot {slot} {decision}{copy}",
+            self.own_store(),
+            self.actor().mail_dir().display(),
         );
         let title = if accept {
             format!("Accept the request for {file_name}")
@@ -1297,7 +1284,8 @@ impl LabState {
         let (outcome, run) = self.history_command("history-answer-request", &title, line);
         if run.ok {
             let request = &mut self.requests[index];
-            request.answer = written_path(&run);
+            request.opened = true;
+            request.answer_relay_id = relay_id_of(&run);
             request.status = if accept {
                 RequestStatus::Accepted
             } else {
@@ -1307,7 +1295,7 @@ impl LabState {
         Ok(outcome)
     }
 
-    /// `keyquorum file open-answer`: record the holder's answer in the
+    /// `keyquorum inbox open --file`: record the holder's answer in the
     /// requester's own copy.
     pub fn history_open_answer(&mut self, request_id: i64) -> Result<Outcome> {
         let Some(index) = self.requests.iter().position(|r| r.id == request_id) else {
@@ -1324,7 +1312,7 @@ impl LabState {
                 vec![],
             ));
         }
-        let Some(answer) = self.requests[index].answer.clone() else {
+        let Some(answer_relay_id) = self.requests[index].answer_relay_id else {
             return Ok(Outcome::done(
                 false,
                 "That request has not been answered yet",
@@ -1339,9 +1327,9 @@ impl LabState {
             (request.requester_kqtf.clone(), request.file_name.clone())
         };
         let line = format!(
-            "{} open-answer --answer {} --slot {slot} --file {}",
-            self.file_line(),
-            quote(&answer.display().to_string()),
+            "keyquorum --db {} inbox open {answer_relay_id} --dir {} --slot {slot} --file {}",
+            self.own_store(),
+            self.actor().mail_dir().display(),
             quote(&kqtf.display().to_string()),
         );
         let (outcome, run) = self.history_command(
@@ -1356,10 +1344,11 @@ impl LabState {
     }
 }
 
-/// The file a command reported writing (`Wrote <path>`).
-fn written_path(run: &CommandRun) -> Option<PathBuf> {
+/// The relay id a command reported (`Relay stored letter <id> for <key>`).
+fn relay_id_of(run: &CommandRun) -> Option<i64> {
     run.stdout_text()
         .lines()
-        .find_map(|line| line.strip_prefix("Wrote "))
-        .map(|path| PathBuf::from(path.trim()))
+        .find_map(|line| line.strip_prefix("Relay stored letter "))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|id| id.parse().ok())
 }

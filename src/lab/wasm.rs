@@ -265,6 +265,25 @@ impl KeyQuorumLab {
         to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
     }
 
+    /// `keyquorum doctor` for the active person.
+    pub fn doctor(&mut self) -> std::result::Result<String, JsError> {
+        let outcome = self.state.doctor();
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum use`: the drive the active person's slot is on becomes
+    /// their default.
+    pub fn use_current_drive(&mut self) -> std::result::Result<String, JsError> {
+        let outcome = self.state.use_current_drive();
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
+    /// `keyquorum device bind` in the active person's own store.
+    pub fn bind_slot(&mut self) -> std::result::Result<String, JsError> {
+        let outcome = self.state.bind_slot();
+        to_js(outcome.and_then(|outcome| self.state.result(outcome, vec![])))
+    }
+
     /// Provision a slot with a typed passphrase and register it as a new leaf
     /// in one action.
     pub fn create_and_register_leaf(

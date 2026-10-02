@@ -2139,6 +2139,60 @@ fn import(conn: &Connection, kqtf: &Path, from: &Path, as_label: &str) -> Result
 
 type Transport = (Option<PathBuf>, bool, Option<String>, Option<String>);
 
+/// The tracked-file letters `inbox open` opens, each the same function the
+/// `file` command of that name runs. The copy a letter concerns is always
+/// named by the caller; nothing here (or in the letter) chooses a local file.
+pub(super) mod inbox {
+    use super::*;
+
+    /// `file ack`: record the answer to a tracked file you sent in your own
+    /// copy `kqtf`.
+    pub(in crate::cli) fn ack(
+        conn: &Connection,
+        kqtf: &Path,
+        ack: &Path,
+        slot: &str,
+    ) -> Result<()> {
+        record_ack(conn, kqtf, ack, None, Some(slot))
+    }
+
+    /// `file open-answer`: read a request's answer, recording it in the copy it
+    /// concerns when one is named.
+    pub(in crate::cli) fn answer(
+        conn: &Connection,
+        answer: &Path,
+        slot: &str,
+        file: Option<PathBuf>,
+    ) -> Result<()> {
+        open_answer(conn, answer, None, Some(slot), file)
+    }
+
+    /// `file open-history`: check a history snapshot, optionally against a copy.
+    pub(in crate::cli) fn snapshot(
+        conn: &Connection,
+        letter: &Path,
+        slot: &str,
+        against: Option<PathBuf>,
+    ) -> Result<()> {
+        open_history(conn, letter, None, Some(slot), against, None)
+    }
+
+    /// `file open-request` then `file answer-request`: read a request made of
+    /// you and answer it. `file` records both in your copy when you name one.
+    pub(in crate::cli) fn request(
+        conn: &Connection,
+        letter: &Path,
+        slot: &str,
+        accepted: bool,
+        file: Option<PathBuf>,
+        transport: Transport,
+    ) -> Result<()> {
+        open_request(conn, letter, None, Some(slot), file.clone())?;
+        let secrets = recipient_secrets(Some(slot.to_string()), None, None)?;
+        answer_request(conn, letter, accepted, secrets, file, transport)
+    }
+}
+
 fn share(
     conn: &Connection,
     kqtf: &Path,
