@@ -205,7 +205,7 @@ command, and is never documented outside the crate's own source.
 \textbf{Command} & \textbf{Purpose} \\
 \midrule
 \code{send} & Seal a file (or a tracked file's newest trusted revision) to a
-  registered label and upload it, or write it to \file{./outbox}. \\
+  registered label and upload it, or write it to \file{./outbox}. \flag{--quorum-file} sends a quorum-protected file unlocked in memory. \\
 \code{inbox} & Pull what is waiting for you from the relay and list it.
   \code{inbox open} opens each letter and posts the signed answer. \\
 \code{deliver send} & (Legacy; use \code{send}.) Seal a file to a registered
@@ -259,9 +259,9 @@ See section~\ref{sec:file-history}.
 \code{file reindex} & Rebuild index rows from tracked files. Every file is verified first; if any fails, nothing changes. \flag{--clear} also drops rows for files not named here. \\
 \code{file status} & Show the heads, their trust, what would be shared, and the current and latest trusted revision ids. \\
 \code{file history} & List the recorded events; \flag{--export} also writes a \code{KQHS} snapshot. \\
-\code{file history export} & The alternative spelling of \code{file history --export}: list the events and write a \code{KQHS} snapshot to \flag{--out}. \\
-\code{file history verify} & The alternative spelling of \code{file verify-snapshot} for a snapshot; given a tracked file it is \code{file verify}. \\
-\code{file verify-snapshot} & Check a history snapshot; with \flag{--against}, that it belongs to a file. \\
+\code{file history export} & List the events and write a \code{KQHS} snapshot to \flag{--out}. The one home for exporting; \code{file history --export} is legacy. \\
+\code{file history verify} & Check a snapshot (with \flag{--against}, that it belongs to a file); given a tracked file it is \code{file verify}. The one home for verifying; \code{file verify-snapshot} is legacy. \\
+\code{file verify-snapshot} & (Legacy; use \code{file history verify}.) Check a history snapshot; with \flag{--against}, that it belongs to a file. \\
 \code{file import} & Bring another copy of the same file's revisions and proofs into this one. A fork is kept as two heads; nothing is overwritten. \\
 \code{file verify} & Verify the history chain and revision graph, and judge every revision. \\
 \code{file expire} & Schedule when this file's content is destroyed, or destroy it now; needs \flag{--slot} to prove you hold the owner label. Every retained revision's content goes at once; the history, the revision graph and every signature stay behind as a tombstone. \\

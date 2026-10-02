@@ -28,6 +28,13 @@ that asks for a decision (a file or change request), an answer to a request, a
 history snapshot, an acknowledgement of a tracked file and a device letter are
 listed with the command that opens them and left for a person.
 
+A quorum-protected file is sent without being unlocked to disk first:
+\code{send --quorum-file ID} takes the shares \code{access quorum --state 1}
+takes (\flag{--unlock-slot}, \flag{--unlock-share-file}, \flag{--approve}),
+unlocks it in memory under the file's own custody and approval rules, seals
+it and sends it. A refused unlock sends nothing, and the attempt is recorded
+at the file's gate as any unlock is.
+
 The single-purpose commands still work as they did and print a note on standard
 error naming what replaces them; they will be retired.
 

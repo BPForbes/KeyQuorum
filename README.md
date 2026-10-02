@@ -692,6 +692,11 @@ keyquorum inbox open                          # M.A: save it and answer
 keyquorum inbox open                          # you: read the answer
 ```
 
+A quorum-protected file goes with `send --quorum-file ID` (plus `--unlock-slot`,
+`--unlock-share-file` and `--approve`, the same shares `access quorum --state 1`
+takes): it is unlocked in memory, never written to disk, and a refused unlock
+sends nothing.
+
 With a relay set up the letter is uploaded; otherwise it is written to
 `./outbox` (`--offline` or `--output-dir DIR` force that). `inbox` keeps the
 letters it pulled in `./inbox` (`--dir`), remembers where it stopped, and opens
@@ -706,8 +711,9 @@ uploading them.
 
 The single-purpose commands still work exactly as before, and print a one-line
 note on stderr naming what replaces them. They will be retired: `deliver send`,
-`deliver open`, `deliver ack`, `file share`, `file receive`, `file ack` and
-`relay pull`.
+`deliver open`, `deliver ack`, `file share`, `file receive`, `file ack`,
+`relay pull`, `file verify-snapshot` and `file history --export` (use
+`file history verify` and `file history export`).
 
 ### Mailbox
 

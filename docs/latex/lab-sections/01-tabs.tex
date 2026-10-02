@@ -66,9 +66,14 @@ public folder's contents and their status pills.}
 Letters are sealed to a recipient's key and routed by the mailbox relay
 without it ever reading them --- sender and contents stay hidden until
 \textbf{Receive} unseals a letter with your own slot. \textbf{Reject}
-answers with a signed refusal instead. The Sent view tracks whether a
-delivery is still awaiting the recipient's signed acknowledgement, and
-\textbf{Check relay for acknowledgements} pulls any that are waiting.
+answers with a signed refusal instead; \textbf{Receive} checks the relay
+first (\code{keyquorum inbox list}, then \code{inbox open}), so there is
+nothing to refresh. The Sent view tracks whether a delivery is still
+awaiting the recipient's signed acknowledgement. Acknowledgements are
+opened by themselves whenever the sender is signed in with their USB
+inserted --- on switching user, on inserting the drive, and after
+receiving --- and \textbf{Check mail} looks again on demand. If the sender's
+USB is out, the answer waits, sealed to their key.
 
 \Screenshot{docs/latex/images/lab/mailbox.png}{Inbox and sent, in the empty
 seeded state.}
@@ -78,8 +83,9 @@ seeded state.}
 Everything that is not the hardware-key quorum tree or a file: locking a
 note with a password (and optionally a PIN), exporting a file or credential
 as a portable sealed bundle, minting a time-limited share link,
-provisioning a fresh slot on an inserted drive and registering it as a new
-leaf, signing or verifying with a private sign bridge you belong to, and,
+creating a key on an inserted drive and registering it as a new leaf in one
+step (\textbf{Create and register a new leaf}; the separate provision and
+register forms stay under \emph{Separate steps}), signing or verifying with a private sign bridge you belong to, and,
 further down, read-only device logs and relay counters for the in-process
 mailbox this lab runs against.
 
@@ -115,8 +121,10 @@ own store and their own drive's slot; each button runs one real
   \item \textbf{Share file} with another person. The line above the button
   says which revision would go --- the head, or the last trusted revision
   when the head is pending. The recipient \textbf{Accept}s or
-  \textbf{Refuse}s the letter (into their own copy), and the sender
-  \textbf{Record}s \textbf{the answer}.
+  \textbf{Refuse}s the letter (into their own copy); the sender's copy
+  records the answer by itself (\code{file ack}) when the sender is next
+  signed in with their USB inserted. \textbf{Record the answer} appears only
+  while it is still waiting.
   \item \textbf{Ask for a file, or for a change}: pick a person, choose
   \emph{a file} (send me your copy) or \emph{a change to this file}, add a
   message if you like, and press \textbf{Send request} (\code{keyquorum file
@@ -124,8 +132,9 @@ own store and their own drive's slot; each button runs one real
   file or a change} the holder sees the message and presses \textbf{Accept
   request} or \textbf{Decline request} (\code{open-request}, then
   \code{answer-request}, which also records the request in their own copy
-  of the file). The asker presses \textbf{Record the request answer}
-  (\code{open-answer}). A request only asks: nothing is delivered or
+  of the file). The asker's copy records the answer by itself
+  (\code{open-answer}) when the asker is next signed in with their USB
+  inserted. A request only asks: nothing is delivered or
   changed. To serve an accepted file request the holder uses \textbf{Share
   file}; a change arrives as an ordinary revision. The log shows the request
   id, kind and decision, never the message.

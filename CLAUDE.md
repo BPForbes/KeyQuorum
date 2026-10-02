@@ -421,7 +421,13 @@ keep new commands out of that frame.
 The lab's mailbox runs `send` and `inbox` with an explicit `--slot` (a slot moves
 between drives, and an explicit flag beats the profile) and keeps the output lines
 it parses (`(delivery <id>)`, `Relay stored letter`, `From X to Y`, `Delivery <id>
-accepted|rejected`) stable.
+accepted|rejected`) stable. Switching user, inserting a drive and receiving a letter
+settle mail in the lab (`LabState::settle_mail_and_answers`: `inbox list`, `inbox open`
+for answers, then `file ack` / `file open-answer` for the tracked files and requests
+the person sent, only while their slot is in); the lab's quorum-file send still
+unlocks to a temporary file because the file and the sender's keys live in
+different stores. `send --quorum-file` unlocks through the same
+`unlock_quorum_file` as `access quorum --state 1`.
 
 ## Working conventions
 
