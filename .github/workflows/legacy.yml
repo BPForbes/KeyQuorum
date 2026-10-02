@@ -1,5 +1,6 @@
 # Legacy checks: the broad `--all-features` build and test run, which includes
-# the tests of deprecated verbs behind the `legacy-tests` feature.
+# the tests of deprecated verbs behind the `legacy-tests` feature. It uses the
+# same parallel test groups as the standard run (tests.yml).
 #
 # The job is SKIPPED by default. A pull request shows it as skipped unless it
 # carries the `legacy` label; anyone can also run it from Actions -> Legacy
@@ -26,13 +27,7 @@ jobs:
   legacy:
     name: legacy
     if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'legacy')
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@nextest
-      - run: cargo nextest run --locked --all-targets --all-features --no-fail-fast
+    uses: ./.github/workflows/tests.yml
+    with:
+      features: --all-features
+      cache-key: legacy
