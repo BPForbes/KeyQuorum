@@ -136,7 +136,7 @@ jobs:
 
       - name: Keep the browser test report
         if: failure()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-report
           path: lab/playwright-report
