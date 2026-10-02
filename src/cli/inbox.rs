@@ -6,7 +6,8 @@
 //! `deliver ack`, a tracked file with `file receive`, a bridge or org update
 //! with the import `relay pull --import` runs. It judges nothing itself.
 //!
-//! Pulled letters are kept in `--dir` (`inbox/`) as `<id>.kqpb`; the store
+//! Pulled letters are kept in a relay-specific directory below `--dir`
+//! (`inbox/`) as `<relay hash>/<id>.kqpb`; the store
 //! remembers the cursor and which letters it has handled, so a later pull
 //! resumes after the newest and a letter is opened once. Receipt is already
 //! idempotent by delivery id, so losing that record only repeats an answer.
@@ -28,6 +29,7 @@ use crate::error::{Error, Result};
 use crate::{key_tree, relay};
 use clap::{Args, Subcommand};
 use rusqlite::Connection;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 #[derive(Args, Clone)]
@@ -152,8 +154,34 @@ fn manual_hint(kind: u8, id: i64) -> Option<String> {
     }
 }
 
-fn letter_path(dir: &Path, id: i64) -> PathBuf {
-    dir.join(format!("{id}.kqpb"))
+fn relay_dir(dir: &Path, url: &str) -> PathBuf {
+    dir.join(hex::encode(Sha256::digest(url.as_bytes())))
+}
+
+pub(super) fn letter_path(dir: &Path, url: &str, id: i64) -> PathBuf {
+    relay_dir(dir, url).join(format!("{id}.kqpb"))
+}
+
+/// Locate a pulled letter, including files written before inboxes were
+/// namespaced by relay. Existing database rows advance the pull cursor, so a
+/// legacy file must remain openable rather than waiting for a redownload that
+/// will never happen.
+fn stored_letter_path(dir: &Path, url: &str, id: i64) -> Result<PathBuf> {
+    let namespaced = letter_path(dir, url, id);
+    if env::exists(&namespaced) {
+        return Ok(namespaced);
+    }
+
+    let legacy = dir.join(format!("{id}.kqpb"));
+    if env::exists(&legacy) {
+        // Move the compatibility file into its selected relay namespace as
+        // soon as it is used. Leaving it at the shared legacy path could let
+        // another relay with the same numeric id consume the wrong letter.
+        env::fs(|fs| fs.rename(&legacy, &namespaced))?;
+        return Ok(namespaced);
+    }
+
+    Ok(namespaced)
 }
 
 /// Fetch every letter after the newest one this store has, keep each in
@@ -165,7 +193,7 @@ fn pull(conn: &Connection, opts: &InboxOpts) -> Result<String> {
         opts.api_key.clone(),
         relay::ApiKeyScope::InboxPull,
     )?;
-    env::create_dir_all(&opts.dir)?;
+    env::create_dir_all(&relay_dir(&opts.dir, &url))?;
     let mut after = db::inbox::cursor(conn, &url)?;
     loop {
         let page = relay::pull_inbox(
@@ -195,7 +223,7 @@ fn pull(conn: &Connection, opts: &InboxOpts) -> Result<String> {
                     continue;
                 }
             };
-            let path = letter_path(&opts.dir, item.id);
+            let path = letter_path(&opts.dir, &url, item.id);
             if !env::exists(&path) {
                 env::write_new(&path, &bytes)?;
             }
@@ -237,8 +265,15 @@ fn list(conn: &Connection, opts: &InboxOpts) -> Result<()> {
 #[inline(never)]
 /// Open one letter the way its own command would. `Ok(false)` is a kind that
 /// is left for a person.
-fn open_letter(conn: &Connection, args: &OpenArgs, slot: &str, id: i64, kind: u8) -> Result<bool> {
-    let path = letter_path(&args.opts.dir, id);
+fn open_letter(
+    conn: &Connection,
+    args: &OpenArgs,
+    url: &str,
+    slot: &str,
+    id: i64,
+    kind: u8,
+) -> Result<bool> {
+    let path = stored_letter_path(&args.opts.dir, url, id)?;
     let push_answer = args.ack_dir.is_none();
     match kind {
         envelope::KIND_FILE_DELIVERY => deliver_cmd::run(
@@ -369,7 +404,7 @@ fn open(conn: &Connection, args: OpenArgs) -> Result<()> {
     env::create_dir_all(&args.save_dir)?;
     let mut failed = 0usize;
     for letter in wanted {
-        match open_letter(conn, &args, &slot, letter.id, letter.kind) {
+        match open_letter(conn, &args, &url, &slot, letter.id, letter.kind) {
             Ok(true) => db::inbox::mark_handled(conn, &url, letter.id)?,
             Ok(false) => {
                 if let Some(hint) = manual_hint(letter.kind, letter.id) {

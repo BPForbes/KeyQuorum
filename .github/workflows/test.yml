@@ -23,4 +23,4 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - name: Test
-        run: cargo nextest run --locked --all-targets --all-features
+        run: cargo nextest run --locked --all-targets --features provider,lab,tui

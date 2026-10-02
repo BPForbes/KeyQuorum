@@ -8,7 +8,7 @@
 use super::deliver_cmd::DeliverCommand;
 use super::env::{self, errln};
 use super::file_cmd::FileCommand;
-use super::{deliver_cmd, file_cmd, resolve_relay_url, unlock_quorum_file, usage};
+use super::{configured_relay_url, deliver_cmd, file_cmd, unlock_quorum_file, usage};
 use crate::error::Result;
 use crate::file_history::CONTAINER_MAGIC;
 use crate::quorum;
@@ -80,9 +80,9 @@ fn transport(conn: &Connection, args: &SendOpts) -> Result<(Option<PathBuf>, boo
     if args.offline {
         return Ok((Some(PathBuf::from("outbox")), false));
     }
-    match resolve_relay_url(conn, args.url.clone(), ApiKeyScope::InboxPush) {
-        Ok(_) => Ok((None, true)),
-        Err(_) => {
+    match configured_relay_url(conn, args.url.clone(), ApiKeyScope::InboxPush)? {
+        Some(_) => Ok((None, true)),
+        None => {
             errln!("note: no relay is set up, so the letter is written to ./outbox; see `keyquorum use --url` and `keyquorum loadkey`");
             Ok((Some(PathBuf::from("outbox")), false))
         }

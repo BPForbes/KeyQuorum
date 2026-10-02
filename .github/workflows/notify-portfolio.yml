@@ -5,7 +5,7 @@
 # KeyQuorum's repository statistics, so it must not move until the lab a
 # visitor can open has moved with it. That is why this waits for
 # "Deploy KeyQuorum Lab" rather than Test: that workflow runs the native
-# tests (`cargo test --locked --all-targets --all-features`, the same gate
+# tests (`cargo test --locked --all-targets --features provider,lab,tui`, the same gate
 # Test is), the WASM and frontend builds, and the browser tests before it
 # publishes.
 #

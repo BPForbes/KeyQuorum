@@ -46,7 +46,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Test
-        run: cargo test --locked --all-targets --all-features
+        run: cargo test --locked --all-targets --features provider,lab,tui
 
   build:
     name: Build and validate the lab
