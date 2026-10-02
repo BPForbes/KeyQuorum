@@ -8,7 +8,6 @@
 use super::env::{self, errln, outln};
 use super::profile;
 use super::{read_key_array_32, resolve_relay_auth, usage, write_delivery_packages, Envelope};
-use crate::db;
 use crate::device::SlotSecrets;
 use crate::error::{Error, Result};
 use crate::keys::{self, KeyType};
@@ -127,19 +126,8 @@ pub fn run(conn: &Connection, command: DeliverCommand) -> Result<()> {
                     .map(|n| n.to_string_lossy().into_owned())
                     .ok_or_else(|| usage("--file has no file name; pass --name"))?,
             };
-            let (as_label, slot) = match &signing_key_file {
-                Some(_) => (
-                    as_label
-                        .or(db::profile::get(conn, db::profile::DEFAULT_LABEL)?)
-                        .ok_or_else(|| usage("pass --as, or set a default with `keyquorum use`"))?,
-                    None,
-                ),
-                None => {
-                    let identity =
-                        profile::resolve_identity(conn, as_label.as_deref(), slot.as_deref())?;
-                    (identity.label, Some(identity.slot))
-                }
-            };
+            let (as_label, slot) =
+                profile::resolve_signer(conn, as_label, slot, signing_key_file.as_deref())?;
             let (signing_secret, encryption_public) =
                 sender_keys(conn, slot, signing_key_file, &as_label)?;
             let recipient = registered_encryption_key(conn, &to)?;

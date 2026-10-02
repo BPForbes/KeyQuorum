@@ -2,6 +2,7 @@ mod deliver;
 mod delivery;
 mod file;
 mod gate_link;
+mod inbox;
 mod memory_env;
 mod parse;
 mod pin;

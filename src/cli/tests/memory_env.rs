@@ -39,7 +39,7 @@ pub struct MemoryEnv {
 /// over an in-memory database, behind a certificate that chains to a test root.
 pub struct TestRelay {
     pub conn: Connection,
-    identity: ProviderIdentity,
+    pub identity: ProviderIdentity,
     root_public: [u8; 32],
     /// How many `POST /provider-identity` challenges commands have made.
     pub identity_challenges: usize,

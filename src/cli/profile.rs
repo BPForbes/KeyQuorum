@@ -179,6 +179,26 @@ pub(crate) fn resolve_identity(
     })
 }
 
+/// The label and slot of someone who signs: from `--slot`/`--as` and the
+/// profile, or, with a `--signing-key-file`, just the label (there is no slot).
+pub(crate) fn resolve_signer(
+    conn: &Connection,
+    as_label: Option<String>,
+    slot: Option<String>,
+    signing_key_file: Option<&Path>,
+) -> Result<(String, Option<String>)> {
+    if signing_key_file.is_some() {
+        let label = match as_label {
+            Some(label) => label,
+            None => profile::get(conn, profile::DEFAULT_LABEL)?
+                .ok_or_else(|| usage("pass --as, or set a default with `keyquorum use`"))?,
+        };
+        return Ok((label, None));
+    }
+    let identity = resolve_identity(conn, as_label.as_deref(), slot.as_deref())?;
+    Ok((identity.label, Some(identity.slot)))
+}
+
 /// Remember what the user gave a command that succeeded, so the next one can
 /// leave it out. Best effort: a cache failure never fails a command.
 pub(crate) fn remember(conn: &Connection, name: &str, value: &str) {
@@ -217,17 +237,32 @@ pub(crate) fn recent_or(
     }))
 }
 
-pub(crate) struct UseArgs {
+#[derive(clap::Args)]
+pub struct UseOpts {
+    /// Your label (defaults to the slot label the first time)
+    #[arg(long)]
     pub label: Option<String>,
+    /// Your slot label in the device container
+    #[arg(long)]
     pub slot: Option<String>,
+    /// The device container directory that holds the slot
+    #[arg(long)]
     pub device: Option<PathBuf>,
+    /// The relay you normally use
+    #[arg(long)]
     pub url: Option<String>,
+    /// Turn the caches on or off (off also empties them)
+    #[arg(long, value_enum)]
     pub cache: Option<CacheSwitch>,
+    /// Print the stored defaults (the default when nothing is set)
+    #[arg(long)]
     pub show: bool,
+    /// Forget every stored default
+    #[arg(long, conflicts_with_all = ["label", "slot", "device", "url", "cache", "show"])]
     pub clear: bool,
 }
 
-pub(crate) fn run_use(conn: &Connection, args: UseArgs) -> Result<()> {
+pub(crate) fn run_use(conn: &Connection, args: UseOpts) -> Result<()> {
     if args.clear {
         profile::clear_all(conn)?;
         outln!("Cleared stored defaults");

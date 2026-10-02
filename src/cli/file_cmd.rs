@@ -513,10 +513,11 @@ pub enum FileCommand {
         /// Recipient label (its encryption key must be registered here)
         #[arg(long)]
         to: String,
-        /// Your label
+        /// Your label (default: from `keyquorum use`)
         #[arg(long = "as")]
-        as_label: String,
-        /// Your identity slot, container=label (signs the letter)
+        as_label: Option<String>,
+        /// Your identity slot, container=label (signs the letter; default:
+        /// from `keyquorum use`)
         #[arg(long, conflicts_with = "signing_key_file")]
         slot: Option<String>,
         /// Your signing private key file, instead of --slot
@@ -886,15 +887,19 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             push,
             url,
             api_key,
-        } => share(
-            conn,
-            &kqtf,
-            &to,
-            &as_label,
-            (slot, signing_key_file),
-            revision,
-            (output_dir, push, url, api_key),
-        ),
+        } => {
+            let (as_label, slot) =
+                super::profile::resolve_signer(conn, as_label, slot, signing_key_file.as_deref())?;
+            share(
+                conn,
+                &kqtf,
+                &to,
+                &as_label,
+                (slot, signing_key_file),
+                revision,
+                (output_dir, push, url, api_key),
+            )
+        }
         FileCommand::SendHistory {
             kqtf,
             to,

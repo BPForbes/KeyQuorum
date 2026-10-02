@@ -33,6 +33,8 @@ pub mod device_tool;
 pub mod env;
 pub(crate) mod file_cmd;
 mod gate_link;
+mod inbox;
+mod legacy;
 mod profile;
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
 mod review_tui;
@@ -41,6 +43,7 @@ use crate::file_history::{EventDetails, HistoryEventType, HistoryOutcome};
 use gate_link::Gate;
 #[cfg(feature = "provider")]
 pub mod host_args;
+mod send;
 mod transfer_cmd;
 
 /// How long a "one-time" PIN unlock stays valid before the PIN is needed
@@ -400,32 +403,19 @@ pub enum Command {
         #[command(subcommand)]
         command: device_cmd::DeviceCommand,
     },
+    /// Send a file to another label: one command, sealed and signed. A tracked
+    /// file goes as `file share` would send it, anything else as `deliver send`
+    Send(Box<send::SendOpts>),
+    /// Pull what is waiting for you and open it. With no subcommand, list it;
+    /// `inbox open` opens each letter and posts the signed answer
+    Inbox {
+        #[command(subcommand)]
+        command: Option<inbox::InboxCommand>,
+    },
     /// Set, change or show the defaults commands use when a flag is left out:
     /// who you are, which device holds your slot, which relay. Pointers only;
     /// no passphrase, key or bearer is stored.
-    Use {
-        /// Your label (defaults to the slot label the first time)
-        #[arg(long)]
-        label: Option<String>,
-        /// Your slot label in the device container
-        #[arg(long)]
-        slot: Option<String>,
-        /// The device container directory that holds the slot
-        #[arg(long)]
-        device: Option<PathBuf>,
-        /// The relay you normally use
-        #[arg(long)]
-        url: Option<String>,
-        /// Turn the caches on or off (off also empties them)
-        #[arg(long, value_enum)]
-        cache: Option<profile::CacheSwitch>,
-        /// Print the stored defaults (the default when nothing is set)
-        #[arg(long)]
-        show: bool,
-        /// Forget every stored default
-        #[arg(long, conflicts_with_all = ["label", "slot", "device", "url", "cache", "show"])]
-        clear: bool,
-    },
+    Use(Box<profile::UseOpts>),
     /// Inspect or empty the short-lived caches
     Cache {
         #[command(subcommand)]
@@ -943,6 +933,14 @@ pub fn run(db_path: &Path, command: Command) -> Result<()> {
         Command::Relay { command } => return run_relay(db_path, command),
         Command::Loadkey { api_key, url } => return run_loadkey(db_path, api_key, url),
         Command::Transfer { command } => return transfer_cmd::run(command),
+        // Dispatched here rather than in `run_in_store`, whose frame is the
+        // largest in the crate, so they run with that much more stack to spare.
+        command @ (Command::Use { .. }
+        | Command::Cache { .. }
+        | Command::Send { .. }
+        | Command::Inbox { .. }) => {
+            return env::with_db(db_path, |conn| run_everyday(conn, command));
+        }
         #[cfg(feature = "provider")]
         Command::Host { .. } => {
             unreachable!("the keyquorum binary serves host before calling cli::run")
@@ -957,27 +955,12 @@ fn run_in_store(conn: &mut Connection, command: Command) -> Result<()> {
     match command {
         Command::Vault { command } => run_vault(conn, command)?,
         Command::Access { command } => run_access(conn, command)?,
-        Command::Use {
-            label,
-            slot,
-            device,
-            url,
-            cache,
-            show,
-            clear,
-        } => profile::run_use(
-            conn,
-            profile::UseArgs {
-                label,
-                slot,
-                device,
-                url,
-                cache,
-                show,
-                clear,
-            },
-        )?,
-        Command::Cache { command } => profile::run_cache(conn, command)?,
+        Command::Use { .. }
+        | Command::Cache { .. }
+        | Command::Send { .. }
+        | Command::Inbox { .. } => {
+            unreachable!("the everyday commands are dispatched in run()")
+        }
         Command::Generate { .. }
         | Command::Register { .. }
         | Command::List
@@ -1044,8 +1027,8 @@ fn run_in_store(conn: &mut Connection, command: Command) -> Result<()> {
         Command::Export { command } => run_export(conn, command)?,
         Command::Share { command } => run_share(conn, command)?,
         Command::Pin { command } => run_pin(conn, command)?,
-        Command::Deliver { command } => deliver_cmd::run(conn, command)?,
-        Command::File { command } => file_cmd::run(conn, command)?,
+        Command::Deliver { command } => run_deliver(conn, command)?,
+        Command::File { command } => run_file(conn, command)?,
         Command::Device { command } => device_cmd::run(conn, command)?,
         Command::Transfer { .. } | Command::Relay { .. } | Command::Loadkey { .. } => {
             unreachable!("transfer and relay commands are handled before opening the org db")
@@ -1056,6 +1039,52 @@ fn run_in_store(conn: &mut Connection, command: Command) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// The everyday commands (`use`, `cache`, `send`, `inbox`), kept out of
+/// `run_in_store` so that function's frame (one per test thread in a debug
+/// build) does not grow with every command.
+#[inline(never)]
+fn run_everyday(conn: &Connection, command: Command) -> Result<()> {
+    match command {
+        Command::Use(opts) => profile::run_use(conn, *opts)?,
+        Command::Cache { command } => profile::run_cache(conn, command)?,
+        Command::Send(opts) => send::run(conn, *opts)?,
+        Command::Inbox { command } => inbox::run(conn, command)?,
+        _ => unreachable!("run_in_store sends only the everyday commands here"),
+    }
+    Ok(())
+}
+
+/// `deliver`, with the legacy notice after it. Out of line for the same
+/// reason as [`run_everyday`].
+#[inline(never)]
+fn run_deliver(conn: &Connection, command: deliver_cmd::DeliverCommand) -> Result<()> {
+    let legacy = match &command {
+        deliver_cmd::DeliverCommand::Send { .. } => ("deliver send", legacy::SEND),
+        deliver_cmd::DeliverCommand::Open { .. } => ("deliver open", legacy::OPEN),
+        deliver_cmd::DeliverCommand::Ack { .. } => ("deliver ack", legacy::OPEN),
+    };
+    deliver_cmd::run(conn, command)?;
+    legacy::notice(legacy.0, legacy.1);
+    Ok(())
+}
+
+/// `file`, with the legacy notice after the three commands `send` and
+/// `inbox` replace.
+#[inline(never)]
+fn run_file(conn: &Connection, command: file_cmd::FileCommand) -> Result<()> {
+    let legacy = match &command {
+        file_cmd::FileCommand::Share { .. } => Some(("file share", legacy::SEND)),
+        file_cmd::FileCommand::Receive { .. } => Some(("file receive", legacy::OPEN)),
+        file_cmd::FileCommand::Ack { .. } => Some(("file ack", legacy::OPEN)),
+        _ => None,
+    };
+    file_cmd::run(conn, command)?;
+    if let Some((old, instead)) = legacy {
+        legacy::notice(old, instead);
+    }
     Ok(())
 }
 
@@ -1382,6 +1411,8 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
         | Command::Loadkey { .. }
         | Command::Device { .. }
         | Command::Use { .. }
+        | Command::Send { .. }
+        | Command::Inbox { .. }
         | Command::Cache { .. }
         | Command::Transfer { .. } => unreachable!("non-tree commands are dispatched in run()"),
         #[cfg(feature = "provider")]
@@ -2526,7 +2557,14 @@ fn loadkey_in_store(conn: &Connection, api_key: Option<String>, url: Option<Stri
 }
 
 fn run_relay(db_path: &Path, command: RelayCommand) -> Result<()> {
-    env::with_db(db_path, |conn| relay_in_store(conn, command))
+    // `relay push` stays the carrier for the producer commands until they
+    // push for themselves, so only a pull is called legacy for now.
+    let pulled = matches!(command, RelayCommand::Pull { .. });
+    env::with_db(db_path, |conn| relay_in_store(conn, command))?;
+    if pulled {
+        legacy::notice("relay pull", legacy::PULL);
+    }
+    Ok(())
 }
 
 fn relay_in_store(conn: &Connection, command: RelayCommand) -> Result<()> {
@@ -2727,24 +2765,30 @@ fn relay_in_store(conn: &Connection, command: RelayCommand) -> Result<()> {
                     continue;
                 }
                 if let Some(sk) = share_sk.as_ref() {
-                    match org_update::import_any(conn, &bytes, sk)? {
-                        org_update::ImportedEnvelope::Bridge(summary) => outln!(
-                            "Imported envelope {} as private bridge {} gen {}",
-                            item.id,
-                            summary.uid,
-                            summary.generation
-                        ),
-                        org_update::ImportedEnvelope::Update(applied) => outln!(
-                            "Imported envelope {}: {}",
-                            item.id,
-                            describe_applied_update(&applied)
-                        ),
-                    }
+                    import_envelope(conn, item.id, &bytes, sk)?;
                 }
             }
             if let Some(cursor) = listed.next_after {
                 outln!("More envelopes remain; pass --after {cursor} to continue");
             }
+        }
+    }
+    Ok(())
+}
+
+/// Import one bridge or org-update envelope and say what it did.
+fn import_envelope(conn: &Connection, id: i64, bytes: &[u8], sk: &[u8; 32]) -> Result<()> {
+    match org_update::import_any(conn, bytes, sk)? {
+        org_update::ImportedEnvelope::Bridge(summary) => outln!(
+            "Imported envelope {id} as private bridge {} gen {}",
+            summary.uid,
+            summary.generation
+        ),
+        org_update::ImportedEnvelope::Update(applied) => {
+            outln!(
+                "Imported envelope {id}: {}",
+                describe_applied_update(&applied)
+            )
         }
     }
     Ok(())

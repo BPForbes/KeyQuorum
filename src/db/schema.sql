@@ -575,3 +575,14 @@ CREATE TABLE IF NOT EXISTS verified_cache (
     verified_at TEXT NOT NULL,
     PRIMARY KEY (kind, subject)
 );
+
+-- Letters `keyquorum inbox` has pulled from a relay, so a later pull resumes
+-- after the newest one and a letter is opened once. The sealed bytes stay in
+-- the inbox directory; nothing here is secret.
+CREATE TABLE IF NOT EXISTS inbox_letters (
+    relay_url TEXT NOT NULL,
+    letter_id INTEGER NOT NULL,
+    kind      INTEGER NOT NULL,
+    status    TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'handled')),
+    PRIMARY KEY (relay_url, letter_id)
+);

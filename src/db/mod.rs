@@ -4,6 +4,7 @@ use std::time::Duration;
 const SCHEMA: &str = include_str!("schema.sql");
 
 pub mod cache;
+pub mod inbox;
 pub mod profile;
 pub mod relay_credential;
 
