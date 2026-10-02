@@ -154,7 +154,7 @@ impl LabState {
 
     /// Follow any container a command line names.
     pub(super) fn register_from_command(&mut self, line: &str) {
-        // `file ...`, and the one-shot commands that name a container too:
+        // `file ...`, and the everyday commands that name a container too:
         // `send <file>.kqtf`, and `inbox open ... --into/--out/--file <file>.kqtf`.
         if !(line.contains(" file ") || line.contains(" inbox open ") || line.contains(" send ")) {
             return;

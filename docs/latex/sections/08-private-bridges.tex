@@ -56,9 +56,16 @@ recipient encryption pub & or roster + salts (managers) \\
 \end{center}
 
 Five people in the example above means five envelopes, each addressed to a
-different public key. Operators can copy those files out of band, or push
-them through the mailbox relay (\code{keyquorum relay push}) so each store
-can \code{relay pull --import} locally.
+different public key. Operators can copy those files out of band, or add
+\flag{--push} to \code{bridge private create} (or \code{remove-member}) to
+upload them to the mailbox relay in the same command, so each member's store
+opens them with \code{keyquorum inbox open}. The order is fixed: the relay is
+proved first, the envelopes are written, the change is committed, and only then
+are they uploaded. If the commit fails the files are removed again; if the
+upload fails the change stays saved, the files stay in place, and the error
+gives the command that finishes the job. With \flag{--push} and no
+\flag{--output-dir} the envelopes are staged in their own folder under
+\file{./outbox} and removed once uploaded.
 
 \begin{lstlisting}
 # Each member needs a registered signing public key under their label:
@@ -72,7 +79,13 @@ keyquorum bridge private create 1 \
   --supervisor M.S=SoftwareManager.pub --supervisor M.A=AccountingManager.pub \
   --self M.S.2 --output-dir ./bridge-packages --label eng-acct
 
-# Each other person imports into *their* database:
+# ...or upload them as part of the same command:
+#   keyquorum bridge private create 1 ... --self M.S.2 --push
+
+# Each other person opens what is waiting for them (a slot, not a key file):
+keyquorum --db ma2.sqlite inbox open
+# A key file works with the direct import (also the form for envelopes
+# carried by hand):
 keyquorum --db ma2.sqlite bridge private import \
   --file ./bridge-packages/M.A.2.kqpb --share-file Accounting2.key
 
@@ -99,7 +112,7 @@ member then runs:
 keyquorum bridge private remove-member <uid> --member M.S.3 \
   --node M.S.2 --share-file Software2.key --output-dir ./bridge-packages-rotate
 # Copy the new packages to M.S.2, M.A.2, M.S, M.A, and M.S.3
-# (or `keyquorum relay push --dir ./bridge-packages-rotate`). Package
+# (or add --push above to upload them in the same command). Package
 # writers name files by recipient and never overwrite, so reuse the
 # original ./bridge-packages here only after clearing it out.
 \end{lstlisting}

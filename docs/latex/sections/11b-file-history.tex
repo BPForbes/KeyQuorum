@@ -217,8 +217,8 @@ cannot author or sign anything new; what it signed earlier still verifies.
 
 \subsection{Sharing falls back to the last trusted revision}
 
-\code{file share} sends the head (or the revision named with
-\flag{--revision}) when it is \emph{trusted}. If it is not --- say someone
+\code{send} (which runs \code{file share} for a tracked file) sends the head
+(or the revision named with \flag{--revision}) when it is \emph{trusted}. If it is not --- say someone
 checked in an edit without signing it --- the letter carries its nearest
 trusted \emph{ancestor} instead. Trusted work on another branch is never
 substituted, and the unsigned revision never leaves your copy: the container
@@ -230,11 +230,13 @@ verify), and \emph{no trusted revision} when it is only waiting for a
 signature.
 
 \begin{lstlisting}
-keyquorum file share report.txt.kqtf --to M.B --as M.A --slot ./usb=M.A \
-  --output-dir ./outbox
-keyquorum --db mb.sqlite file receive --letter ./outbox/<id>.kqpb \
-  --slot ./usb=M.B --ack-dir ./acks --out report.txt.kqtf
-keyquorum file ack report.txt.kqtf --ack ./acks/<id>-ack.kqpb --slot ./usb=M.A
+# M.A (identity and relay stored with `use` and `loadkey`)
+keyquorum send report.txt.kqtf --to M.B
+# M.B: list what is waiting, then open the letter into a new copy
+keyquorum inbox
+keyquorum inbox open <id> --out report.txt.kqtf
+# M.A, later: record M.B's signed answer in M.A's copy
+keyquorum inbox open <answer-id> --file report.txt.kqtf
 \end{lstlisting}
 
 Letters are \code{KQPB} envelopes of their own kind, carried by the relay
@@ -243,18 +245,19 @@ like any other letter. The sender's signature on the letter is
 delivered revision by the file's own policy against their own store, and
 refuses it if it is not trusted there. The recipient's store must also hold the encryption key that
 opened the letter under the recipient label the letter names, so a letter
-sealed to one person cannot credit the delivery to another; \code{deliver
-open} makes the same check. The signed letter also names every proof it
-carries for the delivered revision, and \code{file receive} refuses a letter
-whose container does not match. A rename made before sharing travels with the
+sealed to one person cannot credit the delivery to another; \code{inbox open} (and the older
+\code{deliver open} and \code{file receive}) make the same check. The signed
+letter also names every proof it carries for the delivered revision, and the
+receiving command refuses a letter whose container does not match. A rename made before sharing travels with the
 letter, and so does any later history that does not concern a revision
 outside the delivered one. \flag{--into} merges a letter into a
 copy you already hold. Either way the recipient seals back a signed accept
-or reject, and \code{file ack} records it once in the sender's history.
+or reject, and recording it (\code{inbox open <id> --file}, or the older
+\code{file ack}) happens once in the sender's history.
 Receiving the same letter again records nothing new; it only seals the
 answer again.
 
-\code{file receive} also says how the delivered history compares with what
+Receiving also says how the delivered history compares with what
 your store accepted before for that file: \code{FIRST}, \code{REPLAYED} (the
 same revision and history again), \code{NEWER} (its history passes through
 every history root you accepted before, holds those revisions and adds one)
@@ -264,26 +267,25 @@ warning, not a refusal: a trusted older revision is still accepted.
 
 \code{file send-history} seals a file's event history alone (a \code{KQHS}
 snapshot, no content) to another label, with its root and event count signed
-by you. \code{file open-history} checks the signature and the snapshot and,
-with \flag{--against}, compares it with your copy: \code{SAME},
-\code{LOCAL_AHEAD}, \code{REMOTE_AHEAD} or \code{DIVERGED}. It is not
-answered.
+by you. Opening it (\code{inbox open <id> --file COPY}, or the older
+\code{file open-history --against}) checks the signature and the snapshot and
+compares it with your copy: \code{SAME}, \code{LOCAL_AHEAD},
+\code{REMOTE_AHEAD} or \code{DIVERGED}. It is not answered.
 
 \begin{lstlisting}
-keyquorum file send-history report.txt.kqtf --to M.B --as M.A \
-  --slot ./usb=M.A --output-dir ./outbox
-keyquorum --db mb.sqlite file open-history --letter ./outbox/<id>.kqpb \
-  --slot ./usb=M.B --against report.txt.kqtf
+keyquorum file send-history report.txt.kqtf --to M.B --push
+# M.B:
+keyquorum inbox open <id> --file report.txt.kqtf
 \end{lstlisting}
 
 \subsection{Sending and receiving a tracked file from the command line}
 
 A tracked file travels as a \emph{letter}: a sealed \file{.kqpb} file that
 holds no secret. It is signed by the sender and sealed to the recipient's
-public key, so it can cross any channel. The commands that make and open
-a letter are the same whether or not a relay is used; only the way the
-letter and the answer get from one person to the other differs. Each person
-needs only their \emph{own} drive, plugged into their \emph{own} computer,
+public key, so it can cross any channel. With a relay the commands are
+\code{send} and \code{inbox open}; without one the letter and the answer are
+files you carry, and only the way they get from one person to the other
+differs. Each person needs only their \emph{own} drive, plugged into their \emph{own} computer,
 and only at the moment they sign or open something. Nobody hands over a
 key drive.
 
@@ -308,14 +310,64 @@ keyquorum --db mb.sqlite register --type signing --label M.A \
 #     keyquorum-device public, M.A registers them in ma.sqlite
 \end{lstlisting}
 
-\subsubsection*{When the API is not available: you carry the files}
+\subsubsection*{With a relay: send, then inbox open}
+
+A relay is a mailbox that stores sealed letters and cannot open them. It
+adds no security the letter lacks. It saves the two people from handing
+the files over and lets them act at different times. You need the relay's
+URL and API keys from its operator. Each key has one scope: an
+\emph{inbox push} key sends a letter or an answer, an \emph{inbox pull} key
+downloads what is waiting, so each person usually holds both. Store the
+identity and the relay once per person, on their own computer (\code{setup},
+or \code{use} and \code{loadkey}); after that the commands need no
+\flag{--as}, \flag{--slot} or \flag{--url}.
+
+\begin{lstlisting}
+# 1. M.A's computer, M.A's drive in: seal the letter and upload it
+keyquorum send report.txt.kqtf --to M.B
+
+# 2. Later, M.B's computer, M.B's drive in: see what is waiting (id, kind)
+keyquorum inbox
+
+# 3. M.B opens the letter and uploads the signed answer
+keyquorum inbox open <id> --out report.txt.kqtf
+#    --into report.txt.kqtf   merge into a copy M.B already holds (instead of --out)
+#    --reject                 refuse the letter (instead of --out or --into)
+
+# 4. Later, M.A's computer, M.A's drive in: record the answer in M.A's copy
+keyquorum inbox open <answer-id> --file report.txt.kqtf
+\end{lstlisting}
+
+The copy a letter concerns is always named by the person
+(\flag{--into}, \flag{--out} or \flag{--file}), never taken from the letter:
+its file id is only the sender's claim, and a copy that does not match is
+refused. \flag{--url} and \flag{--api-key} can be given on \code{send} and
+\code{inbox} instead of using the stored key. These environment variables work
+too:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \code{KEYQUORUM_RELAY_URL}
+  \item \code{KEYQUORUM_RELAY_API_KEY}
+\end{itemize}
+
+Downloaded letters are kept under \file{./inbox/<relay hash>/<n>.kqpb}, named
+by the relay's own number, so letters from two relays can never be mistaken
+for each other. The official client only talks to a relay that proves it holds
+a KeyQuorum-signed certificate. Everything else, including the sender's
+signature, the recipient-key check, the history comparison and the signed
+answer, is the same as without the relay.
+
+\subsubsection*{Without a relay: you carry the files}
 
 No URL and no API key. The letter and the answer are plain files; move them
 by email, a shared folder, or a USB stick that is only a courier.
+\code{inbox} reads a relay, so a letter that arrives as a file is opened with
+\code{file receive}, and its answer is recorded with \code{file ack}. Both
+stay supported for exactly this case.
 
 \begin{lstlisting}
 # 1. M.A's computer, M.A's drive in: seal the letter into a folder
-keyquorum --db ma.sqlite file share report.txt.kqtf --to M.B --as M.A \
+keyquorum --db ma.sqlite send report.txt.kqtf --to M.B --as M.A \
   --slot ./usb=M.A --output-dir ./outbox
 
 # 2. Carry ./outbox/<id>.kqpb to M.B's computer (any channel)
@@ -333,8 +385,8 @@ keyquorum --db ma.sqlite file ack report.txt.kqtf --ack ./<id>-ack.kqpb \
   --slot ./usb=M.A
 \end{lstlisting}
 
-To send M.B's changes back, swap the roles and repeat steps 1 to 5. If both
-copies have moved on, the receiver ends up with two heads:
+To send M.B's changes back, swap the roles and repeat. If both copies have
+moved on, the receiver ends up with two heads:
 
 \begin{lstlisting}
 # 6. on whoever received: join the heads, then settle any conflict
@@ -349,55 +401,28 @@ A no-drive alternative to steps 1 to 5 is to carry the whole \file{.kqtf}
 and run \code{file import report.txt.kqtf --from theirs.kqtf --as M.B}. It
 skips the signature and trust check that a letter carries.
 
-\subsubsection*{When the API is available: the relay carries the files}
+\subsubsection*{Legacy procedure with a relay (still possible, not recommended)}
 
-A relay is a mailbox that stores sealed letters and cannot open them. It
-adds no security the letter lacks. It saves the two people from handing
-the files over and lets them act at different times. You need the relay's
-URL and API keys from its operator. Each key has one scope: an
-\emph{inbox push} key sends a letter or an answer, an \emph{inbox pull} key
-downloads what is waiting, so each person usually holds both.
+Before \code{send} and \code{inbox open}, the relay path was five separate
+commands, with a download and an upload step the person had to run by hand.
+They still work as they always did, and each prints a note on standard error
+naming the command that replaces it. Prefer the commands above.
 
 \begin{lstlisting}
-# 1. Once per person, on their own computer: store the relay URL and key
-#    (the key is prompted for when it is not on the command line)
 keyquorum --db ma.sqlite loadkey --url https://relay.example
-
-# 2. M.A's computer, M.A's drive in: seal the letter and upload it
 keyquorum --db ma.sqlite file share report.txt.kqtf --to M.B --as M.A \
-  --slot ./usb=M.A --push
-
-# 3. Later, M.B's computer: download what is waiting for M.B
-keyquorum --db mb.sqlite relay pull --output-dir ./inbox
-
-# 4. M.B's computer, M.B's drive in: open the letter, upload the answer
+  --slot ./usb=M.A --push                                  # M.A uploads
+keyquorum --db mb.sqlite relay pull --output-dir ./inbox   # M.B downloads
 keyquorum --db mb.sqlite file receive --letter ./inbox/<n>.kqpb \
-  --slot ./usb=M.B --push-ack --out report.txt.kqtf
-
-# 5. Later, M.A's computer: download the answer
-keyquorum --db ma.sqlite relay pull --output-dir ./answers
-
-# 6. M.A's computer, M.A's drive in: record the answer
+  --slot ./usb=M.B --push-ack --out report.txt.kqtf        # M.B answers
+keyquorum --db ma.sqlite relay pull --output-dir ./answers # M.A downloads
 keyquorum --db ma.sqlite file ack report.txt.kqtf --ack ./answers/<n>.kqpb \
-  --slot ./usb=M.A
+  --slot ./usb=M.A                                         # M.A records
 \end{lstlisting}
 
-Sending changes back and settling conflicts work exactly as in the
-previous case (swap the roles, then the merge, review, resolve and sign
-commands above). \flag{--url} and \flag{--api-key} can be given on
-\code{share} and \code{receive} instead of using the stored key. These
-environment variables work too:
-
-\begin{itemize}[leftmargin=1.5em]
-  \item \code{KEYQUORUM_RELAY_URL}
-  \item \code{KEYQUORUM_RELAY_API_KEY}
-\end{itemize}
-
-Downloaded letters are named by the relay's own number (\code{<n>.kqpb}). The
-official client only talks to a relay that proves it holds a KeyQuorum-signed
-certificate. Everything else, including the sender's signature, the
-recipient-key check, the history comparison and the signed answer, is the
-same as without the relay.
+In that form, letters downloaded by \code{relay pull} are named by the relay's
+number only (\code{<n>.kqpb}) and \flag{--url} and \flag{--api-key} go on
+\code{share} and \code{receive}.
 
 \begin{cautionBox}
 Without the relay a drive is needed only for the person who is signing or
@@ -545,7 +570,7 @@ proposal} once the author has already prepared the changes.
 
 A request is a small signed letter (\file{.kqpb}) sealed to the holder, and
 the answer is another, sealed back to the requester. They travel exactly as
-in the previous section: as plain files you carry, or through the relay. The
+in the previous section: through the relay, or as plain files you carry. The
 holder checks the requester's signature against the key their own store
 holds for that label, and the requester checks the holder's answer the same
 way. A request never opens as a delivery letter, or the other way round.
@@ -557,10 +582,46 @@ change request is shown to the holder and is \emph{never} recorded. Opening
 the same request or answer twice records it once, and a request already
 answered one way cannot be answered the other.
 
-\subsubsection*{When the API is not available: you carry the files}
+\subsubsection*{With a relay: file request, then inbox open}
+
+Store the relay URL and key once per person (\code{loadkey}, or \code{setup}).
+M.B asks M.A; each answer is one \code{inbox open}.
+
+\begin{lstlisting}
+# 1. M.B's computer, M.B's drive in: ask for a file M.B does not hold yet
+keyquorum file request --file-id <32 hex digits> \
+  --name report.txt --to M.A --push
+#    or ask for a change to M.B's own copy (message up to 1024 bytes)
+keyquorum file request report.txt.kqtf --change \
+  --message "the total in row 3 is wrong" --to M.A --push
+
+# 2. Later, M.A's computer, M.A's drive in: see what is waiting
+keyquorum inbox
+
+# 3. M.A reads the request and answers it in one command; --file records it
+#    in M.A's copy, and a decision is never guessed
+keyquorum inbox open <id> --accept --file report.txt.kqtf   # or --decline
+
+# 4. Later, M.B's computer: record the answer against the request M.B's copy
+#    shows it made
+keyquorum inbox open <answer-id> --file report.txt.kqtf
+\end{lstlisting}
+
+A request that is waiting is listed by \code{inbox} and left alone by a bare
+\code{inbox open}, because it needs a decision only M.A can give.
+
+If M.A accepted a \emph{file request}, M.A now sends the file with
+\code{send}, as in the previous section. If M.A accepted a \emph{change
+request}, the change reaches M.A as a revision the ordinary way: M.B checks it
+in on their copy and sends it with \code{send}, and it arrives as a merge
+proposal.
+
+\subsubsection*{Without a relay: you carry the files}
 
 The public keys of both people are exchanged and registered first (step 0
-in the previous section). M.B asks M.A:
+in the previous section). \code{inbox} reads a relay, so a request or an answer
+that arrives as a file is opened with the \code{file} commands, which stay
+supported for this case.
 
 \begin{lstlisting}
 # 1. M.B's computer, M.B's drive in: ask for a file M.B does not hold yet
@@ -589,48 +650,33 @@ keyquorum --db mb.sqlite file open-answer --answer ./<id>-answer.kqpb \
   --slot ./usb=M.B --file report.txt.kqtf
 \end{lstlisting}
 
-If M.A accepted a \emph{file request}, M.A now sends the file with the
-\code{file share} steps of the previous section. If M.A accepted a
-\emph{change request}, the change reaches M.A as a revision the ordinary
-way: M.B checks it in on their copy and sends it with \code{file share}, and
-it arrives as a merge proposal.
+\subsubsection*{Legacy procedure with a relay (still possible, not recommended)}
 
-\subsubsection*{When the API is available: the relay carries the files}
-
-Store the relay URL and key once per person (\code{loadkey}, as before). Only
-the commands that move a file change:
+The same exchange used to be a download and a separate command at every step.
+It still works, and \code{relay pull --import} still lists a request or an
+answer and tells you which command opens it; it never imports one, because a
+request only asks. Prefer \code{inbox open} above.
 
 \begin{lstlisting}
-# 1. M.B: the same file request commands, with --push in place of --output-dir
-keyquorum --db mb.sqlite file request --file-id <32 hex digits> \
-  --name report.txt --to M.A --as M.B --slot ./usb=M.B --push
-
-# 2. Later, M.A's computer: download what is waiting, then read the request
 keyquorum --db ma.sqlite relay pull --output-dir ./inbox
 keyquorum --db ma.sqlite file open-request --letter ./inbox/<n>.kqpb \
   --slot ./usb=M.A --file report.txt.kqtf
-
-# 3. M.A answers and uploads the answer
 keyquorum --db ma.sqlite file answer-request --letter ./inbox/<n>.kqpb \
   --decision accept --slot ./usb=M.A --file report.txt.kqtf --push-ack
-
-# 4. Later, M.B's computer: download the answer, then read it
 keyquorum --db mb.sqlite relay pull --output-dir ./answers
 keyquorum --db mb.sqlite file open-answer --answer ./answers/<n>.kqpb \
   --slot ./usb=M.B --file report.txt.kqtf
 \end{lstlisting}
 
-\code{relay pull --import} lists a request or an answer and tells you which
-command opens it; it never imports one, because a request only asks.
-
 \subsection{History snapshots and the index}
 
-\code{file history} with \flag{--export} (or \code{file history export --out}) writes a \code{KQHS}
-snapshot: the event
-history alone, which verifies on its own. \code{file verify-snapshot}
-with \flag{--against} checks that a snapshot is a point in a file's history --- for
+\code{file history export FILE --out SNAPSHOT} writes a \code{KQHS} snapshot: the event
+history alone, which verifies on its own. \code{file history verify SNAPSHOT}
+with \flag{--against FILE} checks that a snapshot is a point in a file's history --- for
 example, what a partner held when they last answered. A snapshot of an older
-point is still valid; it proves a prefix, not that nothing came after.
+point is still valid; it proves a prefix, not that nothing came after. The older spellings
+\code{file history --export} and \code{file verify-snapshot} still work but are
+not recommended.
 
 The store keeps \code{tracked_files}, \code{tracked_revisions} and
 \code{tracked_history_index} as a cache of metadata (no content, no trust

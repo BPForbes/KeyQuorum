@@ -76,7 +76,14 @@ receiving --- and \textbf{Check mail} looks again on demand. If the sender's
 USB is out, the answer waits, sealed to their key.
 
 \Screenshot{docs/latex/images/lab/mailbox.png}{Inbox and sent, in the empty
-seeded state.}
+seeded state, with the \textbf{Check mail} button.}
+
+\Screenshot{docs/latex/images/lab/mailbox-inbox.png}{David's inbox with a
+sealed letter waiting: sender and file stay hidden until \textbf{Receive}
+opens it with his slot.}
+
+\Screenshot{docs/latex/images/lab/mailbox-sent.png}{Alice's Sent view after
+David received the letter: the delivery is marked acknowledged.}
 
 \subsection{Security \& devices}
 
@@ -92,8 +99,24 @@ further down, read-only device logs and relay counters for the in-process
 mailbox this lab runs against.
 
 \Screenshot{docs/latex/images/lab/security.png}{Security \& devices: the
-password-lock form, exported bundles, share links, and key/leaf
-provisioning.}
+password-lock form, exported bundles, share links, and the \textbf{Check my
+setup} block.}
+
+\textbf{Check my setup} prints what \code{keyquorum doctor} found for the
+active person: a line for each thing that works, and for each thing that does
+not, a \emph{FIX} line with the command that repairs it. \textbf{Use my
+current drive} (\code{keyquorum use}) and \textbf{Bind my slot}
+(\code{keyquorum device bind}) run those fixes. Everyone seeded already has
+both done; the lab re-runs them for the owner when a slot is moved to another
+drive. \code{keyquorum setup} --- the command that does all of it from
+nothing --- is the \textbf{Create and register a new leaf} form, because the
+lab's people are fixed.
+
+\Screenshot{docs/latex/images/lab/doctor-ok.png}{Check my setup with
+everything in place: every line passes.}
+
+\Screenshot{docs/latex/images/lab/doctor-fix.png}{The same check with Alice's
+USB out: a FIX line says the container cannot be opened and how to repair it.}
 
 \subsection{Activity and access trace}
 
@@ -125,19 +148,20 @@ own store and their own drive's slot; each button runs one real
   when the head is pending. The letter, and every answer, travels through
   the relay (\code{send}, then \code{inbox open}); no shared folder is
   involved. The recipient \textbf{Accept}s or
-  \textbf{Refuse}s the letter (into their own copy); the sender's copy
-  records the answer by itself (\code{file ack}) when the sender is next
-  signed in with their USB inserted. \textbf{Record the answer} appears only
-  while it is still waiting.
+  \textbf{Refuse}s the letter (\code{inbox open ID --out}, or \code{--reject});
+  the sender's copy records the answer by itself
+  (\code{inbox open ID --file}) when the sender is next signed in with their
+  USB inserted. \textbf{Record the answer} appears only while it is still
+  waiting.
   \item \textbf{Ask for a file, or for a change}: pick a person, choose
   \emph{a file} (send me your copy) or \emph{a change to this file}, add a
   message if you like, and press \textbf{Send request} (\code{keyquorum file
   request}, with \code{--change} for a change). Under \emph{Requests for a
   file or a change} the holder sees the message and presses \textbf{Accept
-  request} or \textbf{Decline request} (\code{open-request}, then
-  \code{answer-request}, which also records the request in their own copy
-  of the file). The asker's copy records the answer by itself
-  (\code{open-answer}) when the asker is next signed in with their USB
+  request} or \textbf{Decline request} (\code{inbox open ID --accept} or
+  \code{--decline}, with \code{--file} naming their own copy so the request
+  is recorded there). The asker's copy records the answer by itself
+  (\code{inbox open ID --file}) when the asker is next signed in with their USB
   inserted. A request only asks: nothing is delivered or
   changed. To serve an accepted file request the holder uses \textbf{Share
   file}; a change arrives as an ordinary revision. The log shows the request
@@ -172,7 +196,25 @@ to a reviewer).
 files panel: revisions with their trust, what sharing would send, and the
 controls for the selected file.}
 
+A hand-over, as the panel shows it. Sarah shares \file{budget.txt} with
+Alice and the letter waits; Alice accepts it into her own copy; when Sarah is
+next signed in with her USB, her copy records Alice's answer without a click.
+
+\Screenshot{docs/latex/images/lab/tracked-letter-sent.png}{Sarah's side: the
+letter to Alice is waiting.}
+
+\Screenshot{docs/latex/images/lab/tracked-letter-waiting.png}{Alice's side:
+\textbf{Accept} or \textbf{Refuse} the letter.}
+
+\Screenshot{docs/latex/images/lab/tracked-letter-answered.png}{Back as Sarah:
+the answer is recorded.}
+
+\Screenshot{docs/latex/images/lab/tracked-request-waiting.png}{A request for
+a change, as the holder sees it: the message is shown to her and never
+recorded.}
+
 \subsection{Terminal}
+\label{sec:lab-terminal}
 
 A real shell on the same lab machine. Every button on every other tab runs
 a command here under the hood; typing it directly works identically,
@@ -190,7 +232,22 @@ su david
 
 \code{usb insert} / \code{usb eject} and \code{su} are lab-only shell verbs
 for drive and identity control; every other line is an ordinary
-\code{keyquorum} / \code{keyquorum-device} command. Any passphrase,
+\code{keyquorum} / \code{keyquorum-device} command.
+
+A few shorthands save typing the database path: \code{use}, \code{setup} and
+\code{doctor} run as the active person against their own store, \code{bridge}
+runs against the organization store, \code{send FILE USER} sends a file,
+\code{inbox} lists the letters waiting, and \code{inbox open [ID]} opens one
+letter, or every new one, and posts the answers. \code{receive ID} and
+\code{reject ID} are \code{inbox open ID} with and without \code{--reject}.
+
+\paragraph{Legacy commands.} The older commands --- \code{deliver send},
+\code{deliver open}, \code{deliver ack}, \code{file share}, \code{file
+receive}, \code{file ack}, \code{relay pull} --- still work if you type them
+here, exactly as in the CLI manual, and they print the same note naming their
+replacement. They are not recommended, and no button in the lab uses them: a
+full \code{keyquorum ... inbox open} line typed by hand also bypasses the
+lab's own mailbox bookkeeping, which the shorthand does not. Any passphrase,
 password, or PIN prompt a typed command raises is answered with its
 published default value (Section~\ref{sec:lab-default-credentials}), the
 same way a GUI action's prompt is when you have not staged your own

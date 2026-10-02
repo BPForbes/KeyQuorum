@@ -45,8 +45,14 @@ unlocks it in memory under the file's own custody and approval rules, seals
 it and sends it. A refused unlock sends nothing, and the attempt is recorded
 at the file's gate as any unlock is.
 
-The single-purpose commands still work as they did and print a note on standard
-error naming what replaces them; they will be retired.
+\subsection{Legacy procedure (still possible, not recommended)}
+
+The earlier single-purpose commands still work exactly as they did. Each prints
+a note on standard error naming what replaces it, and standard output and the
+exit status are unchanged, so a script that parses either keeps working. They
+are not recommended for new use: with them the person downloads, opens and
+answers in separate steps, and the sender runs a separate command to read the
+answer.
 
 \begin{lstlisting}
 keyquorum deliver send --file report.pdf --to M.A --as M.S.1 \
@@ -56,6 +62,13 @@ keyquorum --db david.sqlite deliver open --file ./mail/7.kqpb \
   --slot ./usb=M.A --save-dir ./received --push-ack
 keyquorum deliver ack --file ./mail/8.kqpb --slot ./usb=M.S.1
 \end{lstlisting}
+
+\noindent Each line above is replaced by one of \code{send}, \code{inbox} and
+\code{inbox open}: \code{deliver send} by \code{send}, \code{relay pull} by
+\code{inbox}, and \code{deliver open} and \code{deliver ack} by \code{inbox
+open}. The same holds for a tracked file (\code{file share}, \code{file
+receive}, \code{file ack}). \code{relay push} is not legacy: it still carries
+envelopes that were written offline.
 
 To send a file whose revisions and signatures should travel with it, and
 where an unsigned newer edit must never go out, track it instead and use

@@ -216,7 +216,7 @@ the canonical document. `split`,
 `bind`, `add`, `revoke`, `bridge`, and `access quorum --state 0 --leaf` write
 that tree in place. There is no JSON file to author first. `tree --output`
 writes a snapshot of whatever is stored now. `--tree-spec FILE` remains only
-for a nested one-shot tree.
+for a nested tree given in a file.
 
 Leaves that exist only as topology (a sibling or bridge peer whose sealed share
 lives on their device) may have `wrapped_share` NULL.
@@ -358,9 +358,11 @@ recipient encryption pub     or roster + salts (managers)
 ```
 
 Five people in the example means five envelopes, each addressed to a
-different pub. Operators can copy those files out of band, or push them
-through the mailbox relay (`keyquorum relay push`) so each store can
-`relay pull --import` locally.
+different pub. Operators can copy those files out of band, or add `--push` to
+`bridge private create` (or `remove-member`) to upload them in the same command,
+so each store opens them with `keyquorum inbox open`. (`relay push` still
+uploads envelopes written offline, and `relay pull --import` is the older way
+to install them.)
 
 ```sh
 # Each member needs a registered signing public key under their label:
@@ -539,7 +541,8 @@ Each store applies them the same way it applies a bridge envelope — the
 kind byte in the header decides which it is:
 
 ```sh
-keyquorum --db M.S.1.sqlite relay pull --import --share-file M.S.1.key
+keyquorum --db M.S.1.sqlite inbox open
+# Older, still possible: keyquorum --db M.S.1.sqlite relay pull --import --share-file M.S.1.key
 keyquorum --db M.S.1.sqlite bridge private import --file M.S.1.kqpb --share-file M.S.1.key
 keyquorum --db M.S.1.sqlite updates    # what this store has applied
 ```
@@ -716,11 +719,13 @@ tracked file and device letters are listed with the command that opens them and
 left for a person. `--ack-dir DIR` writes answers to a directory instead of
 uploading them.
 
-The single-purpose commands still work exactly as before, and print a one-line
-note on stderr naming what replaces them. They will be retired: `deliver send`,
-`deliver open`, `deliver ack`, `file share`, `file receive`, `file ack`,
-`relay pull`, `file verify-snapshot` and `file history --export` (use
-`file history verify` and `file history export`).
+The older procedure is still possible but not recommended. These commands work
+exactly as before, and each prints a one-line note on stderr naming what
+replaces it: `deliver send`, `deliver open`, `deliver ack`, `file share`,
+`file receive`, `file ack`, `relay pull`, `file verify-snapshot` and
+`file history --export` (use `file history verify` and `file history export`).
+A letter that reaches you as a file, with no relay, is still opened with the
+`file` and `deliver` commands. `relay push` is not legacy.
 
 ### Mailbox
 
