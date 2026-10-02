@@ -295,6 +295,22 @@ pub(crate) fn run_use(conn: &Connection, args: UseOpts) -> Result<()> {
         if opened.slot(label).is_none() {
             return Err(usage(&format!("no slot {label} in {path}")));
         }
+        if caching(conn) {
+            if let (Ok(bytes), Ok(now)) = (
+                env::read(&Path::new(path).join("device.kq")),
+                env::now_utc(),
+            ) {
+                use sha2::{Digest, Sha256};
+                let fingerprint = hex::encode(Sha256::digest(bytes));
+                let _ = cache::store_verified(
+                    conn,
+                    "slot",
+                    &format!("{path}={label}"),
+                    &fingerprint,
+                    &now,
+                );
+            }
+        }
     }
     if let Some(url) = &args.url {
         let url = db::relay_credential::normalize_url(url);

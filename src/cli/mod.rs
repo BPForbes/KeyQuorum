@@ -30,6 +30,7 @@ use zeroize::Zeroize;
 mod deliver_cmd;
 mod device_cmd;
 pub mod device_tool;
+mod doctor;
 pub mod env;
 pub(crate) mod file_cmd;
 mod gate_link;
@@ -44,6 +45,7 @@ use gate_link::Gate;
 #[cfg(feature = "provider")]
 pub mod host_args;
 mod send;
+mod setup;
 mod transfer_cmd;
 
 /// How long a "one-time" PIN unlock stays valid before the PIN is needed
@@ -421,6 +423,13 @@ pub enum Command {
     /// who you are, which device holds your slot, which relay. Pointers only;
     /// no passphrase, key or bearer is stored.
     Use(Box<profile::UseOpts>),
+    /// Set up an identity in one command: create the device container,
+    /// provision your slot, register and bind its keys, optionally load a
+    /// relay key, and remember it all as your defaults. Safe to run again.
+    Setup(Box<setup::SetupOpts>),
+    /// Check what is missing before a task will work, and how to fix each
+    /// thing. Reads only; asks for no passphrase and calls no relay.
+    Doctor(Box<doctor::DoctorOpts>),
     /// Inspect or empty the short-lived caches
     Cache {
         #[command(subcommand)]
@@ -947,6 +956,8 @@ pub fn run(db_path: &Path, command: Command) -> Result<()> {
         command @ (Command::Use { .. }
         | Command::Cache { .. }
         | Command::Send { .. }
+        | Command::Setup { .. }
+        | Command::Doctor { .. }
         | Command::Inbox { .. }) => {
             return env::with_db(db_path, |conn| run_everyday(conn, command));
         }
@@ -967,6 +978,8 @@ fn run_in_store(conn: &mut Connection, command: Command) -> Result<()> {
         Command::Use { .. }
         | Command::Cache { .. }
         | Command::Send { .. }
+        | Command::Setup { .. }
+        | Command::Doctor { .. }
         | Command::Inbox { .. } => {
             unreachable!("the everyday commands are dispatched in run()")
         }
@@ -1065,6 +1078,8 @@ fn run_everyday(conn: &Connection, command: Command) -> Result<()> {
         Command::Cache { command } => profile::run_cache(conn, command)?,
         Command::Send(opts) => send::run(conn, *opts)?,
         Command::Inbox { command } => inbox::run(conn, command)?,
+        Command::Setup(opts) => setup::run(conn, *opts)?,
+        Command::Doctor(opts) => doctor::run(conn, *opts)?,
         _ => unreachable!("run_in_store sends only the everyday commands here"),
     }
     Ok(())
@@ -1602,6 +1617,8 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
         | Command::Use { .. }
         | Command::Send { .. }
         | Command::Inbox { .. }
+        | Command::Setup { .. }
+        | Command::Doctor { .. }
         | Command::Cache { .. }
         | Command::Transfer { .. } => unreachable!("non-tree commands are dispatched in run()"),
         #[cfg(feature = "provider")]

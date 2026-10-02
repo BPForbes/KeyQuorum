@@ -9,4 +9,5 @@ mod pin;
 mod produce;
 mod profile;
 mod request;
+mod setup;
 mod split;
