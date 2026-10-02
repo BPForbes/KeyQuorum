@@ -240,12 +240,12 @@ command, and is never documented outside the crate's own source.
 These commands keep working exactly as before: standard output and the exit
 status are unchanged, and after one succeeds a note on standard error names the
 command to use instead. They are not recommended for new use.
-\code{relay push} and the tracked-file commands not listed here are not legacy.
+\code{relay push} is not legacy.
 
 \begin{center}
 \begin{tabular}{@{}p{0.34\linewidth}p{0.60\linewidth}@{}}
 \toprule
-\textbf{Older command} & \textbf{Use instead} \\
+\textbf{Legacy command (prints a note)} & \textbf{Use instead} \\
 \midrule
 \code{deliver send} & \code{send FILE --to LABEL} \\
 \code{deliver open} & \code{inbox open} \\
@@ -254,12 +254,27 @@ command to use instead. They are not recommended for new use.
 \code{file share} & \code{send FILE.kqtf --to LABEL} \\
 \code{file receive} & \code{inbox open ID --into FILE} or \flag{--out FILE} \\
 \code{file ack} & \code{inbox open ID --file FILE} \\
-\code{file open-request}, \code{file answer-request} & \code{inbox open ID --accept} or \flag{--decline}, with \flag{--file FILE} \\
-\code{file open-answer} & \code{inbox open ID --file FILE} \\
-\code{file open-history} & \code{inbox open ID --file FILE} \\
 \code{file verify-snapshot} & \code{file history verify SNAPSHOT} \\
 \code{file history --export} & \code{file history export FILE --out SNAPSHOT} \\
 a producer command, then \code{relay push} & the producer command with \flag{--push} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsubsection*{Older forms that print no note}
+
+Four tracked-file commands are not marked legacy and print nothing, but
+\code{inbox open} now does the same job when the letter came through a relay.
+They remain the way to open a letter that reached you as a file.
+
+\begin{center}
+\begin{tabular}{@{}p{0.34\linewidth}p{0.60\linewidth}@{}}
+\toprule
+\textbf{Command} & \textbf{With a relay} \\
+\midrule
+\code{file open-request}, \code{file answer-request} & \code{inbox open ID --accept} or \flag{--decline}, with \flag{--file FILE} \\
+\code{file open-answer} & \code{inbox open ID --file FILE} \\
+\code{file open-history} & \code{inbox open ID --file FILE} \\
 \bottomrule
 \end{tabular}
 \end{center}

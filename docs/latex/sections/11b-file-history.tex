@@ -1,7 +1,7 @@
 \section{Tracked files and history}
 \label{sec:file-history}
 
-A \emph{tracked file} carries its own provenance. Where \code{deliver}
+A \emph{tracked file} carries its own provenance. Where \code{send}
 sends a native file once, \code{keyquorum file} keeps a \file{.kqtf}
 container that holds every revision of the file, the signatures over them,
 the rules they are judged by, and an append-only, hash-chained history of
@@ -539,7 +539,7 @@ Three words describe someone asking for, or offering, a change to a file.
 Each names something this version does. A request only asks: it delivers
 nothing and changes nothing, and the answer to it only says yes or no. The
 file or the change itself always travels the ordinary way, as a letter
-(\code{file share}) whose revision is judged by the file's own rules.
+(\code{send}) whose revision is judged by the file's own rules.
 
 \begin{center}
 \begin{tabular}{@{}p{0.22\linewidth}p{0.72\linewidth}@{}}
@@ -554,11 +554,12 @@ file or the change itself always travels the ordinary way, as a letter
   proposed merge. \\
 \textbf{Change request} & Asking someone to change a file (``please change
   this file''), before any change exists: \code{file request --change} with
-  a short message. The holder reads it (\code{file open-request}) and
-  answers accept or decline (\code{file answer-request}). \\
+  a short message. The holder reads it and answers with \code{inbox open ID
+  --accept} or \flag{--decline} (offline: \code{file open-request} and
+  \code{file answer-request}). \\
 \textbf{File request} & Asking the holder to send a file, usually one you do
   not hold: \code{file request}. An accepted file request is served with
-  \code{file share}. \\
+  \code{send}. \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -650,10 +651,10 @@ keyquorum --db mb.sqlite file open-answer --answer ./<id>-answer.kqpb \
   --slot ./usb=M.B --file report.txt.kqtf
 \end{lstlisting}
 
-\subsubsection*{Legacy procedure with a relay (still possible, not recommended)}
+\subsubsection*{Older procedure with a relay (still possible, not recommended)}
 
 The same exchange used to be a download and a separate command at every step.
-It still works, and \code{relay pull --import} still lists a request or an
+These \code{file} commands print no note, but they still work, and \code{relay pull --import} still lists a request or an
 answer and tells you which command opens it; it never imports one, because a
 request only asks. Prefer \code{inbox open} above.
 

@@ -23,10 +23,12 @@ answer; \flag{--ack-dir} writes answers to a directory instead of uploading them
 
 \code{inbox} keeps the letters it pulled in \file{./inbox} (\flag{--dir}), remembers
 where it stopped, and opens each letter once. It opens file deliveries, answers
-to your deliveries, tracked files, and bridge and organization updates. A letter
-that asks for a decision (a file or change request), an answer to a request, a
-history snapshot, an acknowledgement of a tracked file and a device letter are
-listed with the command that opens them and left for a person.
+to your deliveries, tracked files, history snapshots, and bridge and
+organization updates. A letter that asks for a decision (a file or change
+request), an answer to a request, an acknowledgement of a tracked file and a
+device letter are listed with the command that opens them and left for a person.
+A history snapshot is opened as it arrives; \flag{--file} also compares it with
+a copy you name.
 
 Tracked-file letters use the same two commands. \code{inbox open ID} takes the
 copy a letter concerns as an option, because a letter never picks a local file
@@ -72,4 +74,4 @@ envelopes that were written offline.
 
 To send a file whose revisions and signatures should travel with it, and
 where an unsigned newer edit must never go out, track it instead and use
-\code{file share} (section~\ref{sec:file-history}).
+\code{send} on the tracked file (section~\ref{sec:file-history}).

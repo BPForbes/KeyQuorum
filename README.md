@@ -712,11 +712,11 @@ With a relay set up the letter is uploaded; otherwise it is written to
 letters it pulled in `./inbox` (`--dir`), remembers where it stopped, and opens
 each letter once. `inbox open` handles file deliveries, answers to your
 deliveries, tracked files (`--reject` refuses a file and says so in the answer;
-delivered files are kept in `./received`, `--save-dir`), and bridge and
+delivered files are kept in `./received`, `--save-dir`), history snapshots
+(`--file COPY` also compares one with a copy you name), and bridge and
 organization updates. Letters that ask for a decision (file and change
-requests), answers to a request, history snapshots, acknowledgements of a
-tracked file and device letters are listed with the command that opens them and
-left for a person. `--ack-dir DIR` writes answers to a directory instead of
+requests), answers to a request, acknowledgements of a tracked file and device
+letters are listed with the command that opens them and left for a person. `--ack-dir DIR` writes answers to a directory instead of
 uploading them.
 
 The older procedure is still possible but not recommended. These commands work
