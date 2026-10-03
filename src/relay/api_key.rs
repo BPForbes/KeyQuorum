@@ -6,8 +6,6 @@
 use crate::error::{Error, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use rand::rngs::OsRng;
-use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -94,7 +92,7 @@ pub struct AuthedKey {
 
 fn generate_prefixed_bearer(prefix: &str) -> (String, String) {
     let mut raw = Zeroizing::new([0u8; TOKEN_LEN]);
-    OsRng.fill_bytes(&mut *raw);
+    crate::crypto::fill_random(&mut *raw);
     let token = format!("{prefix}{}", URL_SAFE_NO_PAD.encode(*raw));
     let token_hash = hex::encode(Sha256::digest(*raw));
     (token, token_hash)

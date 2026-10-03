@@ -32,8 +32,6 @@ use crate::envelope::{
 use crate::error::{Error, Result};
 use crate::private_bridge;
 use crate::signing;
-use rand::rngs::OsRng;
-use rand::RngCore;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 
@@ -89,7 +87,7 @@ pub struct DeliveryAck {
 
 pub fn seal_letter(outgoing: &Outgoing<'_>) -> Result<SealedLetter> {
     let mut delivery_id = [0u8; 16];
-    OsRng.fill_bytes(&mut delivery_id);
+    crate::crypto::fill_random(&mut delivery_id);
     let content_hash: [u8; 32] = Sha256::digest(outgoing.contents).into();
     let preimage = letter_preimage(
         outgoing.recipient_encryption_public,
@@ -313,7 +311,7 @@ pub struct HistoryAck {
 
 pub fn seal_history_letter(outgoing: &OutgoingHistory<'_>) -> Result<SealedHistoryLetter> {
     let mut delivery_id = [0u8; 16];
-    OsRng.fill_bytes(&mut delivery_id);
+    crate::crypto::fill_random(&mut delivery_id);
     let container_hash: [u8; 32] = Sha256::digest(outgoing.container).into();
     let preimage = history_letter_preimage(&HistoryHeader {
         recipient_public: outgoing.recipient_encryption_public,
@@ -604,7 +602,7 @@ pub struct SnapshotLetter {
 
 pub fn seal_history_snapshot(outgoing: &OutgoingSnapshot<'_>) -> Result<([u8; 16], Vec<u8>)> {
     let mut delivery_id = [0u8; 16];
-    OsRng.fill_bytes(&mut delivery_id);
+    crate::crypto::fill_random(&mut delivery_id);
     let preimage = snapshot_preimage(
         outgoing.recipient_encryption_public,
         &delivery_id,

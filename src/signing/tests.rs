@@ -2,7 +2,7 @@ use super::*;
 use ed25519_dalek::{Signer, SigningKey};
 
 fn generate() -> (SigningKey, [u8; 32]) {
-    let signing_key = SigningKey::generate(&mut rand::rngs::OsRng);
+    let signing_key = SigningKey::generate(&mut rand_core::OsRng);
     let public_key = signing_key.verifying_key().to_bytes();
     (signing_key, public_key)
 }

@@ -180,9 +180,8 @@ fn edit_externally(
     terminal: &mut ratatui::DefaultTerminal,
     text: &str,
 ) -> std::result::Result<String, String> {
-    use rand::RngCore;
     let mut random = [0u8; 8];
-    rand::rngs::OsRng.fill_bytes(&mut random);
+    crate::crypto::fill_random(&mut random);
     let path = std::env::temp_dir().join(format!("keyquorum-review-{}.txt", hex::encode(random)));
     crate::locked_files::write_owner_only(&path, text.as_bytes())
         .map_err(|error| format!("could not prepare the edit: {error}"))?;

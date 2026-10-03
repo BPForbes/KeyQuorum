@@ -281,7 +281,7 @@ fn split_node(
 
             let sharks = Sharks(*threshold);
             let shares: Vec<Share> = sharks
-                .dealer_rng(secret, &mut rand::rngs::OsRng)
+                .dealer_rng(secret, &mut rand_core::OsRng)
                 .take(children.len())
                 .collect();
 
@@ -307,7 +307,7 @@ fn seal_share(hardware_key: &keys::HardwareKey, share: &[u8]) -> Result<Vec<u8>>
         .map_err(|_| Error::InvalidPublicKey)?;
     let public_key = crypto_box::PublicKey::from_bytes(public_key_bytes);
     Ok(public_key
-        .seal(&mut rand::rngs::OsRng, share)
+        .seal(&mut rand_core::OsRng, share)
         .expect("crypto_box sealing should not fail for an in-memory share"))
 }
 
@@ -1145,7 +1145,7 @@ pub fn add_leaf_and_reshare(
     keys::get_active_encryption_key(&tx, new_hardware_id)?;
 
     let new_shares: Vec<Share> = Sharks(threshold as u8)
-        .dealer_rng(&parent_secret, &mut rand::rngs::OsRng)
+        .dealer_rng(&parent_secret, &mut rand_core::OsRng)
         .take(n)
         .collect();
     if new_shares.len() != n {

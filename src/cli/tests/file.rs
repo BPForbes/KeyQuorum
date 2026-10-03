@@ -1280,7 +1280,7 @@ fn export_tracked_file_seals_the_complete_binary_kqtf() {
     let original = env.fs.read(Path::new(KQTF)).unwrap();
     assert!(std::str::from_utf8(&original).is_err());
 
-    let recipient = crypto_box::SecretKey::generate(&mut rand::rngs::OsRng);
+    let recipient = crypto_box::SecretKey::generate(&mut rand_core::OsRng);
     env.fs
         .write_new(
             Path::new("/keys/recipient.pub"),
@@ -1322,7 +1322,7 @@ fn checkout_verify_and_export_record_an_event_only_when_asked() {
         &format!("checkout {KQTF} --out /work/rec.txt --record --as M.A.1"),
     );
     ok(&mut env, &format!("verify {KQTF} --record"));
-    let recipient = crypto_box::SecretKey::generate(&mut rand::rngs::OsRng);
+    let recipient = crypto_box::SecretKey::generate(&mut rand_core::OsRng);
     env.fs
         .write_new(
             Path::new("/keys/recipient.pub"),

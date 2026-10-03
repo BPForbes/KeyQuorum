@@ -8,7 +8,7 @@
 
 use crate::error::{Error, Result};
 use blahaj::{Share, Sharks};
-use rand::rngs::OsRng;
+use rand_core::OsRng;
 use std::collections::{HashMap, HashSet};
 
 /// Builds one zero-constant polynomial of degree `threshold - 1` and
