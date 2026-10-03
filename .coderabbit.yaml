@@ -1,12 +1,24 @@
 # CodeRabbit configuration
 # https://docs.coderabbit.ai/guides/configure-coderabbit
+#
+# Strict review for a security-sensitive project. The full rules, the SOC 2
+# criteria table and the KeyQuorum-specific checks live in the "Review
+# guidelines (strict, SOC 2)" section of AGENTS.md (mirrored in CLAUDE.md and
+# .cursorrules). The instructions below point reviewers at that section and
+# add the per-area checks.
 
 language: "en-US"
 early_access: false
 
+# Limited to 250 characters by CodeRabbit.
+tone_instructions: >-
+  Strict and exact. Every finding quotes the offending lines, cites its source
+  (rule, file:line or standard) and names the SOC 2 criterion. No source or
+  criterion: do not post. Never paraphrase code.
+
 reviews:
-  profile: "chill"
-  request_changes_workflow: false
+  profile: "assertive"
+  request_changes_workflow: true
   high_level_summary: true
   poem: false
   review_status: true
@@ -19,14 +31,141 @@ reviews:
     - "!**/node_modules/**"
     - "!**/dist/**"
     - "!**/build/**"
+    # Lockfiles are checked by cargo audit, cargo deny and npm audit instead.
     - "!**/*.lock"
   path_instructions:
-    - path: "**/*.rs"
+    - path: "**"
       instructions: >
-        This is a security-sensitive Rust project dealing with cryptographic key
-        material, hardware tokens, and encrypted files. Pay close attention to key
-        derivation, encryption/decryption, and quorum/threshold logic. Flag any
-        hardcoded secrets, weak crypto primitives, or missing input validation.
+        Follow the "Review guidelines (strict, SOC 2)" section of AGENTS.md.
+        Every finding must have four parts, or it is not posted: (1) Source -
+        the AGENTS.md or CLAUDE.md rule (name the section), a file:line in this
+        repository, or an external standard such as an RFC section, NIST SP,
+        RustSec or CVE id; (2) Quote - the exact offending lines from the diff
+        in a code block with path and line numbers, copied verbatim; (3) SOC 2 -
+        the Trust Services Criterion id and name (for example CC6.1, CC6.6,
+        CC6.7, CC7.2, CC8.1, C1.1, A1.2, PI1.2) and one sentence on how the
+        change weakens it, or "SOC 2: none (correctness)" for a minor finding
+        when no criterion applies; (4) Fix - the concrete replacement. Mark
+        each finding blocker, high, major or minor as defined there. Verify
+        every claim against the current code, and do not repeat a finding that
+        was fixed or answered.
+    - path: "src/**/*.rs"
+      instructions: >
+        Security-sensitive Rust that handles cryptographic key material,
+        hardware tokens and encrypted files. Check key derivation,
+        encryption and decryption, quorum and threshold logic, signature and
+        freshness checks (SOC 2 CC6.1, PI1.2-PI1.5), plaintext or secrets in
+        logs, errors or history events and missing zeroize (C1.1, CC6.7),
+        unbounded reads and missing limits (A1.2), swallowed errors (CC7.3),
+        and plan-then-commit order for producers. Tests belong in a tests.rs
+        next to the module, never inline; changed behavior needs a test
+        (CC8.1). Flag hardcoded secrets, weak primitives and missing input
+        validation.
+    - path: "src/{crypto,envelope,quorum,key_tree,keys,device,transfer,signing,authority,private_bridge,org_update,file_delivery}*.rs"
+      instructions: >
+        Core trust logic. A bypass, widening or reordering of a check is a
+        blocker (CC6.1, PI1.2-PI1.5). src/envelope.rs is the only sealed-envelope
+        framing; kind bytes, event types and outcome codes are wire format and
+        are appended, never renumbered (CC8.1). Only key_tree.rs mutates
+        key_nodes; authority.rs owns the hierarchy; signing owns signatures;
+        quorum owns quorum rules. Never widen the authorization rule without
+        updating the tests that pin it.
+    - path: "src/{relay,provider}/**"
+      instructions: >
+        The mailbox relay and provider identity. The relay stores opaque
+        envelopes, never unseals them, never holds wrapped shares or private
+        keys, and never mints API keys over HTTP. Check authentication and scope
+        on every route, size limits, timeouts and rate limits, and that no
+        secret reaches a log or audit record (SOC 2 CC6.1, CC6.2, CC6.6, CC7.2,
+        A1.2). Bearers are stored as hashes only.
+    - path: "src/bin/keyquorum/host.rs"
+      instructions: >
+        The hidden mailbox host. It must stay out of customer-facing docs and the
+        default build, and must not weaken authentication or the provider
+        identity check (CC6.1, CC6.6, CC6.8).
+    - path: "src/cli/**"
+      instructions: >
+        The whole keyquorum CLI. Everyday commands add no rule of their own: they
+        call the same handlers as the older commands. A flag left out resolves
+        explicit argument, recent parameter, profile, then the command's own
+        behavior; outward or irreversible commands (send, --push, transfer move,
+        revoke, expire) never take a target from a recent parameter (CC6.1,
+        CC6.7). Caches are never an input to a trust decision. Legacy commands
+        keep their behavior and print their note on stderr only. Check that help
+        text, docs and examples still match.
+    - path: "src/lab/**"
+      instructions: >
+        KeyQuorum Lab. It runs the real CLI in a sandbox and must not
+        reimplement quorum, custody, approval, visibility, bridge or delivery
+        rules, or add a gate in front of them. Nothing secret may be seeded; the
+        provider feature must never be in the wasm32 build (CC6.1, C1.1,
+        CC6.8).
+    - path: "lab/**"
+      instructions: >
+        Lab front end (TypeScript and React). No secrets or real keys in the
+        bundle, ready handshake posts only to https://bailey-forbes.com or a
+        loopback origin and never "*", no unsafe HTML injection (CC6.6, C1.1).
+        UI text and tutorials must match the CLI.
+    - path: "src/db/**"
+      instructions: >
+        SQLite schema and queries. Parameterized queries only, migrations that
+        keep existing data, no secrets in tables, and a UNIQUE or foreign key
+        where a replay or orphan would otherwise be possible (PI1.2, C1.1).
+        Cache tables hold no secret and no trust state.
+    - path: "src/file_history/**"
+      instructions: >
+        Tracked-file container and hash-chained history. Event type and outcome
+        codes are wire format (append only). Only keys in SAFE_DETAIL_KEYS may
+        appear in an event, and history never records secrets (C1.1, CC7.2).
+        Signatures go through signing, ancestry through authority, quorum
+        through quorum.
+    - path: "**/tests.rs"
+      instructions: >
+        Tests must not contain real keys, tokens or personal data (C1.1). Check
+        that the assertion proves the changed behavior, not just that the code
+        ran, and that security checks have a test that fails if they are removed
+        (CC8.1).
+    - path: "docs/**"
+      instructions: >
+        Documentation must match the code. Check every command, flag, default,
+        path, legacy note and limit against the CLI (`keyquorum <cmd> --help`)
+        and the source, and report a mismatch as a major finding quoting both
+        lines (CC8.1). Do not document the hidden `host` subcommand. Keep the
+        manuals consistent with README.md and the three agent files.
+    - path: ".github/workflows/**"
+      instructions: >
+        CI and automation. Least-privilege permissions, no write token on
+        untrusted input, actions from a known source and pinned, no secrets echoed,
+        and no weakening or skipping of tests or the security workflow
+        (SOC 2 CC6.8, CC7.1, CC8.1). Cargo and npm Dependabot updates must not
+        auto-merge.
+    - path: "{Cargo.toml,deny.toml,.gitleaks.toml,lab/package.json}"
+      instructions: >
+        Dependency and scanner policy. A new dependency needs a reason, a
+        licence allowed by deny.toml, and must not widen the build (CC6.8, CC7.1,
+        CC9.1). A gitleaks or deny exception must be as narrow as possible and
+        say why.
+  pre_merge_checks:
+    custom_checks:
+      - name: "SOC 2 evidence"
+        mode: "warning"
+        instructions: >
+          Fail this check when the pull request changes access control,
+          cryptography, quorum or custody logic, the relay, key lifecycle, logging
+          or audit records, retention, CI, or dependencies, and it does not
+          (a) include or update a test that fails if the control is removed,
+          (b) update the documentation and agent files that describe it, and
+          (c) avoid logging or storing any secret. Name the SOC 2 criterion for
+          each gap and quote the lines.
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "SECURITY.md"
+      - "deny.toml"
 
 chat:
   auto_reply: true

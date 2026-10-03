@@ -478,6 +478,97 @@ files, so treat it as security-sensitive:
 - Keep PRs focused on a single logical change where possible.
 - When the current branch already has an open pull request, ask before creating another branch or opening another pull request. No answer is a denial. On a denial, stay on the current branch and update the open pull request. Create a new branch and pull request only after an explicit yes.
 
+## Review guidelines (strict, SOC 2)
+
+These apply to every automated reviewer (CodeRabbit, Codex, Claude) and to humans.
+Review as if an auditor will read the finding. KeyQuorum handles key material, so a
+finding that is only a nit is still reported, but marked as one.
+
+### Every finding must carry all four parts
+
+A finding that lacks any part is not posted.
+
+1. **Source** — why it is a violation, as a pointer that can be checked: a rule in
+   `CLAUDE.md` / `AGENTS.md` (name the section), a file and line in this repository, or an
+   external standard (RFC and section, NIST SP number, RustSec or CVE id, vendor
+   documentation). Never "best practice" with no source.
+2. **Quote** — the exact offending lines from the diff, in a code block, copied
+   verbatim with their file path and line numbers. Do not paraphrase code.
+3. **SOC 2** — the Trust Services Criterion it affects (id and name, from the table
+   below) and one sentence on how this change weakens that control. If no criterion
+   applies, write `SOC 2: none (correctness)` and mark the finding minor. Do not
+   stretch a criterion to fit.
+4. **Fix** — the concrete change, as a diff or replacement lines.
+
+Format:
+
+````
+**<severity>: <title>**
+Source: <rule, file:line or standard>
+Quote (`path:line`):
+```<lang>
+<verbatim lines>
+```
+SOC 2: <id> <name> — <how this weakens it>
+Fix: <change>
+````
+
+Severity: **blocker** (secret exposure, broken or bypassed quorum, custody, approval or
+signature check, plaintext at rest, authentication bypass), **high** (a SOC 2 control
+is missing or weakened, data loss, replay or freshness gap), **major** (wrong
+behavior, a missing test for changed behavior, docs that contradict code),
+**minor** (style, naming, comments). Verify every claim against the current code
+before posting, and do not repeat a finding that was already fixed or answered.
+
+### SOC 2 criteria to check against
+
+| Criterion | What to look for in KeyQuorum |
+| --- | --- |
+| CC6.1 Logical access | A key, slot, bridge, relay or API-key check that is skipped, widened or decided by the caller; scope or fingerprint binding removed; a trust decision taken from a cache. |
+| CC6.2 / CC6.3 Provisioning and removal | Revocation, reissue, eviction or key rotation that leaves old access working; keys minted over HTTP or by a customer. |
+| CC6.6 System boundaries | New relay routes without auth, scope checks, body or rate limits; plaintext listeners; unvalidated input from the network or a letter. |
+| CC6.7 Transmission and removal of information | Anything that sends or writes plaintext, keys, bearers or passphrases outside the sealed envelope, the owner-only file or memory; weakened TLS or certificate checks. |
+| CC6.8 Unauthorized or malicious software | New dependencies or build steps without `deny.toml` / audit coverage; unpinned or unreviewed third-party actions; code that runs untrusted input. |
+| CC7.1 Vulnerability detection | Dependency or config changes that bypass `cargo audit`, `cargo deny`, `gitleaks`, `npm audit` or CodeQL. |
+| CC7.2 Monitoring | Security-relevant events (auth, key lifecycle, denied scope, tamper detection) that are not recorded, or records that hold secrets. |
+| CC7.3 / CC7.4 Incident response | Failures swallowed silently, errors that hide the cause, or no way to revoke or recover after a compromise. |
+| CC8.1 Change management | Behavior changes without tests in their own file, wire-format codes renumbered, wire or schema changes without migration, docs or agent files not updated, CI weakened. |
+| CC9.1 Risk and vendors | New external services, endpoints or data flows not documented in the security model. |
+| C1.1 / C1.2 Confidentiality | Secrets in logs, errors, history events (`SAFE_DETAIL_KEYS`), tests or fixtures; missing `zeroize`; no deletion path for expired or revoked data. |
+| A1.2 Availability and recovery | Unbounded reads or loops, missing size limits or timeouts, no backup or restore path for stored state, retry loops that never end. |
+| PI1.2 – PI1.5 Processing integrity | Signature, freshness, ordering, replay or idempotence checks removed or reordered; partial writes with no rollback (plan-then-commit broken). |
+
+### KeyQuorum-specific rules to enforce
+
+Report a finding, with the rule as its Source, for any of these:
+
+- Private keys, bearers, `.kqpb`, `*.kqcert`, `*.kqrl`, `*.kqpolicy`, provider root keys or
+  relay databases committed, logged or printed. Never log secrets; only the published
+  Lab demo values are allowed.
+- Plaintext of a protected file written to disk (the Lab and `send --quorum-file` unlock
+  in memory only), or a passphrase held after its command ends.
+- A second sealed-envelope framing outside `src/envelope.rs`; a kind byte, event type or
+  outcome code that is renumbered rather than appended.
+- `key_nodes` mutated outside `key_tree.rs`; hierarchy rules outside `authority.rs`;
+  signatures outside `signing`; quorum rules outside `quorum`.
+- A relay that unseals envelopes, holds wrapped shares or private keys, or mints API keys
+  over HTTP; `keyquorum host` documented in customer-facing docs.
+- A cache (`recent_params`, `relay_trust_cache`, `verified_cache`) used as an input to
+  a signature, quorum, custody, approval, freshness or trust decision.
+- Producers (`reissue`, `tree restructure`, `tree countersign`, `bridge private ...`) that
+  upload or persist before the envelopes and the commit are in step.
+- The Lab reimplementing quorum, custody, approval, visibility, bridge or delivery rules,
+  or adding a gate in front of them; the Lab bundle containing anything secret; the
+  `provider` feature in a wasm32 build.
+- Tests placed inline in implementation files instead of a `tests.rs` next to the module;
+  a changed behavior with no test; a `--features provider,lab,tui` build or clippy
+  warning left behind.
+- Documentation (README, `docs/latex`, Lab manual, agent files) that contradicts the code:
+  a command, flag, default, path, legacy note or limit that no longer matches. Check
+  examples against `--help`, and keep `CLAUDE.md`, `AGENTS.md` and `.cursorrules` identical.
+- Legacy commands (`deliver`, `file share|receive|ack`, `relay pull`) changed in behavior,
+  or a new command printing a legacy note it should not.
+
 ## Other agent instruction files
 
 This repo also carries `CLAUDE.md` (Claude) and `.cursorrules` (Cursor). Keep guidance
@@ -485,3 +576,4 @@ consistent across these files when updating one.
 
 - Legacy checks: tests of deprecated verbs (`deliver`, `file receive|ack`, `relay pull` spellings) sit behind the `legacy-tests` feature and the `legacy` workflow (`.github/workflows/legacy.yml`), whose single job is skipped by default and run on the `legacy` PR label or a manual dispatch. `--all-features` includes them; the everyday CI gate is `--features provider,lab,tui`. Both run the same parallel test groups (`.github/workflows/tests.yml`: lab, cli, file_history, relay+provider+db, and everything else), so a new module needs no workflow edit.
 - Security checks: `.github/workflows/security.yml` runs `cargo audit`, `cargo deny --locked check` (policy in `deny.toml`), `gitleaks` over the full history (allowlist in `.gitleaks.toml`, which passes only the published Lab demo passphrases and lockfile checksums), `npm audit` for `lab/` and CodeQL for its TypeScript, on every PR, on `main` and weekly; `.github/workflows/sbom.yml` keeps CycloneDX SBOMs as artifacts. A new dependency must satisfy `deny.toml` (add a licence only after checking it). Dependabot covers Actions, Cargo and npm, but only Actions updates auto-merge; cargo and npm updates (which include the cryptographic crates) wait for a person. Vulnerabilities are reported privately as `SECURITY.md` describes.
+- Review rules: the "Review guidelines (strict, SOC 2)" section above is also loaded by CodeRabbit (`.coderabbit.yaml` points its per-path checks at it and runs a "SOC 2 evidence" pre-merge check) and by Codex review. Change the rules in all three agent files together, and keep `.coderabbit.yaml` consistent with them.
