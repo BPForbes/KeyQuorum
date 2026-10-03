@@ -6,7 +6,7 @@ use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
 use argon2::{Algorithm, Argon2, Params, Version};
 use rand::rngs::OsRng;
-use rand::RngCore;
+use rand::{Rng, RngCore};
 use std::fmt;
 use zeroize::Zeroizing;
 
@@ -27,16 +27,17 @@ impl fmt::Display for DecryptError {
 
 impl std::error::Error for DecryptError {}
 
+/// A fresh salt from the operating system's random source. Drawn directly into
+/// the array, with no zero-filled buffer, so a scanner cannot mistake the
+/// buffer's initial value for a hard-coded salt.
 pub fn random_salt() -> [u8; SALT_LEN] {
-    let mut salt = [0u8; SALT_LEN];
-    OsRng.fill_bytes(&mut salt);
-    salt
+    OsRng.gen()
 }
 
+/// A fresh AES-GCM nonce from the operating system's random source (see
+/// [`random_salt`]). Never reused: every encryption draws its own.
 pub fn random_nonce() -> [u8; NONCE_LEN] {
-    let mut nonce = [0u8; NONCE_LEN];
-    OsRng.fill_bytes(&mut nonce);
-    nonce
+    OsRng.gen()
 }
 
 /// Generates a random 256-bit data key for hardware-key-quorum file

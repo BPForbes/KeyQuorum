@@ -210,7 +210,7 @@ def main():
     ap.add_argument("sarif", nargs="+")
     args = ap.parse_args()
 
-    failing, listed, out = 0, 0, []
+    failing, listed, out, gates = 0, 0, [], []
     for path in args.sarif:
         for rule, res in findings(path):
             sev, uri, text = render(args.repo_root, rule, res)
@@ -219,9 +219,18 @@ def main():
             gate = sev in ("high", "critical") and is_security and not in_tests
             failing += gate
             listed += 1
-            out.append(("GATE " if gate else "") + text + (f"(in test code, does not fail the check)\n" if in_tests else ""))
+            if gate:
+                loc = (res.get("locations") or [{}])[0].get("physicalLocation", {})
+                line = loc.get("region", {}).get("startLine", "?")
+                gates.append(f"- {rule.get('id', '?')} at {uri}:{line}")
+            entry = ("GATE " if gate else "") + text + ("(in test code, does not fail the check)\n" if in_tests else "")
+            # Findings that fail the check come first, so they are never lost
+            # in a long list of lower-severity or test-code findings.
+            (out.insert(0, entry) if gate else out.append(entry))
 
     header = f"CodeQL: {listed} finding(s), {failing} failing the check (high or critical, shipped code)."
+    if gates:
+        header += "\nFailing the check:\n" + "\n".join(gates)
     body = header + "\n\n" + "\n".join(out)
     print(body)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")

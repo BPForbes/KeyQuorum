@@ -57,6 +57,8 @@ class Report(unittest.TestCase):
             self.assertIn("Source quote: > Using a hard-coded cryptographic value", out)
             self.assertIn("SOC 2: C1.1 Confidential information", out)
             self.assertIn("Fix: Generate the key randomly.", out)
+            self.assertIn("Failing the check:\n- rust/hard-coded-cryptographic-value at src/crypto.rs:1", out)
+            self.assertLess(out.index("GATE **"), out.index("SOC 2:"))
 
     def test_the_same_finding_in_test_code_is_listed_but_does_not_fail(self):
         r = run_report([RULE_HIGH], [result(RULE_HIGH["id"], "src/crypto/tests.rs")])

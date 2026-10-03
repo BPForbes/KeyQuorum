@@ -46,3 +46,16 @@ fn decrypt_fails_with_wrong_key() {
 
     assert!(decrypt(&wrong_key, &nonce, &ciphertext).is_err());
 }
+
+#[test]
+fn salts_and_nonces_are_fresh_random_and_the_right_length() {
+    let (a, b) = (random_salt(), random_salt());
+    assert_eq!(a.len(), SALT_LEN);
+    assert_ne!(a, b, "two salts must differ");
+    assert_ne!(a, [0u8; SALT_LEN], "a salt must not be all zero");
+
+    let (a, b) = (random_nonce(), random_nonce());
+    assert_eq!(a.len(), NONCE_LEN);
+    assert_ne!(a, b, "two nonces must differ");
+    assert_ne!(a, [0u8; NONCE_LEN], "a nonce must not be all zero");
+}
