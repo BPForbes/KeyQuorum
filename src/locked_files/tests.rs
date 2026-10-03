@@ -13,7 +13,7 @@ fn lock_and_unlock_roundtrip() {
         .expect("lock_file should succeed");
     let plaintext = unlock_file(&conn, id, "hunter2").expect("unlock_file should succeed");
 
-    assert_eq!(plaintext, b"the quorum has been reached");
+    assert_eq!(plaintext.as_slice(), b"the quorum has been reached");
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn reusing_an_encrypted_path_fails_without_touching_the_original() {
         .expect("original row should still exist");
     let plaintext = unlock_file(&conn, id, "hunter2")
         .expect("original file should remain decryptable with its original password");
-    assert_eq!(plaintext, b"the quorum has been reached");
+    assert_eq!(plaintext.as_slice(), b"the quorum has been reached");
 }
 
 #[test]
@@ -221,7 +221,7 @@ fn unlock_before_expiry_leaves_ciphertext() {
     .expect("lock_file_until should succeed");
 
     let plaintext = unlock_file(&conn, id, "hunter2").expect("unlock before expiry");
-    assert_eq!(plaintext, b"the quorum has been reached");
+    assert_eq!(plaintext.as_slice(), b"the quorum has been reached");
     assert!(encrypted_path.exists());
 }
 

@@ -479,6 +479,33 @@ fn provider_host_keys_list_parses() {
         "--bind",
         "0.0.0.0:8787",
         "--behind-tls-proxy",
+        "--rate-limit-per-minute",
+        "0",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "keys",
+        "events",
+        "--key",
+        "3",
+        "--verify",
+    ])
+    .is_ok());
+    assert!(
+        Cli::try_parse_from(["keyquorum", "host", "keys", "events", "--krl", "x.kqrl"]).is_err()
+    );
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "keys",
+        "revoke",
+        "3",
+        "--cert",
+        "provider.kqcert",
+        "--relay-key",
+        "relay.key",
     ])
     .is_ok());
     assert!(Cli::try_parse_from(["keyquorum", "host", "keys", "events"]).is_ok());

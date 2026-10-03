@@ -93,7 +93,11 @@ CREATE TABLE IF NOT EXISTS provider_auth_events (
     success                 INTEGER NOT NULL CHECK (success IN (0, 1)),
     attempted_at            TEXT NOT NULL DEFAULT (
         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-    )
+    ),
+    -- Hash chain (`relay::audit`): hex SHA-256 of the previous row and of
+    -- this row's fields chained onto it.
+    prev_hash               TEXT,
+    entry_hash              TEXT
 );
 
 -- API-key lifecycle audit trail: one row each time a key is created,
@@ -106,8 +110,24 @@ CREATE TABLE IF NOT EXISTS api_key_events (
     event           TEXT NOT NULL CHECK (event IN ('created', 'rotated', 'revoked')),
     actor           TEXT NOT NULL,
     related_key_id  INTEGER,
-    occurred_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    occurred_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    prev_hash       TEXT,
+    entry_hash      TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_api_key_events_key
     ON api_key_events (api_key_id, id);
+
+-- Relay-key signatures over each audit table's chain head (`relay::audit`).
+-- `certificate` is the public KeyQuorum-signed `provider.kqcert` naming the
+-- signing key; an anchor counts only if that certificate was valid at
+-- `signed_at`. Nothing secret is stored here.
+CREATE TABLE IF NOT EXISTS audit_anchors (
+    id          INTEGER PRIMARY KEY,
+    table_name  TEXT NOT NULL CHECK (table_name IN ('api_key_events', 'provider_auth_events')),
+    row_count   INTEGER NOT NULL CHECK (row_count > 0),
+    head_hash   TEXT NOT NULL,
+    signed_at   TEXT NOT NULL,
+    certificate BLOB NOT NULL,
+    signature   BLOB NOT NULL
+);

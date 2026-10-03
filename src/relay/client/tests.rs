@@ -318,7 +318,7 @@ async fn check_key_client_and_stored_hash_can_push() {
             relay_url: base.clone(),
             scope: check.scope.clone().expect("scope"),
             key_hash: hash.clone(),
-            token: token.clone(),
+            token: zeroize::Zeroizing::new(token.clone()),
             remote_id: check.id,
             label: check.label.clone(),
         },

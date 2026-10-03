@@ -8,6 +8,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use zeroize::Zeroizing;
 
 /// Encrypts the file at `source_path` with a key derived from `password`
 /// and writes the ciphertext to `encrypted_path`, then records it.
@@ -102,7 +103,7 @@ pub fn lock_file_until_in(
 /// If the file has a date-based TTL that has already passed, the ciphertext
 /// is removed from disk and the database row is dropped before any decrypt
 /// is attempted.
-pub fn unlock_file(conn: &Connection, id: i64, password: &str) -> Result<Vec<u8>> {
+pub fn unlock_file(conn: &Connection, id: i64, password: &str) -> Result<Zeroizing<Vec<u8>>> {
     unlock_file_in(&mut NativeStorage, conn, id, password)
 }
 
@@ -113,7 +114,7 @@ pub fn unlock_file_in(
     conn: &Connection,
     id: i64,
     password: &str,
-) -> Result<Vec<u8>> {
+) -> Result<Zeroizing<Vec<u8>>> {
     purge_if_expired_in(storage, conn, id)?;
 
     let (encrypted_path, salt, nonce): (String, Vec<u8>, Vec<u8>) = conn.query_row(
@@ -337,13 +338,19 @@ pub fn write_owner_only(path: &Path, contents: &[u8]) -> Result<()> {
 /// must not assume the written file is protected from other local users.
 #[cfg(not(unix))]
 pub fn write_owner_only(path: &Path, contents: &[u8]) -> Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)?;
+    // The handle is closed at the end of this block, before any cleanup:
+    // Windows cannot remove a file that is still open. (An explicit
+    // `drop(file)` trips `clippy::drop_non_drop` on wasm32, where `File`
+    // has no `Drop`.)
+    let written = {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        file.write_all(contents).and_then(|()| file.sync_all())
+    };
 
-    if let Err(e) = file.write_all(contents).and_then(|()| file.sync_all()) {
-        drop(file);
+    if let Err(e) = written {
         let _ = fs::remove_file(path);
         return Err(e.into());
     }

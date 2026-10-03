@@ -1371,7 +1371,7 @@ fn run_vault(conn: &Connection, command: VaultCommand) -> Result<()> {
                 "Username: {}",
                 credential.username.as_deref().unwrap_or("-")
             );
-            outln!("Password: {}", credential.password);
+            outln!("Password: {}", credential.password.as_str());
         }
     }
     Ok(())
@@ -2286,7 +2286,7 @@ fn run_access_password(conn: &Connection, args: AccessPasswordArgs) -> Result<()
             let id = require(args.id, "id")?;
             gate_link::note_if_gone(Gate::Password, conn, id);
             let mut pin_step = gate_link::PinStep::NotRequired;
-            let attempt = (|| -> Result<Vec<u8>> {
+            let attempt = (|| -> Result<zeroize::Zeroizing<Vec<u8>>> {
                 locked_files::purge_if_expired_in(&mut env::EnvStorage, conn, id)?;
                 check_pin(conn, ResourceType::LockedFile, id, &mut pin_step)?;
                 let password = prompt_secret("Unlock password: ")?;
@@ -2323,7 +2323,7 @@ fn unlock_quorum_file(
     slots: &[String],
     approves: &[String],
     verbose: bool,
-) -> Result<Vec<u8>> {
+) -> Result<zeroize::Zeroizing<Vec<u8>>> {
     // Before anything else: an expired file is destroyed on the
     // first unlock attempt, whether or not the presented shares
     // would have reconstructed it (see quorum::unlock_file_with_approval).
@@ -2612,7 +2612,7 @@ fn persist_checked_key(
             relay_url: url.to_string(),
             scope: scope.to_string(),
             key_hash,
-            token: token.to_string(),
+            token: zeroize::Zeroizing::new(token.to_string()),
             remote_id: check.id,
             label: check.label.clone(),
         },
@@ -2770,7 +2770,7 @@ pub(crate) fn resolve_relay_auth(
     explicit_url: Option<String>,
     explicit_key: Option<String>,
     required: relay::ApiKeyScope,
-) -> Result<(String, String)> {
+) -> Result<(String, zeroize::Zeroizing<String>)> {
     let url = resolve_relay_url(conn, explicit_url, required)?;
     let provided = explicit_key.filter(|s| !s.is_empty()).or_else(|| {
         match env::var("KEYQUORUM_RELAY_API_KEY") {
@@ -2792,7 +2792,7 @@ pub(crate) fn resolve_relay_auth(
             return Err(Error::ApiKeyScopeDenied);
         }
         persist_checked_key(conn, &url, &token, &check)?;
-        return Ok((url, token));
+        return Ok((url, zeroize::Zeroizing::new(token)));
     }
 
     match db::relay_credential::get(conn, &url, required.as_str())? {

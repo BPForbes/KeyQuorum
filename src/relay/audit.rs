@@ -1,0 +1,394 @@
+//! Tamper evidence for the relay's audit tables (`api_key_events`,
+//! `provider_auth_events`).
+//!
+//! Every row carries `prev_hash` and `entry_hash`: a SHA-256 chain over the
+//! row's own fields and the row before it, so editing, reordering or
+//! deleting a row breaks every hash after it. A chain alone does not stop
+//! someone who can write the database from rebuilding it, so the relay also
+//! signs the chain head into `audit_anchors` with its relay key, alongside
+//! the KeyQuorum-signed certificate that names that key.
+//!
+//! Only the holder of a trusted relay key can author an anchor, and only
+//! for the period its certificate covers: [`verify`] accepts an anchor when
+//! the certificate chains to the provider root, is not revoked, and was
+//! valid (`issued_at` to `expires_at`) at the anchor's `signed_at`. Rows
+//! after the newest accepted anchor are reported as pending, not trusted.
+//! Nothing here records or signs a bearer, a key hash or a challenge.
+
+use super::service::ProviderIdentity;
+use crate::envelope::hash_len_prefixed;
+use crate::error::{Error, Result};
+use crate::provider::{self, Certificate};
+use crate::signing;
+use rusqlite::{params, Connection, OptionalExtension};
+use sha2::{Digest, Sha256};
+use std::collections::HashSet;
+
+const ENTRY_DOMAIN: &[u8] = b"KQ-RELAY-AUDIT-ENTRY-v1";
+const GENESIS: [u8; 32] = [0u8; 32];
+
+/// An audit table this module chains and anchors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuditTable {
+    ApiKeyEvents,
+    ProviderAuthEvents,
+}
+
+impl AuditTable {
+    pub const ALL: [AuditTable; 2] = [AuditTable::ApiKeyEvents, AuditTable::ProviderAuthEvents];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::ApiKeyEvents => "api_key_events",
+            Self::ProviderAuthEvents => "provider_auth_events",
+        }
+    }
+
+    /// Every recorded column, as text (NULL stays NULL), in a fixed order.
+    fn fields_sql(self) -> &'static str {
+        match self {
+            Self::ApiKeyEvents => {
+                "SELECT id, CAST(api_key_id AS TEXT), event, actor,
+                        CAST(related_key_id AS TEXT), occurred_at, prev_hash, entry_hash
+                 FROM api_key_events"
+            }
+            Self::ProviderAuthEvents => {
+                "SELECT id, operation, provider_id, network_id, hardware_fingerprints,
+                        CAST(success AS TEXT), attempted_at, prev_hash, entry_hash
+                 FROM provider_auth_events"
+            }
+        }
+    }
+
+    fn field_count(self) -> usize {
+        match self {
+            Self::ApiKeyEvents => 5,
+            Self::ProviderAuthEvents => 6,
+        }
+    }
+}
+
+struct Row {
+    id: i64,
+    fields: Vec<Option<String>>,
+    prev_hash: Option<String>,
+    entry_hash: Option<String>,
+}
+
+fn read_rows(conn: &Connection, table: AuditTable, filter: &str) -> Result<Vec<Row>> {
+    let n = table.field_count();
+    let sql = format!("{} {filter} ORDER BY id", table.fields_sql());
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        let mut fields = Vec::with_capacity(n);
+        for i in 0..n {
+            fields.push(row.get::<_, Option<String>>(i + 1)?);
+        }
+        Ok(Row {
+            id: row.get(0)?,
+            fields,
+            prev_hash: row.get(n + 1)?,
+            entry_hash: row.get(n + 2)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<_>>().map_err(Error::from)
+}
+
+/// The chain hash of one row: domain, table, the previous row's hash, then
+/// each field tagged present (`1 || len || bytes`) or absent (`0`), so a
+/// NULL can never collide with an empty string.
+fn entry_hash(table: AuditTable, prev: &[u8; 32], fields: &[Option<String>]) -> Result<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    hasher.update(ENTRY_DOMAIN);
+    hash_len_prefixed(&mut hasher, table.name().as_bytes())?;
+    hasher.update(prev);
+    for field in fields {
+        match field {
+            Some(value) => {
+                hasher.update([1u8]);
+                hash_len_prefixed(&mut hasher, value.as_bytes())?;
+            }
+            None => hasher.update([0u8]),
+        }
+    }
+    Ok(hasher.finalize().into())
+}
+
+fn decode_hash(hex_hash: &str) -> Option<[u8; 32]> {
+    hex::decode(hex_hash).ok()?.try_into().ok()
+}
+
+/// Chain the row `id` onto the row before it. Called in the same
+/// transaction as the insert, so a row is never left unchained.
+pub(crate) fn seal_row(conn: &Connection, table: AuditTable, id: i64) -> Result<()> {
+    let prev: Option<Option<String>> = conn
+        .query_row(
+            &format!(
+                "SELECT entry_hash FROM {} WHERE id < ?1 ORDER BY id DESC LIMIT 1",
+                table.name()
+            ),
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let prev = match prev {
+        None => GENESIS,
+        Some(hash) => hash
+            .as_deref()
+            .and_then(decode_hash)
+            .ok_or(Error::IntegrityCheckFailed)?,
+    };
+    let row = read_rows(conn, table, &format!("WHERE id = {id}"))?
+        .pop()
+        .ok_or(Error::IntegrityCheckFailed)?;
+    let hash = entry_hash(table, &prev, &row.fields)?;
+    conn.execute(
+        &format!(
+            "UPDATE {} SET prev_hash = ?1, entry_hash = ?2 WHERE id = ?3",
+            table.name()
+        ),
+        params![hex::encode(prev), hex::encode(hash), id],
+    )?;
+    Ok(())
+}
+
+/// Chain rows written before the chain existed, oldest first. Run by the
+/// schema migration; those rows are vouched for only from the first anchor
+/// signed after it.
+pub(crate) fn backfill(conn: &Connection) -> Result<()> {
+    for table in AuditTable::ALL {
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            params![table.name()],
+            |row| row.get(0),
+        )?;
+        if exists == 0 {
+            continue;
+        }
+        let ids: Vec<i64> = read_rows(conn, table, "WHERE entry_hash IS NULL")?
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        for id in ids {
+            seal_row(conn, table, id)?;
+        }
+    }
+    Ok(())
+}
+
+fn head(conn: &Connection, table: AuditTable) -> Result<Option<(u64, [u8; 32])>> {
+    let row: Option<(i64, Option<String>)> = conn
+        .query_row(
+            &format!(
+                "SELECT (SELECT COUNT(*) FROM {t}), entry_hash FROM {t} ORDER BY id DESC LIMIT 1",
+                t = table.name()
+            ),
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    match row {
+        None => Ok(None),
+        Some((count, hash)) => {
+            let hash = hash
+                .as_deref()
+                .and_then(decode_hash)
+                .ok_or(Error::IntegrityCheckFailed)?;
+            Ok(Some((count as u64, hash)))
+        }
+    }
+}
+
+/// Sign each table's current chain head with the relay key, unless the
+/// newest anchor already covers it. Returns how many anchors were written.
+pub fn anchor(conn: &Connection, identity: &ProviderIdentity, signed_at: &str) -> Result<usize> {
+    crate::db::with_immediate_transaction(conn, || {
+        let mut written = 0;
+        for table in AuditTable::ALL {
+            let Some((count, head_hash)) = head(conn, table)? else {
+                continue;
+            };
+            let covered: Option<i64> = conn
+                .query_row(
+                    "SELECT row_count FROM audit_anchors WHERE table_name = ?1
+                     ORDER BY id DESC LIMIT 1",
+                    params![table.name()],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if covered == Some(count as i64) {
+                continue;
+            }
+            let preimage = signing::relay_audit_anchor_preimage(
+                table.name(),
+                count,
+                &head_hash,
+                signed_at,
+                &identity.certificate,
+            )?;
+            let signature = signing::sign(&identity.relay_private_key, &preimage);
+            conn.execute(
+                "INSERT INTO audit_anchors
+                 (table_name, row_count, head_hash, signed_at, certificate, signature)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    table.name(),
+                    count as i64,
+                    hex::encode(head_hash),
+                    signed_at,
+                    identity.certificate,
+                    signature.to_vec()
+                ],
+            )?;
+            written += 1;
+        }
+        Ok(written)
+    })
+}
+
+/// The newest anchor [`verify`] accepted for a table.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrustedAnchor {
+    pub row_count: u64,
+    pub signed_at: String,
+    pub provider_id: String,
+    pub serial: String,
+}
+
+/// What [`verify`] found for one table.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TableReport {
+    pub table: &'static str,
+    pub rows: u64,
+    /// The first row whose chain does not hold; every row from it on is
+    /// unverifiable.
+    pub broken_at: Option<i64>,
+    pub trusted: Option<TrustedAnchor>,
+    /// Anchors that failed: bad signature, a certificate that was not valid
+    /// when it was signed, or a head that does not match the chain.
+    pub rejected_anchors: u64,
+}
+
+impl TableReport {
+    /// Rows the newest accepted anchor vouches for.
+    pub fn anchored_rows(&self) -> u64 {
+        self.trusted.as_ref().map_or(0, |a| a.row_count)
+    }
+
+    /// Rows written since the newest accepted anchor.
+    pub fn pending_rows(&self) -> u64 {
+        self.rows.saturating_sub(self.anchored_rows())
+    }
+
+    /// The chain holds and no anchor was refused.
+    pub fn is_intact(&self) -> bool {
+        self.broken_at.is_none() && self.rejected_anchors == 0
+    }
+}
+
+/// A certificate the relay key was trusted under at `signed_at`.
+fn certificate_at(
+    root_public_key: &[u8; 32],
+    certificate: &[u8],
+    signed_at: &str,
+    revoked: &HashSet<String>,
+) -> Result<Certificate> {
+    let cert = provider::verify_certificate(root_public_key, certificate, signed_at, revoked)?;
+    if signed_at < cert.issued_at.as_str() {
+        return Err(Error::InvalidProviderCertificate);
+    }
+    Ok(cert)
+}
+
+/// Re-walk every chain and check every anchor against the provider root.
+pub fn verify(
+    conn: &Connection,
+    root_public_key: &[u8; 32],
+    revoked: &HashSet<String>,
+) -> Result<Vec<TableReport>> {
+    let mut reports = Vec::new();
+    for table in AuditTable::ALL {
+        let rows = read_rows(conn, table, "")?;
+        let mut heads = vec![GENESIS];
+        let mut broken_at = None;
+        for row in &rows {
+            let prev = *heads.last().expect("starts with genesis");
+            let recorded_prev = row.prev_hash.as_deref().and_then(decode_hash);
+            let recorded = row.entry_hash.as_deref().and_then(decode_hash);
+            let expected = entry_hash(table, &prev, &row.fields)?;
+            if recorded_prev != Some(prev) || recorded != Some(expected) {
+                broken_at = Some(row.id);
+                break;
+            }
+            heads.push(expected);
+        }
+
+        let mut trusted: Option<TrustedAnchor> = None;
+        let mut rejected_anchors = 0;
+        let mut stmt = conn.prepare(
+            "SELECT row_count, head_hash, signed_at, certificate, signature
+             FROM audit_anchors WHERE table_name = ?1 ORDER BY id",
+        )?;
+        let anchors = stmt
+            .query_map(params![table.name()], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (count, head_hex, signed_at, certificate, signature) in anchors {
+            let accepted = (|| -> Option<TrustedAnchor> {
+                let count = u64::try_from(count).ok()?;
+                let head_hash = decode_hash(&head_hex)?;
+                if heads.get(usize::try_from(count).ok()?) != Some(&head_hash) {
+                    return None;
+                }
+                let cert =
+                    certificate_at(root_public_key, &certificate, &signed_at, revoked).ok()?;
+                let signature: [u8; 64] = signature.try_into().ok()?;
+                let preimage = signing::relay_audit_anchor_preimage(
+                    table.name(),
+                    count,
+                    &head_hash,
+                    &signed_at,
+                    &certificate,
+                )
+                .ok()?;
+                signing::verify_signature(&cert.relay_public_key, &preimage, &signature).ok()?;
+                Some(TrustedAnchor {
+                    row_count: count,
+                    signed_at,
+                    provider_id: cert.provider_id,
+                    serial: cert.serial,
+                })
+            })();
+            match accepted {
+                Some(anchor) => {
+                    if trusted
+                        .as_ref()
+                        .is_none_or(|best| anchor.row_count >= best.row_count)
+                    {
+                        trusted = Some(anchor);
+                    }
+                }
+                None => rejected_anchors += 1,
+            }
+        }
+        reports.push(TableReport {
+            table: table.name(),
+            rows: rows.len() as u64,
+            broken_at,
+            trusted,
+            rejected_anchors,
+        });
+    }
+    Ok(reports)
+}
+
+#[cfg(test)]
+#[path = "audit/tests.rs"]
+mod tests;

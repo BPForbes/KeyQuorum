@@ -31,6 +31,11 @@ pub enum HostCommand {
         /// this address. The relay itself serves plain HTTP.
         #[arg(long)]
         behind_tls_proxy: bool,
+        /// Requests each client may make per minute before a 429 (0 turns
+        /// the limit off). Behind --behind-tls-proxy the client is the last
+        /// X-Forwarded-For address, which the proxy must set.
+        #[arg(long, default_value_t = 600)]
+        rate_limit_per_minute: u32,
     },
     /// Generate a relay identity keypair (private key written owner-only).
     Identity {
@@ -172,9 +177,29 @@ pub enum KeysCommand {
     },
     List,
     /// Print the API-key lifecycle audit trail (created, rotated, revoked).
-    Events,
+    Events {
+        /// Only the events that pertain to this key id
+        #[arg(long)]
+        key: Option<i64>,
+        /// Re-walk both audit chains and check every relay-signed anchor
+        /// against the provider root and certificate validity
+        #[arg(long)]
+        verify: bool,
+        /// With --verify: signed revocation list (or KEYQUORUM_PROVIDER_KRL)
+        #[arg(long, requires = "verify")]
+        krl: Option<PathBuf>,
+    },
+    /// Revoke a key now. With the relay identity (flags or environment) the
+    /// revocation is also signed into the audit chain at once; without it,
+    /// the running relay signs it on its next scan.
     Revoke {
         id: i64,
+        #[arg(long)]
+        cert: Option<PathBuf>,
+        #[arg(long)]
+        relay_key: Option<PathBuf>,
+        #[arg(long)]
+        krl: Option<PathBuf>,
     },
     Rotate {
         id: i64,

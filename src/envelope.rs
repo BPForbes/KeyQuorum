@@ -33,6 +33,7 @@
 
 use crate::error::{Error, Result};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 /// Magic and version identifying one framing of the envelope above. The
 /// bytes are wire format: changing either field of a existing constant
@@ -193,14 +194,18 @@ pub fn kind(bytes: &[u8]) -> Result<u8> {
 }
 
 /// Unseal an envelope with the recipient's X25519 private key. Returns the
-/// kind byte, the header's recipient public key, and the letter.
-pub fn open(bytes: &[u8], recipient_secret: &[u8; 32]) -> Result<(u8, [u8; 32], Vec<u8>)> {
+/// kind byte, the header's recipient public key, and the letter, which is
+/// zeroed when dropped (letters carry shares, keys and file contents).
+pub fn open(
+    bytes: &[u8],
+    recipient_secret: &[u8; 32],
+) -> Result<(u8, [u8; 32], Zeroizing<Vec<u8>>)> {
     let (kind, recipient_public_key, sealed) = parse_outer(bytes)?;
     let secret_key = crypto_box::SecretKey::from(*recipient_secret);
     let payload = secret_key
         .unseal(sealed)
         .map_err(|_| Error::InvalidBridgePackage)?;
-    Ok((kind, recipient_public_key, payload))
+    Ok((kind, recipient_public_key, Zeroizing::new(payload)))
 }
 
 /// A handful of X25519 curve points have small order and, under

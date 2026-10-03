@@ -32,7 +32,7 @@ fn encrypt_decrypt_roundtrip() {
     let ciphertext = encrypt(&key, &nonce, plaintext);
     let decrypted = decrypt(&key, &nonce, &ciphertext).unwrap();
 
-    assert_eq!(decrypted, plaintext);
+    assert_eq!(decrypted.as_slice(), plaintext);
 }
 
 #[test]
@@ -58,4 +58,14 @@ fn salts_and_nonces_are_fresh_random_and_the_right_length() {
     assert_eq!(a.len(), NONCE_LEN);
     assert_ne!(a, b, "two nonces must differ");
     assert_ne!(a, [0u8; NONCE_LEN], "a nonce must not be all zero");
+}
+
+#[test]
+fn decrypted_plaintext_is_zeroed_on_drop() {
+    // Pinned by type: the plaintext comes back in a buffer that wipes itself.
+    let key = random_key();
+    let nonce = random_nonce();
+    let ciphertext = encrypt(&key, &nonce, b"secret");
+    let plaintext: zeroize::Zeroizing<Vec<u8>> = decrypt(&key, &nonce, &ciphertext).unwrap();
+    assert_eq!(plaintext.as_slice(), b"secret");
 }

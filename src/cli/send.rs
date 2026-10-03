@@ -174,14 +174,14 @@ fn send_quorum_file(conn: &Connection, id: i64, args: SendOpts) -> Result<()> {
     // An unregistered recipient is refused before anything is unlocked, so the
     // attempt is not recorded at the file's gate for a send that cannot happen.
     deliver_cmd::registered_encryption_key(conn, &args.to)?;
-    let plaintext = zeroize::Zeroizing::new(unlock_quorum_file(
+    let plaintext = unlock_quorum_file(
         conn,
         id,
         &args.unlock_share_files,
         &args.unlock_slots,
         &args.approves,
         false,
-    )?);
+    )?;
     let file_name = match args.name {
         Some(name) => name,
         None => quorum::status(conn, id)?.name,

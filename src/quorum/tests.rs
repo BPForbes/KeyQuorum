@@ -86,7 +86,7 @@ fn lock_status_and_unlock_roundtrip_with_threshold_met() {
     shares.insert(leaves[&"b".to_string()], raw_b);
 
     let plaintext = unlock_file(&conn, file_id, &shares).expect("unlock_file should succeed");
-    assert_eq!(plaintext, b"the quorum has been reached");
+    assert_eq!(plaintext.as_slice(), b"the quorum has been reached");
 }
 
 #[test]
@@ -317,7 +317,7 @@ fn parent_approval_is_required_only_when_the_tree_asks_for_it() {
     };
     let plaintext =
         unlock_file_with_approval(&conn, file_id, &shares, &[grant]).expect("parent signed");
-    assert_eq!(plaintext, b"needs a supervisor");
+    assert_eq!(plaintext.as_slice(), b"needs a supervisor");
 }
 
 #[test]
@@ -406,7 +406,7 @@ fn a_file_with_a_future_expiry_unlocks_normally_and_keeps_its_ttl() {
     shares.insert(leaves[&"a".to_string()], raw_a);
 
     let plaintext = unlock_file(&conn, file_id, &shares).unwrap();
-    assert_eq!(plaintext, b"the quorum has been reached");
+    assert_eq!(plaintext.as_slice(), b"the quorum has been reached");
     assert_eq!(
         status(&conn, file_id).unwrap().expires_at.as_deref(),
         Some(future.as_str())

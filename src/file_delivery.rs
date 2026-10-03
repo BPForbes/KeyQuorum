@@ -518,7 +518,11 @@ fn take_head(data: &mut &[u8]) -> Result<LetterHead> {
 
 /// Unseal `bytes` as `kind` with `secret`: the key the envelope was sealed
 /// to, and its plaintext. Any other kind is refused, so the kinds never mix.
-fn open_kind(bytes: &[u8], secret: &[u8; 32], kind: u8) -> Result<([u8; 32], Vec<u8>)> {
+fn open_kind(
+    bytes: &[u8],
+    secret: &[u8; 32],
+    kind: u8,
+) -> Result<([u8; 32], zeroize::Zeroizing<Vec<u8>>)> {
     let (found, sealed_to, payload) = envelope::open(bytes, secret)?;
     if found != kind {
         return Err(Error::InvalidBridgePackage);

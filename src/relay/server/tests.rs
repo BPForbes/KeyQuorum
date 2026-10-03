@@ -859,3 +859,185 @@ fn plain_http_binds_only_to_loopback_unless_tls_terminates_in_front() {
         super::check_bind(&parse(public), true).expect("operator states TLS terminates upstream");
     }
 }
+
+async fn audit_events_for(app: &axum::Router, token: &str) -> (StatusCode, serde_json::Value) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/audit/api-keys")
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let json = if status == StatusCode::OK {
+        body_json(response).await
+    } else {
+        serde_json::Value::Null
+    };
+    (status, json)
+}
+
+#[tokio::test]
+async fn audit_events_are_scoped_to_the_caller_and_revocations_are_signed_at_once() {
+    let issued = issued_identity("2099-01-01 00:00:00");
+    let conn = relay::open_in_memory().expect("schema");
+    let admin = admin_key(&conn);
+    let push = push_key(&conn);
+    let other = push_key(&conn);
+    let state = AppState::with_identity(
+        conn,
+        ProviderIdentity {
+            certificate: issued.certificate.clone(),
+            relay_private_key: issued.relay_private.clone(),
+        },
+    );
+    let db = state.db.clone();
+    let app = router(state);
+
+    // A push key sees only the event about itself, never another key's.
+    let (status, mine) = audit_events_for(&app, &push).await;
+    assert_eq!(status, StatusCode::OK);
+    let mine = mine.as_array().expect("array");
+    assert_eq!(mine.len(), 1);
+    assert_eq!(mine[0]["api_key_id"], 2);
+    assert_eq!(mine[0]["event"], "created");
+    assert_eq!(mine[0]["entry_hash"].as_str().expect("hash").len(), 64);
+    // An admin key sees the whole trail.
+    let (_, all) = audit_events_for(&app, &admin).await;
+    assert_eq!(all.as_array().expect("array").len(), 3);
+    // No bearer, no access.
+    let (status, _) = audit_events_for(&app, "kq_not-a-key").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // An admin revokes `other` over HTTP; the relay signs the new head.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api-keys/3/revoke")
+                .header("Authorization", format!("Bearer {admin}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    // The revoked key can no longer read even its own events.
+    let (status, _) = audit_events_for(&app, &other).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (_, all) = audit_events_for(&app, &admin).await;
+    let last = all
+        .as_array()
+        .expect("array")
+        .last()
+        .cloned()
+        .expect("event");
+    assert_eq!(last["event"], "revoked");
+    assert_eq!(last["actor"], "admin:1");
+
+    // The revocation is already vouched for by this relay's key.
+    let conn = db.lock().expect("db");
+    let reports =
+        relay::audit::verify(&conn, &issued.root_public, &Default::default()).expect("verify");
+    let events = reports
+        .iter()
+        .find(|r| r.table == "api_key_events")
+        .expect("report");
+    assert!(events.is_intact(), "{events:?}");
+    assert_eq!((events.rows, events.pending_rows()), (4, 0));
+}
+
+#[test]
+fn rate_limiter_counts_per_client_and_resets_each_minute() {
+    use std::net::IpAddr;
+    use std::time::{Duration, Instant};
+    let limiter = super::RateLimiter::new(2, false);
+    let a: IpAddr = [192, 0, 2, 1].into();
+    let b: IpAddr = [192, 0, 2, 2].into();
+    let t0 = Instant::now();
+    assert!(limiter.check(a, t0).is_ok());
+    assert!(limiter.check(a, t0).is_ok());
+    let wait = limiter
+        .check(a, t0 + Duration::from_secs(20))
+        .expect_err("third is refused");
+    assert_eq!(wait, Duration::from_secs(40));
+    // Another client has its own allowance.
+    assert!(limiter.check(b, t0).is_ok());
+    // A new window starts a minute later.
+    assert!(limiter.check(a, t0 + Duration::from_secs(60)).is_ok());
+}
+
+#[test]
+fn rate_limiter_memory_stays_bounded_under_many_addresses() {
+    use std::net::IpAddr;
+    use std::time::Instant;
+    let limiter = super::RateLimiter::new(1, false);
+    let now = Instant::now();
+    for i in 0..(super::MAX_RATE_LIMITED_CLIENTS as u32 + 10) {
+        let ip: IpAddr = std::net::Ipv4Addr::from(i).into();
+        let _ = limiter.check(ip, now);
+    }
+    assert!(limiter.clients.lock().unwrap().len() <= super::MAX_RATE_LIMITED_CLIENTS + 1);
+}
+
+async fn health_from(app: &axum::Router, forwarded: Option<&str>) -> axum::http::Response<Body> {
+    let mut request = Request::builder().uri("/health");
+    if let Some(value) = forwarded {
+        request = request.header("X-Forwarded-For", value);
+    }
+    app.clone()
+        .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn rate_limited_requests_get_429_with_retry_after() {
+    let conn = relay::open_in_memory().expect("schema");
+    let app = router(AppState::new(conn).with_rate_limit(2, false));
+    assert_eq!(health_from(&app, None).await.status(), StatusCode::OK);
+    assert_eq!(health_from(&app, None).await.status(), StatusCode::OK);
+    let refused = health_from(&app, None).await;
+    assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+    let retry: u64 = refused.headers()["retry-after"]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((1..=60).contains(&retry));
+    // Without a trusted proxy, a client cannot dodge the limit by claiming
+    // another address.
+    assert_eq!(
+        health_from(&app, Some("198.51.100.7")).await.status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
+#[tokio::test]
+async fn behind_a_proxy_the_last_forwarded_address_is_the_client() {
+    let conn = relay::open_in_memory().expect("schema");
+    let app = router(AppState::new(conn).with_rate_limit(1, true));
+    assert_eq!(
+        health_from(&app, Some("203.0.113.9, 198.51.100.1"))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    // A spoofed first entry does not make a new client: the proxy's last
+    // entry is the same.
+    assert_eq!(
+        health_from(&app, Some("203.0.113.200, 198.51.100.1"))
+            .await
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        health_from(&app, Some("198.51.100.2")).await.status(),
+        StatusCode::OK
+    );
+}

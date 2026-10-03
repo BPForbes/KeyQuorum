@@ -6,22 +6,26 @@ use super::client::{
     ProviderIdentityResponse,
 };
 use super::device_directory::{DeviceDescriptor, DeviceSlotDescriptor};
-use super::service::{self, ApiKeyView, HttpError, ProviderIdentity, MAX_ENVELOPE_BYTES};
+use super::service::{
+    self, ApiKeyEventView, ApiKeyView, HttpError, ProviderIdentity, MAX_ENVELOPE_BYTES,
+};
 use crate::error::Error;
 use crate::key_tree::{PublicEdge, PublicNode, PublicTree};
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, FromRequestParts, Path, Query, State};
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, FromRequestParts, Path, Query, Request, State};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER};
 use axum::http::request::Parts;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
@@ -32,6 +36,7 @@ use utoipa_swagger_ui::SwaggerUi;
 pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
     identity: Option<Arc<ProviderIdentity>>,
+    rate_limit: Option<Arc<RateLimiter>>,
 }
 
 impl AppState {
@@ -39,6 +44,7 @@ impl AppState {
         Self {
             db: Arc::new(Mutex::new(conn)),
             identity: None,
+            rate_limit: None,
         }
     }
 
@@ -46,7 +52,17 @@ impl AppState {
         Self {
             db: Arc::new(Mutex::new(conn)),
             identity: Some(Arc::new(identity)),
+            rate_limit: None,
         }
+    }
+
+    /// Limit each client to `per_minute` requests (0 turns the limit off).
+    /// With `trust_forwarded`, the client is the address the TLS proxy put
+    /// last in `X-Forwarded-For`; otherwise the connection's peer address.
+    pub fn with_rate_limit(mut self, per_minute: u32, trust_forwarded: bool) -> Self {
+        self.rate_limit =
+            (per_minute > 0).then(|| Arc::new(RateLimiter::new(per_minute, trust_forwarded)));
+        self
     }
 
     pub fn identity(&self) -> Option<Arc<ProviderIdentity>> {
@@ -181,6 +197,7 @@ impl Modify for SecurityAddon {
         get_inbox,
         list_keys,
         revoke_key,
+        get_audit_events,
         put_tree,
         get_tree_context,
         post_provider_identity,
@@ -204,6 +221,7 @@ impl Modify for SecurityAddon {
             DeviceSlotDescriptor,
             ErrorBody,
             ApiKeyView,
+            ApiKeyEventView,
             PublicTree,
             PublicNode,
             PublicEdge,
@@ -215,6 +233,7 @@ impl Modify for SecurityAddon {
     tags(
         (name = "inbox", description = "Opaque .kqpb envelope mailbox"),
         (name = "api-keys", description = "List and revoke API keys"),
+        (name = "audit", description = "API-key lifecycle events, scoped to the caller"),
         (name = "trees", description = "Canonical public split-tree topology"),
         (name = "provider", description = "KeyQuorum-signed relay identity"),
         (name = "devices", description = "Sealed device copy, move, and relocate letters")
@@ -386,8 +405,44 @@ async fn revoke_key(
     ApiToken(token): ApiToken,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
-    with_conn(&state, move |conn| service::revoke_key(conn, &token, id)).await?;
+    let identity = state.identity();
+    with_conn(&state, move |conn| {
+        service::revoke_key(conn, &token, id)?;
+        // Sign the new chain head at once, so the revocation is vouched
+        // for before the next scan.
+        if let Some(identity) = identity {
+            if let Err(err) = anchor_now(conn, &identity) {
+                tracing::warn!("audit anchor after revocation failed: {err}");
+            }
+        }
+        Ok(())
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Anchor the audit chains with this relay's key at the current time.
+pub fn anchor_now(conn: &Connection, identity: &ProviderIdentity) -> crate::error::Result<usize> {
+    let now = crate::provider::system_now_utc_millis()?;
+    super::audit::anchor(conn, identity, &now)
+}
+
+#[utoipa::path(
+    get,
+    path = "/audit/api-keys",
+    tag = "audit",
+    responses(
+        (status = 200, description = "Events about the caller's own key (every event for an admin key)", body = [ApiKeyEventView]),
+        (status = 401, description = "Unauthorized", body = ErrorBody)
+    ),
+    security(("api_key" = []))
+)]
+async fn get_audit_events(
+    State(state): State<AppState>,
+    ApiToken(token): ApiToken,
+) -> Result<Json<Vec<ApiKeyEventView>>, ApiError> {
+    let events = with_conn(&state, move |conn| service::audit_events(conn, &token)).await?;
+    Ok(Json(events))
 }
 
 #[utoipa::path(
@@ -542,6 +597,103 @@ async fn get_device(
     Ok(Json(descriptor))
 }
 
+/// Most clients the rate limiter tracks at once. Past this, expired windows
+/// are dropped, and if every tracked client is still active, new clients
+/// share one overflow bucket, so memory stays bounded under a flood of
+/// distinct addresses.
+pub const MAX_RATE_LIMITED_CLIENTS: usize = 65_536;
+
+const RATE_WINDOW: Duration = Duration::from_secs(60);
+
+/// A fixed one-minute window per client address.
+pub struct RateLimiter {
+    per_minute: u32,
+    trust_forwarded: bool,
+    clients: Mutex<HashMap<IpAddr, (Instant, u32)>>,
+}
+
+impl RateLimiter {
+    pub fn new(per_minute: u32, trust_forwarded: bool) -> Self {
+        Self {
+            per_minute,
+            trust_forwarded,
+            clients: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// `Ok` to serve the request, or how long until `client` may retry.
+    pub fn check(&self, client: IpAddr, now: Instant) -> std::result::Result<(), Duration> {
+        let mut clients = self
+            .clients
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !clients.contains_key(&client) && clients.len() >= MAX_RATE_LIMITED_CLIENTS {
+            clients.retain(|_, (start, _)| now.duration_since(*start) < RATE_WINDOW);
+        }
+        let key = if clients.contains_key(&client) || clients.len() < MAX_RATE_LIMITED_CLIENTS {
+            client
+        } else {
+            IpAddr::from([0u8; 16])
+        };
+        let entry = clients.entry(key).or_insert((now, 0));
+        if now.duration_since(entry.0) >= RATE_WINDOW {
+            *entry = (now, 0);
+        }
+        if entry.1 >= self.per_minute {
+            return Err(RATE_WINDOW.saturating_sub(now.duration_since(entry.0)));
+        }
+        entry.1 += 1;
+        Ok(())
+    }
+
+    fn client(&self, request: &Request) -> IpAddr {
+        if self.trust_forwarded {
+            // The proxy appends the address it saw, so only the last entry
+            // is the proxy's word; earlier ones are whatever the client sent.
+            let forwarded = request
+                .headers()
+                .get_all("x-forwarded-for")
+                .iter()
+                .filter_map(|value| value.to_str().ok())
+                .flat_map(|value| value.split(','))
+                .next_back()
+                .and_then(|last| last.trim().parse::<IpAddr>().ok());
+            if let Some(ip) = forwarded {
+                return ip;
+            }
+        }
+        request
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|info| info.0.ip())
+            .unwrap_or(IpAddr::from([0u8; 16]))
+    }
+}
+
+async fn rate_limit(
+    State(limiter): State<Arc<RateLimiter>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let client = limiter.client(&request);
+    match limiter.check(client, Instant::now()) {
+        Ok(()) => next.run(request).await,
+        Err(retry_after) => {
+            tracing::warn!(%client, "relay rate limit exceeded");
+            let mut response = ApiError {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                message: "rate limit exceeded".to_string(),
+            }
+            .into_response();
+            let seconds = retry_after.as_secs().max(1).to_string();
+            if let Ok(value) = HeaderValue::from_str(&seconds) {
+                response.headers_mut().insert(RETRY_AFTER, value);
+            }
+            response
+        }
+    }
+}
+
 /// Longest a request may take, body included, before the relay answers
 /// `408 Request Timeout`, so a slow or stalled client cannot hold a
 /// connection and the database lock indefinitely.
@@ -562,7 +714,8 @@ pub fn check_bind(addr: &SocketAddr, behind_tls_proxy: bool) -> crate::error::Re
 }
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let limiter = state.rate_limit.clone();
+    let app = Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .route("/health", get(health))
         .route("/keycheck", post(post_keycheck))
@@ -570,6 +723,7 @@ pub fn router(state: AppState) -> Router {
         .route("/inbox", post(post_inbox).get(get_inbox))
         .route("/api-keys", get(list_keys))
         .route("/api-keys/{id}/revoke", post(revoke_key))
+        .route("/audit/api-keys", get(get_audit_events))
         .route("/trees", put(put_tree))
         .route("/trees/{label}/context", get(get_tree_context))
         .route(
@@ -583,8 +737,14 @@ pub fn router(state: AppState) -> Router {
             StatusCode::REQUEST_TIMEOUT,
             REQUEST_TIMEOUT,
         ))
-        .layer(TraceLayer::new_for_http())
-        .with_state(state)
+        .with_state(state);
+    // Outermost after tracing, so a refused request costs no database work
+    // and still shows up in the trace.
+    let app = match limiter {
+        Some(limiter) => app.layer(middleware::from_fn_with_state(limiter, rate_limit)),
+        None => app,
+    };
+    app.layer(TraceLayer::new_for_http())
 }
 
 #[cfg(test)]

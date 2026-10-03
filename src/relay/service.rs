@@ -144,6 +144,44 @@ impl From<ApiKeyInfo> for ApiKeyView {
     }
 }
 
+/// One API-key lifecycle event as `GET /audit/api-keys` returns it.
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct ApiKeyEventView {
+    pub id: i64,
+    pub api_key_id: i64,
+    pub event: String,
+    pub actor: String,
+    pub related_key_id: Option<i64>,
+    pub occurred_at: String,
+    /// This row's link in the relay's signed audit chain.
+    pub entry_hash: String,
+}
+
+impl From<api_key::ApiKeyEvent> for ApiKeyEventView {
+    fn from(event: api_key::ApiKeyEvent) -> Self {
+        Self {
+            id: event.id,
+            api_key_id: event.api_key_id,
+            event: event.event,
+            actor: event.actor,
+            related_key_id: event.related_key_id,
+            occurred_at: event.occurred_at,
+            entry_hash: event.entry_hash,
+        }
+    }
+}
+
+/// `GET /audit/api-keys` (any live key): the lifecycle events that pertain
+/// to the caller. An admin key sees every event; any other key only those
+/// about itself, so no key holder learns about another's.
+pub fn audit_events(conn: &Connection, token: &str) -> Result<Vec<ApiKeyEventView>> {
+    let auth = api_key::authenticate_any(conn, token)?;
+    Ok(api_key::events_visible_to(conn, &auth)?
+        .into_iter()
+        .map(ApiKeyEventView::from)
+        .collect())
+}
+
 /// `POST /provider-identity`: the certificate plus a signature over the
 /// caller's challenge.
 pub fn provider_identity(
@@ -434,6 +472,7 @@ fn route(
             &inbox_pull(conn, &token()?, query("after")?, query("limit")?)?,
         )),
         ("GET", ["api-keys"]) => Ok(json_response(200, &list_keys(conn, &token()?)?)),
+        ("GET", ["audit", "api-keys"]) => Ok(json_response(200, &audit_events(conn, &token()?)?)),
         ("POST", ["api-keys", id, "revoke"]) => {
             let id = id.parse().map_err(|_| Error::ApiKeyNotFound)?;
             revoke_key(conn, &token()?, id)?;

@@ -781,7 +781,7 @@ fn write_token(
     storage.write_new(&path, &bytes)
 }
 
-fn decrypt_token(bytes: &[u8], passphrase: &str) -> Result<Vec<u8>> {
+fn decrypt_token(bytes: &[u8], passphrase: &str) -> Result<Zeroizing<Vec<u8>>> {
     if bytes.len() < 4 + 1 + SALT_LEN + NONCE_LEN + 16 || &bytes[..4] != TOKEN_MAGIC {
         return Err(Error::InvalidDevice);
     }

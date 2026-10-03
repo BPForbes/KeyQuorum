@@ -82,15 +82,16 @@ pub fn encrypt(key: &[u8; KEY_LEN], nonce: &[u8; NONCE_LEN], plaintext: &[u8]) -
 /// Decrypts `ciphertext` with AES-256-GCM under `key`/`nonce`. Fails (and
 /// must be allowed to fail) whenever the key is wrong or the ciphertext
 /// has been tampered with — the AEAD authentication tag is what actually
-/// detects an incorrect password.
+/// detects an incorrect password. The plaintext is zeroed when dropped.
 pub fn decrypt(
     key: &[u8; KEY_LEN],
     nonce: &[u8; NONCE_LEN],
     ciphertext: &[u8],
-) -> Result<Vec<u8>, DecryptError> {
+) -> Result<Zeroizing<Vec<u8>>, DecryptError> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     cipher
         .decrypt(Nonce::from_slice(nonce), ciphertext)
+        .map(Zeroizing::new)
         .map_err(|_| DecryptError)
 }
 

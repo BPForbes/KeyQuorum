@@ -21,6 +21,7 @@ const FILE_COUNTERSIGN_DOMAIN: &[u8] = b"KQ-FILE-COUNTERSIGN-v1";
 const FILE_FINALIZE_DOMAIN: &[u8] = b"KQ-FILE-FINALIZE-v1";
 const FILE_HISTORY_EVENT_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-EVENT-v1";
 const FILE_BRIDGE_APPROVAL_DOMAIN: &[u8] = b"KQ-FILE-BRIDGE-APPROVAL-v1";
+const RELAY_AUDIT_ANCHOR_DOMAIN: &[u8] = b"KQ-RELAY-AUDIT-ANCHOR-v1";
 
 /// Verifies `signature` over `message` under `public_key`. Uses
 /// `verify_strict` rather than `verify` — it rejects the non-canonical
@@ -200,6 +201,27 @@ pub fn file_history_event_preimage(
     hasher.update(previous_event_hash);
     hasher.update(event_hash);
     hasher.finalize().into()
+}
+
+/// What a relay signs to vouch for an audit chain: the table, how many rows
+/// it covers, the chain head at that row, when it was signed, and the
+/// certificate that names the signing key (so a key cannot be moved under
+/// another certificate). Domain-separated from every other preimage.
+pub fn relay_audit_anchor_preimage(
+    table: &str,
+    row_count: u64,
+    head_hash: &[u8; 32],
+    signed_at: &str,
+    certificate: &[u8],
+) -> Result<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    hasher.update(RELAY_AUDIT_ANCHOR_DOMAIN);
+    hash_len_prefixed(&mut hasher, table.as_bytes())?;
+    hasher.update(row_count.to_be_bytes());
+    hasher.update(head_hash);
+    hash_len_prefixed(&mut hasher, signed_at.as_bytes())?;
+    hasher.update(Sha256::digest(certificate));
+    Ok(hasher.finalize().into())
 }
 
 pub fn sign_with_bridge(

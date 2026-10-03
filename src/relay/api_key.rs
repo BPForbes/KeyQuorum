@@ -185,6 +185,9 @@ pub struct ApiKeyEvent {
     pub actor: String,
     pub related_key_id: Option<i64>,
     pub occurred_at: String,
+    /// This row's link in the audit chain (`relay::audit`), so a key holder
+    /// can keep evidence of what the relay recorded about it.
+    pub entry_hash: String,
 }
 
 fn record_event(
@@ -199,16 +202,46 @@ fn record_event(
          VALUES (?1, ?2, ?3, ?4)",
         params![api_key_id, event, actor, related_key_id],
     )?;
-    Ok(())
+    super::audit::seal_row(
+        conn,
+        super::audit::AuditTable::ApiKeyEvents,
+        conn.last_insert_rowid(),
+    )
 }
 
-/// The lifecycle audit trail, oldest first. Holds no bearer or hash.
+/// The lifecycle audit trail, oldest first. Holds no bearer or hash of one.
 pub fn events(conn: &Connection) -> Result<Vec<ApiKeyEvent>> {
+    query_events(conn, None)
+}
+
+/// Only the events that pertain to key `id`: those about it, those it
+/// caused as an admin, and the rotation that replaced it.
+pub fn events_for_key(conn: &Connection, id: i64) -> Result<Vec<ApiKeyEvent>> {
+    query_events(conn, Some(id))
+}
+
+/// What the holder of `auth` may read: an admin key sees the whole trail,
+/// any other key only the events that pertain to itself.
+pub fn events_visible_to(conn: &Connection, auth: &AuthedKey) -> Result<Vec<ApiKeyEvent>> {
+    if auth.scope == ApiKeyScope::Admin {
+        events(conn)
+    } else {
+        events_for_key(conn, auth.id)
+    }
+}
+
+fn query_events(conn: &Connection, key: Option<i64>) -> Result<Vec<ApiKeyEvent>> {
     let mut stmt = conn.prepare(
-        "SELECT id, api_key_id, event, actor, related_key_id, occurred_at
-         FROM api_key_events ORDER BY id",
+        "SELECT id, api_key_id, event, actor, related_key_id, occurred_at,
+                COALESCE(entry_hash, '')
+         FROM api_key_events
+         WHERE ?1 IS NULL
+            OR api_key_id = ?1
+            OR related_key_id = ?1
+            OR actor = 'admin:' || ?1
+         ORDER BY id",
     )?;
-    let rows = stmt.query_map([], |row| {
+    let rows = stmt.query_map(params![key], |row| {
         Ok(ApiKeyEvent {
             id: row.get(0)?,
             api_key_id: row.get(1)?,
@@ -216,6 +249,7 @@ pub fn events(conn: &Connection) -> Result<Vec<ApiKeyEvent>> {
             actor: row.get(3)?,
             related_key_id: row.get(4)?,
             occurred_at: row.get(5)?,
+            entry_hash: row.get(6)?,
         })
     })?;
     rows.collect::<rusqlite::Result<_>>().map_err(Error::from)
@@ -394,6 +428,23 @@ pub fn authenticate(conn: &Connection, token: &str, required: ApiKeyScope) -> Re
     }
 }
 
+/// Authenticates a live, unexpired key of any scope and stamps its use.
+/// For routes whose answer is scoped to the caller rather than gated on a
+/// scope (the caller's own audit events).
+pub fn authenticate_any(conn: &Connection, token: &str) -> Result<AuthedKey> {
+    let token_hash = hash_bearer(token)?;
+    let scope: Option<String> = conn
+        .query_row(
+            "SELECT scope FROM api_keys WHERE key_hash = ?1",
+            params![token_hash],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let scope = scope.ok_or(Error::InvalidApiKey)?;
+    // The scoped check does the rest: revoked, expired and last-used.
+    authenticate(conn, token, ApiKeyScope::parse(&scope)?)
+}
+
 /// Result of `POST /keycheck`: whether a token or stored hash is live.
 /// Does not distinguish unknown / expired / revoked, and does not stamp
 /// `last_used_at` — this is not an authenticated session.
@@ -521,17 +572,23 @@ pub fn record_provider_auth_event(
     hardware_fingerprints: Option<&str>,
     success: bool,
 ) -> Result<()> {
-    conn.execute(
-        "INSERT INTO provider_auth_events
-         (operation, provider_id, network_id, hardware_fingerprints, success)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            operation,
-            provider_id,
-            network_id,
-            hardware_fingerprints,
-            i64::from(success)
-        ],
-    )?;
-    Ok(())
+    crate::db::with_immediate_transaction(conn, || {
+        conn.execute(
+            "INSERT INTO provider_auth_events
+             (operation, provider_id, network_id, hardware_fingerprints, success)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                operation,
+                provider_id,
+                network_id,
+                hardware_fingerprints,
+                i64::from(success)
+            ],
+        )?;
+        super::audit::seal_row(
+            conn,
+            super::audit::AuditTable::ProviderAuthEvents,
+            conn.last_insert_rowid(),
+        )
+    })
 }

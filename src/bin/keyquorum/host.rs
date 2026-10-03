@@ -39,6 +39,7 @@ pub fn run(mailbox_db: &Path, org_db: &Path, command: HostCommand) -> Result<()>
             scan_db,
             scan_interval_seconds,
             behind_tls_proxy,
+            rate_limit_per_minute,
         } => {
             let scan_db = scan_db.or_else(|| org_db.is_file().then(|| org_db.to_path_buf()));
             tokio::runtime::Builder::new_multi_thread()
@@ -54,6 +55,7 @@ pub fn run(mailbox_db: &Path, org_db: &Path, command: HostCommand) -> Result<()>
                     scan_db,
                     scan_interval_seconds,
                     behind_tls_proxy,
+                    rate_limit_per_minute,
                 ))
         }
         HostCommand::Identity { command } => run_identity(command),
@@ -127,7 +129,7 @@ fn authorize_mint(
     relay_key: Option<PathBuf>,
     krl: Option<PathBuf>,
     licensee_key: Option<String>,
-) -> Result<()> {
+) -> Result<ProviderIdentity> {
     let mut provider_id = None;
     let result = check_mint(conn, &mut provider_id, cert, relay_key, krl, licensee_key);
     relay::record_provider_auth_event(
@@ -148,8 +150,8 @@ fn check_mint(
     relay_key: Option<PathBuf>,
     krl: Option<PathBuf>,
     licensee_key: Option<String>,
-) -> Result<()> {
-    let (_, id) = load_serve_identity(cert, relay_key, krl)?;
+) -> Result<ProviderIdentity> {
+    let (identity, id) = load_serve_identity(cert, relay_key, krl)?;
     *provider_id = Some(id);
     let supplied = licensee_key
         .filter(|s| !s.is_empty())
@@ -162,12 +164,12 @@ fn check_mint(
         relay::authorize_licensee_or_bootstrap(conn, supplied.as_deref().map(String::as_str))?
     {
         print_new_licensee(&issuer);
-        return Ok(());
+        return Ok(identity);
     }
     if supplied.is_none() {
         require_licensee(conn, None)?;
     }
-    Ok(())
+    Ok(identity)
 }
 
 fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
@@ -182,7 +184,7 @@ fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
             krl,
             licensee_key,
         } => {
-            authorize_mint(conn, "keys.create", cert, relay_key, krl, licensee_key)?;
+            let identity = authorize_mint(conn, "keys.create", cert, relay_key, krl, licensee_key)?;
             let created = relay::create_api_key(
                 conn,
                 &NewApiKey {
@@ -201,6 +203,7 @@ fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
                 println!("expires: {expires}");
             }
             println!("token (shown once): {}", created.token);
+            anchor_audit(conn, &identity);
         }
         KeysCommand::List => {
             let keys = relay::list_api_keys(conn)?;
@@ -219,8 +222,11 @@ fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
                 }
             }
         }
-        KeysCommand::Events => {
-            let events = relay::api_key_events(conn)?;
+        KeysCommand::Events { key, verify, krl } => {
+            let events = match key {
+                Some(id) => relay::api_key_events_for_key(conn, id)?,
+                None => relay::api_key_events(conn)?,
+            };
             if events.is_empty() {
                 println!("(no API key events)");
             }
@@ -229,14 +235,30 @@ fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
                     .related_key_id
                     .map_or_else(|| "-".to_string(), |id| id.to_string());
                 println!(
-                    "{}\t{}\t{}\t{}\treplaces={related}",
-                    event.occurred_at, event.api_key_id, event.event, event.actor
+                    "{}\t{}\t{}\t{}\treplaces={related}\t{}",
+                    event.occurred_at, event.api_key_id, event.event, event.actor, event.entry_hash
                 );
             }
+            if verify {
+                return verify_audit(conn, krl);
+            }
         }
-        KeysCommand::Revoke { id } => {
+        KeysCommand::Revoke {
+            id,
+            cert,
+            relay_key,
+            krl,
+        } => {
             relay::revoke_api_key(conn, id)?;
             println!("Revoked API key {id}");
+            let configured = path_or_env(cert.clone(), "KEYQUORUM_PROVIDER_CERT").is_some()
+                && path_or_env(relay_key.clone(), "KEYQUORUM_RELAY_KEY").is_some();
+            if configured {
+                let (identity, _) = load_serve_identity(cert, relay_key, krl)?;
+                anchor_audit(conn, &identity);
+            } else {
+                eprintln!("note: no relay identity given; the running relay signs this revocation into the audit chain on its next scan");
+            }
         }
         KeysCommand::Rotate {
             id,
@@ -245,13 +267,60 @@ fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
             krl,
             licensee_key,
         } => {
-            authorize_mint(conn, "keys.rotate", cert, relay_key, krl, licensee_key)?;
+            let identity = authorize_mint(conn, "keys.rotate", cert, relay_key, krl, licensee_key)?;
             let created = relay::rotate_api_key(conn, id)?;
             println!("Rotated API key {id} -> {}", created.info.id);
             println!("token (shown once): {}", created.token);
+            anchor_audit(conn, &identity);
         }
     }
     Ok(())
+}
+
+/// Sign the audit chains' new heads. The key change itself is already
+/// committed, so a failure here is reported, not fatal: the running relay
+/// signs any unanchored rows on its next scan.
+fn anchor_audit(conn: &rusqlite::Connection, identity: &ProviderIdentity) {
+    if let Err(err) = relay::anchor_now(conn, identity) {
+        eprintln!("warning: could not sign the audit chain now ({err}); the relay signs it on its next scan");
+    }
+}
+
+/// `keys events --verify`: every chain re-walked and every anchor checked
+/// against the compiled-in provider root. Fails if any chain is broken or
+/// any anchor is refused.
+fn verify_audit(conn: &rusqlite::Connection, krl: Option<PathBuf>) -> Result<()> {
+    let krl = path_or_env(krl, "KEYQUORUM_PROVIDER_KRL");
+    let revoked =
+        provider::load_revocation_list(&KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY, krl.as_deref())?;
+    let reports = relay::audit::verify(conn, &KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY, &revoked)?;
+    let mut intact = true;
+    for report in &reports {
+        let chain = match report.broken_at {
+            None => "chain intact".to_string(),
+            Some(id) => format!("chain BROKEN at row {id}"),
+        };
+        let anchor = match &report.trusted {
+            Some(a) => format!(
+                "signed through row {} by {} (serial {}) at {}",
+                a.row_count, a.provider_id, a.serial, a.signed_at
+            ),
+            None => "no trusted anchor".to_string(),
+        };
+        println!(
+            "{}: {} rows, {chain}, {anchor}, {} pending, {} rejected anchor(s)",
+            report.table,
+            report.rows,
+            report.pending_rows(),
+            report.rejected_anchors
+        );
+        intact &= report.is_intact();
+    }
+    if intact {
+        Ok(())
+    } else {
+        Err(Error::IntegrityCheckFailed)
+    }
 }
 
 fn run_root(command: RootCommand) -> Result<()> {
@@ -530,6 +599,7 @@ async fn serve(
     scan_db: Option<PathBuf>,
     scan_interval_seconds: u64,
     behind_tls_proxy: bool,
+    rate_limit_per_minute: u32,
 ) -> Result<()> {
     // INFO by default (RUST_LOG still overrides), so authentication and
     // scope denials and TTL purges reach the operator's logs without opt-in.
@@ -560,17 +630,35 @@ async fn serve(
         eprintln!("TTL file scan: {}", path.display());
     }
 
-    let state = AppState::with_identity(conn, identity);
-    spawn_ttl_scan(state.db.clone(), scan_db, scan_interval_seconds);
+    // Anything recorded while the relay was down (host `keys` commands run
+    // without an identity) is signed now.
+    if let Err(err) = relay::anchor_now(&conn, &identity) {
+        tracing::warn!("audit anchor at startup failed: {err}");
+    }
+    let state = AppState::with_identity(conn, identity)
+        .with_rate_limit(rate_limit_per_minute, behind_tls_proxy);
+    if rate_limit_per_minute == 0 {
+        tracing::warn!("rate limiting is off; limit requests in front of this relay");
+    }
+    spawn_ttl_scan(
+        state.db.clone(),
+        state.identity(),
+        scan_db,
+        scan_interval_seconds,
+    );
 
-    axum::serve(listener, relay::router(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        relay::router(state).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
     Ok(())
 }
 
 fn spawn_ttl_scan(
     mailbox: Arc<Mutex<rusqlite::Connection>>,
+    identity: Option<Arc<ProviderIdentity>>,
     scan_db: Option<PathBuf>,
     interval_seconds: u64,
 ) {
@@ -599,6 +687,19 @@ fn spawn_ttl_scan(
                 Ok(n) if n > 0 => tracing::info!("purged {n} expired device letter(s)"),
                 Ok(_) => {}
                 Err(err) => tracing::warn!("device mailbox TTL scan failed: {err}"),
+            }
+            if let Some(identity) = identity.as_deref() {
+                let anchored = {
+                    let conn = mailbox
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    relay::anchor_now(&conn, identity)
+                };
+                match anchored {
+                    Ok(n) if n > 0 => tracing::info!("signed {n} audit chain head(s)"),
+                    Ok(_) => {}
+                    Err(err) => tracing::warn!("audit anchor failed: {err}"),
+                }
             }
             if let Some(path) = scan_db.as_ref().filter(|path| path.is_file()) {
                 let Some(path) = path.to_str() else {

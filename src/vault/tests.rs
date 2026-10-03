@@ -11,7 +11,7 @@ fn add_and_get_credential_roundtrip() {
 
     assert_eq!(credential.label, "Email");
     assert_eq!(credential.username.as_deref(), Some("bailey"));
-    assert_eq!(credential.password, "s3cr3t");
+    assert_eq!(credential.password.as_str(), "s3cr3t");
 }
 
 #[test]
