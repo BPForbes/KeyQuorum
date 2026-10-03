@@ -910,7 +910,7 @@ async fn audit_events_are_scoped_to_the_caller_and_revocations_are_signed_at_onc
     assert_eq!(status, StatusCode::OK);
     let mine = mine.as_array().expect("array");
     assert_eq!(mine.len(), 1);
-    assert_eq!(mine[0]["api_key_id"], 2);
+    assert_eq!(mine[0]["key_id"], 2);
     assert_eq!(mine[0]["event"], "created");
     assert_eq!(mine[0]["entry_hash"].as_str().expect("hash").len(), 64);
     // An admin key sees the whole trail.

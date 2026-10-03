@@ -622,7 +622,7 @@ fn key_events(conn: &rusqlite::Connection) -> Vec<(i64, String, String, Option<i
     relay::api_key_events(conn)
         .expect("events")
         .into_iter()
-        .map(|e| (e.api_key_id, e.event, e.actor, e.related_key_id))
+        .map(|e| (e.key_id, e.event, e.actor, e.related_key_id))
         .collect()
 }
 

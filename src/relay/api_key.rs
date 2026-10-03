@@ -206,7 +206,9 @@ pub fn admin_actor(id: i64) -> String {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct ApiKeyEvent {
     pub id: i64,
-    pub api_key_id: i64,
+    /// The row id (`api_keys.id`) of the key the event is about. Never the
+    /// bearer or its hash.
+    pub key_id: i64,
     pub event: String,
     pub actor: String,
     pub related_key_id: Option<i64>,
@@ -218,7 +220,7 @@ pub struct ApiKeyEvent {
 
 fn record_event(
     conn: &Connection,
-    api_key_id: i64,
+    key_id: i64,
     event: &str,
     actor: &str,
     related_key_id: Option<i64>,
@@ -226,7 +228,7 @@ fn record_event(
     conn.execute(
         "INSERT INTO api_key_events (api_key_id, event, actor, related_key_id)
          VALUES (?1, ?2, ?3, ?4)",
-        params![api_key_id, event, actor, related_key_id],
+        params![key_id, event, actor, related_key_id],
     )?;
     super::audit::seal_row(
         conn,
@@ -270,7 +272,7 @@ fn query_events(conn: &Connection, key: Option<i64>) -> Result<Vec<ApiKeyEvent>>
     let rows = stmt.query_map(params![key], |row| {
         Ok(ApiKeyEvent {
             id: row.get(0)?,
-            api_key_id: row.get(1)?,
+            key_id: row.get(1)?,
             event: row.get(2)?,
             actor: row.get(3)?,
             related_key_id: row.get(4)?,

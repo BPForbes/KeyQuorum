@@ -237,7 +237,7 @@ fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
                     .map_or_else(|| "-".to_string(), |id| id.to_string());
                 println!(
                     "{}\t{}\t{}\t{}\treplaces={related}\t{}",
-                    event.occurred_at, event.api_key_id, event.event, event.actor, event.entry_hash
+                    event.occurred_at, event.key_id, event.event, event.actor, event.entry_hash
                 );
             }
             if verify {
