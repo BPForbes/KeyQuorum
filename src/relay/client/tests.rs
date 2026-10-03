@@ -491,7 +491,7 @@ fn response_reads_are_bounded() {
     ));
     // A default-sized inbox page of the largest envelopes, base64-encoded,
     // still fits under the cap.
-    let page = relay::DEFAULT_INBOX_PAGE as u64 * relay::MAX_ENVELOPE_BYTES as u64;
+    let page = crate::relay::DEFAULT_INBOX_PAGE as u64 * crate::relay::MAX_ENVELOPE_BYTES as u64;
     assert!(MAX_RESPONSE_BYTES >= page * 4 / 3);
 }
 

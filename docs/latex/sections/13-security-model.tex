@@ -85,3 +85,17 @@ additionally \emph{signed} by whoever is authorizing that decision, checked
 against a key the opening store already has on file. A mailbox that carries
 these letters can route them by their outer fingerprint without ever being
 able to read or forge what is inside.
+
+\subsection{Secrets in memory and the relay's audit trail}
+
+Passphrases, passwords, PINs and API keys typed at a prompt, the stored relay
+bearer, and every decrypted plaintext or unsealed letter are held in buffers
+that are overwritten when the command is done with them. What a command writes
+out on purpose (to stdout, or a file you name) is yours to protect.
+
+The relay records each API key's creation, rotation and revocation, and every
+attempt to mint one, in a hash chain whose head the relay signs with its
+KeyQuorum-certified key. That signature is trusted only for the period the
+relay's certificate was valid, and not at all once the certificate is revoked.
+A key holder can read the events about their own key, and nobody else's.
+

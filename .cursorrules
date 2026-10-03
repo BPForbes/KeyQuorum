@@ -92,14 +92,51 @@ HTTP) lands in `api_key_events`, which `host keys events` prints; every mint
 authorization (`keys.create`, `keys.rotate`), granted or refused, lands in
 `provider_auth_events`. Authentication and scope denials are logged at WARN by
 reason, and the host logs at INFO unless `RUST_LOG` says otherwise. None of
-those records or logs holds a bearer, a key hash or a challenge. `identity
+those records or logs holds a bearer, a key hash or a challenge. Both tables
+are hash-chained (`prev_hash`, `entry_hash`) by `src/relay/audit.rs`, which
+owns the chain and `audit_anchors`: the relay signs each chain head with its
+relay key (`signing::relay_audit_anchor_preimage`) at startup, on every scan,
+after each host `keys` command and after an HTTP revocation, and
+`audit::verify` (`host keys events --verify`) trusts an anchor only when its
+certificate chains to the provider root, is not revoked, and was valid at
+`signed_at`; rows after the newest trusted anchor are pending.
+`GET /audit/api-keys` takes any live key and returns only the events that
+pertain to it (`api_key::events_visible_to`; an admin key sees all). Each
+client gets `--rate-limit-per-minute` requests (600 by default, 0 is off; 429
+with `Retry-After`), keyed by peer address, or by the last `X-Forwarded-For`
+entry behind `--behind-tls-proxy`, in a table capped at
+`MAX_RATE_LIMITED_CLIENTS`. `identity
 generate` and `root generate` write the private key only to
 `--private-key-out` (owner-only, never overwritten) and never print it.
 Prompted passphrases, passwords, PINs and pasted API keys are
-`Zeroizing<String>` (`cli::env::prompt_secret`, `transfer::Passphrases`).
+`Zeroizing<String>` (`cli::env::prompt_secret`, `transfer::Passphrases`), and
+so are the vault password and the stored relay bearer (whose `Debug` is
+redacted); decrypted plaintext (`crypto::decrypt`, `envelope::open`, the
+quorum and password-locked unlocks) is `Zeroizing<Vec<u8>>`.
 The relay client reads at most `relay::client::MAX_RESPONSE_BYTES` (256 MiB)
 of any response, the provider challenge included, and quotes a relay's error
 body only through `relay_error_text` (control characters dropped, 512 chars).
+
+`src/outbox.rs` owns each person's outbox ring buffer (`outbox_rings`,
+`outbox_slots` in the personal store) and `keyquorum outbox`
+(`src/cli/outbox_cmd.rs`, an everyday command) drives it. A ring has a
+capacity (32 by default, 1 to 1024, changed only while empty), a write
+pointer, a read pointer, a `size` of held slots and `sent_total`; its state is
+`Empty`, `Partial` or `Full`. `push` writes at the write pointer and a full
+ring refuses rather than overwrite an unsent item. Only `send_next`, inside
+one immediate transaction that re-checks trust, hands the read-pointer item to
+the sender and, if that succeeds, wipes the slot (zeroblob plus
+`secure_delete`) and advances; a failed or refused send moves nothing.
+`drop_next` discards the head unsent. It carries `KQPB`, `KQXB`, `KQBS`, `KQBN`
+and `KQHS` only (`ItemKind::detect` checks each is well formed) and refuses
+`KQTF`, `KQTX`, slot tokens and provider files. A recipient is trusted when
+the store has an active encryption key for them (`keys::active_keys_for`); a
+`KQPB`/`KQXB` item must be sealed to one of those keys
+(`envelope::parse_outer_as`), and a `KQBN` notice must name them
+(`private_bridge::notice_labels`). The owner must hold an active key in the
+store. Letters go to the relay with the stored push key or to
+`--output-dir`; other kinds need `--output-dir`. The `./outbox` directory
+`send --offline` writes is unrelated.
 
 A hardware key with no `device_placements` row is its own device: that is the
 original one-key one-device exchange, and distinct key files count as distinct

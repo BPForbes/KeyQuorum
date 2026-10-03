@@ -727,6 +727,35 @@ replaces it: `deliver send`, `deliver open`, `deliver ack`, `file share`,
 A letter that reaches you as a file, with no relay, is still opened with the
 `file` and `deliver` commands. `relay push` is not legacy.
 
+### Outbox ring buffer
+
+`keyquorum outbox` keeps your own queue of `.kq*` files for other people in your
+store: a ring of fixed size (32 slots unless you change it) with a write pointer,
+a read pointer, and a count of slots held. `add` writes at the write pointer;
+`send` sends from the read pointer, oldest first, and only a send that succeeds
+moves it on and wipes the slot. A full ring refuses new files rather than
+overwrite one that has not been sent, and an empty one has nothing to send.
+
+```sh
+keyquorum send report.pdf --to M.A --output-dir ./letters   # seal, don't upload yet
+keyquorum outbox add ./letters/*.kqpb --to M.A               # queue for M.A
+keyquorum outbox                                              # index, size, state
+keyquorum outbox send --all                                   # upload, oldest first
+```
+
+A file goes only to a trusted recipient it pertains to: their encryption key
+must be registered in your store, a sealed letter (`.kqpb`) or export bundle
+(`.kqxb`) must be sealed to that key, and an eviction notice (`.kqbn`) must name
+them. That is checked when you queue it and again when you send it, so revoking
+the recipient's key stops a queued send. Signature artifacts (`.kqbs`) and
+history snapshots (`.kqhs`) are carried too. Tracked files (`.kqtf`, which hold
+content in the clear) are not: send those with `send`. Letters go to the relay
+with your stored push key or to `--output-dir`; every other kind needs
+`--output-dir`. `outbox drop` discards the oldest item without sending it, and
+`outbox capacity N` (1 to 1024) resizes an empty ring. `--as LABEL` picks whose
+outbox; the default is your label from `keyquorum use`. (The `./outbox`
+directory `send --offline` writes to is a plain folder, not this ring.)
+
 ### Mailbox
 
 The hosted mailbox carries sealed `.kqpb` envelopes and public-tree slices.

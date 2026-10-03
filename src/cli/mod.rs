@@ -37,6 +37,7 @@ pub(crate) mod file_cmd;
 mod gate_link;
 mod inbox;
 mod legacy;
+mod outbox_cmd;
 mod profile;
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
 mod review_tui;
@@ -420,6 +421,9 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<inbox::InboxCommand>,
     },
+    /// Your outbox ring buffer of .kq* files for trusted recipients: queue
+    /// with `add`, send oldest first with `send`. With no subcommand, show it
+    Outbox(Box<outbox_cmd::OutboxOpts>),
     /// Set, change or show the defaults commands use when a flag is left out:
     /// who you are, which device holds your slot, which relay. Pointers only;
     /// no passphrase, key or bearer is stored.
@@ -959,7 +963,8 @@ pub fn run(db_path: &Path, command: Command) -> Result<()> {
         | Command::Send { .. }
         | Command::Setup { .. }
         | Command::Doctor { .. }
-        | Command::Inbox { .. }) => {
+        | Command::Inbox { .. }
+        | Command::Outbox { .. }) => {
             return env::with_db(db_path, |conn| run_everyday(conn, command));
         }
         #[cfg(feature = "provider")]
@@ -981,7 +986,8 @@ fn run_in_store(conn: &mut Connection, command: Command) -> Result<()> {
         | Command::Send { .. }
         | Command::Setup { .. }
         | Command::Doctor { .. }
-        | Command::Inbox { .. } => {
+        | Command::Inbox { .. }
+        | Command::Outbox { .. } => {
             unreachable!("the everyday commands are dispatched in run()")
         }
         Command::Generate { .. }
@@ -1081,6 +1087,7 @@ fn run_everyday(conn: &Connection, command: Command) -> Result<()> {
         Command::Inbox { command } => inbox::run(conn, command)?,
         Command::Setup(opts) => setup::run(conn, *opts)?,
         Command::Doctor(opts) => doctor::run(conn, *opts)?,
+        Command::Outbox(opts) => outbox_cmd::run(conn, *opts)?,
         _ => unreachable!("run_in_store sends only the everyday commands here"),
     }
     Ok(())
@@ -1664,6 +1671,7 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
         | Command::Use { .. }
         | Command::Send { .. }
         | Command::Inbox { .. }
+        | Command::Outbox { .. }
         | Command::Setup { .. }
         | Command::Doctor { .. }
         | Command::Cache { .. }

@@ -115,6 +115,15 @@ pub enum Error {
     TransferReplay,
     /// A transfer stopped before both devices agreed, and needs recovery.
     TransferIncomplete,
+    /// The person's outbox ring buffer is full; send or drop an item first.
+    OutboxFull,
+    /// The recipient is not trusted for this item: no active encryption key
+    /// is registered for them here, or the item is not addressed to them.
+    UntrustedRecipient,
+    /// The file is not a kind the outbox carries.
+    OutboxItemRefused,
+    /// Only an empty outbox can be resized.
+    OutboxNotEmpty,
 }
 
 impl fmt::Display for Error {
@@ -357,6 +366,23 @@ impl fmt::Display for Error {
             Error::TransferIncomplete => {
                 write!(f, "transfer stopped before both devices committed")
             }
+            Error::OutboxFull => write!(
+                f,
+                "outbox is full: send or drop the oldest item before adding another"
+            ),
+            Error::UntrustedRecipient => write!(
+                f,
+                "recipient is not trusted for this item: register their encryption key, \
+                 and queue only what is addressed to them"
+            ),
+            Error::OutboxNotEmpty => write!(
+                f,
+                "only an empty outbox can be resized: send or drop what it holds first"
+            ),
+            Error::OutboxItemRefused => write!(
+                f,
+                "the outbox carries only .kqpb, .kqxb, .kqbs, .kqbn and .kqhs files"
+            ),
         }
     }
 }

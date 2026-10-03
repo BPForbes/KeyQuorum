@@ -4,8 +4,8 @@ use crate::relay::ApiKeyScope;
 use crate::storage::Storage;
 use std::path::Path;
 
-const ALICE: &str = "keyquorum --db /home/alice/keyquorum.sqlite";
-const BOB: &str = "keyquorum --db /home/bob/keyquorum.sqlite";
+pub(super) const ALICE: &str = "keyquorum --db /home/alice/keyquorum.sqlite";
+pub(super) const BOB: &str = "keyquorum --db /home/bob/keyquorum.sqlite";
 
 fn run(env: &mut MemoryEnv, line: &str) -> String {
     let (ok, out) = env.keyquorum(line);
@@ -22,7 +22,7 @@ fn fingerprint_of(env: &MemoryEnv, db: &str, label: &str) -> String {
 
 /// Alice and Bob: containers, each other's keys registered, defaults set,
 /// and relay keys loaded (push for both; pull bound to each one's own key).
-fn two_people_on_a_relay() -> MemoryEnv {
+pub(super) fn two_people_on_a_relay() -> MemoryEnv {
     let mut env = MemoryEnv::with_relay();
     env.now = Some("2026-10-02 12:00".into());
     for who in ["alice", "bob"] {

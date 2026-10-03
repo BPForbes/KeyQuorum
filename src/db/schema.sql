@@ -586,3 +586,33 @@ CREATE TABLE IF NOT EXISTS inbox_letters (
     status    TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'handled')),
     PRIMARY KEY (relay_url, letter_id)
 );
+
+-- Per-person outbox ring buffer (`src/outbox.rs`): a fixed number of slots
+-- holding the .kq* files a person has queued for trusted recipients. The
+-- write pointer takes new items; only a send to the trusted recipient moves
+-- the read pointer, and a sent slot is wiped and freed. `size` is how many
+-- slots are held (queued, not yet sent); a full ring refuses new items and
+-- never overwrites one that has not been sent.
+CREATE TABLE IF NOT EXISTS outbox_rings (
+    owner_label TEXT PRIMARY KEY,
+    capacity    INTEGER NOT NULL CHECK (capacity BETWEEN 1 AND 1024),
+    read_index  INTEGER NOT NULL DEFAULT 0,
+    write_index INTEGER NOT NULL DEFAULT 0,
+    size        INTEGER NOT NULL DEFAULT 0,
+    sent_total  INTEGER NOT NULL DEFAULT 0,
+    CHECK (read_index >= 0 AND read_index < capacity),
+    CHECK (write_index >= 0 AND write_index < capacity),
+    CHECK (size >= 0 AND size <= capacity),
+    CHECK ((read_index + size) % capacity = write_index)
+);
+
+CREATE TABLE IF NOT EXISTS outbox_slots (
+    owner_label     TEXT NOT NULL REFERENCES outbox_rings (owner_label) ON DELETE CASCADE,
+    slot_index      INTEGER NOT NULL,
+    kind            TEXT NOT NULL CHECK (kind IN ('KQPB', 'KQXB', 'KQBS', 'KQBN', 'KQHS')),
+    recipient_label TEXT NOT NULL,
+    content         BLOB NOT NULL,
+    content_hash    TEXT NOT NULL,
+    queued_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (owner_label, slot_index)
+);

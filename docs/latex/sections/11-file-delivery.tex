@@ -47,6 +47,35 @@ unlocks it in memory under the file's own custody and approval rules, seals
 it and sends it. A refused unlock sends nothing, and the attempt is recorded
 at the file's gate as any unlock is.
 
+\subsection{Your outbox ring buffer}
+
+\code{keyquorum outbox} keeps each person's queue of \file{.kq*} files in
+their own store: a ring of fixed size (32 slots unless changed with
+\code{outbox capacity N}, 1 to 1024, while it is empty) with a write pointer,
+a read pointer and a count of slots held. \code{outbox add FILE --to LABEL}
+writes at the write pointer. \code{outbox send} sends from the read pointer,
+oldest first, and only a send that succeeds moves it on and wipes the slot.
+A full ring refuses new files rather than overwrite one that has not been sent;
+an empty ring has nothing to send. \code{outbox drop} discards the oldest item
+unsent.
+
+A file goes only to a trusted recipient it pertains to: their encryption key
+must be registered in the store; a sealed letter (\file{.kqpb}) or export
+bundle (\file{.kqxb}) must be sealed to that key; an eviction notice
+(\file{.kqbn}) must name them. Both checks run when the file is queued and
+again when it is sent, so revoking the recipient's key stops a queued send.
+Signature artifacts (\file{.kqbs}) and history snapshots (\file{.kqhs}) are
+carried too; tracked files (\file{.kqtf}), which hold content in the clear, are
+not. Letters go to the relay with your stored push key or to
+\flag{--output-dir}; every other kind needs \flag{--output-dir}.
+
+\begin{verbatim}
+keyquorum send report.pdf --to M.A --output-dir ./letters
+keyquorum outbox add ./letters/*.kqpb --to M.A
+keyquorum outbox
+keyquorum outbox send --all
+\end{verbatim}
+
 \subsection{Legacy procedure (still possible, not recommended)}
 
 The earlier single-purpose commands still work exactly as they did. Each prints
