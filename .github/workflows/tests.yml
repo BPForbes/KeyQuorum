@@ -47,10 +47,14 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           shared-key: ${{ inputs.cache-key }}
-      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@badb8c3638e0b773c6c17a6025c2306a8f1c4303 # nextest tag
+        with:
+          tool: nextest
       - name: Test ${{ matrix.name }}
         run: cargo nextest run --locked --all-targets ${{ inputs.features }} --no-fail-fast -E '${{ matrix.filter }}'

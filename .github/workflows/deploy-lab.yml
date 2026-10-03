@@ -44,7 +44,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
       - name: Test
         run: cargo test --locked --all-targets --features provider,lab,tui
 
@@ -57,8 +59,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
         with:
+          toolchain: stable
           targets: wasm32-unknown-unknown
 
       - name: Refuse a provider + lab WASM build
@@ -79,7 +82,7 @@ jobs:
           version="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)"
           test -n "${version}"
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
         with:
           tool: wasm-bindgen@${{ steps.bindgen.outputs.version }}
 
