@@ -21,6 +21,7 @@ use std::fmt;
 use std::io::Write;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
 pub trait Env: Any {
     fn stdout(&mut self) -> &mut dyn Write;
@@ -262,12 +263,13 @@ pub fn read_stdin() -> Result<Vec<u8>> {
     with(|env| env.read_stdin())
 }
 
-pub fn prompt_secret(prompt: &str) -> Result<String> {
-    with(|env| env.prompt_secret(prompt))
+/// A prompted secret, zeroed when the caller drops it.
+pub fn prompt_secret(prompt: &str) -> Result<Zeroizing<String>> {
+    with(|env| env.prompt_secret(prompt)).map(Zeroizing::new)
 }
 
 /// Prompt for a device passphrase and refuse an empty one.
-pub fn prompt_passphrase(prompt: &str) -> Result<String> {
+pub fn prompt_passphrase(prompt: &str) -> Result<Zeroizing<String>> {
     let passphrase = prompt_secret(prompt)?;
     if passphrase.is_empty() {
         return Err(Error::InvalidPassword);
@@ -276,7 +278,7 @@ pub fn prompt_passphrase(prompt: &str) -> Result<String> {
 }
 
 /// Prompt twice and refuse an empty or mismatched passphrase.
-pub fn confirm_passphrase(first_prompt: &str, second_prompt: &str) -> Result<String> {
+pub fn confirm_passphrase(first_prompt: &str, second_prompt: &str) -> Result<Zeroizing<String>> {
     let passphrase = prompt_passphrase(first_prompt)?;
     let again = prompt_passphrase(second_prompt)?;
     if passphrase != again {

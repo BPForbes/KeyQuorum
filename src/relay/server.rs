@@ -19,7 +19,10 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
@@ -539,6 +542,25 @@ async fn get_device(
     Ok(Json(descriptor))
 }
 
+/// Longest a request may take, body included, before the relay answers
+/// `408 Request Timeout`, so a slow or stalled client cannot hold a
+/// connection and the database lock indefinitely.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The relay serves plain HTTP. That is only acceptable on loopback, or
+/// when the operator states that a TLS-terminating proxy sits in front of
+/// it (`--behind-tls-proxy`); official clients refuse plain HTTP to any
+/// other host, and a bearer must never cross a network in the clear.
+pub fn check_bind(addr: &SocketAddr, behind_tls_proxy: bool) -> crate::error::Result<()> {
+    if addr.ip().is_loopback() || behind_tls_proxy {
+        return Ok(());
+    }
+    Err(Error::RelayRequest(format!(
+        "refusing to serve plain HTTP on non-loopback address {addr}: bind to loopback, \
+         or pass --behind-tls-proxy when a TLS-terminating proxy forwards to this address"
+    )))
+}
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
@@ -557,6 +579,10 @@ pub fn router(state: AppState) -> Router {
         .route("/devices", put(put_device))
         .route("/devices/{device_id}", get(get_device))
         .layer(DefaultBodyLimit::max(MAX_ENVELOPE_BYTES.saturating_mul(2)))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            REQUEST_TIMEOUT,
+        ))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

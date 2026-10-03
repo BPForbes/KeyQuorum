@@ -2847,7 +2847,7 @@ fn loadkey_in_store(conn: &Connection, api_key: Option<String>, url: Option<Stri
     db::cache::forget_relay_trust(conn, &url)?;
     authenticate_official_relay(&url)?;
     let token = match api_key.filter(|s| !s.is_empty()) {
-        Some(token) => token,
+        Some(token) => zeroize::Zeroizing::new(token),
         None => prompt_secret("Relay API key: ")?,
     };
     let check = relay::check_key(&env::EnvRelay, &url, &token)?;
@@ -4119,7 +4119,7 @@ fn require<T>(value: Option<T>, flag: &str) -> Result<T> {
     value.ok_or_else(|| usage(&format!("--{flag} is required for this --state value")))
 }
 
-fn prompt_secret(prompt: &str) -> Result<String> {
+fn prompt_secret(prompt: &str) -> Result<zeroize::Zeroizing<String>> {
     env::prompt_secret(prompt)
 }
 

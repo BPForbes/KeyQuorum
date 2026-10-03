@@ -595,3 +595,108 @@ fn bridge_inbox_rejects_device_letters() {
         Err(Error::InvalidBridgePackage)
     ));
 }
+
+#[cfg(unix)]
+#[test]
+fn relay_open_restricts_the_database_to_its_owner() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("relay.sqlite");
+    let path_str = path.to_str().expect("utf-8");
+    relay::open(path_str).expect("create relay db");
+    let mode =
+        |p: &std::path::Path| std::fs::metadata(p).expect("meta").permissions().mode() & 0o777;
+    assert_eq!(mode(&path), 0o600);
+
+    let mut perms = std::fs::metadata(&path).expect("meta").permissions();
+    perms.set_mode(0o644);
+    std::fs::set_permissions(&path, perms).expect("chmod 0644");
+    let journal = dir.path().join("relay.sqlite-journal");
+    std::fs::write(&journal, b"").expect("journal");
+    relay::open(path_str).expect("reopen relay db");
+    assert_eq!(mode(&path), 0o600);
+    assert_eq!(mode(&journal), 0o600);
+}
+
+fn key_events(conn: &rusqlite::Connection) -> Vec<(i64, String, String, Option<i64>)> {
+    relay::api_key_events(conn)
+        .expect("events")
+        .into_iter()
+        .map(|e| (e.api_key_id, e.event, e.actor, e.related_key_id))
+        .collect()
+}
+
+#[test]
+fn api_key_lifecycle_is_recorded_without_bearers() {
+    let conn = relay::open_in_memory().expect("schema");
+    let created = relay::create_api_key(
+        &conn,
+        &NewApiKey {
+            scope: ApiKeyScope::InboxPush,
+            recipient_fingerprint: None,
+            label: Some("ops".into()),
+            ttl_seconds: None,
+        },
+    )
+    .expect("create");
+    let old = created.info.id;
+    let rotated = relay::rotate_api_key(&conn, old).expect("rotate");
+    let new = rotated.info.id;
+    relay::revoke_api_key(&conn, new).expect("revoke");
+    // Revoking again changes nothing, so it records nothing.
+    relay::revoke_api_key(&conn, new).expect("revoke again");
+
+    assert_eq!(
+        key_events(&conn),
+        vec![
+            (old, "created".into(), "host".into(), None),
+            (old, "revoked".into(), "host".into(), None),
+            (new, "rotated".into(), "host".into(), Some(old)),
+            (new, "revoked".into(), "host".into(), None),
+        ]
+    );
+
+    let hash = relay::hash_bearer(&created.token).expect("hash");
+    let dump: String = conn
+        .query_row(
+            "SELECT COALESCE(group_concat(actor || event), '') FROM api_key_events",
+            [],
+            |row| row.get(0),
+        )
+        .expect("dump");
+    assert!(!dump.contains(&created.token) && !dump.contains(&hash));
+}
+
+#[test]
+fn http_revocation_records_the_admin_key_that_revoked() {
+    let conn = relay::open_in_memory().expect("schema");
+    let new_key = |scope| NewApiKey {
+        scope,
+        recipient_fingerprint: None,
+        label: None,
+        ttl_seconds: None,
+    };
+    let admin = relay::create_api_key(&conn, &new_key(ApiKeyScope::Admin)).expect("admin");
+    let target = relay::create_api_key(&conn, &new_key(ApiKeyScope::InboxPush)).expect("push");
+
+    relay::service::revoke_key(&conn, &admin.token, target.info.id).expect("revoke");
+
+    let last = key_events(&conn).pop().expect("an event");
+    assert_eq!(
+        last,
+        (
+            target.info.id,
+            "revoked".into(),
+            format!("admin:{}", admin.info.id),
+            None
+        )
+    );
+    // A key without the admin scope cannot revoke, and nothing is recorded.
+    let push = relay::create_api_key(&conn, &new_key(ApiKeyScope::InboxPush)).expect("push");
+    let before = key_events(&conn).len();
+    assert!(matches!(
+        relay::service::revoke_key(&conn, &push.token, admin.info.id),
+        Err(Error::ApiKeyScopeDenied)
+    ));
+    assert_eq!(key_events(&conn).len(), before);
+}

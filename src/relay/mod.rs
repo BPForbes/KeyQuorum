@@ -19,10 +19,10 @@ pub mod service;
 
 pub use api_key::{
     authenticate, authenticate_licensee, authorize_licensee_or_bootstrap,
-    bootstrap_licensee_if_empty, check_hash, check_token, create as create_api_key, hash_bearer,
-    list as list_api_keys, record_provider_auth_event, revoke as revoke_api_key,
-    rotate as rotate_api_key, ApiKeyInfo, ApiKeyScope, AuthedKey, CreatedApiKey, CreatedLicensee,
-    KeyCheck, NewApiKey,
+    bootstrap_licensee_if_empty, check_hash, check_token, create as create_api_key,
+    events as api_key_events, hash_bearer, list as list_api_keys, record_provider_auth_event,
+    revoke as revoke_api_key, rotate as rotate_api_key, ApiKeyEvent, ApiKeyInfo, ApiKeyScope,
+    AuthedKey, CreatedApiKey, CreatedLicensee, KeyCheck, NewApiKey,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use client::UreqTransport;
@@ -54,7 +54,7 @@ pub use org_tree::{
     merge_public_tree, put_public_tree, slices_for_fingerprint,
 };
 #[cfg(feature = "provider")]
-pub use server::{router, AppState};
+pub use server::{check_bind, router, AppState, REQUEST_TIMEOUT};
 pub use service::{ProviderIdentity, MAX_ENVELOPE_BYTES};
 
 use crate::error::{Error, Result};
@@ -89,7 +89,12 @@ pub fn open(path: &str) -> Result<Connection> {
         }
     }
     let conn = Connection::open(path)?;
+    // Owner-only before and after the schema, like the personal store: the
+    // relay database holds API-key hashes, the audit trail and every stored
+    // envelope, and must not be readable or writable by other local users.
+    crate::db::restrict_db_files(path)?;
     init(&conn)?;
+    crate::db::restrict_db_files(path)?;
     Ok(conn)
 }
 

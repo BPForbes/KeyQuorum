@@ -25,7 +25,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::signal;
+use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::EnvFilter;
+use zeroize::Zeroizing;
 
 pub fn run(mailbox_db: &Path, org_db: &Path, command: HostCommand) -> Result<()> {
     match command {
@@ -36,6 +38,7 @@ pub fn run(mailbox_db: &Path, org_db: &Path, command: HostCommand) -> Result<()>
             krl,
             scan_db,
             scan_interval_seconds,
+            behind_tls_proxy,
         } => {
             let scan_db = scan_db.or_else(|| org_db.is_file().then(|| org_db.to_path_buf()));
             tokio::runtime::Builder::new_multi_thread()
@@ -50,6 +53,7 @@ pub fn run(mailbox_db: &Path, org_db: &Path, command: HostCommand) -> Result<()>
                     krl,
                     scan_db,
                     scan_interval_seconds,
+                    behind_tls_proxy,
                 ))
         }
         HostCommand::Identity { command } => run_identity(command),
@@ -97,13 +101,15 @@ fn print_new_licensee(issuer: &relay::CreatedLicensee) {
     eprintln!("Store this; it cannot be recovered from the database.");
 }
 
-fn licensee_secret(explicit: Option<String>) -> Result<String> {
+fn licensee_secret(explicit: Option<String>) -> Result<Zeroizing<String>> {
     if let Some(key) = explicit.filter(|s| !s.is_empty()) {
-        return Ok(key);
+        return Ok(Zeroizing::new(key));
     }
     match std::env::var("KEYQUORUM_LICENSEE_KEY") {
-        Ok(key) if !key.is_empty() => Ok(key),
-        _ => rpassword::prompt_password("Licensee key: ").map_err(Error::from),
+        Ok(key) if !key.is_empty() => Ok(Zeroizing::new(key)),
+        _ => rpassword::prompt_password("Licensee key: ")
+            .map(Zeroizing::new)
+            .map_err(Error::from),
     }
 }
 
@@ -111,21 +117,50 @@ fn require_licensee(conn: &rusqlite::Connection, explicit: Option<String>) -> Re
     relay::authenticate_licensee(conn, &licensee_secret(explicit)?)
 }
 
+/// Every mint authorization, granted or refused, lands in
+/// `provider_auth_events` with the provider id when the certificate was
+/// checked far enough to name one. No key, bearer or challenge is recorded.
 fn authorize_mint(
     conn: &rusqlite::Connection,
+    operation: &str,
     cert: Option<PathBuf>,
     relay_key: Option<PathBuf>,
     krl: Option<PathBuf>,
     licensee_key: Option<String>,
 ) -> Result<()> {
-    load_serve_identity(cert, relay_key, krl)?;
-    let supplied = licensee_key.filter(|s| !s.is_empty()).or_else(|| {
-        match std::env::var("KEYQUORUM_LICENSEE_KEY") {
+    let mut provider_id = None;
+    let result = check_mint(conn, &mut provider_id, cert, relay_key, krl, licensee_key);
+    relay::record_provider_auth_event(
+        conn,
+        operation,
+        provider_id.as_deref(),
+        None,
+        None,
+        result.is_ok(),
+    )?;
+    result
+}
+
+fn check_mint(
+    conn: &rusqlite::Connection,
+    provider_id: &mut Option<String>,
+    cert: Option<PathBuf>,
+    relay_key: Option<PathBuf>,
+    krl: Option<PathBuf>,
+    licensee_key: Option<String>,
+) -> Result<()> {
+    let (_, id) = load_serve_identity(cert, relay_key, krl)?;
+    *provider_id = Some(id);
+    let supplied = licensee_key
+        .filter(|s| !s.is_empty())
+        .or_else(|| match std::env::var("KEYQUORUM_LICENSEE_KEY") {
             Ok(key) if !key.is_empty() => Some(key),
             _ => None,
-        }
-    });
-    if let Some(issuer) = relay::authorize_licensee_or_bootstrap(conn, supplied.as_deref())? {
+        })
+        .map(Zeroizing::new);
+    if let Some(issuer) =
+        relay::authorize_licensee_or_bootstrap(conn, supplied.as_deref().map(String::as_str))?
+    {
         print_new_licensee(&issuer);
         return Ok(());
     }
@@ -147,7 +182,7 @@ fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
             krl,
             licensee_key,
         } => {
-            authorize_mint(conn, cert, relay_key, krl, licensee_key)?;
+            authorize_mint(conn, "keys.create", cert, relay_key, krl, licensee_key)?;
             let created = relay::create_api_key(
                 conn,
                 &NewApiKey {
@@ -184,6 +219,21 @@ fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
                 }
             }
         }
+        KeysCommand::Events => {
+            let events = relay::api_key_events(conn)?;
+            if events.is_empty() {
+                println!("(no API key events)");
+            }
+            for event in events {
+                let related = event
+                    .related_key_id
+                    .map_or_else(|| "-".to_string(), |id| id.to_string());
+                println!(
+                    "{}\t{}\t{}\t{}\treplaces={related}",
+                    event.occurred_at, event.api_key_id, event.event, event.actor
+                );
+            }
+        }
         KeysCommand::Revoke { id } => {
             relay::revoke_api_key(conn, id)?;
             println!("Revoked API key {id}");
@@ -195,7 +245,7 @@ fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
             krl,
             licensee_key,
         } => {
-            authorize_mint(conn, cert, relay_key, krl, licensee_key)?;
+            authorize_mint(conn, "keys.rotate", cert, relay_key, krl, licensee_key)?;
             let created = relay::rotate_api_key(conn, id)?;
             println!("Rotated API key {id} -> {}", created.info.id);
             println!("token (shown once): {}", created.token);
@@ -206,14 +256,10 @@ fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
 
 fn run_root(command: RootCommand) -> Result<()> {
     match command {
-        RootCommand::Generate { public_key_out } => {
-            let (secret, public) = provider::generate_relay_identity();
-            locked_files::write_owner_only(&public_key_out, hex::encode(public).as_bytes())?;
-            println!("{}", hex::encode(*secret));
-            eprintln!("Public key written to {}", public_key_out.display());
-            eprintln!("Root private key printed to stdout above — this tool keeps no copy of it.");
-            Ok(())
-        }
+        RootCommand::Generate {
+            public_key_out,
+            private_key_out,
+        } => write_keypair("Root", &public_key_out, &private_key_out),
     }
 }
 
@@ -316,15 +362,38 @@ fn collect_hardware(
 
 fn run_identity(command: IdentityCommand) -> Result<()> {
     match command {
-        IdentityCommand::Generate { public_key_out } => {
-            let (secret, public) = provider::generate_relay_identity();
-            locked_files::write_owner_only(&public_key_out, hex::encode(public).as_bytes())?;
-            println!("{}", hex::encode(*secret));
-            eprintln!("Public key written to {}", public_key_out.display());
-            eprintln!("Private key printed to stdout above — this tool keeps no copy of it.");
-            Ok(())
-        }
+        IdentityCommand::Generate {
+            public_key_out,
+            private_key_out,
+        } => write_keypair("Relay", &public_key_out, &private_key_out),
     }
+}
+
+/// Writes a fresh keypair: the private key owner-only (0600) and never to
+/// stdout or a log, so it cannot land in terminal scrollback, CI logs or
+/// shell history. Neither file may already exist, and the private key is
+/// written first so a failure leaves no public key without its pair.
+fn write_keypair(what: &str, public_key_out: &Path, private_key_out: &Path) -> Result<()> {
+    if public_key_out.exists() {
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("{} already exists", public_key_out.display()),
+        )));
+    }
+    let (secret, public) = provider::generate_relay_identity();
+    let secret_hex = Zeroizing::new(hex::encode(*secret));
+    locked_files::write_owner_only(private_key_out, secret_hex.as_bytes())?;
+    if let Err(err) = locked_files::write_owner_only(public_key_out, hex::encode(public).as_bytes())
+    {
+        let _ = std::fs::remove_file(private_key_out);
+        return Err(err);
+    }
+    eprintln!(
+        "{what} private key written owner-only to {}",
+        private_key_out.display()
+    );
+    eprintln!("Public key written to {}", public_key_out.display());
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -388,41 +457,46 @@ fn path_or_env(flag: Option<PathBuf>, env_name: &str) -> Option<PathBuf> {
         })
 }
 
-fn read_key_bytes(path: &Path) -> Result<Vec<u8>> {
-    let contents = std::fs::read_to_string(path)?;
-    keys::parse_key_text(&contents)
+/// Key text and its decoded bytes are zeroed on drop: the same reader
+/// loads the relay and provider-root private keys.
+fn key_array_32(text: &str) -> Result<Zeroizing<[u8; 32]>> {
+    let bytes = Zeroizing::new(keys::parse_key_text(text)?);
+    let mut key = Zeroizing::new([0u8; 32]);
+    if bytes.len() != key.len() {
+        return Err(Error::InvalidPublicKey);
+    }
+    key.copy_from_slice(&bytes);
+    Ok(key)
 }
 
-fn read_key_array_32(path: &Path) -> Result<[u8; 32]> {
-    read_key_bytes(path)?
-        .try_into()
-        .map_err(|_| Error::InvalidPublicKey)
+fn read_key_array_32(path: &Path) -> Result<Zeroizing<[u8; 32]>> {
+    let contents = Zeroizing::new(std::fs::read_to_string(path)?);
+    key_array_32(&contents)
 }
 
-fn read_root_key(path: Option<PathBuf>) -> Result<[u8; 32]> {
+fn read_root_key(path: Option<PathBuf>) -> Result<Zeroizing<[u8; 32]>> {
     if let Some(path) = path {
         return read_key_array_32(&path);
     }
-    match std::env::var("KEYQUORUM_PROVIDER_ROOT_KEY") {
-        Ok(value) if !value.is_empty() => keys::parse_key_text(&value)?
-            .try_into()
-            .map_err(|_| Error::InvalidPublicKey),
+    match std::env::var("KEYQUORUM_PROVIDER_ROOT_KEY").map(Zeroizing::new) {
+        Ok(value) if !value.is_empty() => key_array_32(&value),
         _ => Err(Error::InvalidProviderCertificate),
     }
 }
 
+/// The checked identity and the provider id its certificate names.
 fn load_serve_identity(
     cert: Option<PathBuf>,
     relay_key: Option<PathBuf>,
     krl: Option<PathBuf>,
-) -> Result<ProviderIdentity> {
+) -> Result<(ProviderIdentity, String)> {
     let cert_path =
         path_or_env(cert, "KEYQUORUM_PROVIDER_CERT").ok_or(Error::ProviderIdentityMissing)?;
     let key_path =
         path_or_env(relay_key, "KEYQUORUM_RELAY_KEY").ok_or(Error::ProviderIdentityMissing)?;
     let krl_path = path_or_env(krl, "KEYQUORUM_PROVIDER_KRL");
     let certificate = std::fs::read(&cert_path)?;
-    let relay_private_key = zeroize::Zeroizing::new(read_key_array_32(&key_path)?);
+    let relay_private_key = read_key_array_32(&key_path)?;
     let now = provider::system_now_utc()?;
     let revoked =
         provider::load_revocation_list(&KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY, krl_path.as_deref())?;
@@ -437,12 +511,16 @@ fn load_serve_identity(
         "provider identity {} serial {} expires {}",
         cert.provider_id, cert.serial, cert.expires_at
     );
-    Ok(ProviderIdentity {
-        certificate,
-        relay_private_key,
-    })
+    Ok((
+        ProviderIdentity {
+            certificate,
+            relay_private_key,
+        },
+        cert.provider_id,
+    ))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve(
     mailbox_db: &Path,
     bind: &str,
@@ -451,21 +529,32 @@ async fn serve(
     krl: Option<PathBuf>,
     scan_db: Option<PathBuf>,
     scan_interval_seconds: u64,
+    behind_tls_proxy: bool,
 ) -> Result<()> {
+    // INFO by default (RUST_LOG still overrides), so authentication and
+    // scope denials and TTL purges reach the operator's logs without opt-in.
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
         .init();
-
-    let identity = load_serve_identity(cert, relay_key, krl)?;
-    let db_path = mailbox_db.to_str().ok_or(Error::InvalidPath)?;
-    let conn = relay::open(db_path)?;
 
     let addr: SocketAddr = bind
         .parse()
         .map_err(|e| Error::RelayRequest(format!("invalid bind address: {e}")))?;
+    relay::check_bind(&addr, behind_tls_proxy)?;
+    let (identity, _) = load_serve_identity(cert, relay_key, krl)?;
+    let db_path = mailbox_db.to_str().ok_or(Error::InvalidPath)?;
+    let conn = relay::open(db_path)?;
+
     let listener = TcpListener::bind(addr).await?;
     let local = listener.local_addr()?;
     eprintln!("mailbox listening on http://{local}");
+    if !local.ip().is_loopback() {
+        tracing::warn!("serving plain HTTP on {local}; TLS must terminate in front of this relay");
+    }
     eprintln!("Swagger UI: http://{local}/swagger-ui");
     if let Some(path) = &scan_db {
         eprintln!("TTL file scan: {}", path.display());

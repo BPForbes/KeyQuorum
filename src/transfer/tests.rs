@@ -30,11 +30,11 @@ fn enroll_all(end: &mut End, labels: &[&str]) {
     }
 }
 
-fn passes_for(conn: &Connection, label: &str, mode: DescendantMode) -> HashMap<String, String> {
+fn passes_for(conn: &Connection, label: &str, mode: DescendantMode) -> Passphrases {
     let labels = export_secret_labels(conn, label, mode).unwrap();
     labels
         .into_iter()
-        .map(|label| (label, PASS.to_string()))
+        .map(|label| (label, zeroize::Zeroizing::new(PASS.to_string())))
         .collect()
 }
 

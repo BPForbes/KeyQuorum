@@ -168,8 +168,70 @@ fn row_to_info(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApiKeyInfo> {
     })
 }
 
-/// Hands out a new bearer once and stores only its hash.
+/// Who changed an API key, as `api_key_events.actor` records it.
+pub const HOST_ACTOR: &str = "host";
+
+/// `actor` for a change made over HTTP by the admin key `id`.
+pub fn admin_actor(id: i64) -> String {
+    format!("admin:{id}")
+}
+
+/// One row of the API-key lifecycle audit trail (`api_key_events`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApiKeyEvent {
+    pub id: i64,
+    pub api_key_id: i64,
+    pub event: String,
+    pub actor: String,
+    pub related_key_id: Option<i64>,
+    pub occurred_at: String,
+}
+
+fn record_event(
+    conn: &Connection,
+    api_key_id: i64,
+    event: &str,
+    actor: &str,
+    related_key_id: Option<i64>,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO api_key_events (api_key_id, event, actor, related_key_id)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![api_key_id, event, actor, related_key_id],
+    )?;
+    Ok(())
+}
+
+/// The lifecycle audit trail, oldest first. Holds no bearer or hash.
+pub fn events(conn: &Connection) -> Result<Vec<ApiKeyEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, api_key_id, event, actor, related_key_id, occurred_at
+         FROM api_key_events ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ApiKeyEvent {
+            id: row.get(0)?,
+            api_key_id: row.get(1)?,
+            event: row.get(2)?,
+            actor: row.get(3)?,
+            related_key_id: row.get(4)?,
+            occurred_at: row.get(5)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<_>>().map_err(Error::from)
+}
+
+/// Hands out a new bearer once and stores only its hash. Recorded in
+/// `api_key_events` as created by the host.
 pub fn create(conn: &Connection, new: &NewApiKey) -> Result<CreatedApiKey> {
+    crate::db::with_immediate_transaction(conn, || {
+        let created = insert(conn, new)?;
+        record_event(conn, created.info.id, "created", HOST_ACTOR, None)?;
+        Ok(created)
+    })
+}
+
+fn insert(conn: &Connection, new: &NewApiKey) -> Result<CreatedApiKey> {
     let fingerprint = match (
         new.scope.binds_recipient(),
         new.recipient_fingerprint.as_deref(),
@@ -214,7 +276,18 @@ pub fn list(conn: &Connection) -> Result<Vec<ApiKeyInfo>> {
     rows.collect::<rusqlite::Result<_>>().map_err(Error::from)
 }
 
+/// Revokes key `id` on the host. See [`revoke_by`].
 pub fn revoke(conn: &Connection, id: i64) -> Result<()> {
+    revoke_by(conn, id, HOST_ACTOR)
+}
+
+/// Revokes key `id` and records who did it. Revoking an already revoked key
+/// succeeds and records nothing, since nothing changed.
+pub fn revoke_by(conn: &Connection, id: i64, actor: &str) -> Result<()> {
+    crate::db::with_immediate_transaction(conn, || revoke_inner(conn, id, actor))
+}
+
+fn revoke_inner(conn: &Connection, id: i64, actor: &str) -> Result<()> {
     let n = conn.execute(
         "UPDATE api_keys
          SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -222,7 +295,7 @@ pub fn revoke(conn: &Connection, id: i64) -> Result<()> {
         params![id],
     )?;
     if n == 1 {
-        return Ok(());
+        return record_event(conn, id, "revoked", actor, None);
     }
     let exists: Option<i64> = conn
         .query_row(
@@ -246,7 +319,7 @@ pub fn rotate(conn: &Connection, id: i64) -> Result<CreatedApiKey> {
             return Err(Error::ApiKeyRevoked);
         }
         let scope = ApiKeyScope::parse(&info.scope)?;
-        let created = create(
+        let created = insert(
             conn,
             &NewApiKey {
                 scope,
@@ -261,7 +334,8 @@ pub fn rotate(conn: &Connection, id: i64) -> Result<CreatedApiKey> {
                 params![expires_at, created.info.id],
             )?;
         }
-        revoke(conn, id)?;
+        revoke_inner(conn, id, HOST_ACTOR)?;
+        record_event(conn, created.info.id, "rotated", HOST_ACTOR, Some(id))?;
         Ok(CreatedApiKey {
             info: load_info(conn, created.info.id)?,
             token: created.token,

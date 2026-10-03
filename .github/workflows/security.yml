@@ -11,7 +11,7 @@
 # .github/scripts/codeql_report.py prints each finding with its source, a quote
 # of that source, the offending lines and its SOC 2 criterion, and fails the
 # `codeql gate` check on a high or critical finding in shipped code. `cargo audit`,
-# `cargo deny` and clippy (in tests.yml) cover the Rust dependencies and style.
+# `cargo deny` cover the Rust dependencies; fmt and clippy run in lint.yml.
 
 name: Security
 

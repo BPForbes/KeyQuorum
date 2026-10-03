@@ -23,7 +23,9 @@ pub fn open(path: &str) -> crate::error::Result<Connection> {
     Ok(conn)
 }
 
-fn restrict_db_files(path: &str) -> crate::error::Result<()> {
+/// Owner-only (0600) on Unix for a SQLite file and any journal sidecars
+/// beside it. Shared with the relay database (`relay::open`).
+pub(crate) fn restrict_db_files(path: &str) -> crate::error::Result<()> {
     restrict_owner_only(path)?;
     for suffix in ["-journal", "-wal", "-shm"] {
         let sidecar = format!("{path}{suffix}");

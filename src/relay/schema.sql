@@ -95,3 +95,19 @@ CREATE TABLE IF NOT EXISTS provider_auth_events (
         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     )
 );
+
+-- API-key lifecycle audit trail: one row each time a key is created,
+-- rotated or revoked, by the host CLI or by an admin key over HTTP.
+-- `actor` is `host` or `admin:<api_keys.id>`. Never stores a bearer or
+-- its hash; `related_key_id` is the key a rotation replaced.
+CREATE TABLE IF NOT EXISTS api_key_events (
+    id              INTEGER PRIMARY KEY,
+    api_key_id      INTEGER NOT NULL,
+    event           TEXT NOT NULL CHECK (event IN ('created', 'rotated', 'revoked')),
+    actor           TEXT NOT NULL,
+    related_key_id  INTEGER,
+    occurred_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_key_events_key
+    ON api_key_events (api_key_id, id);

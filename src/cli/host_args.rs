@@ -27,8 +27,12 @@ pub enum HostCommand {
         /// How often to delete expired mailbox envelopes and TTL files.
         #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..))]
         scan_interval_seconds: u64,
+        /// Allow a non-loopback `--bind`: a TLS-terminating proxy forwards to
+        /// this address. The relay itself serves plain HTTP.
+        #[arg(long)]
+        behind_tls_proxy: bool,
     },
-    /// Generate a relay identity keypair (private key printed once).
+    /// Generate a relay identity keypair (private key written owner-only).
     Identity {
         #[command(subcommand)]
         command: IdentityCommand,
@@ -85,10 +89,14 @@ pub enum HostCommand {
 
 #[derive(Subcommand)]
 pub enum RootCommand {
-    /// Print the root private key once.
+    /// Generate the root keypair. The private key goes only to
+    /// `--private-key-out` (created owner-only, never overwritten) and is
+    /// never printed.
     Generate {
         #[arg(long)]
         public_key_out: PathBuf,
+        #[arg(long)]
+        private_key_out: PathBuf,
     },
 }
 
@@ -126,9 +134,14 @@ pub enum PolicyCommand {
 
 #[derive(Subcommand)]
 pub enum IdentityCommand {
+    /// Generate the relay keypair. The private key goes only to
+    /// `--private-key-out` (created owner-only, never overwritten) and is
+    /// never printed.
     Generate {
         #[arg(long)]
         public_key_out: PathBuf,
+        #[arg(long)]
+        private_key_out: PathBuf,
     },
 }
 
@@ -158,6 +171,8 @@ pub enum KeysCommand {
         licensee_key: Option<String>,
     },
     List,
+    /// Print the API-key lifecycle audit trail (created, rotated, revoked).
+    Events,
     Revoke {
         id: i64,
     },

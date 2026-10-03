@@ -22,8 +22,10 @@ fn transfer_letter_round_trips_and_hides_the_package() {
     let (mut source, _source_dir, dest, _dest_dir) = pair();
     let source_conn = crate::db::open_in_memory().unwrap();
     transfer::enroll(&source_conn, &mut source, "M", "slot-passphrase").unwrap();
-    let passes =
-        std::collections::HashMap::from([("M".to_string(), "slot-passphrase".to_string())]);
+    let passes: transfer::Passphrases = std::collections::HashMap::from([(
+        "M".to_string(),
+        zeroize::Zeroizing::new("slot-passphrase".to_string()),
+    )]);
     let prepared = transfer::prepare(
         &source_conn,
         &source,

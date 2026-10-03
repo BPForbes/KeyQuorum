@@ -844,3 +844,18 @@ async fn device_routes_are_api_blocked_and_keep_packages_opaque() {
         .unwrap();
     assert_eq!(directory.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[test]
+fn plain_http_binds_only_to_loopback_unless_tls_terminates_in_front() {
+    let parse = |s: &str| s.parse::<std::net::SocketAddr>().expect("addr");
+    for loopback in ["127.0.0.1:8787", "[::1]:8787"] {
+        super::check_bind(&parse(loopback), false).expect("loopback is allowed");
+    }
+    for public in ["0.0.0.0:8787", "192.0.2.10:443", "[::]:8787"] {
+        assert!(matches!(
+            super::check_bind(&parse(public), false),
+            Err(crate::error::Error::RelayRequest(_))
+        ));
+        super::check_bind(&parse(public), true).expect("operator states TLS terminates upstream");
+    }
+}

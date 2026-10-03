@@ -88,6 +88,25 @@ personal SQLite file. Later commands re-check the hash and inject the
 bearer. Never commit bearers, `.kqpb` files, `*.kqcert`, `*.kqrl`,
 `*.kqpolicy`, provider root keys, or the relay database.
 
+The relay host's own operating controls: the relay database is owner-only
+(0600, journal sidecars too, like the personal store). It serves plain HTTP,
+so `serve` refuses a non-loopback `--bind` unless `--behind-tls-proxy` says a
+TLS-terminating proxy forwards to it; every request is cut off at
+`relay::REQUEST_TIMEOUT` (30 s, answered 408) inside the body limit. Every
+API-key change (created, rotated, revoked, by `host` or by `admin:<id>` over
+HTTP) lands in `api_key_events`, which `host keys events` prints; every mint
+authorization (`keys.create`, `keys.rotate`), granted or refused, lands in
+`provider_auth_events`. Authentication and scope denials are logged at WARN by
+reason, and the host logs at INFO unless `RUST_LOG` says otherwise. None of
+those records or logs holds a bearer, a key hash or a challenge. `identity
+generate` and `root generate` write the private key only to
+`--private-key-out` (owner-only, never overwritten) and never print it.
+Prompted passphrases, passwords, PINs and pasted API keys are
+`Zeroizing<String>` (`cli::env::prompt_secret`, `transfer::Passphrases`).
+The relay client reads at most `relay::client::MAX_RESPONSE_BYTES` (256 MiB)
+of any response, the provider challenge included, and quotes a relay's error
+body only through `relay_error_text` (control characters dropped, 512 chars).
+
 A hardware key with no `device_placements` row is its own device: that is the
 original one-key one-device exchange, and distinct key files count as distinct
 devices. `src/device.rs` owns containers, placements, and custody policy.
@@ -578,4 +597,5 @@ This repo also carries `AGENTS.md` (Codex and other agent tooling) and `.cursorr
 
 - Legacy checks: tests of deprecated verbs (`deliver`, `file receive|ack`, `relay pull` spellings) sit behind the `legacy-tests` feature and the `legacy` workflow (`.github/workflows/legacy.yml`), whose single job is skipped by default and run on the `legacy` PR label or a manual dispatch. `--all-features` includes them; the everyday CI gate is `--features provider,lab,tui`. Both run the same parallel test groups (`.github/workflows/tests.yml`: lab, cli, file_history, relay+provider+db, and everything else), so a new module needs no workflow edit.
 - Security checks: `.github/workflows/security.yml` runs `cargo audit`, `cargo deny --locked check` (policy in `deny.toml`), `gitleaks` over the full history (allowlist in `.gitleaks.toml`, which passes only the published Lab demo passphrases and lockfile checksums), `npm audit` for `lab/` and CodeQL (security-and-quality suite from `.github/codeql/codeql-config.yml`, for Rust, the Lab's TypeScript and the workflows; `.github/scripts/codeql_report.py` prints each finding as source, source quote, quoted lines, SOC 2 criterion and fix, and the `codeql gate` check fails on a high or critical finding in shipped code), on every PR, on `main` and weekly; `.github/workflows/sbom.yml` keeps CycloneDX SBOMs as artifacts. A new dependency must satisfy `deny.toml` (add a licence only after checking it). Dependabot covers Actions, Cargo and npm, but only Actions updates auto-merge; cargo and npm updates (which include the cryptographic crates) wait for a person. Vulnerabilities are reported privately as `SECURITY.md` describes.
+- SOC 2: `docs/soc2-controls.md` maps each Trust Services Criterion to the control in this repository, its evidence (test or workflow) and what the operator must still provide (TLS termination, rate limiting, backups, log retention). Update it with any change to a control it names.
 - Review rules: the "Review guidelines (strict, SOC 2)" section above is also loaded by CodeRabbit (`.coderabbit.yaml` points its per-path checks at it and runs a "SOC 2 evidence" pre-merge check) and by Codex review. Change the rules in all three agent files together, and keep `.coderabbit.yaml` consistent with them.
