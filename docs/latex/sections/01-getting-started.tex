@@ -46,7 +46,7 @@ passphrase, key or bearer is stored there.
 
 A left-out flag resolves, in order, from the flag you typed, a recent
 parameter, the stored default, and then the command's own behaviour or error.
-The environment variable \code{KEYQUORUM\_DB} chooses the database when
+The environment variable \code{KEYQUORUM_DB} chooses the database when
 \flag{--db} is not given.
 
 The older, longer procedures --- \code{deliver send|open|ack}, \code{file
@@ -68,7 +68,7 @@ looked up. Every reuse is announced on standard error, except that
 Most commands read and write a local SQLite database that holds your split
 trees, registered keys, and (for a relay-connected identity) a sealed copy
 of your mailbox bearer. Pass \flag{--db} to point at a specific file; when
-omitted, commands use \code{KEYQUORUM\_DB} if it is set, and otherwise a
+omitted, commands use \code{KEYQUORUM_DB} if it is set, and otherwise a
 default database in the current directory. Running
 the same commands against different \flag{--db} files is how one machine
 can hold several independent identities (for example \file{alice.sqlite}
