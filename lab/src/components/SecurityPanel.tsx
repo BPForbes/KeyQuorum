@@ -733,8 +733,9 @@ export function SecurityPanel({ snapshot, act }: { snapshot: Snapshot; act: Act 
           <h3>Check my setup</h3>
           <p className="small muted">
             <code>keyquorum doctor</code> says what is missing for you and the command that fixes it. The buttons beside it run those
-            fixes (<code>keyquorum use</code>, <code>keyquorum device bind</code>). Creating an identity from scratch
-            (<code>keyquorum setup</code>) is the <strong>Create and register a new leaf</strong> form below.
+            fixes (<code>keyquorum use</code>, <code>keyquorum device bind</code>). The people here are fixed, so
+            there is no button for <code>keyquorum setup</code>; the <strong>Create and register a new leaf</strong> form
+            below is a separate workflow that provisions a slot, registers its keys and adds it to the tree.
           </p>
           <CheckSetup act={act} />
         </div>

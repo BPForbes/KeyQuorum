@@ -58,7 +58,8 @@ Three short-lived caches are fresh for 15 minutes: parameters you just used (for
 the same command only, and never a recipient or any target of an outward or
 destructive command), a relay identity check that just passed (never a failure,
 and \code{loadkey} always runs the full check), and facts \code{doctor} already
-looked up. Every reuse is announced on standard error. Turn them off with
+looked up. Every reuse is announced on standard error, except that
+\code{doctor} marks a recently checked slot in its own report. Turn them off with
 \flag{--no-cache}, \code{KEYQUORUM\_NO\_CACHE=1} or \code{use --cache off};
 \code{cache clear} empties them.
 

@@ -223,7 +223,8 @@ command, and is never documented outside the crate's own source.
   back. \\
 \code{deliver ack} & (Legacy; use \code{inbox open}.) Check an acknowledgement sealed back to you. \\
 \code{relay push} & Upload every \file{.kqpb} in a directory to the relay;
-  also replaces public-tree documents from trees stored in \flag{--db}. \\
+  also merges the public trees stored in \flag{--db} into the relay's documents
+  (unrelated nodes stay; \code{tree publish} is the command that replaces one). \\
 \code{relay pull} & (Legacy for letters; use \code{inbox}.) Download envelopes and the public-tree slice for a
   pull key; \flag{--import} installs each envelope into \flag{--db}
   directly. \\
@@ -256,7 +257,6 @@ command to use instead. They are not recommended for new use.
 \code{file ack} & \code{inbox open ID --file FILE} \\
 \code{file verify-snapshot} & \code{file history verify SNAPSHOT} \\
 \code{file history --export} & \code{file history export FILE --out SNAPSHOT} \\
-a producer command, then \code{relay push} & the producer command with \flag{--push} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -281,7 +281,9 @@ They remain the way to open a letter that reached you as a file.
 
 \noindent A letter that reaches you as a file (carried by hand, no relay) is
 still opened with the \code{file} and \code{deliver} commands, because
-\code{inbox} reads a relay.
+\code{inbox} reads a relay. A producer command followed by \code{relay push}
+also still works and prints no note; \flag{--push} on the producer command does
+both in one step.
 
 \subsection{Tracked files}
 

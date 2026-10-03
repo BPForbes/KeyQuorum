@@ -114,7 +114,7 @@ yourself: parameters you just used (a letter path, for the same command; never
 a recipient or any target of an outward or destructive command), a relay
 identity check that just passed (never a failure, and `loadkey` always runs the
 full check), and facts `doctor` already looked up. Every reuse says so on
-stderr. Turn them off with `--no-cache`, `KEYQUORUM_NO_CACHE=1`, or
+stderr, except that `doctor` marks a recently checked slot in its own report. Turn them off with `--no-cache`, `KEYQUORUM_NO_CACHE=1`, or
 `keyquorum use --cache off`; `keyquorum cache clear` empties them and
 `keyquorum cache status` shows what is held.
 

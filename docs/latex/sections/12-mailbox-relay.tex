@@ -42,7 +42,11 @@ keyquorum --db alice.sqlite relay pull --import --share-file alice.key
 checks the key with the mailbox, then stores the key hash and a sealed copy
 of the bearer in the personal database. Later \code{relay} / \code{tree
 fetch} commands repeat that identity check and re-check the hash before
-using the key. An optional signed revocation list can be pointed at with
+using the key. One exception: with caching on, a check that passed within the
+last 15 minutes stands in for the challenge (never a failure, and announced on
+standard error); \flag{--no-cache}, \code{KEYQUORUM\_NO\_CACHE=1} or
+\code{use --cache off} always repeat it, and \code{loadkey} always runs a
+fresh one. An optional signed revocation list can be pointed at with
 \code{KEYQUORUM_PROVIDER_KRL}.
 
 \code{relay push} also uploads every public tree in \flag{--db} and

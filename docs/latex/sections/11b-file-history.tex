@@ -273,7 +273,7 @@ compares it with your copy: \code{SAME}, \code{LOCAL_AHEAD},
 \code{REMOTE_AHEAD} or \code{DIVERGED}. It is not answered.
 
 \begin{lstlisting}
-keyquorum file send-history report.txt.kqtf --to M.B --push
+keyquorum file send-history report.txt.kqtf --to M.B --as M.A --push
 # M.B:
 keyquorum inbox open <id> --file report.txt.kqtf
 \end{lstlisting}
@@ -591,10 +591,10 @@ M.B asks M.A; each answer is one \code{inbox open}.
 \begin{lstlisting}
 # 1. M.B's computer, M.B's drive in: ask for a file M.B does not hold yet
 keyquorum file request --file-id <32 hex digits> \
-  --name report.txt --to M.A --push
+  --name report.txt --to M.A --as M.B --push
 #    or ask for a change to M.B's own copy (message up to 1024 bytes)
 keyquorum file request report.txt.kqtf --change \
-  --message "the total in row 3 is wrong" --to M.A --push
+  --message "the total in row 3 is wrong" --to M.A --as M.B --push
 
 # 2. Later, M.A's computer, M.A's drive in: see what is waiting
 keyquorum inbox
@@ -603,8 +603,10 @@ keyquorum inbox
 #    in M.A's copy, and a decision is never guessed
 keyquorum inbox open <id> --accept --file report.txt.kqtf   # or --decline
 
-# 4. Later, M.B's computer: record the answer against the request M.B's copy
-#    shows it made
+# 4. Later, M.B's computer. A file request: read the answer by its id (M.B
+#    holds no copy to record it in)
+keyquorum inbox open <answer-id>
+#    A change request: record the answer in the copy that recorded the request
 keyquorum inbox open <answer-id> --file report.txt.kqtf
 \end{lstlisting}
 
