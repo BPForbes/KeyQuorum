@@ -1,14 +1,17 @@
 # Security scanning: known-vulnerable dependencies, licence and source policy,
-# committed secrets, the Lab's npm dependencies, and static analysis of the
-# Lab's TypeScript.
+# committed secrets, the Lab's npm dependencies, and CodeQL static analysis of
+# the crate, the Lab and the workflows.
 #
 # Runs on every pull request and push to main, and weekly, because new
 # advisories appear without any change to this repository. It reads, scans and
 # reports; it never publishes, merges or writes to the repository.
 #
-# CodeQL covers JavaScript/TypeScript only: GitHub's Rust analysis is not a
-# stable offering yet, so the Rust crate is covered by `cargo audit`,
-# `cargo deny` and clippy (in tests.yml) instead.
+# CodeQL runs the security-and-quality suite (.github/codeql/codeql-config.yml)
+# over the Rust crate, the Lab's TypeScript and the workflows themselves.
+# .github/scripts/codeql_report.py prints each finding with its source, a quote
+# of that source, the offending lines and its SOC 2 criterion, and fails the
+# `codeql gate` check on a high or critical finding in shipped code. `cargo audit`,
+# `cargo deny` and clippy (in tests.yml) cover the Rust dependencies and style.
 
 name: Security
 
@@ -75,19 +78,42 @@ jobs:
         run: npm audit --omit=dev --audit-level=high
 
   codeql:
-    name: codeql (javascript-typescript)
+    name: codeql (${{ matrix.language }})
     runs-on: ubuntu-latest
     permissions:
       contents: read
       security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # Rust is the crate, javascript-typescript is the Lab, actions is this
+        # repository's own workflows (a changed workflow is a changed control).
+        language: [rust, javascript-typescript, actions]
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: github/codeql-action/init@v3
+      - uses: github/codeql-action/init@v4
         with:
-          languages: javascript-typescript
-          source-root: lab
-      - uses: github/codeql-action/analyze@v3
+          languages: ${{ matrix.language }}
+          build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
+      - uses: github/codeql-action/analyze@v4
         with:
-          category: "/language:javascript-typescript"
+          category: "/language:${{ matrix.language }}"
+          output: sarif-results
+      # Same form as the review rules in AGENTS.md: source, source quote, the
+      # quoted lines, the SOC 2 criterion and the fix. Fails on a high or
+      # critical finding in shipped code.
+      - name: Report findings with their SOC 2 criterion
+        run: python3 .github/scripts/codeql_report.py sarif-results/*.sarif
+
+  # One stable check name for all CodeQL languages, for branch protection.
+  codeql-gate:
+    name: codeql gate
+    needs: codeql
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every CodeQL language passed
+        run: test "${{ needs.codeql.result }}" = success

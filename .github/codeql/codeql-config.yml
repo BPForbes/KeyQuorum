@@ -1,0 +1,22 @@
+# CodeQL configuration for .github/workflows/security.yml.
+#
+# security-and-quality is the strictest standard suite: every security query
+# (including the lower-precision "extended" ones) plus the reliability and
+# maintainability queries. Findings are reported by .github/scripts/codeql_report.py
+# in the same five-part form as the review rules in AGENTS.md (source, source
+# quote, quoted lines, SOC 2 criterion, fix); the job fails on anything high or
+# critical.
+name: "KeyQuorum CodeQL"
+
+queries:
+  - uses: security-and-quality
+
+# Build output, dependencies and generated files are not our code. Test code is
+# kept in scope: the report lists findings in tests, but only findings in
+# shipped code fail the check (see codeql_report.py).
+paths-ignore:
+  - target
+  - "**/node_modules"
+  - lab/dist
+  - lab/pkg
+  - lab/public/docs

@@ -45,4 +45,6 @@ and seeded data in the Lab, which are published on purpose and protect nothing.
 
 The `security` workflow runs RustSec advisories (`cargo audit`), `cargo deny`
 (advisories, licenses, sources), secret scanning (`gitleaks`), `npm audit` for the
-Lab and CodeQL for its TypeScript. Dependabot proposes dependency updates.
+Lab and CodeQL for the Rust crate, the Lab's TypeScript and the workflows. CodeQL
+findings are reported with their SOC 2 criterion, and a high or critical finding
+fails the `codeql gate` check. Dependabot proposes dependency updates.

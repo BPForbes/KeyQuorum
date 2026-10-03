@@ -150,6 +150,13 @@ reviews:
         and no weakening or skipping of tests or the security workflow
         (SOC 2 CC6.8, CC7.1, CC8.1). Cargo and npm Dependabot updates must not
         auto-merge.
+    - path: ".github/{codeql,scripts}/**"
+      instructions: >
+        CodeQL configuration and the report script that turns its findings into
+        the five-part review format with a SOC 2 criterion. Do not narrow the
+        query suite, widen paths-ignore, lower the failing severity, or hide a
+        finding without a quoted reason (SOC 2 CC7.1, CC8.1). New CWE-to-
+        criterion mappings need a source and a one-sentence reason.
     - path: "{Cargo.toml,deny.toml,.gitleaks.toml,lab/package.json}"
       instructions: >
         Dependency and scanner policy. A new dependency needs a reason, a
