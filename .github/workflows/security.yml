@@ -1,0 +1,121 @@
+# Security scanning: known-vulnerable dependencies, licence and source policy,
+# committed secrets, the Lab's npm dependencies, and CodeQL static analysis of
+# the crate, the Lab and the workflows.
+#
+# Runs on every pull request and push to main, and weekly, because new
+# advisories appear without any change to this repository. It reads, scans and
+# reports; it never publishes, merges or writes to the repository.
+#
+# CodeQL runs the security-and-quality suite (.github/codeql/codeql-config.yml)
+# over the Rust crate, the Lab's TypeScript and the workflows themselves.
+# .github/scripts/codeql_report.py prints each finding with its source, a quote
+# of that source, the offending lines and its SOC 2 criterion, and fails the
+# `codeql gate` check on a high or critical finding in shipped code. `cargo audit`,
+# `cargo deny` and clippy (in tests.yml) cover the Rust dependencies and style.
+
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-dependencies:
+    name: rust dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        with:
+          tool: cargo-audit,cargo-deny
+      - name: RustSec advisories
+        run: cargo audit --deny warnings
+      - name: Advisories, licences, bans and sources (deny.toml)
+        run: cargo deny --locked check
+
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # The published image, pinned to a release tag, so no licence key or
+      # third-party action is involved. .gitleaks.toml carries the allowlist.
+      - name: gitleaks over the full history
+        run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.30.1 \
+            detect --source /repo --config /repo/.gitleaks.toml \
+            --redact --verbose --exit-code 1
+
+  lab-dependencies:
+    name: lab dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: lab/package-lock.json
+      - name: npm audit (production dependencies)
+        working-directory: lab
+        run: npm audit --omit=dev --audit-level=high
+
+  codeql:
+    name: codeql (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # Rust is the crate, javascript-typescript is the Lab, actions is this
+        # repository's own workflows (a changed workflow is a changed control).
+        language: [rust, javascript-typescript, actions]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
+          output: sarif-results
+      # Same form as the review rules in AGENTS.md: source, source quote, the
+      # quoted lines, the SOC 2 criterion and the fix. Fails on a high or
+      # critical finding in shipped code.
+      - name: Test the report script
+        run: python3 -m unittest discover -s .github/scripts
+      - name: Report findings with their SOC 2 criterion
+        run: python3 .github/scripts/codeql_report.py sarif-results/*.sarif
+
+  # One stable check name for all CodeQL languages, for branch protection.
+  codeql-gate:
+    name: codeql gate
+    needs: codeql
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every CodeQL language passed
+        run: test "${{ needs.codeql.result }}" = success

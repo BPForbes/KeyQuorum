@@ -1,0 +1,29 @@
+# gitleaks configuration (see .github/workflows/security.yml).
+title = "KeyQuorum"
+
+[extend]
+useDefault = true
+
+# The Lab is a public demonstration: its seeded people, USB passphrases
+# (`lab-demo-<label>`) and demo password are published on purpose and protect
+# nothing (see the "Default credentials" section of the Lab manual). Nothing
+# else is allowed through.
+[[allowlists]]
+description = "Published Lab demo passphrases and password"
+regexes = [
+  '''lab-demo-[A-Za-z0-9._-]+''',
+]
+
+# Cargo.lock is a list of package checksums, which trip the generic API-key
+# rule. The exception is limited to that one rule in that one file, so every
+# other rule (cloud keys, tokens, credentialed URLs) still scans it.
+#
+# Note: gitleaks' built-in defaults skip package-lock.json entirely, and this
+# file cannot turn that back on. `npm audit` in security.yml covers the Lab's
+# npm dependencies instead.
+[[allowlists]]
+description = "Package checksums in Cargo.lock"
+targetRules = ["generic-api-key"]
+paths = [
+  '''(^|/)Cargo\.lock$''',
+]

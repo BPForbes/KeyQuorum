@@ -1,0 +1,45 @@
+# cargo-deny policy, run by .github/workflows/security.yml:
+#   cargo deny --locked check
+# Checks the whole dependency graph in Cargo.lock for known vulnerabilities,
+# licences nobody agreed to, and crates that do not come from crates.io.
+
+[graph]
+all-features = true
+
+[advisories]
+# Vulnerabilities and unsound crates always fail. Unmaintained and yanked
+# crates fail too; add an `ignore` entry with a reason and a date only when a
+# fix is not available yet.
+yanked = "deny"
+unmaintained = "workspace"
+ignore = []
+
+[licenses]
+confidence-threshold = 0.9
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+  # Mozilla's CA root list (webpki-roots), used by the relay's TLS client.
+  "CDLA-Permissive-2.0",
+]
+
+# This crate is not published, so a missing licence field is not an error.
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
