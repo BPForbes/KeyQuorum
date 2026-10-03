@@ -5,7 +5,7 @@ use crate::keys::{self, KeyType};
 use std::fs;
 
 fn register_encryption_key(conn: &Connection, label: &str) -> (i64, crypto_box::SecretKey) {
-    let secret_key = crypto_box::SecretKey::generate(&mut rand::rngs::OsRng);
+    let secret_key = crypto_box::SecretKey::generate(&mut rand_core::OsRng);
     let public_key = *secret_key.public_key().as_bytes();
     let id = keys::register_key(conn, label, KeyType::Encryption, &public_key)
         .expect("register_key should succeed");
@@ -193,7 +193,7 @@ fn lock_cleans_up_ciphertext_when_starting_the_transaction_fails() {
 #[test]
 fn lock_rejects_signing_key_as_recipient() {
     let mut conn = db::open_in_memory().expect("schema should apply");
-    let signing_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+    let signing_key = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
     let public_key = signing_key.verifying_key().to_bytes();
     let id = keys::register_key(&conn, "signer", KeyType::Signing, &public_key)
         .expect("register_key should succeed");

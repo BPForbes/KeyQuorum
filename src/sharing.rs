@@ -13,8 +13,6 @@ use crate::locked_files;
 use crate::storage::{NativeStorage, Storage};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use rand::rngs::OsRng;
-use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
@@ -28,7 +26,7 @@ pub struct Share {
 
 fn generate_token() -> (String, String) {
     let mut raw = [0u8; TOKEN_LEN];
-    OsRng.fill_bytes(&mut raw);
+    crate::crypto::fill_random(&mut raw);
     let token = URL_SAFE_NO_PAD.encode(raw);
     let token_hash = hex::encode(Sha256::digest(raw));
     (token, token_hash)

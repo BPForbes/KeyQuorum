@@ -5,7 +5,7 @@ use crate::vault;
 use std::fs;
 
 fn recipient_keypair() -> (crypto_box::SecretKey, [u8; 32]) {
-    let secret_key = crypto_box::SecretKey::generate(&mut rand::rngs::OsRng);
+    let secret_key = crypto_box::SecretKey::generate(&mut rand_core::OsRng);
     let public_key = *secret_key.public_key().as_bytes();
     (secret_key, public_key)
 }
