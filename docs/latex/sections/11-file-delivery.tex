@@ -21,7 +21,7 @@ waiting, and \code{inbox open} opens each letter, keeps the file in
 the sender to read the answer. \flag{--reject} refuses a file and says so in the
 answer; \flag{--ack-dir} writes answers to a directory instead of uploading them.
 
-\code{inbox} keeps the letters it pulled in \file{./inbox} (\flag{--dir}), remembers
+\code{inbox} keeps the letters it pulled in \file{./inbox/<relay hash>/} (\flag{--dir}), remembers
 where it stopped, and opens each letter once. It opens file deliveries, answers
 to your deliveries, tracked files, history snapshots, and bridge and
 organization updates. A letter that asks for a decision (a file or change

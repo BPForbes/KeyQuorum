@@ -5,18 +5,11 @@ The rest of this manual explains what each area of the CLI is for and how
 the pieces fit together; this section is the complete index of every
 \code{keyquorum} and \code{keyquorum-device} command and subcommand, so
 this manual alone --- without a separate run of \code{--help} --- says
-what the tool can do. Each row's description is the same one \code{--help}
+what the tool can do. Each row summarizes what \code{--help}
 prints for that command. Flags are not reproduced here in full; run
 \code{keyquorum <command> --help} (or \code{keyquorum <command>
 <subcommand> --help}) for a command's complete flag list, defaults, and
 which flags conflict with or require others.
-
-\begin{noteBox}
-\code{keyquorum host} is a hidden subcommand, compiled only with
-\flag{--features provider}, and is intentionally omitted here: it is a
-build capability for operating a mailbox relay, not a customer-facing
-command, and is never documented outside the crate's own source.
-\end{noteBox}
 
 \subsection{Identity and hardware keys}
 
@@ -210,7 +203,8 @@ command, and is never documented outside the crate's own source.
 \midrule
 \code{send} & Seal a file (or a tracked file's newest trusted revision) to a
   registered label and upload it, or write it to \file{./outbox}. \flag{--quorum-file} sends a quorum-protected file unlocked in memory. \\
-\code{inbox} & Pull what is waiting for you from the relay and list it.
+\code{inbox} & Pull what is waiting for you from the relay and list it
+  (\code{inbox list} is the same, spelled out).
   \code{inbox open} opens each letter and posts the signed answer, including
   bridge and organization updates;
   with a letter id it also takes \flag{--into}/\flag{--out} (a tracked file),

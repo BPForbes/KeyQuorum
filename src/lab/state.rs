@@ -1932,8 +1932,9 @@ impl LabState {
     /// with the CLI's own `SealedKeyNotHeld` error, same as it would on a
     /// second person's real, separate store that never imported the
     /// package addressed to them. Quorum-locked files are not offered
-    /// here: they would first need decrypting to a temporary plaintext
-    /// the same way `send` does, which this build keeps out of scope.
+    /// here: signing is offered only on plaintext the Files tab already
+    /// holds, and a quorum file's contents never leave the unlock (`send
+    /// --quorum-file` unlocks in memory and writes nothing).
     pub fn sign_file(&mut self, file_key: &str) -> Result<Outcome> {
         let actor_label = self.actor().label.clone();
         let Some(signer_label) = self.bridge_signer_label(&actor_label) else {

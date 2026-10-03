@@ -81,7 +81,7 @@ export function FileExplorer({ snapshot, act }: { snapshot: Snapshot; act: Act }
   }
 
   // Only a public or received file's plaintext can be signed here — a
-  // quorum file would first need decrypting to a temporary plaintext.
+  // quorum file's contents are only ever unlocked in memory, never kept.
   function canSign(file: FileView) {
     return file.protection === "public" || file.protection === "received";
   }

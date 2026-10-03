@@ -709,7 +709,7 @@ sends nothing.
 
 With a relay set up the letter is uploaded; otherwise it is written to
 `./outbox` (`--offline` or `--output-dir DIR` force that). `inbox` keeps the
-letters it pulled in `./inbox` (`--dir`), remembers where it stopped, and opens
+letters it pulled in `./inbox/<relay hash>/` (`--dir`), remembers where it stopped, and opens
 each letter once. `inbox open` handles file deliveries, answers to your
 deliveries, tracked files (`--reject` refuses a file and says so in the answer;
 delivered files are kept in `./received`, `--save-dir`), history snapshots

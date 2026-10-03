@@ -75,7 +75,11 @@ accepted into the bridge inbox.
 \subsection{Recovering from a lost key or a missed pull}
 
 If a key is lost or rotated, load the replacement your provider issues.
-Envelopes already delivered are unchanged.
+Envelopes already delivered are unchanged. \code{inbox} remembers where it
+stopped, so the next \code{inbox} or \code{inbox open} picks up whatever was
+missed.
+
+The older form downloads by hand (it prints a note naming \code{inbox}):
 
 \begin{lstlisting}
 keyquorum relay pull --after <id> --output-dir ./inbox
@@ -83,6 +87,6 @@ keyquorum relay pull --after <id> --output-dir ./inbox
 # keyquorum relay pull --after <id> --import --share-file alice.key
 \end{lstlisting}
 
-replays anything not yet downloaded; \code{bridge private import} still
+That form replays anything not yet downloaded; \code{bridge private import} still
 rejects stale generations, so replaying an old envelope by mistake changes
 nothing.
