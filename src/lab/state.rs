@@ -511,6 +511,11 @@ impl LabState {
         // everyone then loads theirs with `keyquorum loadkey`.
         let admin = self.issue_api_key(ApiKeyScope::Admin, None, "org admin")?;
         run(self, format!("keyquorum --db {ORG_DB} loadkey {admin}"))?;
+        // The org store also sends: a quorum file is unlocked there (its
+        // wrapped shares live nowhere else), so `send --quorum-file` runs
+        // against it with its own push key.
+        let org_push = self.issue_api_key(ApiKeyScope::InboxPush, None, "org push")?;
+        run(self, format!("keyquorum --db {ORG_DB} loadkey {org_push}"))?;
         for index in 0..self.users.len() {
             let (id, label, store) = {
                 let user = &self.users[index];
@@ -521,6 +526,17 @@ impl LabState {
             let pull = self.issue_api_key(ApiKeyScope::InboxPull, Some(fingerprint), &id)?;
             for token in [push, pull] {
                 run(self, format!("keyquorum --db {store} loadkey {token}"))?;
+            }
+            // Where this person's own slot lives is their default, so
+            // `doctor` can say whether their setup is whole.
+            if let Some(mount) = self
+                .drive_holding(&label)
+                .map(|d| d.mount.display().to_string())
+            {
+                run(
+                    self,
+                    format!("keyquorum --db {store} use --device {mount} --slot {label}"),
+                )?;
             }
             // Everyone's public keys, so letters can be sealed to them and
             // their signatures checked.
@@ -536,6 +552,17 @@ impl LabState {
                         )?;
                     }
                 }
+            }
+            // Binding follows the keys being registered: this person's own
+            // slot now belongs to the device it sits on.
+            if let Some(mount) = self
+                .drive_holding(&label)
+                .map(|d| d.mount.display().to_string())
+            {
+                run(
+                    self,
+                    format!("keyquorum --db {store} device bind {mount} --slot {label}"),
+                )?;
             }
         }
 
@@ -939,8 +966,7 @@ impl LabState {
             )),
         ];
         let message = format!("Switched to {} ({})", user.name, user.label);
-        let (mail_trace, _) = self.check_mail();
-        trace.extend(mail_trace);
+        trace.extend(self.settle_mail_and_answers());
         self.log("user", "info", &message, trace.clone(), None);
         Ok(Outcome::done(true, message, trace))
     }
@@ -973,6 +999,8 @@ impl LabState {
             let list = self.run(&format!("keyquorum-device list {mount}"));
             commands.push(list.line.clone());
             trace.extend(transcript(&list, true));
+            // Answers sealed to this person's slot can be opened now.
+            trace.extend(self.settle_mail_and_answers());
         } else {
             trace.push(TraceStep::info(format!(
                 "{name} unmounted from {mount}; its slots can no longer unwrap shares or sign"
@@ -1037,7 +1065,7 @@ impl LabState {
                 vec![],
             ));
         }
-        let lines = [
+        let mut lines = vec![
             format!(
                 "keyquorum-device relocate --from {} --to {} --label {label}",
                 from.display(),
@@ -1048,6 +1076,19 @@ impl LabState {
                 to.display()
             ),
         ];
+        // The slot's owner keeps their own defaults and binding pointing at
+        // the drive it now sits on.
+        if let Some(owner) = self.user_by_label(label) {
+            let store = owner.store();
+            lines.push(format!(
+                "keyquorum --db {store} use --device {} --slot {label}",
+                to.display()
+            ));
+            lines.push(format!(
+                "keyquorum --db {store} device bind {} --slot {label}",
+                to.display()
+            ));
+        }
         let (runs, ok) = self.run_all(&lines);
         let mut trace = transcripts(&runs, true);
         let message = if ok {
@@ -1197,19 +1238,17 @@ impl LabState {
     /// The unlock command for a quorum file: every inserted slot that
     /// holds a share of it, and, when the file needs parent approval, each
     /// holder's parent whose slot is inserted too. The command decides.
-    fn unlock_line(
-        &self,
-        file_id: i64,
-        key_id: i64,
-        output: Option<&Path>,
-    ) -> Result<(String, Vec<String>)> {
-        let leaves = self.leaves(key_id)?;
-        let mut line =
-            format!("keyquorum --db {ORG_DB} access quorum --state 1 --id {file_id} --verbose");
+    /// The shares this person can present for a file's key tree: one slot
+    /// flag per leaf whose drive is inserted (`--slot` for `access quorum`,
+    /// `--unlock-slot` for `send --quorum-file`) and, when the policy asks
+    /// for a parent's approval, the `--approve` pairs. Also returns the
+    /// leaves presented.
+    fn unlock_flags(&self, key_id: i64, slot_flag: &str) -> Result<(String, Vec<String>)> {
+        let mut flags = String::new();
         let mut presented = Vec::new();
-        for leaf in &leaves {
+        for leaf in &self.leaves(key_id)? {
             if let Some(drive) = self.drive_holding(leaf).filter(|drive| drive.connected) {
-                line.push_str(&format!(" --slot {}={leaf}", drive.mount.display()));
+                flags.push_str(&format!(" {slot_flag} {}={leaf}", drive.mount.display()));
                 presented.push(leaf.clone());
             }
         }
@@ -1219,13 +1258,26 @@ impl LabState {
                     continue;
                 };
                 if let Some(drive) = self.drive_holding(parent).filter(|drive| drive.connected) {
-                    line.push_str(&format!(
+                    flags.push_str(&format!(
                         " --approve {leaf}={}>{parent}",
                         drive.mount.display()
                     ));
                 }
             }
         }
+        Ok((flags, presented))
+    }
+
+    fn unlock_line(
+        &self,
+        file_id: i64,
+        key_id: i64,
+        output: Option<&Path>,
+    ) -> Result<(String, Vec<String>)> {
+        let mut line =
+            format!("keyquorum --db {ORG_DB} access quorum --state 1 --id {file_id} --verbose");
+        let (flags, presented) = self.unlock_flags(key_id, "--slot")?;
+        line.push_str(&flags);
         if let Some(output) = output {
             line.push_str(&format!(
                 " --output {}",
@@ -1880,8 +1932,9 @@ impl LabState {
     /// with the CLI's own `SealedKeyNotHeld` error, same as it would on a
     /// second person's real, separate store that never imported the
     /// package addressed to them. Quorum-locked files are not offered
-    /// here: they would first need decrypting to a temporary plaintext
-    /// the same way `send` does, which this build keeps out of scope.
+    /// here: signing is offered only on plaintext the Files tab already
+    /// holds, and a quorum file's contents never leave the unlock (`send
+    /// --quorum-file` unlocks in memory and writes nothing).
     pub fn sign_file(&mut self, file_key: &str) -> Result<Outcome> {
         let actor_label = self.actor().label.clone();
         let Some(signer_label) = self.bridge_signer_label(&actor_label) else {
@@ -2142,6 +2195,38 @@ impl LabState {
         slot_label: &str,
         parent_label: &str,
     ) -> Result<Outcome> {
+        self.register_leaf_with(drive_id, slot_label, parent_label, None)
+    }
+
+    /// Provision a slot and register it as a leaf in one action: the same
+    /// `keyquorum-device provision` then the register, bind and `add` steps
+    /// of [`LabState::register_leaf`], with the passphrase just typed.
+    pub fn create_and_register_leaf(
+        &mut self,
+        drive_id: &str,
+        slot_label: &str,
+        parent_label: &str,
+        passphrase: &str,
+    ) -> Result<Outcome> {
+        let provisioned = self.provision_slot(drive_id, slot_label, passphrase)?;
+        if !provisioned.ok {
+            return Ok(provisioned);
+        }
+        let mut registered =
+            self.register_leaf_with(drive_id, slot_label, parent_label, Some(passphrase))?;
+        let mut trace = provisioned.trace;
+        trace.append(&mut registered.trace);
+        registered.trace = trace;
+        Ok(registered)
+    }
+
+    fn register_leaf_with(
+        &mut self,
+        drive_id: &str,
+        slot_label: &str,
+        parent_label: &str,
+        passphrase: Option<&str>,
+    ) -> Result<Outcome> {
         if slot_label.trim().is_empty() {
             return Ok(Outcome::done(false, "A leaf label is required", vec![]));
         }
@@ -2236,7 +2321,14 @@ impl LabState {
             ),
             add_line,
         ];
+        // `device bind` asks for the slot's passphrase (twice); a slot just
+        // created with a typed passphrase answers with that one.
+        if let Some(passphrase) = passphrase {
+            self.vm_mut()
+                .stage_secrets([passphrase.to_string(), passphrase.to_string()]);
+        }
         let (runs, ok) = self.run_all(&lines);
+        self.vm_mut().clear_pending_secrets();
         trace.extend(transcripts(&runs, true));
         let message = if ok {
             format!("Registered {slot_label} on {drive_name} as a new leaf under {parent_label}")
@@ -2251,6 +2343,93 @@ impl LabState {
             Some(format!("{public_line}\n{}", lines_run(&runs))),
         );
         Ok(Outcome::done(ok, message, trace))
+    }
+
+    /// `keyquorum doctor`: what is missing for the active person, and the
+    /// command that fixes each thing. Reads only.
+    pub fn doctor(&mut self) -> Result<Outcome> {
+        let line = format!("keyquorum --db {} doctor", self.actor().store());
+        let run = self.run(&line);
+        // Doctor prints one verdict per line (`ok`, `FIX`, a `->` hint, `info`);
+        // show each as what it says rather than as a passed step.
+        let mut trace = vec![TraceStep::info(format!("$ {line}"))];
+        for text in run.stdout_text().lines() {
+            let trimmed = text.trim_start();
+            trace.push(if trimmed.starts_with("ok ") {
+                TraceStep::pass(text.to_string())
+            } else if trimmed.starts_with("FIX ") {
+                TraceStep::fail(text.to_string())
+            } else {
+                TraceStep::info(text.to_string())
+            });
+        }
+        let message = if run.ok {
+            "Everything checks out".to_string()
+        } else {
+            run.error().unwrap_or("Problems found").to_string()
+        };
+        self.log(
+            "doctor",
+            "info",
+            "Check my setup",
+            trace.clone(),
+            Some(line),
+        );
+        Ok(Outcome::done(true, message, trace))
+    }
+
+    /// `keyquorum use`: make the drive the active person's slot sits on
+    /// their default.
+    pub fn use_current_drive(&mut self) -> Result<Outcome> {
+        let Some(slot) = self.own_slot_arg() else {
+            return Ok(Outcome::done(
+                false,
+                "You have no slot on any drive",
+                vec![],
+            ));
+        };
+        let (mount, label) = slot.rsplit_once('=').unwrap_or((&slot, ""));
+        let line = format!(
+            "keyquorum --db {} use --device {mount} --slot {label}",
+            self.actor().store()
+        );
+        self.setup_command("use", "Use my current drive as my default", line)
+    }
+
+    /// `keyquorum device bind`: tie the active person's slot to the device it
+    /// sits on, in their own store.
+    pub fn bind_slot(&mut self) -> Result<Outcome> {
+        let Some(slot) = self.own_slot_arg() else {
+            return Ok(Outcome::done(
+                false,
+                "You have no slot on any drive",
+                vec![],
+            ));
+        };
+        let (mount, label) = slot.rsplit_once('=').unwrap_or((&slot, ""));
+        let line = format!(
+            "keyquorum --db {} device bind {mount} --slot {label}",
+            self.actor().store()
+        );
+        self.setup_command("bind", "Bind my slot to its device", line)
+    }
+
+    fn setup_command(&mut self, kind: &str, title: &str, line: String) -> Result<Outcome> {
+        let run = self.run(&line);
+        let trace = transcript(&run, true);
+        let message = if run.ok {
+            title.to_string()
+        } else {
+            format!("{title}: {}", run.error().unwrap_or("failed"))
+        };
+        self.log(
+            kind,
+            if run.ok { "granted" } else { "denied" },
+            title,
+            trace.clone(),
+            Some(line),
+        );
+        Ok(Outcome::done(run.ok, message, trace))
     }
 
     /// Read-only: `keyquorum-device list` for an inserted drive's
@@ -2756,10 +2935,10 @@ impl LabState {
 
     // ----- delivery -------------------------------------------------------
 
-    /// Send a file with `keyquorum deliver send --push`. A quorum-locked
-    /// file is first opened to a temporary file with `access quorum
-    /// --state 1 --output` (so only someone who can open it can send it),
-    /// which is removed afterward.
+    /// Send a file with `keyquorum send` (which pushes to the relay). A
+    /// quorum-locked file goes by `send --quorum-file` against the org store:
+    /// it is unlocked in memory with the inserted slots (so only someone who
+    /// can open it can send it) and no plaintext is written to disk.
     pub fn send(&mut self, file_key: &str, recipient_key: &str) -> Result<Outcome> {
         let Some(recipient) = self.user_index(recipient_key) else {
             return Ok(Outcome::done(
@@ -2781,11 +2960,17 @@ impl LabState {
             ));
         };
 
-        let mut lines = Vec::new();
-        let mut temporary = None;
-        let (source, name) = if let Some(path) = self.received_path(file_key) {
+        let (line, name) = if let Some(path) = self.received_path(file_key) {
             let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
-            (path, name.unwrap_or_default())
+            let name = name.unwrap_or_default();
+            (
+                format!(
+                    "keyquorum --db {store} send {} --name {} --to {to_label} --as {me_label} --slot {slot}",
+                    quote(&path.display().to_string()),
+                    quote(&name)
+                ),
+                name,
+            )
         } else {
             let Some(index) = self.file_index(file_key) else {
                 return Ok(Outcome::done(
@@ -2796,35 +2981,34 @@ impl LabState {
             };
             let name = self.files[index].name.clone();
             match &self.files[index].kind {
-                FileKind::Public { path } => (path.clone(), name),
+                FileKind::Public { path } => (
+                    format!(
+                        "keyquorum --db {store} send {} --name {} --to {to_label} --as {me_label} --slot {slot}",
+                        quote(&path.display().to_string()),
+                        quote(&name)
+                    ),
+                    name,
+                ),
+                // A quorum file is unlocked where its shares are (the org
+                // store), by the shares of whichever drives are inserted, and
+                // sealed in memory: nothing is written to disk.
                 FileKind::Quorum { file_id, key_id } => {
                     let (file_id, key_id) = (*file_id, *key_id);
-                    let temp = self.actor().home().join(".outgoing").join(&name);
-                    let (line, _) = self.unlock_line(file_id, key_id, Some(&temp))?;
-                    lines.push(line);
-                    temporary = Some(temp.clone());
-                    (temp, name)
+                    let (flags, _) = self.unlock_flags(key_id, "--unlock-slot")?;
+                    (
+                        format!(
+                            "keyquorum --db {ORG_DB} send --quorum-file {file_id} --name {} --to {to_label} --as {me_label} --slot {slot}{flags}",
+                            quote(&name)
+                        ),
+                        name,
+                    )
                 }
             }
         };
-        lines.push(format!(
-            "keyquorum --db {store} deliver send --file {} --name {} --to {to_label} --as {me_label} --slot {slot} --push",
-            quote(&source.display().to_string()),
-            quote(&name)
-        ));
+        let lines = [line];
         let (runs, ok) = self.run_all(&lines);
-        let mut trace = transcripts(&runs, false);
-        let mut commands = lines_run(&runs);
-        if let Some(temp) = &temporary {
-            if self.vm().exists(temp) {
-                self.remove_file(temp)?;
-                commands.push_str(&format!("\nrm {}", quote(&temp.display().to_string())));
-                trace.push(TraceStep::info(format!(
-                    "Removed the temporary plaintext {}",
-                    temp.display()
-                )));
-            }
-        }
+        let trace = transcripts(&runs, false);
+        let commands = lines_run(&runs);
         let title = format!("Send {name} to {to_name}");
         if !ok {
             let message = format!("{title}: {}", last_error(&runs));
@@ -2856,21 +3040,20 @@ impl LabState {
         Ok(Outcome::done(true, message, trace))
     }
 
-    /// Check the relay with `keyquorum relay pull`, then check any new
-    /// acknowledgements with `keyquorum deliver ack` (which needs the
+    /// Check the relay with `keyquorum inbox list`, then check any new
+    /// acknowledgements with `keyquorum inbox open` (which needs the
     /// active user's slot inserted). Returns the trace and how many new
     /// envelopes arrived.
     fn check_mail(&mut self) -> (Vec<TraceStep>, usize) {
         let user = self.actor();
         let (me, store, mail_dir) = (user.id.clone(), user.store(), user.mail_dir());
         let before = self.mail_ids(&mail_dir);
-        let mut line = format!(
-            "keyquorum --db {store} relay pull --output-dir {}",
+        // The store remembers where the last pull stopped, so no cursor is
+        // passed.
+        let line = format!(
+            "keyquorum --db {store} inbox list --dir {}",
             mail_dir.display()
         );
-        if let Some(last) = before.iter().max() {
-            line.push_str(&format!(" --after {last}"));
-        }
         let pull = self.run(&line);
         let mut trace = transcript(&pull, true);
         let arrived = self.mail_ids(&mail_dir).len() - before.len();
@@ -2901,7 +3084,7 @@ impl LabState {
         };
         for id in acks {
             let run = self.run(&format!(
-                "keyquorum --db {store} deliver ack --file {}/{id}.kqpb --slot {slot}",
+                "keyquorum --db {store} inbox open {id} --dir {} --slot {slot}",
                 mail_dir.display()
             ));
             trace.extend(transcript(&run, true));
@@ -2934,24 +3117,55 @@ impl LabState {
         (trace, arrived)
     }
 
-    fn mail_ids(&self, dir: &Path) -> Vec<i64> {
-        self.vm()
-            .list(dir)
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|path| {
-                path.file_name()?
+    /// What happens by itself when a person is present with their slot in:
+    /// the relay is checked (`inbox list`), acknowledgements to their
+    /// deliveries are opened (`inbox open`), and answers to the tracked
+    /// files and requests they sent are recorded (`inbox open <id> --file`). Each is the real command, shown in the transcript;
+    /// deciding to accept or refuse something stays a click.
+    fn settle_mail_and_answers(&mut self) -> Vec<TraceStep> {
+        let (mut trace, _) = self.check_mail();
+        trace.extend(self.record_waiting_answers());
+        trace
+    }
+
+    /// Every pulled letter under `dir` with its path. `inbox list` keeps each
+    /// relay's letters in a subdirectory named for the relay; the lab has one
+    /// relay, so it looks one level down (and at `dir` itself).
+    fn mail_files(&self, dir: &Path) -> Vec<(i64, PathBuf)> {
+        let vm = self.vm();
+        let mut found = Vec::new();
+        for path in vm.list(dir).unwrap_or_default() {
+            let children = if vm.is_file(&path) {
+                vec![path]
+            } else {
+                vm.list(&path).unwrap_or_default()
+            };
+            found.extend(children.into_iter().filter_map(|path| {
+                let id = path
+                    .file_name()?
                     .to_str()?
                     .strip_suffix(".kqpb")?
                     .parse()
-                    .ok()
-            })
-            .collect()
+                    .ok()?;
+                Some((id, path))
+            }));
+        }
+        found
+    }
+
+    fn mail_ids(&self, dir: &Path) -> Vec<i64> {
+        self.mail_files(dir).into_iter().map(|(id, _)| id).collect()
+    }
+
+    fn mail_path(&self, dir: &Path, id: i64) -> Option<PathBuf> {
+        self.mail_files(dir)
+            .into_iter()
+            .find_map(|(found, path)| (found == id).then_some(path))
     }
 
     /// The public kind byte in an envelope's header (not its contents).
     fn letter_kind(&self, dir: &Path, id: i64) -> Option<u8> {
-        let bytes = self.vm().read(&dir.join(format!("{id}.kqpb"))).ok()?;
+        let bytes = self.vm().read(&self.mail_path(dir, id)?).ok()?;
         envelope::kind(&bytes).ok()
     }
 
@@ -2967,7 +3181,7 @@ impl LabState {
         Ok(Outcome::done(true, message, trace))
     }
 
-    /// Open (or reject) a letter with `keyquorum deliver open`, which
+    /// Open (or reject) a letter with `keyquorum inbox open`, which
     /// verifies the sender and pushes a signed answer back.
     pub fn receive(&mut self, relay_id: i64, accept: bool) -> Result<Outcome> {
         let user = self.actor();
@@ -2982,6 +3196,13 @@ impl LabState {
             "{} letter #{relay_id}",
             if accept { "Receive" } else { "Reject" }
         );
+        // Pull first, as `inbox open` itself does, so a letter that arrived
+        // since the last refresh can still be received.
+        let pull = self.run(&format!(
+            "keyquorum --db {store} inbox list --dir {}",
+            mail_dir.display()
+        ));
+        let mut pulled = transcript(&pull, true);
         if self.letter_kind(&mail_dir, relay_id) != Some(envelope::KIND_FILE_DELIVERY) {
             return Ok(Outcome::done(
                 false,
@@ -3002,16 +3223,15 @@ impl LabState {
         }
         let slot = self.own_slot_arg().unwrap_or_default();
         let line = format!(
-            "keyquorum --db {store} deliver open --file {}/{relay_id}.kqpb --slot {slot} {} --push-ack",
+            "keyquorum --db {store} inbox open {relay_id} --dir {} --slot {slot} --save-dir {}{}",
             mail_dir.display(),
-            if accept {
-                format!("--save-dir {}", received.display())
-            } else {
-                "--reject".to_string()
-            }
+            received.display(),
+            if accept { "" } else { " --reject" }
         );
         let run = self.run(&line);
-        let trace = transcript(&run, true);
+        pulled.extend(transcript(&run, true));
+        let trace = pulled;
+        let line = format!("{}\n{line}", pull.line);
         if !run.ok {
             let message = if self.slot_connected(&label) {
                 format!(
@@ -3062,6 +3282,8 @@ impl LabState {
         } else {
             format!("Transfer rejected: {file_name}")
         };
+        let mut trace = trace;
+        trace.extend(self.settle_mail_and_answers());
         self.log(
             "receive",
             if accept { "granted" } else { "info" },
@@ -3336,7 +3558,7 @@ impl LabState {
                         .into(),
                         bytes: self
                             .vm()
-                            .read(&mail_dir.join(format!("{id}.kqpb")))
+                            .read(&self.mail_path(&mail_dir, id).unwrap_or_default())
                             .map(|bytes| bytes.len())
                             .unwrap_or(0),
                         from: opened.map(|opened| self.describe_label(&opened.from)),

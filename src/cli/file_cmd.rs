@@ -404,8 +404,8 @@ pub enum FileCommand {
     },
     /// Show the heads, their trust, and what would be shared
     Status { kqtf: PathBuf },
-    /// List the recorded events; `history export` and `history verify` are
-    /// the snapshot forms of `--export` and `verify-snapshot`
+    /// List the recorded events. `history export` and `history verify` are the
+    /// one home for snapshots (`--export` and `verify-snapshot` are legacy)
     #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
     History {
         #[arg(required = true)]
@@ -416,7 +416,8 @@ pub enum FileCommand {
         #[command(subcommand)]
         action: Option<HistoryAction>,
     },
-    /// Check a history snapshot; with --against, that it belongs to a file
+    /// (Legacy: use `file history verify`.) Check a history snapshot; with
+    /// --against, that it belongs to a file
     VerifySnapshot {
         snapshot: PathBuf,
         /// A tracked file the snapshot must be a point in the history of
@@ -513,10 +514,11 @@ pub enum FileCommand {
         /// Recipient label (its encryption key must be registered here)
         #[arg(long)]
         to: String,
-        /// Your label
+        /// Your label (default: from `keyquorum use`)
         #[arg(long = "as")]
-        as_label: String,
-        /// Your identity slot, container=label (signs the letter)
+        as_label: Option<String>,
+        /// Your identity slot, container=label (signs the letter; default:
+        /// from `keyquorum use`)
         #[arg(long, conflicts_with = "signing_key_file")]
         slot: Option<String>,
         /// Your signing private key file, instead of --slot
@@ -886,15 +888,19 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             push,
             url,
             api_key,
-        } => share(
-            conn,
-            &kqtf,
-            &to,
-            &as_label,
-            (slot, signing_key_file),
-            revision,
-            (output_dir, push, url, api_key),
-        ),
+        } => {
+            let (as_label, slot) =
+                super::profile::resolve_signer(conn, as_label, slot, signing_key_file.as_deref())?;
+            share(
+                conn,
+                &kqtf,
+                &to,
+                &as_label,
+                (slot, signing_key_file),
+                revision,
+                (output_dir, push, url, api_key),
+            )
+        }
         FileCommand::SendHistory {
             kqtf,
             to,
@@ -1004,7 +1010,14 @@ fn request_command(conn: &Connection, command: FileCommand) -> Result<()> {
                 share_file,
                 file,
             } = *opts;
-            open_request(conn, &letter, share_file.as_deref(), slot.as_deref(), file)
+            open_request(
+                conn,
+                &letter,
+                share_file.as_deref(),
+                slot.as_deref(),
+                file,
+                true,
+            )
         }
         FileCommand::AnswerRequest(opts) => {
             let AnswerRequestOpts {
@@ -2133,6 +2146,60 @@ fn import(conn: &Connection, kqtf: &Path, from: &Path, as_label: &str) -> Result
 
 type Transport = (Option<PathBuf>, bool, Option<String>, Option<String>);
 
+/// The tracked-file letters `inbox open` opens, each the same function the
+/// `file` command of that name runs. The copy a letter concerns is always
+/// named by the caller; nothing here (or in the letter) chooses a local file.
+pub(super) mod inbox {
+    use super::*;
+
+    /// `file ack`: record the answer to a tracked file you sent in your own
+    /// copy `kqtf`.
+    pub(in crate::cli) fn ack(
+        conn: &Connection,
+        kqtf: &Path,
+        ack: &Path,
+        slot: &str,
+    ) -> Result<()> {
+        record_ack(conn, kqtf, ack, None, Some(slot))
+    }
+
+    /// `file open-answer`: read a request's answer, recording it in the copy it
+    /// concerns when one is named.
+    pub(in crate::cli) fn answer(
+        conn: &Connection,
+        answer: &Path,
+        slot: &str,
+        file: Option<PathBuf>,
+    ) -> Result<()> {
+        open_answer(conn, answer, None, Some(slot), file)
+    }
+
+    /// `file open-history`: check a history snapshot, optionally against a copy.
+    pub(in crate::cli) fn snapshot(
+        conn: &Connection,
+        letter: &Path,
+        slot: &str,
+        against: Option<PathBuf>,
+    ) -> Result<()> {
+        open_history(conn, letter, None, Some(slot), against, None)
+    }
+
+    /// `file open-request` then `file answer-request`: read a request made of
+    /// you and answer it. `file` records both in your copy when you name one.
+    pub(in crate::cli) fn request(
+        conn: &Connection,
+        letter: &Path,
+        slot: &str,
+        accepted: bool,
+        file: Option<PathBuf>,
+        transport: Transport,
+    ) -> Result<()> {
+        open_request(conn, letter, None, Some(slot), file.clone(), false)?;
+        let secrets = recipient_secrets(Some(slot.to_string()), None, None)?;
+        answer_request(conn, letter, accepted, secrets, file, transport)
+    }
+}
+
 fn share(
     conn: &Connection,
     kqtf: &Path,
@@ -2422,6 +2489,7 @@ fn open_request(
     share_file: Option<&str>,
     slot: Option<&str>,
     file: Option<PathBuf>,
+    hint_answer: bool,
 ) -> Result<()> {
     let secret = super::encryption_secret_from(share_file, slot)?;
     let request = file_delivery::open_request(conn, &secret, &env::read(letter_path)?)?;
@@ -2471,10 +2539,12 @@ fn open_request(
         index_after(conn, &copy);
         outln!("Recorded in {}", path.display());
     }
-    outln!(
-        "Answer with `file answer-request --letter {} --decision accept|decline`",
-        letter_path.display()
-    );
+    if hint_answer {
+        outln!(
+            "Answer with `file answer-request --letter {} --decision accept|decline`",
+            letter_path.display()
+        );
+    }
     Ok(())
 }
 
@@ -2534,9 +2604,8 @@ fn answer_request(
     );
     if accepted && request.kind == file_delivery::RequestKind::File {
         outln!(
-            "Send the file with `file share <file> --to {} --as {} --slot …`",
-            request.requester_label,
-            request.holder_label
+            "Send the file with `keyquorum send <file> --to {}`",
+            request.requester_label
         );
     }
     let letter = Letter {
@@ -3433,6 +3502,7 @@ fn review_interactive(
     let view = review_view_of(conn, kqtf)?.ok_or_else(|| {
         usage("nothing to review: the history has neither two heads nor one merge head")
     })?;
+    let who = super::profile::review_identity(conn, who);
     super::review_tui::run(view, who, &mut |action, as_label, slot| {
         review_action(conn, kqtf, action, as_label, slot)
     })

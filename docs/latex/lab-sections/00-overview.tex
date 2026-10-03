@@ -29,6 +29,14 @@ outside the browser tab, so this is the only way back to a known starting
 point; it is also what \textbf{Exit tutorial} and the tutorial picker
 leave alone; a gated tutorial in progress does not survive a reset.
 
+Tasks that take several commands in a plain shell take one here --- a file is
+sent with \code{keyquorum send}, a letter is opened and answered with
+\code{keyquorum inbox open}, and \code{keyquorum doctor} says what is
+missing --- and the lab shows each command it ran. The older, longer
+procedures (\code{deliver}, \code{file share|receive|ack}, \code{relay pull})
+still work if typed in the Terminal tab, but no button uses them, and they are
+not recommended (Section~\ref{sec:lab-terminal}).
+
 The lab itself is a browser-based virtual machine: its mock USB drives
 emulate USB-token custody entirely in memory, and every slot passphrase is
 a published default value (Section~\ref{sec:lab-default-credentials}), so

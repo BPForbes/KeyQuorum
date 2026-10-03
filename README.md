@@ -85,6 +85,39 @@ Passwords, PINs, and hardware-key material are always prompted for interactively
 from a `--share-file` key path) rather than taken as plain arguments. Run `keyquorum --help` for
 the full command list.
 
+### Quick start
+
+Most tasks are one command once you have an identity. `setup` creates it, and
+`use` remembers it, so later commands can leave `--as`, `--slot` and `--url` out
+(an explicit flag always wins):
+
+```sh
+keyquorum setup --device ./usb --label alice --url https://relay.example.com
+keyquorum doctor --to bob            # what is missing, and the command that fixes it
+keyquorum send report.pdf --to bob   # sealed, signed, uploaded
+keyquorum inbox                      # what is waiting for you
+keyquorum inbox open                 # open it, answer it, in one step
+```
+
+`setup` creates the container if it is missing, provisions your slot, registers
+its keys, binds it, loads the relay key, and runs `use` for you. It can be run
+again: a step that is already done is skipped. `keyquorum use --show` prints
+what is stored. The stored defaults are pointers only (label, slot, container
+path, relay URL, cache on/off): no passphrase, key or bearer is kept there.
+
+Defaults resolve in this order: the flag you typed, a recent parameter, the
+stored default, and then the command's own behaviour or error. `KEYQUORUM_DB`
+chooses the database when `--db` is not given; it holds no setting itself.
+
+Three short-lived caches, all fresh for 15 minutes, keep you from repeating
+yourself: parameters you just used (a letter path, for the same command; never
+a recipient or any target of an outward or destructive command), a relay
+identity check that just passed (never a failure, and `loadkey` always runs the
+full check), and facts `doctor` already looked up. Every reuse says so on
+stderr, except that `doctor` marks a recently checked slot in its own report. Turn them off with `--no-cache`, `KEYQUORUM_NO_CACHE=1`, or
+`keyquorum use --cache off`; `keyquorum cache clear` empties them and
+`keyquorum cache status` shows what is held.
+
 ### Hardware keys
 
 Hardware and tree verbs are top-level (`generate`, `split`, `bind`, …).
@@ -183,7 +216,7 @@ the canonical document. `split`,
 `bind`, `add`, `revoke`, `bridge`, and `access quorum --state 0 --leaf` write
 that tree in place. There is no JSON file to author first. `tree --output`
 writes a snapshot of whatever is stored now. `--tree-spec FILE` remains only
-for a nested one-shot tree.
+for a nested tree given in a file.
 
 Leaves that exist only as topology (a sibling or bridge peer whose sealed share
 lives on their device) may have `wrapped_share` NULL.
@@ -325,9 +358,11 @@ recipient encryption pub     or roster + salts (managers)
 ```
 
 Five people in the example means five envelopes, each addressed to a
-different pub. Operators can copy those files out of band, or push them
-through the mailbox relay (`keyquorum relay push`) so each store can
-`relay pull --import` locally.
+different pub. Operators can copy those files out of band, or add `--push` to
+`bridge private create` (or `remove-member`) to upload them in the same command,
+so each store opens them with `keyquorum inbox open`. (`relay push` still
+uploads envelopes written offline, and `relay pull --import` is the older way
+to install them.)
 
 ```sh
 # Each member needs a registered signing public key under their label:
@@ -506,7 +541,8 @@ Each store applies them the same way it applies a bridge envelope — the
 kind byte in the header decides which it is:
 
 ```sh
-keyquorum --db M.S.1.sqlite relay pull --import --share-file M.S.1.key
+keyquorum --db M.S.1.sqlite inbox open
+# Older, still possible: keyquorum --db M.S.1.sqlite relay pull --import --share-file M.S.1.key
 keyquorum --db M.S.1.sqlite bridge private import --file M.S.1.kqpb --share-file M.S.1.key
 keyquorum --db M.S.1.sqlite updates    # what this store has applied
 ```
@@ -645,25 +681,51 @@ acknowledgement (`--push-key`, or a stored key of that scope).
 
 ### Sending a file
 
-`deliver` seals one file to another label. You sign it with your signing key
-and seal it to the encryption key your store has registered for the recipient.
-The recipient opens it: that step verifies your signature against the signing
-key their store holds for you. They then answer with a signed accept or
-reject, sealed back to you. Letters and answers are ordinary `.kqpb` envelopes
-that `relay push` / `relay pull` carry.
+`send` seals one file to another label. You sign it with your signing key and
+seal it to the encryption key your store has registered for the recipient. The
+recipient opens it, which verifies your signature against the signing key their
+store holds for you, and answers with a signed accept or reject, sealed back to
+you. A tracked file (`.kqtf`) goes as `file share` would send it, the newest
+trusted revision only; any other file goes as `deliver send` would.
 
 ```sh
-keyquorum deliver send --file report.pdf --to M.A --as M.S.1 \
-  --slot ./usb=M.S.1 --push
-keyquorum --db david.sqlite relay pull --output-dir ./mail
-keyquorum --db david.sqlite deliver open --file ./mail/7.kqpb \
-  --slot ./usb=M.A --save-dir ./received --push-ack
-keyquorum deliver ack --file ./mail/8.kqpb --slot ./usb=M.S.1
+keyquorum send report.pdf --to M.A            # you: uploads to the relay
+keyquorum inbox                               # M.A: what is waiting
+keyquorum inbox open                          # M.A: save it and answer
+keyquorum inbox open                          # you: read the answer
 ```
 
-`--output-dir` / `--ack-dir` write the envelope to disk instead of (or as
-well as) `--push` / `--push-ack`. `--reject` refuses the file and says so in
-the answer.
+Tracked-file letters use the same two commands. `inbox open ID` takes the copy a letter concerns as an
+option, because a letter never picks a local file (its file id is the sender's claim): `--into FILE` merges a
+tracked file into your copy and `--out FILE` writes a new one, `--file FILE` records an acknowledgement or a
+request answer in your copy (or compares a history snapshot with it), and `--accept` or `--decline` answers a
+request. These options need a letter id. `inbox` uses your stored relay keys; `--api-key` there is a pull key,
+and answers upload with your stored push key.
+
+A quorum-protected file goes with `send --quorum-file ID` (plus `--unlock-slot`,
+`--unlock-share-file` and `--approve`, the same shares `access quorum --state 1`
+takes): it is unlocked in memory, never written to disk, and a refused unlock
+sends nothing.
+
+With a relay set up the letter is uploaded; otherwise it is written to
+`./outbox` (`--offline` or `--output-dir DIR` force that). `inbox` keeps the
+letters it pulled in `./inbox/<relay hash>/` (`--dir`), remembers where it stopped, and opens
+each letter once. `inbox open` handles file deliveries, answers to your
+deliveries, tracked files (`--reject` refuses a file and says so in the answer;
+delivered files are kept in `./received`, `--save-dir`), history snapshots
+(`--file COPY` also compares one with a copy you name), and bridge and
+organization updates. Letters that ask for a decision (file and change
+requests), answers to a request, acknowledgements of a tracked file and device
+letters are listed with the command that opens them and left for a person. `--ack-dir DIR` writes answers to a directory instead of
+uploading them.
+
+The older procedure is still possible but not recommended. These commands work
+exactly as before, and each prints a one-line note on stderr naming what
+replaces it: `deliver send`, `deliver open`, `deliver ack`, `file share`,
+`file receive`, `file ack`, `relay pull`, `file verify-snapshot` and
+`file history --export` (use `file history verify` and `file history export`).
+A letter that reaches you as a file, with no relay, is still opened with the
+`file` and `deliver` commands. `relay push` is not legacy.
 
 ### Mailbox
 
@@ -675,15 +737,25 @@ mint keys. Official `loadkey` / `relay` commands authenticate that host
 with a KeyQuorum-signed provider certificate before sending a bearer.
 
 ```sh
-export KEYQUORUM_RELAY_URL=https://relay.example.com
+export KEYQUORUM_RELAY_URL=https://relay.example.com   # or: keyquorum use --url ...
 # Load once; omit the key so it is prompted (stays out of shell history).
 keyquorum loadkey --url https://relay.example.com
-keyquorum relay push --dir ./bridge-packages
-keyquorum relay pull --output-dir ./inbox
+keyquorum inbox open                       # pull, open and answer what is waiting
+keyquorum relay push --dir ./outbox        # letters written offline
 keyquorum --db alice.sqlite relay pull --import --share-file alice.key
 # --api-key still works for scripts and is stored after a successful check.
 keyquorum relay push --dir ./bridge-packages --api-key "$PUSH_KEY"
 ```
+
+Commands that write envelopes (`reissue`, `tree restructure`, `tree countersign`,
+`bridge private create`, `bridge private remove-member`) take `--push` and upload
+them themselves, so `--output-dir` becomes optional (the envelopes are then staged
+in `./outbox` and removed once uploaded). The change is saved first and the upload
+happens last; if the upload fails the change stays saved, the files stay in place,
+and the error names the `relay push --dir` command that finishes the job. `reissue`
+and `tree restructure` can sign with `--slot` (or the device from `keyquorum use`)
+instead of a key file, `tree publish` with no key id publishes every split tree, and
+`tree fetch` with no id uses the only tree the store holds.
 
 `loadkey` first verifies the relay's KeyQuorum-signed identity, then checks
 the key with the mailbox, then stores the key hash and a sealed copy of the

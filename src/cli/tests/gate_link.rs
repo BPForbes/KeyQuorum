@@ -3,11 +3,11 @@ use super::memory_env::MemoryEnv;
 use crate::storage::Storage;
 use std::path::Path;
 
-const SECRET: &[u8] = b"the launch code is 0000";
+pub(super) const SECRET: &[u8] = b"the launch code is 0000";
 
 /// A two-of-two quorum file (`Q.A`, `Q.B`) as file 1, next to a tracked
 /// `report.txt` owned by M.A.
-fn gated() -> MemoryEnv {
+pub(super) fn gated() -> MemoryEnv {
     gated_with("")
 }
 

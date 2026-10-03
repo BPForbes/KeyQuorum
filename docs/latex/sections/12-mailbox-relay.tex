@@ -14,17 +14,39 @@ export KEYQUORUM_RELAY_URL=https://relay.example.com
 # Load once; omit the key so it is prompted (stays out of shell history).
 keyquorum loadkey --url https://relay.example.com
 keyquorum relay push --dir ./bridge-packages
-keyquorum relay pull --output-dir ./inbox
-keyquorum --db alice.sqlite relay pull --import --share-file alice.key
+keyquorum inbox            # download and list what is waiting
+keyquorum inbox open       # open it and post the signed answers
 # --api-key still works for scripts and is stored after a successful check.
 keyquorum relay push --dir ./bridge-packages --api-key "$PUSH_KEY"
+\end{lstlisting}
+
+\code{inbox} downloads each letter into \file{./inbox/<relay hash>/}, remembers
+where it stopped, and opens each letter once (\code{inbox open}), including
+bridge and organization updates. A producer command takes \flag{--push} to
+upload its envelopes itself, so no separate \code{relay push} is needed (see
+Sections~\ref{sec:private-bridges} and~\ref{sec:authenticated-updates}).
+
+\subsection{Legacy procedure (still possible, not recommended)}
+
+\code{relay pull} still downloads envelopes by hand, and \flag{--import}
+installs them straight into \flag{--db}; it is the form to use when you hold a
+key as a file (\flag{--share-file}) instead of in a slot. It prints a note
+naming \code{inbox} for letters. \code{relay push} is not legacy.
+
+\begin{lstlisting}
+keyquorum relay pull --output-dir ./inbox
+keyquorum --db alice.sqlite relay pull --import --share-file alice.key
 \end{lstlisting}
 
 \code{loadkey} first verifies the relay's KeyQuorum-signed identity, then
 checks the key with the mailbox, then stores the key hash and a sealed copy
 of the bearer in the personal database. Later \code{relay} / \code{tree
 fetch} commands repeat that identity check and re-check the hash before
-using the key. An optional signed revocation list can be pointed at with
+using the key. One exception: with caching on, a check that passed within the
+last 15 minutes stands in for the challenge (never a failure, and announced on
+standard error); \flag{--no-cache}, \code{KEYQUORUM_NO_CACHE=1} or
+\code{use --cache off} always repeat it, and \code{loadkey} always runs a
+fresh one. An optional signed revocation list can be pointed at with
 \code{KEYQUORUM_PROVIDER_KRL}.
 
 \code{relay push} also uploads every public tree in \flag{--db} and
@@ -53,7 +75,11 @@ accepted into the bridge inbox.
 \subsection{Recovering from a lost key or a missed pull}
 
 If a key is lost or rotated, load the replacement your provider issues.
-Envelopes already delivered are unchanged.
+Envelopes already delivered are unchanged. \code{inbox} remembers where it
+stopped, so the next \code{inbox} or \code{inbox open} picks up whatever was
+missed.
+
+The older form downloads by hand (it prints a note naming \code{inbox}):
 
 \begin{lstlisting}
 keyquorum relay pull --after <id> --output-dir ./inbox
@@ -61,6 +87,6 @@ keyquorum relay pull --after <id> --output-dir ./inbox
 # keyquorum relay pull --after <id> --import --share-file alice.key
 \end{lstlisting}
 
-replays anything not yet downloaded; \code{bridge private import} still
+That form replays anything not yet downloaded; \code{bridge private import} still
 rejects stale generations, so replaying an old envelope by mistake changes
 nothing.

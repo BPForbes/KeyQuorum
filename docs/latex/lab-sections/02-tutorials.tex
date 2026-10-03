@@ -15,6 +15,10 @@ category.}
 progress: the Active user bar is spotlit, and the tooltip names the step
 and what to do.}
 
+\Screenshot{docs/latex/images/lab/tutorial-check-setup.png}{The Check your
+setup module: Alice's USB is out, so the tooltip asks for \textbf{Check my
+setup} and the result lists the FIX line.}
+
 \subsection{How a step works}
 
 Each step spotlights the part of the page it is about and shows a tooltip
@@ -42,7 +46,7 @@ element.
 
 \subsection{The modules}
 
-The picker groups its thirteen modules into three categories; taking one
+The picker groups its nineteen modules into four categories; taking one
 module is never a commitment to the others in its category, or to the
 category itself.
 
@@ -54,8 +58,10 @@ category itself.
   switching identity.
   \item \textbf{Move \& copy slots} --- move and copy slots, then inspect
   how containers affect physical-device policy.
-  \item \textbf{Provision \& register a leaf} --- provision a fresh device
-  slot, then register it in the organization tree.
+  \item \textbf{Check your setup} --- run \code{keyquorum doctor} while
+  Alice's USB is out, plug it back in, and run it again to see it go green.
+  \item \textbf{Provision \& register a leaf} --- create a fresh device
+  slot and register it in the organization tree in one step.
   \item \textbf{Key administration} --- revoke, reissue, restructure,
   countersign, and understand parent approval.
   \item \textbf{Bridges \& remote devices} --- manage cross-branch
@@ -86,17 +92,18 @@ category itself.
 
 \begin{itemize}
   \item \textbf{Mailbox: sending \& receiving} --- sealing a file to
-  another label, switching to that identity, and receiving it from the
-  inbox.
-  \item \textbf{Reject \& acknowledge} --- exercise the rejection path and
-  explicitly refresh a sender's acknowledgement state.
+  another label, receiving it as that person (the step makes them active
+  with their USB in), and switching back to see the acknowledgement arrive
+  on its own.
+  \item \textbf{Reject \& acknowledge} --- exercise the rejection path
+  and see the sender learn of it as they sign in, with nothing to refresh.
   \item \textbf{Updates \& device letters} --- see which higher-level
   workflows use sealed letters and where their controls actually live.
 \end{itemize}
 
 \subsubsection{File history}
 
-Four short parts on the Activity tab's \textbf{Tracked files} panel. Each
+Five short parts on the Activity tab's \textbf{Tracked files} panel. Each
 one sets up who is active and which drives are in, so they can be taken in
 any order.
 
@@ -106,8 +113,8 @@ any order.
   trusted revision, sign the edit, and read the result in the activity
   log's Revision filter.
   \item \textbf{2 $\cdot$ Hand a file over} --- share \file{budget.txt} with
-  Alice, switch to her and accept the letter into her own copy, then switch
-  back and record her signed answer in Sarah's history.
+  Alice, accept the letter into her own copy as her, then switch back to
+  Sarah, whose history records Alice's signed answer as she signs in.
   \item \textbf{3 $\cdot$ Merges \& conflicts} --- sign the merge of
   \file{forecast.txt} that happened on its own, then review \file{memo.txt},
   whose same-line edits could not merge, and see the reviewer its history
@@ -117,9 +124,9 @@ any order.
   unlock in the Security filter, then destroy the tracked file's content and
   verify the tombstone.
   \item \textbf{5 $\cdot$ Ask for a file or a change} --- as Sarah, ask Alice
-  for a change to \file{budget.txt} with a message, switch to her and accept
-  the request, then switch back and record her signed answer; the log shows
-  the request and its answer, never the message.
+  for a change to \file{budget.txt} with a message, accept the request as
+  Alice, then switch back to Sarah, whose copy records the signed answer as
+  she signs in; the log shows the request and its answer, never the message.
 \end{itemize}
 
 The step card is docked in the top-right corner of the window (bottom edge

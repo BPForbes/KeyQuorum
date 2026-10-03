@@ -37,14 +37,14 @@ from the container this process opened, tying that key to the container's
 Commands that unwrap a key also take \flag{--slot container=label} beside
 \flag{--share-file}. This includes \code{reconstruct}, \code{add},
 \code{bind}, \code{revoke}, an \code{access quorum} unlock,
-\code{bridge private import}, \code{sign}, \code{remove-member}, and
-\code{relay pull}. \code{tree countersign} takes \flag{--device} and
+\code{bridge private import}, \code{sign}, \code{remove-member},
+\code{inbox open}, and the older \code{relay pull}. \code{tree countersign} takes \flag{--device} and
 \flag{--slot} instead.
 
 \begin{lstlisting}
 keyquorum reconstruct <key-id> --slot ./usb=M.S --slot ./usb2=M.A \
   --output master.pub
-keyquorum --db alice.sqlite relay pull --import --slot ./usb=M.S
+keyquorum --db alice.sqlite inbox open --slot ./usb=M.S
 \end{lstlisting}
 
 \subsection{Custody modes}

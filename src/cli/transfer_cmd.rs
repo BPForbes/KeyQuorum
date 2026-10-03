@@ -115,9 +115,10 @@ pub enum TransferCommand {
         /// Slot the acknowledgement was sealed back to.
         #[arg(long)]
         slot: String,
-        /// Hex device id of the destination that signed the acknowledgement.
+        /// Hex device id of the destination that signed the acknowledgement
+        /// (default: the one destination this device has a transfer waiting for)
         #[arg(long)]
-        to_device_id: String,
+        to_device_id: Option<String>,
         #[arg(long)]
         url: Option<String>,
         /// device.pull bearer. A stored key is used when this is omitted.
@@ -269,7 +270,14 @@ pub fn run(command: TransferCommand) -> Result<()> {
             to_device_id,
             url,
             api_key,
-        } => run_relay_finalize(&from_device, &from_db, &slot, &to_device_id, url, api_key)?,
+        } => run_relay_finalize(
+            &from_device,
+            &from_db,
+            &slot,
+            to_device_id.as_deref(),
+            url,
+            api_key,
+        )?,
         TransferCommand::List { db, all } => {
             let conn = open_db(&db)?;
             let rows = transfer::list_identities(&conn, all)?;
@@ -502,15 +510,42 @@ fn run_relay_collect(
     Ok(())
 }
 
+/// The destination a finalize is for: the one given, or else the only one this
+/// store has a prepared transfer waiting on.
+fn waiting_destination(conn: &rusqlite::Connection, given: Option<&str>) -> Result<String> {
+    if let Some(given) = given {
+        return Ok(given.to_string());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT peer_device_id FROM transfer_transactions
+         WHERE role = 'source' AND state = 'prepared' ORDER BY peer_device_id",
+    )?;
+    let waiting: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, Vec<u8>>(0).map(hex::encode))?
+        .collect::<rusqlite::Result<_>>()?;
+    match waiting.as_slice() {
+        [only] => Ok(only.clone()),
+        [] => Err(super::usage(
+            "no transfer is waiting on a destination; pass --to-device-id",
+        )),
+        several => Err(super::usage(&format!(
+            "transfers are waiting on {} destinations; pass --to-device-id one of: {}",
+            several.len(),
+            several.join(", ")
+        ))),
+    }
+}
+
 fn run_relay_finalize(
     from_device: &Path,
     from_db: &Path,
     slot: &str,
-    to_device_id: &str,
+    to_device_id: Option<&str>,
     url: Option<String>,
     api_key: Option<String>,
 ) -> Result<()> {
     let source_conn = open_db(from_db)?;
+    let to_device_id = &waiting_destination(&source_conn, to_device_id)?;
     let mut source = env::fs(|fs| device::open_in(fs, from_device))?;
     let (url, pull_key) =
         super::resolve_relay_auth(&source_conn, url, api_key, ApiKeyScope::DevicePull)?;

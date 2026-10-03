@@ -1,12 +1,60 @@
 \section{Sending a file}
 
-\code{deliver} seals one file to another label. You sign it with your
+\code{send} seals one file to another label. You sign it with your
 signing key and seal it to the encryption key your store has registered for
 the recipient. The recipient opens it: that step verifies your signature
 against the signing key their store holds for you. They then answer with a
 signed accept or reject, sealed back to you. Letters and answers are
-ordinary \file{.kqpb} envelopes that \code{relay push} / \code{relay pull}
-carry.
+ordinary \file{.kqpb} envelopes carried by the relay.
+
+\begin{lstlisting}
+keyquorum send report.pdf --to M.A
+keyquorum inbox
+keyquorum inbox open
+\end{lstlisting}
+
+The first line is yours: the letter is uploaded when a relay is set up, and
+otherwise written to \file{./outbox} (\flag{--offline} or \flag{--output-dir}
+force that). The next two are the recipient's: \code{inbox} lists what is
+waiting, and \code{inbox open} opens each letter, keeps the file in
+\file{./received}, and uploads the signed answer. Run \code{inbox open} again as
+the sender to read the answer. \flag{--reject} refuses a file and says so in the
+answer; \flag{--ack-dir} writes answers to a directory instead of uploading them.
+
+\code{inbox} keeps the letters it pulled in \file{./inbox/<relay hash>/} (\flag{--dir}), remembers
+where it stopped, and opens each letter once. It opens file deliveries, answers
+to your deliveries, tracked files, history snapshots, and bridge and
+organization updates. A letter that asks for a decision (a file or change
+request), an answer to a request, an acknowledgement of a tracked file and a
+device letter are listed with the command that opens them and left for a person.
+A history snapshot is opened as it arrives; \flag{--file} also compares it with
+a copy you name.
+
+Tracked-file letters use the same two commands. \code{inbox open ID} takes the
+copy a letter concerns as an option, because a letter never picks a local file
+(its file id is only the sender's claim, and the handlers refuse a copy that
+does not match): \flag{--into} merges a tracked file into your copy,
+\flag{--out} writes a new one, \flag{--file} records an acknowledgement or a
+request answer in your copy (or compares a history snapshot with it), and
+\flag{--accept} or \flag{--decline} answers a request. These options belong to
+one letter, so they need its id; the sweep leaves acknowledgements, requests
+and request answers listed with the command that opens them.
+
+A quorum-protected file is sent without being unlocked to disk first:
+\code{send --quorum-file ID} takes the shares \code{access quorum --state 1}
+takes (\flag{--unlock-slot}, \flag{--unlock-share-file}, \flag{--approve}),
+unlocks it in memory under the file's own custody and approval rules, seals
+it and sends it. A refused unlock sends nothing, and the attempt is recorded
+at the file's gate as any unlock is.
+
+\subsection{Legacy procedure (still possible, not recommended)}
+
+The earlier single-purpose commands still work exactly as they did. Each prints
+a note on standard error naming what replaces it, and standard output and the
+exit status are unchanged, so a script that parses either keeps working. They
+are not recommended for new use: with them the person downloads, opens and
+answers in separate steps, and the sender runs a separate command to read the
+answer.
 
 \begin{lstlisting}
 keyquorum deliver send --file report.pdf --to M.A --as M.S.1 \
@@ -14,18 +62,16 @@ keyquorum deliver send --file report.pdf --to M.A --as M.S.1 \
 keyquorum --db david.sqlite relay pull --output-dir ./mail
 keyquorum --db david.sqlite deliver open --file ./mail/7.kqpb \
   --slot ./usb=M.A --save-dir ./received --push-ack
-
-# The acknowledgement is sealed back to the sender -- pull it into the
-# sender's own store (a different mailbox than David's ./mail above)
-# before answering it.
-keyquorum relay pull --output-dir ./mail
 keyquorum deliver ack --file ./mail/8.kqpb --slot ./usb=M.S.1
 \end{lstlisting}
 
-\flag{--output-dir} / \flag{--ack-dir} write the envelope to disk instead of
-(or as well as) \flag{--push} / \flag{--push-ack}. \flag{--reject} refuses
-the file and says so in the answer.
+\noindent Each line above is replaced by one of \code{send}, \code{inbox} and
+\code{inbox open}: \code{deliver send} by \code{send}, \code{relay pull} by
+\code{inbox}, and \code{deliver open} and \code{deliver ack} by \code{inbox
+open}. The same holds for a tracked file (\code{file share}, \code{file
+receive}, \code{file ack}). \code{relay push} is not legacy: it still carries
+envelopes that were written offline.
 
 To send a file whose revisions and signatures should travel with it, and
 where an unsigned newer edit must never go out, track it instead and use
-\code{file share} (section~\ref{sec:file-history}).
+\code{send} on the tracked file (section~\ref{sec:file-history}).

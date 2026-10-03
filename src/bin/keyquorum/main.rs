@@ -20,8 +20,8 @@ fn main() -> ExitCode {
         Command::Host {
             mailbox_db,
             command,
-        } => host::run(&mailbox_db, &cli.db, command),
-        command => cli::run(&cli.db, command),
+        } => host::run(&mailbox_db, &cli::resolve_db(cli.db.as_deref()), command),
+        command => cli::run_cli(Cli { command, ..cli }),
     };
     match ran {
         Ok(()) => ExitCode::SUCCESS,

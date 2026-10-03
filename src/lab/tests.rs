@@ -406,6 +406,140 @@ fn you_cannot_send_a_file_you_cannot_open() {
     assert!(snap(&state).sent.is_empty());
 }
 
+#[test]
+fn receiving_pulls_first_and_shows_both_commands() {
+    let mut state = lab();
+    state.send("architecture.md", "david").unwrap();
+    let relay_id = snap(&state).sent[0].relay_id;
+    state.switch_user("david").unwrap();
+    state.set_drive("david", true).unwrap();
+    assert!(state.receive(relay_id, true).unwrap().ok);
+    let command = snap(&state).activity[0].command.clone().unwrap();
+    assert!(command.contains("inbox list --dir"), "{command}");
+    assert!(
+        command.contains(&format!("inbox open {relay_id}")),
+        "{command}"
+    );
+}
+
+#[test]
+fn an_acknowledgement_is_collected_when_the_senders_drive_comes_back() {
+    let mut state = lab();
+    state.send("architecture.md", "david").unwrap();
+    let relay_id = snap(&state).sent[0].relay_id;
+    state.switch_user("david").unwrap();
+    state.set_drive("david", true).unwrap();
+    assert!(state.receive(relay_id, true).unwrap().ok);
+
+    // Alice returns without her drive: the answer waits, sealed to her key.
+    state.set_drive("alice", false).unwrap();
+    state.switch_user("alice").unwrap();
+    let waiting = snap(&state);
+    assert_eq!(waiting.sent[0].status, "delivered");
+    assert_eq!(waiting.pending_acks, 1);
+
+    // Plugging her drive in opens it; there is no refresh to click.
+    state.set_drive("alice", true).unwrap();
+    let done = snap(&state);
+    assert_eq!(done.sent[0].status, "acknowledged");
+    assert_eq!(done.pending_acks, 0);
+}
+
+#[test]
+fn the_terminal_opens_a_letter_by_id_or_every_new_one() {
+    let mut state = lab();
+    state.send("architecture.md", "david").unwrap();
+    state.send("project-roadmap.md", "david").unwrap();
+    state.switch_user("david").unwrap();
+    state.set_drive("david", true).unwrap();
+    let (outcome, _) = terminal::run(&mut state, "inbox open 999").unwrap();
+    assert!(!outcome.ok);
+    let (outcome, _) = terminal::run(&mut state, "inbox open").unwrap();
+    assert!(outcome.ok);
+    let inbox = snap(&state).inbox;
+    assert_eq!(inbox.len(), 2);
+    assert!(
+        inbox.iter().all(|item| item.status == "received"),
+        "{inbox:?}"
+    );
+    let (_, output) = terminal::run(&mut state, "doctor").unwrap();
+    assert!(!output.is_empty(), "doctor answers in the lab terminal");
+}
+
+#[test]
+fn a_tracked_answer_is_recorded_when_the_sender_returns() {
+    let mut state = lab();
+    state.switch_user("sarah").unwrap();
+    ok(state.history_track("notes.txt", "a\n"));
+    ok(state.history_share(NOTES, "alice"));
+    state.switch_user("alice").unwrap();
+    let letter = snap(&state).tracked_letters[0].id;
+    ok(state.history_receive(letter, true));
+    assert!(!snap(&state).tracked_letters[0].ack_recorded);
+
+    // Signing back in as Sarah (her drive is in) records Alice's answer with
+    // the real `file ack`, and the button's own action then has nothing to do.
+    let back = state.switch_user("sarah").unwrap();
+    assert!(
+        snap(&state).tracked_letters[0].ack_recorded,
+        "{}",
+        said(&back)
+    );
+    let again = state.history_ack(letter).unwrap();
+    assert!(again.ok);
+    assert_eq!(again.message, "That answer is already recorded");
+}
+
+#[test]
+fn a_tracked_request_answer_is_recorded_when_the_requester_returns() {
+    let mut state = lab();
+    state.switch_user("sarah").unwrap();
+    ok(state.history_track("notes.txt", "a\n"));
+    ok(state.history_share(NOTES, "alice"));
+    state.switch_user("alice").unwrap();
+    let letter = snap(&state).tracked_letters[0].id;
+    ok(state.history_receive(letter, true));
+    state.switch_user("sarah").unwrap();
+    ok(state.history_request(NOTES, "alice", true, "tighten the intro"));
+    let request = snap(&state).tracked_requests[0].id;
+    state.switch_user("alice").unwrap();
+    ok(state.history_answer_request(request, true));
+    assert!(!snap(&state).tracked_requests[0].answer_recorded);
+    state.switch_user("sarah").unwrap();
+    assert!(snap(&state).tracked_requests[0].answer_recorded);
+}
+
+#[test]
+fn create_and_register_leaf_provisions_with_a_typed_passphrase_and_registers() {
+    let mut state = lab();
+    state.set_drive("bob", true).unwrap();
+    state.set_drive("spare", true).unwrap();
+    let outcome = state
+        .create_and_register_leaf("spare", "M.S.3", "M.S", "my own passphrase")
+        .unwrap();
+    assert!(outcome.ok, "{}", said(&outcome));
+    let text = said(&outcome);
+    assert!(
+        text.contains("keyquorum-device provision") || text.contains("slot M.S.3"),
+        "{text}"
+    );
+    let tree = snap(&state).tree;
+    assert!(tree.nodes.iter().any(|node| node.label == "M.S.3"));
+
+    // A refused provision (empty passphrase) registers nothing.
+    let mut state = lab();
+    state.set_drive("spare", true).unwrap();
+    let refused = state
+        .create_and_register_leaf("spare", "M.S.3", "M.S", "")
+        .unwrap();
+    assert!(!refused.ok);
+    assert!(!snap(&state)
+        .tree
+        .nodes
+        .iter()
+        .any(|node| node.label == "M.S.3"));
+}
+
 // ----- date properties: expiry -----------------------------------------
 
 #[test]
@@ -712,7 +846,7 @@ fn an_unknown_recipient_is_a_usage_error_from_the_cli() {
     let mut state = lab();
     let (outcome, output) = terminal::run(
         &mut state,
-        "keyquorum deliver send --file /srv/keyquorum/public/company-handbook.txt --to M.Z --as M.S.1 --slot /media/alice-usb=M.S.1 --push",
+        "keyquorum send /srv/keyquorum/public/company-handbook.txt --to M.Z --as M.S.1 --slot /media/alice-usb=M.S.1",
     )
     .unwrap();
     assert!(!outcome.ok);
@@ -2060,4 +2194,197 @@ fn a_change_request_is_asked_answered_and_recorded_by_real_commands() {
     assert!(events.contains(&"RequestAnswered"), "{events:?}");
     // The message is shown to the holder in the CLI output, never recorded.
     assert!(!format!("{:?}", view.activity).contains("tighten the intro\"}"));
+}
+
+// ----- one command per task: quorum send, tracked letters, doctor --------
+
+#[test]
+fn a_quorum_file_is_sent_by_one_command_against_the_org_store_with_no_temp_file() {
+    let mut state = lab();
+    let sent = state.send("architecture.md", "david").unwrap();
+    assert!(sent.ok, "{}", said(&sent));
+    let command = snap(&state).activity[0].command.clone().unwrap();
+    assert!(
+        command.contains("--db /srv/keyquorum/org.sqlite send --quorum-file"),
+        "{command}"
+    );
+    assert!(command.contains("--unlock-slot /media/"), "{command}");
+    assert!(!command.contains("access quorum"), "{command}");
+    assert!(!command.contains("rm "), "{command}");
+    let text = said(&sent);
+    assert!(!text.contains("temporary plaintext"), "{text}");
+    assert_eq!(snap(&state).sent[0].status, "delivered");
+}
+
+#[test]
+fn tracked_letters_travel_through_the_relay_and_are_opened_with_inbox_open() {
+    let mut state = lab();
+    state.switch_user("sarah").unwrap();
+    ok(state.history_track("notes.txt", "a\n"));
+    ok(state.history_share(NOTES, "alice"));
+    let share = snap(&state)
+        .activity
+        .iter()
+        .find(|a| a.kind == "history-share")
+        .cloned()
+        .unwrap();
+    let command = share.command.unwrap();
+    assert!(command.contains(" send "), "{command}");
+    assert!(
+        !command.contains("--output-dir"),
+        "no folder hand-off: {command}"
+    );
+
+    state.switch_user("alice").unwrap();
+    let letter = snap(&state).tracked_letters[0].id;
+    ok(state.history_receive(letter, true));
+    let received = snap(&state)
+        .activity
+        .iter()
+        .find(|a| a.kind == "history-receive")
+        .cloned()
+        .unwrap();
+    let command = received.command.unwrap();
+    assert!(command.contains(" inbox open "), "{command}");
+    assert!(
+        command.contains("--out /home/alice/tracked/notes.txt.kqtf"),
+        "{command}"
+    );
+    assert!(!command.contains(" file receive"), "{command}");
+    assert!(
+        !said_all(&received.trace).contains("legacy command"),
+        "no legacy notes"
+    );
+
+    // Her answer travelled the relay too, and Sarah's copy records it.
+    state.switch_user("sarah").unwrap();
+    let ack = snap(&state)
+        .activity
+        .iter()
+        .find(|a| a.kind == "history-ack")
+        .cloned()
+        .unwrap();
+    assert!(ack.command.unwrap().contains(" inbox open "));
+    assert!(snap(&state).tracked_letters[0].ack_recorded);
+}
+
+fn said_all(trace: &[super::view::TraceStep]) -> String {
+    trace
+        .iter()
+        .map(|step| step.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn a_request_is_answered_with_one_inbox_open_command() {
+    let mut state = lab();
+    state.switch_user("sarah").unwrap();
+    ok(state.history_track("notes.txt", "a\n"));
+    ok(state.history_share(NOTES, "alice"));
+    state.switch_user("alice").unwrap();
+    let letter = snap(&state).tracked_letters[0].id;
+    ok(state.history_receive(letter, true));
+    state.switch_user("sarah").unwrap();
+    ok(state.history_request(NOTES, "alice", true, "tighten the intro"));
+    let request = snap(&state).tracked_requests[0].id;
+    state.switch_user("alice").unwrap();
+    ok(state.history_answer_request(request, true));
+    let answered = snap(&state)
+        .activity
+        .iter()
+        .find(|a| a.kind == "history-answer-request")
+        .cloned()
+        .unwrap();
+    let command = answered.command.unwrap();
+    assert!(command.contains(" inbox open "), "{command}");
+    assert!(command.contains("--accept"), "{command}");
+    assert!(!command.contains("open-request"), "{command}");
+}
+
+#[test]
+fn doctor_is_green_for_a_seeded_person_and_names_a_missing_drive() {
+    let mut state = lab();
+    let green = state.doctor().unwrap();
+    assert_eq!(green.message, "Everything checks out", "{}", said(&green));
+    let text = said(&green);
+    assert!(text.contains("acting as M.S.1"), "{text}");
+    assert!(text.contains("the slot is bound to its device"), "{text}");
+
+    state.set_drive("alice", false).unwrap();
+    let red = state.doctor().unwrap();
+    assert!(red.ok, "a report, not a failure");
+    let text = said(&red);
+    assert!(text.contains("cannot be opened"), "{text}");
+    assert!(text.contains("plug the device in"), "{text}");
+    assert_ne!(red.message, "Everything checks out");
+    // A FIX line is shown as a failure and an ok line as a pass, never the
+    // other way round.
+    assert!(
+        red.trace
+            .iter()
+            .any(|step| step.status == StepStatus::Fail && step.text.contains("FIX")),
+        "{text}"
+    );
+    assert!(
+        red.trace
+            .iter()
+            .filter(|step| step.status == StepStatus::Pass)
+            .all(|step| !step.text.contains("FIX")),
+        "{text}"
+    );
+}
+
+#[test]
+fn moving_a_slot_keeps_its_owners_defaults_and_binding_whole() {
+    let mut state = lab();
+    state.set_drive("bob", true).unwrap();
+    ok(state.move_slot("M.S.1", "bob"));
+    let doctor = state.doctor().unwrap();
+    assert_eq!(doctor.message, "Everything checks out", "{}", said(&doctor));
+    assert!(
+        said(&doctor).contains("/media/bob-usb"),
+        "{}",
+        said(&doctor)
+    );
+    let moved = snap(&state)
+        .activity
+        .iter()
+        .find(|a| a.kind == "move")
+        .cloned()
+        .unwrap();
+    let command = moved.command.unwrap();
+    assert!(
+        command.contains(" use --device /media/bob-usb --slot M.S.1"),
+        "{command}"
+    );
+}
+
+#[test]
+fn use_and_bind_run_the_real_commands_in_the_active_persons_store() {
+    let mut state = lab();
+    let used = state.use_current_drive().unwrap();
+    assert!(used.ok, "{}", said(&used));
+    let bound = state.bind_slot().unwrap();
+    assert!(bound.ok, "{}", said(&bound));
+    let log: Vec<_> = snap(&state)
+        .activity
+        .iter()
+        .take(2)
+        .map(|a| (a.kind.clone(), a.command.clone().unwrap_or_default()))
+        .collect();
+    assert_eq!(log[0].0, "bind");
+    assert!(
+        log[0]
+            .1
+            .contains("--db /home/alice/keyquorum.sqlite device bind"),
+        "{log:?}"
+    );
+    assert_eq!(log[1].0, "use");
+    assert!(
+        log[1]
+            .1
+            .contains("--db /home/alice/keyquorum.sqlite use --device"),
+        "{log:?}"
+    );
 }

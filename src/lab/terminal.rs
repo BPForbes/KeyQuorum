@@ -14,6 +14,7 @@ pub const HELP: &[&str] = &[
     "keyquorum ...               the real CLI (try `keyquorum --help`)",
     "keyquorum-device ...        the real device tool",
     "bridge ...                  shorthand for keyquorum --db <org store> bridge ...",
+    "use|setup|doctor ...        shorthand for keyquorum --db <your store> use|setup|doctor ...",
     "keyquorum --db /home/<you>/keyquorum.sqlite file ...   tracked files (see the Activity tab)",
     "                            (use full paths: ~ is not expanded inside arguments)",
     "",
@@ -28,10 +29,11 @@ pub const HELP: &[&str] = &[
     "files                       the org's files and how you relate to them",
     "status <file>               key tree, custody policy, and dates",
     "unlock <file>               open a file (access quorum --state 1)",
-    "send <file> <user>          deliver a file (deliver send --push)",
+    "send <file> <user>          deliver a file (keyquorum send)",
     "inbox                       letters in ~/mail",
-    "refresh                     relay pull, then deliver ack",
-    "receive <id> | reject <id>  deliver open --push-ack",
+    "inbox open [id]             receive one letter, or every new one (inbox open)",
+    "refresh                     inbox list, then inbox open for answers",
+    "receive <id> | reject <id>  inbox open <id> [--reject]",
     "sent                        your sent deliveries",
     "move <label> <drive>        keyquorum-device relocate + device bind",
     "tree                        org tree from your view",
@@ -70,6 +72,10 @@ pub fn run(state: &mut LabState, line: &str) -> Result<(Outcome, Vec<String>)> {
         ["bridge", ..] => {
             let rest = line.trim().strip_prefix("bridge").unwrap_or_default();
             command(state, &format!("keyquorum --db {ORG_DB} bridge{rest}"))?
+        }
+        ["use", ..] | ["setup", ..] | ["doctor", ..] => {
+            let store = state.own_store();
+            command(state, &format!("keyquorum --db {store} {}", line.trim()))?
         }
         ["whoami"] => quiet(true, vec![state.active_summary()]),
         ["users"] => quiet(
@@ -204,6 +210,31 @@ pub fn run(state: &mut LabState, line: &str) -> Result<(Outcome, Vec<String>)> {
             }
             quiet(true, output)
         }
+        ["inbox", "open"] => {
+            let waiting: Vec<i64> = state
+                .snapshot()?
+                .inbox
+                .iter()
+                .filter(|item| item.status == "new")
+                .map(|item| item.relay_id)
+                .collect();
+            if waiting.is_empty() {
+                with_trace(state.refresh_inbox()?)
+            } else {
+                let mut output = Vec::new();
+                let mut ok = true;
+                for id in waiting {
+                    let (outcome, lines) = with_trace(state.receive(id, true)?);
+                    ok &= outcome.ok;
+                    output.extend(lines);
+                }
+                quiet(ok, output)
+            }
+        }
+        ["inbox", "open", id] => match id.trim_start_matches('#').parse::<i64>() {
+            Ok(id) => with_trace(state.receive(id, true)?),
+            Err(_) => quiet(false, vec![format!("Not a letter id: {id}")]),
+        },
         ["receive", id] | ["reject", id] => match id.trim_start_matches('#').parse::<i64>() {
             Ok(id) => with_trace(state.receive(id, words[0] == "receive")?),
             Err(_) => quiet(false, vec![format!("Not a letter id: {id}")]),

@@ -1,0 +1,34 @@
+# Legacy checks: the broad `--all-features` build and test run, which includes
+# the tests of deprecated verbs behind the `legacy-tests` feature. It uses the
+# same parallel test groups as the standard run (tests.yml).
+#
+# The job is SKIPPED by default. A pull request shows it as skipped unless it
+# carries the `legacy` label; anyone can also run it from Actions -> Legacy
+# checks -> Run workflow. It never publishes or notifies.
+
+name: Legacy checks
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  legacy:
+    name: legacy
+    # On the job, not the workflow: a run whose job is skipped must not cancel
+    # a legacy run that is already going.
+    concurrency:
+      group: legacy-${{ github.ref }}
+      cancel-in-progress: true
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'legacy')
+    uses: ./.github/workflows/tests.yml
+    with:
+      features: --all-features
+      cache-key: legacy

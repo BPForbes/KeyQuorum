@@ -2,6 +2,7 @@ import { useId, useState } from "react";
 import type { Act } from "../App";
 import type { ActionResult, FileShareView, PasswordFileView, Snapshot } from "../api/types";
 import { formatUtc } from "../explorerTypes";
+import { Trace } from "./ActivityPanel";
 import { FileViewer } from "./FileViewer";
 
 /** Lock a note as a password-protected file with a password (and optional PIN) the person types themselves. */
@@ -373,6 +374,112 @@ function ShareLinks({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
   );
 }
 
+/**
+ * `keyquorum doctor` for the active person, and the two commands it most often
+ * tells them to run (`use`, `device bind`). Each button is one real command.
+ */
+function CheckSetup({ act }: { act: Act }) {
+  const [result, setResult] = useState<ActionResult | null>(null);
+  const run = (call: (client: Parameters<Parameters<Act>[0]>[0]) => ActionResult) => {
+    const outcome = act(call);
+    if (outcome) setResult(outcome);
+  };
+  return (
+    <div className="check-setup">
+      <div className="button-row">
+        <button type="button" className="btn btn-primary" data-testid="doctor-run" onClick={() => run((client) => client.doctor())}>
+          Check my setup
+        </button>
+        <button type="button" className="btn" data-testid="doctor-use" onClick={() => run((client) => client.useCurrentDrive())}>
+          Use my current drive
+        </button>
+        <button type="button" className="btn" data-testid="doctor-bind" onClick={() => run((client) => client.bindSlot())}>
+          Bind my slot
+        </button>
+      </div>
+      {result ? (
+        <div data-testid="doctor-result">
+          <p className={`small ${result.ok ? "muted" : "viewer-denied-title"}`}>{result.message}</p>
+          <Trace steps={result.trace} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** One form for the whole enrollment: provision a slot under a typed passphrase and add it as a leaf. */
+function CreateAndRegisterForm({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
+  const id = useId();
+  const connected = snapshot.drives.filter((drive) => drive.connected);
+  const [driveId, setDriveId] = useState(connected[0]?.id ?? "");
+  const [slotLabel, setSlotLabel] = useState("");
+  const [passphrase, setPassphrase] = useState("");
+  const splitNodes = snapshot.tree.nodes.filter((node) => node.kind === "split");
+  const [parent, setParent] = useState(splitNodes[0]?.label ?? "");
+  const [result, setResult] = useState<ActionResult | null>(null);
+
+  if (connected.length === 0 || splitNodes.length === 0) {
+    return <p className="small muted">Insert a mock USB drive (see USB devices) to create a key on it and grow the org tree.</p>;
+  }
+
+  return (
+    <form
+      className="provision-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!slotLabel.trim() || !passphrase || !parent) return;
+        const outcome = act((client) => client.createAndRegisterLeaf(driveId, slotLabel.trim(), parent, passphrase));
+        if (outcome) setResult(outcome);
+        if (outcome?.ok) {
+          setSlotLabel("");
+          setPassphrase("");
+        }
+      }}
+    >
+      <label htmlFor={`${id}-drive`}>Drive</label>
+      <select id={`${id}-drive`} value={driveId} onChange={(event) => setDriveId(event.target.value)}>
+        {connected.map((drive) => (
+          <option key={drive.id} value={drive.id}>
+            {drive.name}
+          </option>
+        ))}
+      </select>
+
+      <label htmlFor={`${id}-slot`}>New leaf label</label>
+      <input id={`${id}-slot`} value={slotLabel} onChange={(event) => setSlotLabel(event.target.value)} placeholder="e.g. M.S.3" required />
+
+      <label htmlFor={`${id}-pass`}>Your own passphrase</label>
+      <input
+        id={`${id}-pass`}
+        type="password"
+        value={passphrase}
+        onChange={(event) => setPassphrase(event.target.value)}
+        autoComplete="new-password"
+        required
+      />
+
+      <label htmlFor={`${id}-parent`}>Parent node</label>
+      <select id={`${id}-parent`} value={parent} onChange={(event) => setParent(event.target.value)}>
+        {splitNodes.map((node) => (
+          <option key={node.label} value={node.label}>
+            {node.label}
+          </option>
+        ))}
+      </select>
+
+      <button type="submit" className="btn btn-primary">
+        Create and register leaf
+      </button>
+      <p className="small muted">
+        Runs <code>keyquorum-device provision</code>, then <code>device register</code> for both keys,{" "}
+        <code>device bind</code> and <code>keyquorum add</code>. <code>add</code> reshares the parent from its existing
+        children&rsquo;s shares, so every currently inserted, active sibling under it is offered as recovery material.
+      </p>
+      {result ? <p className={`small ${result.ok ? "muted" : "viewer-denied-title"}`}>{result.message}</p> : null}
+    </form>
+  );
+}
+
 function ProvisionSlotForm({ snapshot, act }: { snapshot: Snapshot; act: Act }) {
   const id = useId();
   const connected = snapshot.drives.filter((drive) => drive.connected);
@@ -622,16 +729,36 @@ export function SecurityPanel({ snapshot, act }: { snapshot: Snapshot; act: Act 
           <ShareLinks snapshot={snapshot} act={act} />
         </div>
 
-        <div data-testid="provision-slot">
-          <h3>Create a new key</h3>
-          <p className="small muted">Provision a fresh slot on an inserted drive, sealed under a passphrase you choose.</p>
-          <ProvisionSlotForm snapshot={snapshot} act={act} />
+        <div data-testid="doctor">
+          <h3>Check my setup</h3>
+          <p className="small muted">
+            <code>keyquorum doctor</code> says what is missing for you and the command that fixes it. The buttons beside it run those
+            fixes (<code>keyquorum use</code>, <code>keyquorum device bind</code>). The people here are fixed, so
+            there is no button for <code>keyquorum setup</code>; the <strong>Create and register a new leaf</strong> form
+            below is a separate workflow that provisions a slot, registers its keys and adds it to the tree.
+          </p>
+          <CheckSetup act={act} />
         </div>
 
-        <div data-testid="register-leaf">
-          <h3>Register a new leaf</h3>
-          <p className="small muted">Take a provisioned slot from &ldquo;minted, not in any tree&rdquo; to a registered leaf under a chosen org-tree node.</p>
-          <RegisterLeafForm snapshot={snapshot} act={act} />
+        <div data-testid="create-register-leaf">
+          <h3>Create and register a new leaf</h3>
+          <p className="small muted">
+            Mint a key on an inserted drive under a passphrase you choose and add it to the org tree under a chosen node, in one step.
+          </p>
+          <CreateAndRegisterForm snapshot={snapshot} act={act} />
+          <details>
+            <summary className="small">Separate steps</summary>
+            <div data-testid="provision-slot">
+              <h4>Create a new key only</h4>
+              <p className="small muted">Provision a fresh slot on an inserted drive, sealed under a passphrase you choose (for example a replacement token).</p>
+              <ProvisionSlotForm snapshot={snapshot} act={act} />
+            </div>
+            <div data-testid="register-leaf">
+              <h4>Register an existing slot</h4>
+              <p className="small muted">Take a provisioned slot from &ldquo;minted, not in any tree&rdquo; to a registered leaf under a chosen org-tree node.</p>
+              <RegisterLeafForm snapshot={snapshot} act={act} />
+            </div>
+          </details>
         </div>
 
         <div data-testid="signatures">

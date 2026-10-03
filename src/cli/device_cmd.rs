@@ -21,6 +21,11 @@ pub enum DeviceCommand {
         path: PathBuf,
         #[arg(long)]
         label: String,
+        /// Also register the slot's encryption and signing keys in this store
+        /// and bind the slot to the device (the `device register` and
+        /// `device bind` steps), under the same passphrase
+        #[arg(long)]
+        register: bool,
     },
     /// List slot labels and public keys
     List { path: PathBuf },
@@ -114,7 +119,11 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
                 hex::encode(container.device_id())
             );
         }
-        DeviceCommand::Provision { path, label } => {
+        DeviceCommand::Provision {
+            path,
+            label,
+            register,
+        } => {
             let mut container = env::fs(|fs| device::open_in(fs, &path))?;
             let passphrase = env::confirm_passphrase(
                 &format!("Passphrase for {label}: "),
@@ -124,6 +133,21 @@ pub fn run(conn: &Connection, command: DeviceCommand) -> Result<()> {
             outln!("slot {}", slot.label);
             outln!("  encryption {}", hex::encode(slot.encryption_public));
             outln!("  signing {}", hex::encode(slot.signing_public));
+            if register {
+                for (kind, public) in [
+                    (KeyType::Encryption, slot.encryption_public),
+                    (KeyType::Signing, slot.signing_public),
+                ] {
+                    if super::setup::ensure_registered(conn, &label, kind, &public)? {
+                        outln!("Registered {} key for {label}", kind.as_str());
+                    }
+                }
+                env::fs(|fs| device::bind_slot_in(fs, conn, &container, &label, &passphrase))?;
+                outln!(
+                    "Bound {label} to device {}",
+                    hex::encode(container.device_id())
+                );
+            }
         }
         DeviceCommand::List { path } => {
             let container = env::fs(|fs| device::open_in(fs, &path))?;

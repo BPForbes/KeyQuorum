@@ -532,3 +532,57 @@ CREATE TABLE IF NOT EXISTS tracked_bridge_approvals (
     recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (revision_id, bridge_uid)
 );
+
+-- Non-secret defaults the CLI falls back on when a flag is omitted (see
+-- `keyquorum use`). Pointers only: the device container, `.kqst` slot tokens,
+-- and `relay_credentials` stay the authority for identity and relay auth.
+-- Never store passphrases, keys, or bearers here.
+CREATE TABLE IF NOT EXISTS profile (
+    key   TEXT PRIMARY KEY CHECK (key IN (
+        'default_label', 'default_slot_label', 'default_container',
+        'default_relay_url', 'cache_enabled'
+    )),
+    value TEXT NOT NULL
+);
+
+-- Parameters a command was last given, reused while they are fresh
+-- (`db::cache::TTL_MINUTES`). Non-secret and never an authorization input.
+CREATE TABLE IF NOT EXISTS recent_params (
+    name    TEXT PRIMARY KEY,
+    value   TEXT NOT NULL,
+    used_at TEXT NOT NULL
+);
+
+-- A relay identity check that passed recently, so a following command can
+-- skip the provider challenge. Bound to the certificate, the revocation list
+-- and the stored key hash; never records a failure or a bearer.
+CREATE TABLE IF NOT EXISTS relay_trust_cache (
+    relay_url        TEXT PRIMARY KEY,
+    cert_fingerprint TEXT NOT NULL,
+    krl_digest       TEXT NOT NULL,
+    key_hash         TEXT NOT NULL,
+    verified_at      TEXT NOT NULL,
+    valid_until      TEXT NOT NULL
+);
+
+-- Non-secret facts a preflight already looked up (a slot exists, a label's
+-- keys are registered), tied to a fingerprint of what they were read from.
+-- A mismatch invalidates the row. Never read for a trust decision.
+CREATE TABLE IF NOT EXISTS verified_cache (
+    kind        TEXT NOT NULL,
+    subject     TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    verified_at TEXT NOT NULL,
+    PRIMARY KEY (kind, subject)
+);
+
+-- Letters `keyquorum inbox` has pulled from a relay, so a later pull resumes
+-- after the newest one and a letter is opened once. The sealed bytes stay in
+-- the inbox directory; nothing here is secret.
+CREATE TABLE IF NOT EXISTS inbox_letters (
+    relay_url TEXT NOT NULL,
+    letter_id INTEGER NOT NULL,
+    kind      INTEGER NOT NULL,
+    status    TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'handled')),
+    PRIMARY KEY (relay_url, letter_id)
+);

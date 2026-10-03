@@ -1,5 +1,6 @@
-use super::memory_env::MemoryEnv;
+use super::super::memory_env::MemoryEnv;
 use crate::storage::Storage;
+use clap::Parser;
 use std::path::Path;
 
 /// Alice and Bob each have their own container and store. Each store
@@ -138,4 +139,150 @@ fn a_letter_from_an_unregistered_sender_does_not_open() {
         .list(Path::new("/acks"))
         .unwrap_or_default()
         .is_empty());
+}
+
+const ALICE_DB: &str = "keyquorum --db /home/alice/keyquorum.sqlite";
+const BOB_DB: &str = "keyquorum --db /home/bob/keyquorum.sqlite";
+
+fn use_defaults(env: &mut MemoryEnv) {
+    for (db, who) in [(ALICE_DB, "alice"), (BOB_DB, "bob")] {
+        let (ok, _) = env.keyquorum(&format!("{db} use --device /usb/{who} --slot {who}"));
+        assert!(ok.is_ok(), "{ok:?}");
+    }
+}
+
+#[test]
+fn stored_defaults_replace_as_and_slot() {
+    let mut env = two_people();
+    use_defaults(&mut env);
+    let (ok, out) = env.keyquorum(&format!(
+        "{ALICE_DB} deliver send --file /home/alice/note.txt --to bob --output-dir /outbox"
+    ));
+    assert!(ok.is_ok(), "{ok:?}");
+    assert!(out.starts_with("Sealed note.txt to bob (delivery "));
+    let letter = only_file(&env, "/outbox");
+    let (ok, out) = env.keyquorum(&format!(
+        "{BOB_DB} deliver open --file {letter} --save /home/bob/note.txt --ack-dir /acks"
+    ));
+    assert!(ok.is_ok(), "{ok:?}");
+    assert!(out.starts_with("Saved note.txt"), "{out}");
+    let ack = only_file(&env, "/acks");
+    let (ok, out) = env.keyquorum(&format!("{ALICE_DB} deliver ack --file {ack}"));
+    assert!(ok.is_ok(), "{ok:?}");
+    assert!(out.contains(" accepted by bob"), "{out}");
+}
+
+#[test]
+fn as_that_disagrees_with_the_slot_is_refused() {
+    let mut env = two_people();
+    let (ok, _) = env.keyquorum(&format!(
+        "{ALICE_DB} deliver send --file /home/alice/note.txt --to bob --as bob \
+         --slot /usb/alice=alice --output-dir /outbox"
+    ));
+    assert!(ok.unwrap_err().to_string().contains("does not match"));
+    assert!(env
+        .fs
+        .list(Path::new("/outbox"))
+        .unwrap_or_default()
+        .is_empty());
+}
+
+#[test]
+fn no_flags_and_no_defaults_asks_for_an_identity() {
+    let mut env = two_people();
+    let (ok, _) = env.keyquorum(&format!(
+        "{ALICE_DB} deliver send --file /home/alice/note.txt --to bob --output-dir /outbox"
+    ));
+    assert!(ok.unwrap_err().to_string().contains("no identity"));
+}
+
+#[test]
+fn a_recent_letter_is_reused_for_the_same_command_until_it_goes_stale() {
+    let mut env = two_people();
+    use_defaults(&mut env);
+    env.keyquorum(&format!(
+        "{ALICE_DB} deliver send --file /home/alice/note.txt --to bob --output-dir /outbox"
+    ))
+    .0
+    .unwrap();
+    let letter = only_file(&env, "/outbox");
+    env.now = Some("2026-09-27 00:00".into());
+    let (ok, _) = env.keyquorum(&format!(
+        "{BOB_DB} deliver open --file {letter} --reject --ack-dir /acks"
+    ));
+    assert!(ok.is_ok(), "{ok:?}");
+
+    env.now = Some("2026-09-27 00:10".into());
+    let (ok, _) = env.keyquorum(&format!("{BOB_DB} deliver open --reject --ack-dir /acks2"));
+    assert!(ok.is_ok(), "{ok:?}");
+    let stderr = String::from_utf8_lossy(&env.stderr).to_string();
+    assert!(
+        stderr.contains(&format!("using --file {letter} from 10m ago")),
+        "{stderr}"
+    );
+
+    env.now = Some("2026-09-27 00:20".into());
+    let (ok, _) = env.keyquorum(&format!("{BOB_DB} deliver open --reject --ack-dir /acks3"));
+    assert!(ok.unwrap_err().to_string().contains("--file is required"));
+}
+
+#[test]
+fn pushing_an_acknowledgement_never_reuses_a_recent_letter() {
+    let mut env = two_people();
+    use_defaults(&mut env);
+    env.keyquorum(&format!(
+        "{ALICE_DB} deliver send --file /home/alice/note.txt --to bob --output-dir /outbox"
+    ))
+    .0
+    .unwrap();
+    let letter = only_file(&env, "/outbox");
+    env.keyquorum(&format!(
+        "{BOB_DB} deliver open --file {letter} --reject --ack-dir /acks"
+    ))
+    .0
+    .unwrap();
+
+    let (result, _) = env.keyquorum(&format!("{BOB_DB} deliver open --reject --push-ack"));
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("--file is required"));
+}
+
+#[test]
+fn no_cache_ignores_a_recent_letter() {
+    let mut env = two_people();
+    use_defaults(&mut env);
+    env.keyquorum(&format!(
+        "{ALICE_DB} deliver send --file /home/alice/note.txt --to bob --output-dir /outbox"
+    ))
+    .0
+    .unwrap();
+    let letter = only_file(&env, "/outbox");
+    env.keyquorum(&format!(
+        "{BOB_DB} deliver open --file {letter} --reject --ack-dir /acks"
+    ))
+    .0
+    .unwrap();
+    let (ok, _) = env.keyquorum(&format!(
+        "{BOB_DB} --no-cache deliver open --reject --ack-dir /acks2"
+    ));
+    assert!(ok.unwrap_err().to_string().contains("--file is required"));
+}
+
+#[test]
+fn a_recipient_is_never_filled_in_from_a_recent_use() {
+    let mut env = two_people();
+    use_defaults(&mut env);
+    env.keyquorum(&format!(
+        "{ALICE_DB} deliver send --file /home/alice/note.txt --to bob --output-dir /outbox"
+    ))
+    .0
+    .unwrap();
+    // `--to` is required by the command line itself, so a send cannot go to
+    // whoever was addressed last.
+    assert!(crate::cli::Cli::try_parse_from(
+        "keyquorum deliver send --file x --output-dir /o".split_whitespace()
+    )
+    .is_err());
 }

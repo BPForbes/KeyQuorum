@@ -5,8 +5,9 @@
 use crate::cli::env::{self, Env};
 use crate::cli::{self, device_tool, Cli};
 use crate::error::{Error, Result};
-use crate::relay::{RelayHttpRequest, RelayHttpResponse};
+use crate::relay::{self, ProviderIdentity, RelayHttpRequest, RelayHttpResponse};
 use crate::storage::{MemoryStorage, Storage};
+use crate::{keys, provider};
 use clap::Parser;
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -28,7 +29,27 @@ pub struct MemoryEnv {
     /// Milliseconds the precise clock adds after the seconds (`"482"`);
     /// none by default, so the precise clock equals [`MemoryEnv::now`].
     pub millis: Option<String>,
+    /// Environment variables the commands can read.
+    pub vars: HashMap<String, String>,
+    /// A relay served in process (see [`MemoryEnv::with_relay`]); none by default.
+    pub relay: Option<TestRelay>,
 }
+
+/// The relay a test environment answers for: the crate's own request handling
+/// over an in-memory database, behind a certificate that chains to a test root.
+pub struct TestRelay {
+    pub conn: Connection,
+    pub identity: ProviderIdentity,
+    root_public: [u8; 32],
+    /// How many `POST /provider-identity` challenges commands have made.
+    pub identity_challenges: usize,
+    /// Make uploads (`POST /inbox`) fail as a dropped connection would.
+    pub fail_uploads: bool,
+    /// Let this many uploads through, then fail every later one.
+    pub fail_uploads_after: Option<usize>,
+}
+
+pub const RELAY_URL: &str = "https://relay.test";
 
 impl Env for MemoryEnv {
     fn stdout(&mut self) -> &mut dyn Write {
@@ -54,12 +75,42 @@ impl Env for MemoryEnv {
             .unwrap_or_else(|| PASSPHRASE.to_string()))
     }
 
-    fn var(&self, _name: &str) -> Option<String> {
-        None
+    fn var(&self, name: &str) -> Option<String> {
+        self.vars.get(name).cloned()
     }
 
-    fn relay_send(&mut self, _request: RelayHttpRequest) -> Result<RelayHttpResponse> {
-        Err(Error::RelayRequest("no relay in this test".into()))
+    fn relay_send(&mut self, request: RelayHttpRequest) -> Result<RelayHttpResponse> {
+        let Some(relay) = self.relay.as_mut() else {
+            return Err(Error::RelayRequest("no relay in this test".into()));
+        };
+        if request.url.path() == "/provider-identity" {
+            relay.identity_challenges += 1;
+        }
+        if request.method == "POST" && request.url.path() == "/inbox" {
+            let out_of_uploads = match relay.fail_uploads_after.as_mut() {
+                Some(0) => true,
+                Some(left) => {
+                    *left -= 1;
+                    false
+                }
+                None => false,
+            };
+            if relay.fail_uploads || out_of_uploads {
+                return Err(Error::RelayRequest("connection reset".into()));
+            }
+        }
+        Ok(relay::service::dispatch(
+            &relay.conn,
+            Some(&relay.identity),
+            &request,
+        ))
+    }
+
+    fn provider_root(&self) -> [u8; 32] {
+        match &self.relay {
+            Some(relay) => relay.root_public,
+            None => crate::provider::KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY,
+        }
     }
 
     fn now_utc(&self) -> Result<String> {
@@ -91,6 +142,62 @@ impl Env for MemoryEnv {
 }
 
 impl MemoryEnv {
+    /// An environment whose relay is [`RELAY_URL`], answered in process.
+    pub fn with_relay() -> Self {
+        let mut env = MemoryEnv::default();
+        env.attach_relay();
+        env
+    }
+
+    /// Give this environment a relay at [`RELAY_URL`].
+    pub fn attach_relay(&mut self) {
+        let conn = relay::open_in_memory().expect("relay database");
+        let (root_private, root_public) = keys::generate_signing_keypair();
+        let (relay_private, relay_public) = provider::generate_relay_identity();
+        let certificate = provider::issue_certificate(
+            &root_private,
+            &provider::NewCertificate {
+                provider_id: "Test relay",
+                serial: "TEST-1",
+                relay_public_key: &relay_public,
+                issued_at: "2026-01-01 00:00:00",
+                expires_at: "2999-12-31 23:59:00",
+                capabilities: provider::CAP_PROVIDER,
+                issuer_id: "TestRoot",
+            },
+        )
+        .expect("test certificate");
+        self.vars
+            .insert("KEYQUORUM_RELAY_URL".into(), RELAY_URL.into());
+        self.relay = Some(TestRelay {
+            conn,
+            identity: ProviderIdentity {
+                certificate,
+                relay_private_key: relay_private,
+            },
+            root_public,
+            identity_challenges: 0,
+            fail_uploads: false,
+            fail_uploads_after: None,
+        });
+    }
+
+    /// Mint a relay key of `scope` (inbox push needs no recipient).
+    pub fn relay_key(&self, scope: relay::ApiKeyScope, fingerprint: Option<String>) -> String {
+        let relay = self.relay.as_ref().expect("a relay");
+        relay::create_api_key(
+            &relay.conn,
+            &relay::NewApiKey {
+                scope,
+                recipient_fingerprint: fingerprint,
+                label: Some("test".into()),
+                ttl_seconds: None,
+            },
+        )
+        .expect("relay key")
+        .token
+    }
+
     /// The store at `path`, once a command has opened it.
     pub fn store(&self, path: &str) -> &Connection {
         self.stores
@@ -101,7 +208,7 @@ impl MemoryEnv {
     /// Run one `keyquorum` command line; returns its result and stdout.
     pub fn keyquorum(&mut self, line: &str) -> (Result<()>, String) {
         let cli = Cli::try_parse_from(line.split_whitespace()).expect("command line parses");
-        self.run(|| cli::run(&cli.db, cli.command))
+        self.run(|| cli::run_cli(cli))
     }
 
     /// Run one `keyquorum-device` command line.

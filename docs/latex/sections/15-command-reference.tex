@@ -5,18 +5,11 @@ The rest of this manual explains what each area of the CLI is for and how
 the pieces fit together; this section is the complete index of every
 \code{keyquorum} and \code{keyquorum-device} command and subcommand, so
 this manual alone --- without a separate run of \code{--help} --- says
-what the tool can do. Each row's description is the same one \code{--help}
+what the tool can do. Each row summarizes what \code{--help}
 prints for that command. Flags are not reproduced here in full; run
 \code{keyquorum <command> --help} (or \code{keyquorum <command>
 <subcommand> --help}) for a command's complete flag list, defaults, and
 which flags conflict with or require others.
-
-\begin{noteBox}
-\code{keyquorum host} is a hidden subcommand, compiled only with
-\flag{--features provider}, and is intentionally omitted here: it is a
-build capability for operating a mailbox relay, not a customer-facing
-command, and is never documented outside the crate's own source.
-\end{noteBox}
 
 \subsection{Identity and hardware keys}
 
@@ -57,11 +50,13 @@ command, and is never documented outside the crate's own source.
   the relay. \\
 \code{tree restructure} & Announce a restructured tree: one authenticated
   envelope per active leaf at the next public generation. Unlike
-  \code{publish}, recipients can verify who authorized the change. \\
+  \code{publish}, recipients can verify who authorized the change. Signs with
+  a key file or \flag{--slot}; \flag{--push} uploads the envelopes. \\
 \code{tree countersign} & Countersign a pending restructure proposal (key
-  file, or \flag{--device}/\flag{--slot}). \\
+  file, or \flag{--device}/\flag{--slot}); \flag{--push} uploads. \\
 \code{tree fetch} & Download the slice a pull key is allowed to see and
-  merge it into this store. \\
+  merge it into this store. The key id is optional when the store holds one
+  tree. \\
 \code{reconstruct} & Reconstruct a key's secret from raw shares (key
   files, container slots, or an interactive prompt). \\
 \bottomrule
@@ -99,7 +94,8 @@ command, and is never documented outside the crate's own source.
 \code{bridge list} & List whitelist entries and established pairings. \\
 \code{bridge private create} & Create a private sign bridge: writes every
   recipient's \file{.kqpb} envelope first, then commits this store, so a
-  failure at any point can simply be retried. \\
+  failure at any point can simply be retried. \flag{--push} uploads the
+  envelopes after the commit. \\
 \code{bridge private list} & List private bridges, optionally for one
   split tree. \\
 \code{bridge private show} & Show one private bridge by uid. \\
@@ -107,7 +103,7 @@ command, and is never documented outside the crate's own source.
 \code{bridge private import} & Import a per-person bridge package into this
   store. \\
 \code{bridge private remove-member} & Drop a signing member: writes
-  rotation/destroy packages first, then commits. \\
+  rotation/destroy packages first, then commits; \flag{--push} uploads them. \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -121,7 +117,8 @@ command, and is never documented outside the crate's own source.
 \midrule
 \code{reissue} & Announce a replaced hardware key: writes one authenticated
   envelope per store that holds the old key, so every recipient converges
-  on the same token. \\
+  on the same token. Signs with a key file or \flag{--slot}; \flag{--push}
+  uploads. \\
 \code{updates} & Print the authenticated organization updates this store
   has applied. \\
 \bottomrule
@@ -177,6 +174,26 @@ command, and is never documented outside the crate's own source.
 \end{tabular}
 \end{center}
 
+\subsection{Defaults, setup and caches}
+
+\begin{center}
+\begin{tabular}{@{}p{0.24\linewidth}p{0.70\linewidth}@{}}
+\toprule
+\textbf{Command} & \textbf{Purpose} \\
+\midrule
+\code{setup} & Create the device container, provision your slot, register
+  and bind its keys, optionally load a relay key, and store the defaults.
+  Safe to run again. \\
+\code{doctor} & Read-only check of what is missing before a task will work,
+  with the command that fixes each thing. \\
+\code{use} & Set, change, show (\flag{--show}) or clear (\flag{--clear}) the
+  stored defaults: label, slot, device container, relay, cache setting. \\
+\code{cache} & \code{cache clear} empties the short-lived caches;
+  \code{cache status} shows what is held. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
 \subsection{Delivery and the mailbox relay}
 
 \begin{center}
@@ -184,15 +201,25 @@ command, and is never documented outside the crate's own source.
 \toprule
 \textbf{Command} & \textbf{Purpose} \\
 \midrule
-\code{deliver send} & Seal a file to a registered label, signed with your
-  signing key. \\
-\code{deliver open} & Open a letter addressed to you: verify the sender,
+\code{send} & Seal a file (or a tracked file's newest trusted revision) to a
+  registered label and upload it, or write it to \file{./outbox}. \flag{--quorum-file} sends a quorum-protected file unlocked in memory. \\
+\code{inbox} & Pull what is waiting for you from the relay and list it
+  (\code{inbox list} is the same, spelled out).
+  \code{inbox open} opens each letter and posts the signed answer, including
+  bridge and organization updates;
+  with a letter id it also takes \flag{--into}/\flag{--out} (a tracked file),
+  \flag{--file} (the copy an acknowledgement, request answer or snapshot
+  concerns) and \flag{--accept}/\flag{--decline} (a request). \\
+\code{deliver send} & (Legacy; use \code{send}.) Seal a file to a registered
+  label, signed with your signing key. \\
+\code{deliver open} & (Legacy; use \code{inbox open}.) Open a letter addressed to you: verify the sender,
   keep (or \flag{--reject}) the file, and seal a signed acknowledgement
   back. \\
-\code{deliver ack} & Check an acknowledgement sealed back to you. \\
+\code{deliver ack} & (Legacy; use \code{inbox open}.) Check an acknowledgement sealed back to you. \\
 \code{relay push} & Upload every \file{.kqpb} in a directory to the relay;
-  also replaces public-tree documents from trees stored in \flag{--db}. \\
-\code{relay pull} & Download envelopes and the public-tree slice for a
+  also merges the public trees stored in \flag{--db} into the relay's documents
+  (unrelated nodes stay; \code{tree publish} is the command that replaces one). \\
+\code{relay pull} & (Legacy for letters; use \code{inbox}.) Download envelopes and the public-tree slice for a
   pull key; \flag{--import} installs each envelope into \flag{--db}
   directly. \\
 \code{loadkey} & Check a relay API key with \code{POST /keycheck} and
@@ -201,6 +228,56 @@ command, and is never documented outside the crate's own source.
 \bottomrule
 \end{tabular}
 \end{center}
+
+\subsection{Legacy commands (still possible, not recommended)}
+\label{sec:legacy-commands}
+
+These commands keep working exactly as before: standard output and the exit
+status are unchanged, and after one succeeds a note on standard error names the
+command to use instead. They are not recommended for new use.
+\code{relay push} is not legacy.
+
+\begin{center}
+\begin{tabular}{@{}p{0.34\linewidth}p{0.60\linewidth}@{}}
+\toprule
+\textbf{Legacy command (prints a note)} & \textbf{Use instead} \\
+\midrule
+\code{deliver send} & \code{send FILE --to LABEL} \\
+\code{deliver open} & \code{inbox open} \\
+\code{deliver ack} & \code{inbox open} (it reads the answer) \\
+\code{relay pull} (letters) & \code{inbox} to list, \code{inbox open} to open \\
+\code{file share} & \code{send FILE.kqtf --to LABEL} \\
+\code{file receive} & \code{inbox open ID --into FILE} or \flag{--out FILE} \\
+\code{file ack} & \code{inbox open ID --file FILE} \\
+\code{file verify-snapshot} & \code{file history verify SNAPSHOT} \\
+\code{file history --export} & \code{file history export FILE --out SNAPSHOT} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsubsection*{Older forms that print no note}
+
+Four tracked-file commands are not marked legacy and print nothing, but
+\code{inbox open} now does the same job when the letter came through a relay.
+They remain the way to open a letter that reached you as a file.
+
+\begin{center}
+\begin{tabular}{@{}p{0.34\linewidth}p{0.60\linewidth}@{}}
+\toprule
+\textbf{Command} & \textbf{With a relay} \\
+\midrule
+\code{file open-request}, \code{file answer-request} & \code{inbox open ID --accept} or \flag{--decline}, with \flag{--file FILE} \\
+\code{file open-answer} & \code{inbox open ID --file FILE} \\
+\code{file open-history} & \code{inbox open ID --file FILE} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent A letter that reaches you as a file (carried by hand, no relay) is
+still opened with the \code{file} and \code{deliver} commands, because
+\code{inbox} reads a relay. A producer command followed by \code{relay push}
+also still works and prints no note; \flag{--push} on the producer command does
+both in one step.
 
 \subsection{Tracked files}
 
@@ -235,17 +312,17 @@ See section~\ref{sec:file-history}.
 \code{file reindex} & Rebuild index rows from tracked files. Every file is verified first; if any fails, nothing changes. \flag{--clear} also drops rows for files not named here. \\
 \code{file status} & Show the heads, their trust, what would be shared, and the current and latest trusted revision ids. \\
 \code{file history} & List the recorded events; \flag{--export} also writes a \code{KQHS} snapshot. \\
-\code{file history export} & The alternative spelling of \code{file history --export}: list the events and write a \code{KQHS} snapshot to \flag{--out}. \\
-\code{file history verify} & The alternative spelling of \code{file verify-snapshot} for a snapshot; given a tracked file it is \code{file verify}. \\
-\code{file verify-snapshot} & Check a history snapshot; with \flag{--against}, that it belongs to a file. \\
+\code{file history export} & List the events and write a \code{KQHS} snapshot to \flag{--out}. The one home for exporting; \code{file history --export} is legacy. \\
+\code{file history verify} & Check a snapshot (with \flag{--against}, that it belongs to a file); given a tracked file it is \code{file verify}. The one home for verifying; \code{file verify-snapshot} is legacy. \\
+\code{file verify-snapshot} & (Legacy; use \code{file history verify}.) Check a history snapshot; with \flag{--against}, that it belongs to a file. \\
 \code{file import} & Bring another copy of the same file's revisions and proofs into this one. A fork is kept as two heads; nothing is overwritten. \\
 \code{file verify} & Verify the history chain and revision graph, and judge every revision. \\
 \code{file expire} & Schedule when this file's content is destroyed, or destroy it now; needs \flag{--slot} to prove you hold the owner label. Every retained revision's content goes at once; the history, the revision graph and every signature stay behind as a tombstone. \\
 \code{file link} & Record what happens at a quorum-protected or password-locked file's gate in this tracked file's history. The gate is unchanged and never depends on it. \\
 \code{file unlink} & Stop recording a gate in this tracked file's history. \\
-\code{file share} & Seal the head (or \flag{--revision}) to another label as a \file{.kqpb} letter, or its most recently stored trusted ancestor when it is not trusted. Trusted work on another branch is never substituted, and nothing is sent when no ancestor is trusted. \\
-\code{file receive} & Open a tracked-file letter addressed to you. The sender is checked as the transport; the delivered revision is then judged by the file's own policy and accepted only if it is trusted here. Prints and records how the history compares with what this store accepted before (\code{FIRST}, \code{REPLAYED}, \code{NEWER}, \code{NOT_NEWER}); receiving the same letter again records nothing new. \\
-\code{file ack} & Record an acknowledgement sealed back to you in your copy's history. \\
+\code{file share} & (Older; \code{send} runs it.) Seal the head (or \flag{--revision}) to another label as a \file{.kqpb} letter, or its most recently stored trusted ancestor when it is not trusted. Trusted work on another branch is never substituted, and nothing is sent when no ancestor is trusted. \\
+\code{file receive} & (Older; \code{inbox open ID --into|--out} runs it. Still how a letter carried as a file is opened.) Open a tracked-file letter addressed to you. The sender is checked as the transport; the delivered revision is then judged by the file's own policy and accepted only if it is trusted here. Prints and records how the history compares with what this store accepted before (\code{FIRST}, \code{REPLAYED}, \code{NEWER}, \code{NOT_NEWER}); receiving the same letter again records nothing new. \\
+\code{file ack} & (Older; \code{inbox open ID --file}.) Record an acknowledgement sealed back to you in your copy's history. \\
 \bottomrule
 \end{longtable}
 
@@ -273,11 +350,13 @@ See section~\ref{sec:file-history}.
 \code{transfer relay-collect} & Pull a sealed copy or move, install it, and
   post the acknowledgement. \\
 \code{transfer relay-finalize} & Apply a destination acknowledgement and
-  finish the source. \\
+  finish the source; the destination is inferred when this device has only
+  one transfer waiting. \\
 \code{device init} & Create \file{device.kq} and an empty vault directory
   in this store's registry. \\
 \code{device provision} & Add a passphrase-sealed slot to a container and
-  print its public keys. \\
+  print its public keys; \flag{--register} also registers the keys and binds
+  the slot. \\
 \code{device list} & List a container's slot labels and public keys. \\
 \code{device bind} & Record a container's device id for a slot's
   registered keys. \\

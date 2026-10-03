@@ -378,16 +378,61 @@ with `fileId`, `revisionId`, `generatedLabel`, `historyRoot`,
 because tutorial gates read `activity[0]`. The Activity page's tracked-file
 buttons (track, check in signed or unsigned, sign, countersign, merge, review, resolve,
 verify, share, receive or refuse, record the answer, ask for a file or a change
-(`file request`, `--change`), accept or decline a request (`open-request` then `answer-request`),
-record a request's answer (`open-answer`), expire, view a revision,
+(`file request`, `--change`), accept or decline a request (`inbox open <id> --accept|--decline`),
+record a request's answer (`inbox open <id> --file`), expire, view a revision,
 diff, export and check a snapshot, import another copy, link or unlink a quorum
 or password gate) each run one `keyquorum file` command as the active person against their own store with their own slot
 (a quorum gate is linked in the org store and a password gate in its owner's
-store, where each gate runs); letters and acknowledgements pass through `/srv/keyquorum/tracked/letters` and
-`acks`. `Snapshot::tracked_files` judges revisions with that store's
+store, where each gate runs); letters and answers travel through the relay (`send`, then `inbox open <id>` with
+`--into`, `--out`, `--file`, `--accept` or `--decline`), never a shared folder. `Snapshot::tracked_files` judges revisions with that store's
 `StoreTrust`; the lab adds no gate or rule of its own, event categories come
 from `HistoryEventType::category`, and entries without a history serialize
 exactly as before. The terminal does not expand `~` inside command arguments.
+
+The everyday commands (`src/cli/{profile,send,inbox,setup,doctor}.rs`: `use`,
+`cache`, `send`, `inbox`, `setup`, `doctor`) add no rule of their own. `send`
+builds the command `deliver send` or `file share` would, and `inbox open` calls
+those commands' own handlers (`deliver_cmd::run`, `file_cmd::run`,
+`org_update::import_any`) and judges nothing; `inbox open <id>` takes `--into`/`--out`
+(a tracked file), `--file` (the copy an acknowledgement, request answer, request or snapshot
+concerns) and `--accept`/`--decline` (a request); the copy is always named by the person, never chosen
+from the letter (its file id is the sender's claim, and the handlers refuse a wrong copy). The
+sweep (`inbox open` with no id) leaves acknowledgements, requests and request answers, and device
+letters, listed with the command that opens them. `inbox --api-key` is the pull key; answers upload with
+the stored push key. The `profile`, `recent_params`,
+`relay_trust_cache`, `verified_cache` and `inbox_letters` tables hold no secret
+(no passphrase, key, bearer or plaintext). The three caches share one flat
+`db::cache::TTL_MINUTES` (15), are never an input to a signature, quorum,
+custody, approval, freshness or trust decision, and turn off with `--no-cache`,
+`KEYQUORUM_NO_CACHE` or `use --cache off`; the relay trust entry is bound to the
+revocation list, the stored key hash and the certificate expiry, never records a
+failure, and `loadkey` always runs the full challenge. A left-out flag resolves
+explicit argument, then recent parameter, then profile, then the command's own
+behaviour or error, and a command that acts outward or cannot be undone (`send`,
+`--push`, `transfer move`, `revoke`, `expire`) never takes its target from a
+recent parameter. A slot's passphrase is prompted once per command
+(`cli::profile::RunScope`), held in memory and zeroized when it ends. The
+producers (`reissue`, `tree restructure`, `tree countersign`,
+`bridge private create`, `bridge private remove-member`) upload with `--push`
+through `deliver_commit_push`: prove the relay and key, write the envelopes,
+commit, then upload, so a failed commit still removes the files and a failed
+upload leaves the change saved with the files in place and the retry command in
+the error. `deliver send|open|ack`, `file share|receive|ack` and `relay pull`
+are legacy: they behave as before and a stderr note names the replacement. The
+everyday commands are dispatched from `cli::run`, outside `run_in_store`, and
+take boxed option structs, because debug-build test threads have little stack;
+keep new commands out of that frame.
+The lab's mailbox runs `send` and `inbox` with an explicit `--slot` (a slot moves
+between drives, and an explicit flag beats the profile) and keeps the output lines
+it parses (`(delivery <id>)`, `Relay stored letter`, `From X to Y`, `Delivery <id>
+accepted|rejected`) stable. Switching user, inserting a drive and receiving a letter
+settle mail in the lab (`LabState::settle_mail_and_answers`: `inbox list`, `inbox open`
+for answers, then `inbox open <id> --file` for the tracked files and requests
+the person sent, only while their slot is in); a quorum file is sent by one
+`send --quorum-file` run against the org store (it holds the file's shares and its own push key),
+unlocking through the same `unlock_quorum_file` as `access quorum --state 1`, so nothing is written to disk.
+Each seeded person has `use` and `device bind` run for their own slot (re-run for the owner by
+`move_slot`), and the lab can run `doctor`, `use` and `device bind` for the active person.
 
 ## Setup / build / test
 
@@ -437,3 +482,5 @@ files, so treat it as security-sensitive:
 
 This repo also carries `CLAUDE.md` (Claude) and `.cursorrules` (Cursor). Keep guidance
 consistent across these files when updating one.
+
+- Legacy checks: tests of deprecated verbs (`deliver`, `file receive|ack`, `relay pull` spellings) sit behind the `legacy-tests` feature and the `legacy` workflow (`.github/workflows/legacy.yml`), whose single job is skipped by default and run on the `legacy` PR label or a manual dispatch. `--all-features` includes them; the everyday CI gate is `--features provider,lab,tui`. Both run the same parallel test groups (`.github/workflows/tests.yml`: lab, cli, file_history, relay+provider+db, and everything else), so a new module needs no workflow edit.

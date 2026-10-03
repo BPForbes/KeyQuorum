@@ -85,7 +85,10 @@ fn a_file_request_is_read_answered_and_then_served_by_the_normal_share() {
         ),
     );
     assert!(answered.contains("Accepted file request"), "{answered}");
-    assert!(answered.contains("file share"), "{answered}");
+    assert!(
+        answered.contains("keyquorum send <file> --to M.B"),
+        "{answered}"
+    );
     assert!(!env.fs.exists(Path::new("/out")), "nothing was delivered");
     let history = ok(&mut env, &format!("history {KQTF}"));
     assert!(history.contains("RequestAnswered"), "{history}");

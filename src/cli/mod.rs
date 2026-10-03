@@ -22,6 +22,7 @@ use crate::{
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use env::{errln, out, outln};
+use rand::RngCore;
 use rusqlite::Connection;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -30,9 +31,13 @@ use zeroize::Zeroize;
 mod deliver_cmd;
 mod device_cmd;
 pub mod device_tool;
+mod doctor;
 pub mod env;
 pub(crate) mod file_cmd;
 mod gate_link;
+mod inbox;
+mod legacy;
+mod profile;
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
 mod review_tui;
 mod review_view;
@@ -40,6 +45,8 @@ use crate::file_history::{EventDetails, HistoryEventType, HistoryOutcome};
 use gate_link::Gate;
 #[cfg(feature = "provider")]
 pub mod host_args;
+mod send;
+mod setup;
 mod transfer_cmd;
 
 /// How long a "one-time" PIN unlock stays valid before the PIN is needed
@@ -53,9 +60,15 @@ const PIN_TTL_SECONDS: i64 = 3600;
     version
 )]
 pub struct Cli {
-    /// Path to the KeyQuorum SQLite database
-    #[arg(long, global = true, default_value = "keyquorum.sqlite")]
-    pub db: PathBuf,
+    /// Path to the KeyQuorum SQLite database (or KEYQUORUM_DB; default
+    /// keyquorum.sqlite)
+    #[arg(long, global = true)]
+    pub db: Option<PathBuf>,
+
+    /// Do not read or write the caches (recent parameters, relay trust
+    /// checks, verified facts) for this command; or KEYQUORUM_NO_CACHE
+    #[arg(long, global = true)]
+    pub no_cache: bool,
 
     #[command(subcommand)]
     pub command: Command,
@@ -278,18 +291,21 @@ pub enum Command {
         /// they already hold for that label.
         #[arg(long = "as")]
         as_node: String,
-        /// Ed25519 private key file for --as
+        /// Ed25519 private key file for --as (or sign with --slot)
+        #[arg(long, conflicts_with = "slot")]
+        signing_key_file: Option<PathBuf>,
+        /// Container slot that signs for --as: container=label (default: the
+        /// device from `keyquorum use`, opened as the --as label)
         #[arg(long)]
-        signing_key_file: PathBuf,
+        slot: Option<String>,
         /// Also retire the replaced ENCRYPTION key in every store that
         /// applies this. A replaced signing key is always retired,
         /// regardless of this flag — it doubles as an authorization
         /// identity, and leaving two active would make that ambiguous.
         #[arg(long)]
         revoke_previous: bool,
-        /// Directory for the per-recipient `.kqpb` envelopes
-        #[arg(long)]
-        output_dir: PathBuf,
+        #[command(flatten)]
+        delivery: Box<ProducerDelivery>,
     },
     /// Print the authenticated organization updates this store has applied
     Updates {
@@ -324,8 +340,10 @@ pub enum Command {
         /// Local member label
         #[arg(long)]
         node: String,
-        #[arg(long)]
-        signing_key_file: PathBuf,
+        /// Your Ed25519 signing private key (not needed with --slot, which
+        /// holds it)
+        #[arg(long, required_unless_present = "slot")]
+        signing_key_file: Option<PathBuf>,
         /// Encryption private key that unwraps this store's sealed bridge secret
         #[arg(long, required_unless_present = "slot", conflicts_with = "slot")]
         share_file: Option<String>,
@@ -392,6 +410,31 @@ pub enum Command {
     Device {
         #[command(subcommand)]
         command: device_cmd::DeviceCommand,
+    },
+    /// Send a file to another label: one command, sealed and signed. A tracked
+    /// file goes as `file share` would send it, anything else as `deliver send`
+    Send(Box<send::SendOpts>),
+    /// Pull what is waiting for you and open it. With no subcommand, list it;
+    /// `inbox open` opens each letter and posts the signed answer
+    Inbox {
+        #[command(subcommand)]
+        command: Option<inbox::InboxCommand>,
+    },
+    /// Set, change or show the defaults commands use when a flag is left out:
+    /// who you are, which device holds your slot, which relay. Pointers only;
+    /// no passphrase, key or bearer is stored.
+    Use(Box<profile::UseOpts>),
+    /// Set up an identity in one command: create the device container,
+    /// provision your slot, register and bind its keys, optionally load a
+    /// relay key, and remember it all as your defaults. Safe to run again.
+    Setup(Box<setup::SetupOpts>),
+    /// Check what is missing before a task will work, and how to fix each
+    /// thing. Reads only; asks for no passphrase and calls no relay.
+    Doctor(Box<doctor::DoctorOpts>),
+    /// Inspect or empty the short-lived caches
+    Cache {
+        #[command(subcommand)]
+        command: profile::CacheCommand,
     },
     /// Provider mailbox host (capability build). Hidden from --help.
     #[cfg(feature = "provider")]
@@ -462,7 +505,8 @@ pub struct TreeArgs {
 pub enum TreeCommand {
     /// Upload this store's public topology (no sealed shares) to the relay
     Publish {
-        key_id: i64,
+        /// Local key id to publish (default: every split tree in this store)
+        key_id: Option<i64>,
         /// Relay base URL (or KEYQUORUM_RELAY_URL)
         #[arg(long)]
         url: Option<String>,
@@ -480,13 +524,15 @@ pub enum TreeCommand {
         /// of are reported and left without an envelope.
         #[arg(long = "as")]
         as_node: String,
-        /// Ed25519 private key file for --as. A container slot uses
-        /// `tree countersign` instead.
+        /// Ed25519 private key file for --as (or sign with --slot)
+        #[arg(long, conflicts_with = "slot")]
+        signing_key_file: Option<PathBuf>,
+        /// Container slot that signs for --as: container=label (default: the
+        /// device from `keyquorum use`, opened as the --as label)
         #[arg(long)]
-        signing_key_file: PathBuf,
-        /// Directory for the per-recipient `.kqpb` envelopes
-        #[arg(long)]
-        output_dir: PathBuf,
+        slot: Option<String>,
+        #[command(flatten)]
+        delivery: Box<ProducerDelivery>,
     },
     /// Countersign a pending restructure. Pass a key file, or a container slot.
     Countersign {
@@ -500,17 +546,19 @@ pub enum TreeCommand {
         device: Option<PathBuf>,
         #[arg(long, requires = "device")]
         slot: Option<String>,
-        #[arg(long)]
-        output_dir: PathBuf,
+        #[command(flatten)]
+        delivery: Box<ProducerDelivery>,
     },
     /// Download the slice this pull key is allowed to see and merge it here.
     /// Inbox pull also applies this slice automatically; use fetch to refresh
     /// topology without downloading envelopes.
     Fetch {
-        /// Local key id to update. Default: match the published tree label.
+        /// Local key id to update. Default: match the published tree label,
+        /// or the only split tree this store holds.
         key_id: Option<i64>,
         /// Published `keys.label` when this store has no local key id yet
-        #[arg(long, required_unless_present = "key_id")]
+        /// (default: the only split tree this store holds)
+        #[arg(long)]
         label: Option<String>,
         /// Relay base URL (or KEYQUORUM_RELAY_URL)
         #[arg(long)]
@@ -552,9 +600,8 @@ pub enum PrivateBridgeCommand {
         /// Local node whose sealed copy stays in this database
         #[arg(long = "self")]
         self_node: Option<String>,
-        /// Directory for per-recipient .kqpb packages
-        #[arg(long)]
-        output_dir: PathBuf,
+        #[command(flatten)]
+        delivery: Box<ProducerDelivery>,
         #[arg(long)]
         label: Option<String>,
     },
@@ -608,8 +655,8 @@ pub enum PrivateBridgeCommand {
             conflicts_with = "share_file"
         )]
         slot: Option<String>,
-        #[arg(long)]
-        output_dir: PathBuf,
+        #[command(flatten)]
+        delivery: Box<ProducerDelivery>,
     },
 }
 
@@ -877,6 +924,27 @@ pub enum PinCommand {
     },
 }
 
+/// The personal database to open: `--db`, else `KEYQUORUM_DB`, else
+/// `keyquorum.sqlite`. The variable only selects which database; it holds
+/// no setting itself.
+pub fn resolve_db(explicit: Option<&Path>) -> PathBuf {
+    if let Some(path) = explicit {
+        return path.to_path_buf();
+    }
+    match env::var("KEYQUORUM_DB") {
+        Ok(path) if !path.is_empty() => PathBuf::from(path),
+        _ => PathBuf::from("keyquorum.sqlite"),
+    }
+}
+
+/// Run one parsed command line: resolve the database (`--db`,
+/// `KEYQUORUM_DB`, `keyquorum.sqlite`) and apply `--no-cache`.
+pub fn run_cli(cli: Cli) -> Result<()> {
+    let db_path = resolve_db(cli.db.as_deref());
+    let _scope = profile::RunScope::enter(cli.no_cache);
+    run(&db_path, cli.command)
+}
+
 /// Run one parsed command against the store at `db_path`. The provider
 /// `host` subcommand is served by the binary and never reaches here.
 pub fn run(db_path: &Path, command: Command) -> Result<()> {
@@ -884,6 +952,16 @@ pub fn run(db_path: &Path, command: Command) -> Result<()> {
         Command::Relay { command } => return run_relay(db_path, command),
         Command::Loadkey { api_key, url } => return run_loadkey(db_path, api_key, url),
         Command::Transfer { command } => return transfer_cmd::run(command),
+        // Dispatched here rather than in `run_in_store`, whose frame is the
+        // largest in the crate, so they run with that much more stack to spare.
+        command @ (Command::Use { .. }
+        | Command::Cache { .. }
+        | Command::Send { .. }
+        | Command::Setup { .. }
+        | Command::Doctor { .. }
+        | Command::Inbox { .. }) => {
+            return env::with_db(db_path, |conn| run_everyday(conn, command));
+        }
         #[cfg(feature = "provider")]
         Command::Host { .. } => {
             unreachable!("the keyquorum binary serves host before calling cli::run")
@@ -898,6 +976,14 @@ fn run_in_store(conn: &mut Connection, command: Command) -> Result<()> {
     match command {
         Command::Vault { command } => run_vault(conn, command)?,
         Command::Access { command } => run_access(conn, command)?,
+        Command::Use { .. }
+        | Command::Cache { .. }
+        | Command::Send { .. }
+        | Command::Setup { .. }
+        | Command::Doctor { .. }
+        | Command::Inbox { .. } => {
+            unreachable!("the everyday commands are dispatched in run()")
+        }
         Command::Generate { .. }
         | Command::Register { .. }
         | Command::List
@@ -945,7 +1031,11 @@ fn run_in_store(conn: &mut Connection, command: Command) -> Result<()> {
             signature_out,
         } => {
             let encryption_sk = encryption_secret_from(share_file.as_deref(), slot.as_deref())?;
-            let signing_sk = zeroize::Zeroizing::new(read_key_array_32(&signing_key_file)?);
+            let signing_sk = match (&signing_key_file, slot.as_deref()) {
+                (Some(file), _) => zeroize::Zeroizing::new(read_key_array_32(file)?),
+                (None, Some(slot)) => open_slot_secrets(slot)?.signing_secret,
+                (None, None) => return Err(usage("pass --signing-key-file or --slot")),
+            };
             let message = env::read(&message_file)?;
             let artifact = private_bridge::sign_message(
                 conn,
@@ -964,8 +1054,8 @@ fn run_in_store(conn: &mut Connection, command: Command) -> Result<()> {
         Command::Export { command } => run_export(conn, command)?,
         Command::Share { command } => run_share(conn, command)?,
         Command::Pin { command } => run_pin(conn, command)?,
-        Command::Deliver { command } => deliver_cmd::run(conn, command)?,
-        Command::File { command } => file_cmd::run(conn, command)?,
+        Command::Deliver { command } => run_deliver(conn, command)?,
+        Command::File { command } => run_file(conn, command)?,
         Command::Device { command } => device_cmd::run(conn, command)?,
         Command::Transfer { .. } | Command::Relay { .. } | Command::Loadkey { .. } => {
             unreachable!("transfer and relay commands are handled before opening the org db")
@@ -977,6 +1067,274 @@ fn run_in_store(conn: &mut Connection, command: Command) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The everyday commands (`use`, `cache`, `send`, `inbox`), kept out of
+/// `run_in_store` so that function's frame (one per test thread in a debug
+/// build) does not grow with every command.
+#[inline(never)]
+fn run_everyday(conn: &Connection, command: Command) -> Result<()> {
+    match command {
+        Command::Use(opts) => profile::run_use(conn, *opts)?,
+        Command::Cache { command } => profile::run_cache(conn, command)?,
+        Command::Send(opts) => send::run(conn, *opts)?,
+        Command::Inbox { command } => inbox::run(conn, command)?,
+        Command::Setup(opts) => setup::run(conn, *opts)?,
+        Command::Doctor(opts) => doctor::run(conn, *opts)?,
+        _ => unreachable!("run_in_store sends only the everyday commands here"),
+    }
+    Ok(())
+}
+
+/// `deliver`, with the legacy notice after it. Out of line for the same
+/// reason as [`run_everyday`].
+#[inline(never)]
+fn run_deliver(conn: &Connection, command: deliver_cmd::DeliverCommand) -> Result<()> {
+    let legacy = match &command {
+        deliver_cmd::DeliverCommand::Send { .. } => ("deliver send", legacy::SEND),
+        deliver_cmd::DeliverCommand::Open { .. } => ("deliver open", legacy::OPEN),
+        deliver_cmd::DeliverCommand::Ack { .. } => ("deliver ack", legacy::OPEN),
+    };
+    deliver_cmd::run(conn, command)?;
+    legacy::notice(legacy.0, legacy.1);
+    Ok(())
+}
+
+/// `file`, with the legacy notice after the three commands `send` and
+/// `inbox` replace.
+#[inline(never)]
+fn run_file(conn: &Connection, command: file_cmd::FileCommand) -> Result<()> {
+    let legacy = match &command {
+        file_cmd::FileCommand::Share { .. } => Some(("file share", legacy::SEND)),
+        file_cmd::FileCommand::Receive { .. } => Some(("file receive", legacy::OPEN)),
+        file_cmd::FileCommand::Ack { .. } => Some(("file ack", legacy::OPEN)),
+        file_cmd::FileCommand::VerifySnapshot { .. } => Some((
+            "file verify-snapshot",
+            "keyquorum file history verify <snapshot> [--against FILE]",
+        )),
+        file_cmd::FileCommand::History {
+            export: Some(_), ..
+        } => Some((
+            "file history --export",
+            "keyquorum file history export <file> --out <snapshot>",
+        )),
+        _ => None,
+    };
+    file_cmd::run(conn, command)?;
+    if let Some((old, instead)) = legacy {
+        legacy::notice(old, instead);
+    }
+    Ok(())
+}
+
+/// The signing key for `as_node`: a key file, or the signing half of a slot
+/// (`--slot`, else the profile's device opened as that label).
+fn signing_secret_for(
+    conn: &Connection,
+    as_node: &str,
+    file: Option<&Path>,
+    slot: Option<&str>,
+) -> Result<zeroize::Zeroizing<[u8; 32]>> {
+    if let Some(file) = file {
+        return Ok(zeroize::Zeroizing::new(read_key_array_32(file)?));
+    }
+    let identity = profile::resolve_identity(conn, Some(as_node), slot)?;
+    Ok(open_slot_secrets(&identity.slot)?.signing_secret)
+}
+
+/// Upload sealed packages, attaching this store's public trees to the first
+/// so the relay's topology stays current. Prints one line per package.
+fn push_packages(
+    conn: &Connection,
+    url: &str,
+    api_key: &str,
+    items: &[(String, Vec<u8>)],
+    expires: Option<&str>,
+    mut on_accepted: impl FnMut(usize),
+) -> Result<()> {
+    let trees = export_local_public_trees(conn)?;
+    for (index, (name, bytes)) in items.iter().enumerate() {
+        let attach_trees = !trees.is_empty() && index == 0;
+        let accepted = if expires.is_some() || attach_trees {
+            let trees = if attach_trees { trees.as_slice() } else { &[] };
+            relay::push_inbox_with_trees_until(&env::EnvRelay, url, api_key, bytes, trees, expires)?
+        } else {
+            relay::push_inbox(&env::EnvRelay, url, api_key, bytes)?
+        };
+        outln!(
+            "{name} -> id {} ({})",
+            accepted.id,
+            accepted.recipient_fingerprint
+        );
+        on_accepted(index);
+    }
+    if !trees.is_empty() {
+        outln!(
+            "Updated relay public-tree context ({} tree{})",
+            trees.len(),
+            if trees.len() == 1 { "" } else { "s" }
+        );
+    }
+    Ok(())
+}
+
+/// Where a command that writes sealed envelopes sends them: a directory, the
+/// relay, or both. A change is always saved before anything is uploaded.
+#[derive(Args)]
+pub struct ProducerDelivery {
+    /// Directory for the per-recipient `.kqpb` envelopes (with --push and no
+    /// directory they are staged in ./outbox and removed once uploaded)
+    #[arg(long, required_unless_present = "push")]
+    output_dir: Option<PathBuf>,
+    /// Upload the envelopes to the relay after the change is saved
+    /// (inbox.push key), instead of a separate `relay push`
+    #[arg(long)]
+    push: bool,
+    /// Relay base URL (default: `keyquorum use --url`)
+    #[arg(long, requires = "push")]
+    url: Option<String>,
+    /// Push-scope API key (default: a key from `loadkey`)
+    #[arg(long, requires = "push")]
+    api_key: Option<String>,
+    /// Expire uploaded envelopes at UTC `yyyy-mm-dd hh:mm`
+    #[arg(long, requires = "push")]
+    expires: Option<String>,
+}
+
+/// What `deliver_commit_push` did with the envelopes.
+pub(crate) struct Delivered {
+    paths: Vec<PathBuf>,
+    /// The relay they were uploaded to, if they were.
+    uploaded_to: Option<String>,
+    /// Whether the files are still on disk.
+    kept: bool,
+}
+
+impl Delivered {
+    fn report(&self) {
+        if self.kept {
+            for path in &self.paths {
+                outln!("Wrote {}", path.display());
+            }
+        }
+        self.report_upload();
+    }
+
+    /// Only the upload line, for commands that list where each envelope went.
+    fn report_upload(&self) {
+        if let Some(url) = &self.uploaded_to {
+            outln!(
+                "Uploaded {} envelope{} to {url}",
+                self.paths.len(),
+                if self.paths.len() == 1 { "" } else { "s" }
+            );
+        }
+    }
+
+    /// Where package `index` ended up, for a per-recipient listing.
+    fn location(&self, index: usize) -> String {
+        match (self.kept, self.paths.get(index), &self.uploaded_to) {
+            (true, Some(path), _) => path.display().to_string(),
+            (_, _, Some(url)) => format!("uploaded to {url}"),
+            _ => String::new(),
+        }
+    }
+}
+
+/// Write the envelopes, commit, then upload. The order matters: the files go
+/// first so a failed commit takes them away again (the command can simply be
+/// run once more), and the upload goes last because it cannot be undone. If
+/// the upload fails the change stays saved and the files stay on disk, with
+/// the command that finishes the job.
+fn deliver_commit_push(
+    conn: &Connection,
+    delivery: &ProducerDelivery,
+    packages: &[impl Envelope],
+    commit: impl FnOnce() -> Result<()>,
+) -> Result<Delivered> {
+    // Prove the relay and the key before anything is written or committed.
+    let auth = if delivery.push {
+        if let Some(expires) = delivery.expires.as_deref() {
+            locked_files::require_future_expires_utc(conn, expires)?;
+        }
+        Some(resolve_relay_auth(
+            conn,
+            delivery.url.clone(),
+            delivery.api_key.clone(),
+            relay::ApiKeyScope::InboxPush,
+        )?)
+    } else {
+        None
+    };
+    let staged = delivery.output_dir.is_none();
+    let dir = match &delivery.output_dir {
+        Some(dir) => dir.clone(),
+        None => {
+            // A failed upload must have a retry target containing only this
+            // operation. Reusing the shared outbox could send unrelated
+            // offline letters when the person follows the recovery command.
+            let mut id = [0u8; 8];
+            rand::rngs::OsRng.fill_bytes(&mut id);
+            PathBuf::from("outbox").join(format!("retry-{}", hex::encode(id)))
+        }
+    };
+    let paths = deliver_then_commit(&dir, packages, commit)?;
+    let Some((url, api_key)) = auth else {
+        return Ok(Delivered {
+            paths,
+            uploaded_to: None,
+            kept: true,
+        });
+    };
+    let items: Vec<(String, Vec<u8>)> = paths
+        .iter()
+        .zip(packages)
+        .map(|(path, package)| (path.display().to_string(), package.bytes().to_vec()))
+        .collect();
+    // Each envelope the relay accepts is dropped from a staged directory at
+    // once, so a retry (`relay push --dir`) never sends one twice. A directory
+    // the person named is left alone, and the error lists what is still to send.
+    let mut accepted = vec![false; paths.len()];
+    let pushed = push_packages(
+        conn,
+        &url,
+        &api_key,
+        &items,
+        delivery.expires.as_deref(),
+        |index| {
+            accepted[index] = true;
+            if staged {
+                let _ = env::remove_file(&paths[index]);
+            }
+        },
+    );
+    if let Err(err) = pushed {
+        let left: Vec<String> = paths
+            .iter()
+            .zip(&accepted)
+            .filter(|(_, done)| !**done)
+            .map(|(path, _)| path.display().to_string())
+            .collect();
+        let retry = if staged {
+            format!(
+                "the envelopes still to send are in {0}; upload them with `keyquorum relay push --dir {0}`",
+                dir.display()
+            )
+        } else {
+            format!(
+                "the relay already has the others; still to send: {}",
+                left.join(", ")
+            )
+        };
+        return Err(Error::RelayRequest(format!(
+            "the change is saved, but the upload failed: {err}. {retry}"
+        )));
+    }
+    Ok(Delivered {
+        paths,
+        uploaded_to: Some(url),
+        kept: !staged,
+    })
 }
 
 fn run_vault(conn: &Connection, command: VaultCommand) -> Result<()> {
@@ -1256,8 +1614,9 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
             signing_public_key_file,
             as_node,
             signing_key_file,
+            slot,
             revoke_previous,
-            output_dir,
+            delivery,
         } => run_reissue(
             conn,
             ReissueArgs {
@@ -1267,8 +1626,9 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
                 signing_public_key_file,
                 as_node,
                 signing_key_file,
+                slot,
                 revoke_previous,
-                output_dir,
+                delivery,
             },
         )?,
         Command::Updates { since } => {
@@ -1301,6 +1661,12 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
         | Command::Relay { .. }
         | Command::Loadkey { .. }
         | Command::Device { .. }
+        | Command::Use { .. }
+        | Command::Send { .. }
+        | Command::Inbox { .. }
+        | Command::Setup { .. }
+        | Command::Doctor { .. }
+        | Command::Cache { .. }
         | Command::Transfer { .. } => unreachable!("non-tree commands are dispatched in run()"),
         #[cfg(feature = "provider")]
         Command::Host { .. } => unreachable!("non-tree commands are dispatched in run()"),
@@ -1315,30 +1681,38 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
             url,
             api_key,
         }) => {
-            let snapshot = key_tree::export_public_tree(conn, key_id)?;
+            let snapshots = match key_id {
+                Some(key_id) => vec![key_tree::export_public_tree(conn, key_id)?],
+                None => export_local_public_trees(conn)?,
+            };
+            if snapshots.is_empty() {
+                return Err(usage("no split tree in this store to publish"));
+            }
             let (url, api_key) = resolve_relay_auth(conn, url, api_key, relay::ApiKeyScope::Admin)?;
-            let stored = relay::publish_tree(&env::EnvRelay, &url, &api_key, &snapshot)?;
-            outln!(
-                "Published {} (generation {}, {} nodes)",
-                stored.label,
-                stored.generation,
-                stored.nodes.len()
-            );
+            for snapshot in snapshots {
+                let stored = relay::publish_tree(&env::EnvRelay, &url, &api_key, &snapshot)?;
+                outln!(
+                    "Published {} (generation {}, {} nodes)",
+                    stored.label,
+                    stored.generation,
+                    stored.nodes.len()
+                );
+            }
         }
         Some(TreeCommand::Restructure {
             key_id,
             as_node,
             signing_key_file,
-            output_dir,
+            slot,
+            delivery,
         }) => {
-            let signing_sk = zeroize::Zeroizing::new(read_key_array_32(&signing_key_file)?);
+            let signing_sk =
+                signing_secret_for(conn, &as_node, signing_key_file.as_deref(), slot.as_deref())?;
             let planned = org_update::plan_tree_restructure(conn, key_id, &as_node, &signing_sk)?;
-            let written = deliver_then_commit(&output_dir, &planned.packages, || {
+            let delivered = deliver_commit_push(conn, &delivery, &planned.packages, || {
                 org_update::commit_planned_tree_restructure(conn, &planned).map(|_| ())
             })?;
-            for path in written {
-                outln!("Wrote {}", path.display());
-            }
+            delivered.report();
             if planned.needs_countersign {
                 let parent = planned.countersigner_label.as_deref().unwrap_or("parent");
                 outln!(
@@ -1370,7 +1744,7 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
             signing_key_file,
             device,
             slot,
-            output_dir,
+            delivery,
         }) => {
             let signing_sk = zeroize::Zeroizing::new(signing_secret_from(
                 signing_key_file.as_deref(),
@@ -1379,12 +1753,10 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
             )?);
             let planned =
                 org_update::plan_restructure_countersign(conn, key_id, &as_node, &signing_sk)?;
-            let written = deliver_then_commit(&output_dir, &planned.packages, || {
+            let delivered = deliver_commit_push(conn, &delivery, &planned.packages, || {
                 org_update::commit_planned_countersign(conn, &planned).map(|_| ())
             })?;
-            for path in written {
-                outln!("Wrote {}", path.display());
-            }
+            delivered.report();
             outln!(
                 "{} countersigned generation {}",
                 as_node,
@@ -1397,12 +1769,17 @@ fn run_tree(conn: &Connection, args: TreeArgs) -> Result<()> {
             url,
             api_key,
         }) => {
-            let label = match (label, key_id) {
-                (Some(label), _) => label,
-                (None, Some(id)) => key_tree::tree_label(conn, id)?,
-                (None, None) => {
-                    return Err(usage("tree fetch requires a key id or --label"));
-                }
+            let (label, key_id) = match (label, key_id) {
+                (Some(label), key_id) => (label, key_id),
+                (None, Some(id)) => (key_tree::tree_label(conn, id)?, Some(id)),
+                (None, None) => match key_tree::list_trees(conn)?.as_slice() {
+                    [only] => (key_tree::tree_label(conn, only.key_id)?, Some(only.key_id)),
+                    _ => {
+                        return Err(usage(
+                            "tree fetch needs a key id or --label (this store does not hold exactly one tree)",
+                        ));
+                    }
+                },
             };
             let (url, api_key) =
                 resolve_relay_auth(conn, url, api_key, relay::ApiKeyScope::InboxPull)?;
@@ -1461,9 +1838,10 @@ pub struct ReissueArgs {
     encryption_public_key_file: Option<PathBuf>,
     signing_public_key_file: Option<PathBuf>,
     as_node: String,
-    signing_key_file: PathBuf,
+    signing_key_file: Option<PathBuf>,
+    slot: Option<String>,
     revoke_previous: bool,
-    output_dir: PathBuf,
+    delivery: Box<ProducerDelivery>,
 }
 
 fn run_reissue(conn: &Connection, args: ReissueArgs) -> Result<()> {
@@ -1477,7 +1855,12 @@ fn run_reissue(conn: &Connection, args: ReissueArgs) -> Result<()> {
         .as_deref()
         .map(read_key_array_32)
         .transpose()?;
-    let signing_sk = zeroize::Zeroizing::new(read_key_array_32(&args.signing_key_file)?);
+    let signing_sk = signing_secret_for(
+        conn,
+        &args.as_node,
+        args.signing_key_file.as_deref(),
+        args.slot.as_deref(),
+    )?;
 
     let planned = org_update::plan_key_reissue(
         conn,
@@ -1489,12 +1872,10 @@ fn run_reissue(conn: &Connection, args: ReissueArgs) -> Result<()> {
         &args.as_node,
         &signing_sk,
     )?;
-    let written = deliver_then_commit(&args.output_dir, &planned.packages, || {
+    let delivered = deliver_commit_push(conn, &args.delivery, &planned.packages, || {
         org_update::commit_planned_key_reissue(conn, &planned).map(|_| ())
     })?;
-    for path in written {
-        outln!("Wrote {}", path.display());
-    }
+    delivered.report();
     outln!(
         "Reissue {} for {} authorized by {} ({} envelope{})",
         planned.sequence(),
@@ -1526,7 +1907,7 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
             members,
             supervisors,
             self_node,
-            output_dir,
+            delivery,
             label,
         } => {
             let member_parties = resolve_parties(conn, Some(key_id), &members, true)?;
@@ -1563,9 +1944,10 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
                 &supervisor_parties,
                 self_node.as_deref(),
             )?;
-            let written = deliver_then_commit(&output_dir, &planned.created.packages, || {
-                private_bridge::commit_planned_creation(conn, &planned)
-            })?;
+            let delivered =
+                deliver_commit_push(conn, &delivery, &planned.created.packages, || {
+                    private_bridge::commit_planned_creation(conn, &planned)
+                })?;
             let created = &planned.created;
             outln!(
                 "Created private bridge {} (generation {}). Notify {} store(s):",
@@ -1573,9 +1955,15 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
                 created.generation,
                 created.packages.len()
             );
-            for (pkg, path) in created.packages.iter().zip(&written) {
-                outln!("  {} ({:?}) -> {}", pkg.label, pkg.role, path.display());
+            for (index, pkg) in created.packages.iter().enumerate() {
+                outln!(
+                    "  {} ({:?}) -> {}",
+                    pkg.label,
+                    pkg.role,
+                    delivered.location(index)
+                );
             }
+            delivered.report_upload();
         }
         PrivateBridgeCommand::List { key_id } => {
             let listing = private_bridge::list(conn, key_id)?;
@@ -1643,13 +2031,14 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
             node,
             share_file,
             slot,
-            output_dir,
+            delivery,
         } => {
             let sk = encryption_secret_from(share_file.as_deref(), slot.as_deref())?;
             let planned = private_bridge::plan_remove_member(conn, &uid, &member, &node, &sk)?;
-            let written = deliver_then_commit(&output_dir, &planned.outcome.packages, || {
-                private_bridge::commit_planned_removal(conn, &planned)
-            })?;
+            let delivered =
+                deliver_commit_push(conn, &delivery, &planned.outcome.packages, || {
+                    private_bridge::commit_planned_removal(conn, &planned)
+                })?;
             let outcome = &planned.outcome;
             if outcome.destroyed {
                 outln!("Destroyed private bridge {uid}");
@@ -1660,9 +2049,15 @@ fn run_private_bridge(conn: &Connection, command: PrivateBridgeCommand) -> Resul
                 );
             }
             outln!("Deliver these packages to each store:");
-            for (pkg, path) in outcome.packages.iter().zip(&written) {
-                outln!("  {} ({:?}) -> {}", pkg.label, pkg.role, path.display());
+            for (index, pkg) in outcome.packages.iter().enumerate() {
+                outln!(
+                    "  {} ({:?}) -> {}",
+                    pkg.label,
+                    pkg.role,
+                    delivered.location(index)
+                );
             }
+            delivered.report_upload();
         }
     }
     Ok(())
@@ -1916,6 +2311,127 @@ fn run_access_password(conn: &Connection, args: AccessPasswordArgs) -> Result<()
     Ok(())
 }
 
+/// The unlock half of `access quorum --state 1`, shared with `send
+/// --quorum-file`: purge an expired file, collect the presented shares,
+/// check custody and parent approval, reconstruct, decrypt, and record the
+/// attempt at the file's gate. Returns the plaintext; the caller decides
+/// where it goes, and a failure leaves exactly what the command always left.
+fn unlock_quorum_file(
+    conn: &Connection,
+    id: i64,
+    share_files: &[String],
+    slots: &[String],
+    approves: &[String],
+    verbose: bool,
+) -> Result<Vec<u8>> {
+    // Before anything else: an expired file is destroyed on the
+    // first unlock attempt, whether or not the presented shares
+    // would have reconstructed it (see quorum::unlock_file_with_approval).
+    gate_link::note_if_gone(Gate::Quorum, conn, id);
+    if let Err(err) = quorum::purge_if_expired_in(&mut env::EnvStorage, conn, id) {
+        gate_link::record_unlock(Gate::Quorum, conn, id, Some(&err), &[]);
+        return Err(err);
+    }
+    let file_status = quorum::status(conn, id)?;
+    let shares = collect_shares(conn, &file_status.tree.root, share_files, slots)?;
+    // What the gate's history may say about this attempt: counts and
+    // the policy it ran under, never a share, key or device secret.
+    let policy = device::custody_policy(conn, file_status.tree.key_id)?;
+    let mut safe = vec![
+        ("shares", shares.len().to_string()),
+        (
+            "threshold",
+            file_status
+                .tree
+                .root
+                .threshold
+                .map_or_else(|| "-".to_string(), |t| t.to_string()),
+        ),
+        ("custody", policy.mode.as_str().to_string()),
+        (
+            "minimum_devices",
+            policy.minimum_physical_devices.to_string(),
+        ),
+        ("approval", policy.unlock_approval.as_str().to_string()),
+    ];
+    if verbose {
+        let mut leaves = Vec::new();
+        collect_leaves(&file_status.tree.root, &mut leaves);
+        let unwrapped: Vec<&str> = leaves
+            .iter()
+            .filter(|(node_id, _, _)| shares.contains_key(node_id))
+            .map(|(_, _, label)| label.as_str())
+            .collect();
+        errln!(
+            "Shares unwrapped: {}",
+            if unwrapped.is_empty() {
+                "none".to_string()
+            } else {
+                unwrapped.join(", ")
+            }
+        );
+    }
+    let presented = match key_tree::reconstruct_presented(conn, file_status.tree.key_id, &shares) {
+        Ok(presented) => presented,
+        Err(err) => {
+            quorum::record_unlock_failure(conn, id, &err)?;
+            gate_link::record_unlock_with(Gate::Quorum, conn, id, Some(&err), &[], &safe);
+            return Err(err);
+        }
+    };
+    safe.push(("devices", presented.devices.len().to_string()));
+    if verbose {
+        let used: Vec<&str> = presented
+            .leaves
+            .iter()
+            .map(|leaf| leaf.leaf_label.as_str())
+            .collect();
+        errln!("Threshold met using: {}", used.join(", "));
+        errln!(
+            "Physical devices: {} (minimum {}) — {}",
+            presented.devices.len(),
+            policy.minimum_physical_devices,
+            device::format_presentation(&presented.devices)
+        );
+    }
+    let grants = match approval_grants(id, file_status.tree.key_id, &presented.devices, approves) {
+        Ok(grants) => grants,
+        Err(err) => {
+            let mut secret = presented.secret;
+            secret.zeroize();
+            quorum::record_unlock_failure(conn, id, &err)?;
+            safe.push(("approvals", "missing".to_string()));
+            gate_link::record_unlock_with(Gate::Quorum, conn, id, Some(&err), &[], &safe);
+            return Err(err);
+        }
+    };
+    safe.push(("approvals", grants.len().to_string()));
+    if verbose {
+        for grant in &grants {
+            errln!(
+                "Parent approval: {} signed for {}",
+                grant.countersigner_label,
+                grant.leaf_label
+            );
+        }
+    }
+    let presented_labels: Vec<String> = presented
+        .leaves
+        .iter()
+        .map(|leaf| leaf.leaf_label.clone())
+        .collect();
+    let unlocked = quorum::complete_unlock_in(&mut env::EnvStorage, conn, id, presented, &grants);
+    gate_link::record_unlock_with(
+        Gate::Quorum,
+        conn,
+        id,
+        unlocked.as_ref().err(),
+        &presented_labels,
+        &safe,
+    );
+    unlocked
+}
+
 fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()> {
     if args.status {
         let id = require(args.id, "id")?;
@@ -1990,127 +2506,14 @@ fn run_access_quorum(conn: &mut Connection, args: AccessQuorumArgs) -> Result<()
         }
         Some(1) => {
             let id = require(args.id, "id")?;
-            // Before anything else: an expired file is destroyed on the
-            // first unlock attempt, whether or not the presented shares
-            // would have reconstructed it (see quorum::unlock_file_with_approval).
-            gate_link::note_if_gone(Gate::Quorum, conn, id);
-            if let Err(err) = quorum::purge_if_expired_in(&mut env::EnvStorage, conn, id) {
-                gate_link::record_unlock(Gate::Quorum, conn, id, Some(&err), &[]);
-                return Err(err);
-            }
-            let file_status = quorum::status(conn, id)?;
-            let shares =
-                collect_shares(conn, &file_status.tree.root, &args.share_files, &args.slots)?;
-            // What the gate's history may say about this attempt: counts and
-            // the policy it ran under, never a share, key or device secret.
-            let policy = device::custody_policy(conn, file_status.tree.key_id)?;
-            let mut safe = vec![
-                ("shares", shares.len().to_string()),
-                (
-                    "threshold",
-                    file_status
-                        .tree
-                        .root
-                        .threshold
-                        .map_or_else(|| "-".to_string(), |t| t.to_string()),
-                ),
-                ("custody", policy.mode.as_str().to_string()),
-                (
-                    "minimum_devices",
-                    policy.minimum_physical_devices.to_string(),
-                ),
-                ("approval", policy.unlock_approval.as_str().to_string()),
-            ];
-            if args.verbose {
-                let mut leaves = Vec::new();
-                collect_leaves(&file_status.tree.root, &mut leaves);
-                let unwrapped: Vec<&str> = leaves
-                    .iter()
-                    .filter(|(node_id, _, _)| shares.contains_key(node_id))
-                    .map(|(_, _, label)| label.as_str())
-                    .collect();
-                errln!(
-                    "Shares unwrapped: {}",
-                    if unwrapped.is_empty() {
-                        "none".to_string()
-                    } else {
-                        unwrapped.join(", ")
-                    }
-                );
-            }
-            let presented =
-                match key_tree::reconstruct_presented(conn, file_status.tree.key_id, &shares) {
-                    Ok(presented) => presented,
-                    Err(err) => {
-                        quorum::record_unlock_failure(conn, id, &err)?;
-                        gate_link::record_unlock_with(
-                            Gate::Quorum,
-                            conn,
-                            id,
-                            Some(&err),
-                            &[],
-                            &safe,
-                        );
-                        return Err(err);
-                    }
-                };
-            safe.push(("devices", presented.devices.len().to_string()));
-            if args.verbose {
-                let used: Vec<&str> = presented
-                    .leaves
-                    .iter()
-                    .map(|leaf| leaf.leaf_label.as_str())
-                    .collect();
-                errln!("Threshold met using: {}", used.join(", "));
-                errln!(
-                    "Physical devices: {} (minimum {}) — {}",
-                    presented.devices.len(),
-                    policy.minimum_physical_devices,
-                    device::format_presentation(&presented.devices)
-                );
-            }
-            let grants = match approval_grants(
-                id,
-                file_status.tree.key_id,
-                &presented.devices,
-                &args.approves,
-            ) {
-                Ok(grants) => grants,
-                Err(err) => {
-                    let mut secret = presented.secret;
-                    secret.zeroize();
-                    quorum::record_unlock_failure(conn, id, &err)?;
-                    safe.push(("approvals", "missing".to_string()));
-                    gate_link::record_unlock_with(Gate::Quorum, conn, id, Some(&err), &[], &safe);
-                    return Err(err);
-                }
-            };
-            safe.push(("approvals", grants.len().to_string()));
-            if args.verbose {
-                for grant in &grants {
-                    errln!(
-                        "Parent approval: {} signed for {}",
-                        grant.countersigner_label,
-                        grant.leaf_label
-                    );
-                }
-            }
-            let presented_labels: Vec<String> = presented
-                .leaves
-                .iter()
-                .map(|leaf| leaf.leaf_label.clone())
-                .collect();
-            let unlocked =
-                quorum::complete_unlock_in(&mut env::EnvStorage, conn, id, presented, &grants);
-            gate_link::record_unlock_with(
-                Gate::Quorum,
+            let plaintext = unlock_quorum_file(
                 conn,
                 id,
-                unlocked.as_ref().err(),
-                &presented_labels,
-                &safe,
-            );
-            let plaintext = unlocked?;
+                &args.share_files,
+                &args.slots,
+                &args.approves,
+                args.verbose,
+            )?;
             match args.output {
                 Some(path) => env::write_new(&path, &plaintext)?,
                 None => env::stdout_bytes(&plaintext)?,
@@ -2216,19 +2619,108 @@ fn persist_checked_key(
     )
 }
 
+/// The revocation list the environment points at, and the digest of the file
+/// it came from (of nothing when there is none).
+fn revocation_list(root: &[u8; 32]) -> Result<(std::collections::HashSet<String>, String)> {
+    use sha2::{Digest, Sha256};
+    match env::var("KEYQUORUM_PROVIDER_KRL")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        Some(path) => {
+            let bytes = env::read(Path::new(&path))?;
+            let digest = hex::encode(Sha256::digest(&bytes));
+            Ok((provider::verify_revocation_list(root, &bytes)?, digest))
+        }
+        None => Ok((Default::default(), hex::encode(Sha256::digest([])))),
+    }
+}
+
 /// Official clients verify a KeyQuorum-signed provider certificate before
 /// sending a bearer. A modified relay cannot skip this check.
 fn authenticate_official_relay(url: &str) -> Result<provider::Certificate> {
     let now = env::now_utc()?;
     let root = env::provider_root();
-    let revoked = match env::var("KEYQUORUM_PROVIDER_KRL")
-        .ok()
-        .filter(|s| !s.is_empty())
-    {
-        Some(path) => provider::verify_revocation_list(&root, &env::read(Path::new(&path))?)?,
-        None => Default::default(),
-    };
-    relay::authenticate_provider(&env::EnvRelay, url, &root, &now, &revoked)
+    let (revoked, _) = revocation_list(&root)?;
+    let cert = relay::authenticate_provider(&env::EnvRelay, url, &root, &now, &revoked)?;
+    profile::mark_relay_proven(url);
+    Ok(cert)
+}
+
+/// The identity check for a command that presents only a stored key. A check
+/// that passed for this relay in the last 15 minutes, against the same
+/// revocation list and stored key hash, stands in for a new challenge; so does
+/// one this command already ran. Anything else, and every new bearer, runs the
+/// full challenge. Only a passed check is ever remembered.
+fn authenticate_relay_for_stored_key(conn: &Connection, url: &str, key_hash: &str) -> Result<()> {
+    if profile::relay_proven(url) {
+        return Ok(());
+    }
+    let root = env::provider_root();
+    let (_, krl_digest) = revocation_list(&root)?;
+    let now = env::now_utc()?;
+    let cached = profile::caching(conn);
+    if cached && db::cache::relay_trust_hit(conn, url, &krl_digest, key_hash, &now)? {
+        profile::mark_relay_proven(url);
+        errln!(
+            "note: reusing a relay check from the last {} minutes for {url} (--no-cache to repeat it)",
+            db::cache::TTL_MINUTES
+        );
+        return Ok(());
+    }
+    let cert = authenticate_official_relay(url)?;
+    if cached {
+        let fingerprint = format!("{}:{}", cert.provider_id, cert.serial);
+        let _ = db::cache::store_relay_trust(
+            conn,
+            &db::cache::RelayTrust {
+                relay_url: url,
+                cert_fingerprint: &fingerprint,
+                krl_digest: &krl_digest,
+                key_hash,
+                cert_not_after: &cert.expires_at,
+            },
+            &now,
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn configured_relay_url(
+    conn: &Connection,
+    explicit: Option<String>,
+    scope: relay::ApiKeyScope,
+) -> Result<Option<String>> {
+    if let Some(url) = explicit.filter(|s| !s.is_empty()) {
+        let url = db::relay_credential::normalize_url(&url);
+        relay::validate_relay_url(&url)?;
+        return Ok(Some(url));
+    }
+    match env::var("KEYQUORUM_RELAY_URL") {
+        Ok(url) if !url.is_empty() => {
+            let url = db::relay_credential::normalize_url(&url);
+            relay::validate_relay_url(&url)?;
+            Ok(Some(url))
+        }
+        _ => {
+            let preferred = db::profile::get(conn, db::profile::DEFAULT_RELAY_URL)?;
+            if let Some(url) = preferred {
+                relay::validate_relay_url(&url)?;
+                return Ok(Some(url));
+            }
+            let stored = db::relay_credential::get_for_scope(conn, scope.as_str())?;
+            match stored.as_slice() {
+                [one] => {
+                    relay::validate_relay_url(&one.relay_url)?;
+                    Ok(Some(one.relay_url.clone()))
+                }
+                [] => Ok(None),
+                _ => Err(Error::RelayRequest(
+                    "multiple stored relay URLs; pass --url".into(),
+                )),
+            }
+        }
+    }
 }
 
 fn resolve_relay_url(
@@ -2236,33 +2728,9 @@ fn resolve_relay_url(
     explicit: Option<String>,
     scope: relay::ApiKeyScope,
 ) -> Result<String> {
-    if let Some(url) = explicit.filter(|s| !s.is_empty()) {
-        let url = db::relay_credential::normalize_url(&url);
-        relay::validate_relay_url(&url)?;
-        return Ok(url);
-    }
-    match env::var("KEYQUORUM_RELAY_URL") {
-        Ok(url) if !url.is_empty() => {
-            let url = db::relay_credential::normalize_url(&url);
-            relay::validate_relay_url(&url)?;
-            Ok(url)
-        }
-        _ => {
-            let stored = db::relay_credential::get_for_scope(conn, scope.as_str())?;
-            match stored.as_slice() {
-                [one] => {
-                    relay::validate_relay_url(&one.relay_url)?;
-                    Ok(one.relay_url.clone())
-                }
-                [] => Err(Error::RelayRequest(
-                    "relay URL required (--url or KEYQUORUM_RELAY_URL)".into(),
-                )),
-                _ => Err(Error::RelayRequest(
-                    "multiple stored relay URLs; pass --url".into(),
-                )),
-            }
-        }
-    }
+    configured_relay_url(conn, explicit, scope)?.ok_or_else(|| {
+        Error::RelayRequest("relay URL required (--url or KEYQUORUM_RELAY_URL)".into())
+    })
 }
 
 /// Every device letter for this pull key, following `next_after` until the
@@ -2304,7 +2772,6 @@ pub(crate) fn resolve_relay_auth(
     required: relay::ApiKeyScope,
 ) -> Result<(String, String)> {
     let url = resolve_relay_url(conn, explicit_url, required)?;
-    authenticate_official_relay(&url)?;
     let provided = explicit_key.filter(|s| !s.is_empty()).or_else(|| {
         match env::var("KEYQUORUM_RELAY_API_KEY") {
             Ok(key) if !key.is_empty() => Some(key),
@@ -2313,6 +2780,10 @@ pub(crate) fn resolve_relay_auth(
     });
 
     if let Some(token) = provided {
+        // A bearer not yet stored always meets the full challenge first.
+        if !profile::relay_proven(&url) {
+            authenticate_official_relay(&url)?;
+        }
         let check = relay::check_key(&env::EnvRelay, &url, &token)?;
         if !check.valid {
             return Err(Error::InvalidApiKey);
@@ -2326,8 +2797,10 @@ pub(crate) fn resolve_relay_auth(
 
     match db::relay_credential::get(conn, &url, required.as_str())? {
         Some(stored) => {
+            authenticate_relay_for_stored_key(conn, &url, &stored.key_hash)?;
             let check = relay::check_key_hash(&env::EnvRelay, &url, &stored.key_hash)?;
             if !check.valid {
+                db::cache::forget_relay_trust(conn, &url)?;
                 db::relay_credential::delete(conn, &url, required.as_str())?;
                 return Err(Error::RelayRequest(format!(
                     "stored API key for {} is no longer valid; run `keyquorum loadkey`",
@@ -2337,10 +2810,15 @@ pub(crate) fn resolve_relay_auth(
             db::relay_credential::touch_checked(conn, &url, required.as_str())?;
             Ok((url, stored.token))
         }
-        None => Err(Error::RelayRequest(format!(
-            "no stored API key for {}; run `keyquorum loadkey` or pass --api-key",
-            required.as_str()
-        ))),
+        None => {
+            if !profile::relay_proven(&url) {
+                authenticate_official_relay(&url)?;
+            }
+            Err(Error::RelayRequest(format!(
+                "no stored API key for {}; run `keyquorum loadkey` or pass --api-key",
+                required.as_str()
+            )))
+        }
     }
 }
 
@@ -2349,19 +2827,24 @@ fn run_loadkey(db_path: &Path, api_key: Option<String>, url: Option<String>) -> 
 }
 
 fn loadkey_in_store(conn: &Connection, api_key: Option<String>, url: Option<String>) -> Result<()> {
-    let url = if let Some(url) = url.filter(|s| !s.is_empty()) {
-        db::relay_credential::normalize_url(&url)
-    } else {
-        match env::var("KEYQUORUM_RELAY_URL") {
-            Ok(url) if !url.is_empty() => db::relay_credential::normalize_url(&url),
-            _ => {
-                return Err(Error::RelayRequest(
-                    "relay URL required (--url or KEYQUORUM_RELAY_URL)".into(),
-                ))
+    let url =
+        if let Some(url) = url.filter(|s| !s.is_empty()) {
+            db::relay_credential::normalize_url(&url)
+        } else {
+            match env::var("KEYQUORUM_RELAY_URL") {
+                Ok(url) if !url.is_empty() => db::relay_credential::normalize_url(&url),
+                _ => match db::profile::get(conn, db::profile::DEFAULT_RELAY_URL)? {
+                    Some(url) => db::relay_credential::normalize_url(&url),
+                    None => return Err(Error::RelayRequest(
+                        "relay URL required (--url, KEYQUORUM_RELAY_URL or `keyquorum use --url`)"
+                            .into(),
+                    )),
+                },
             }
-        }
-    };
+        };
     relay::validate_relay_url(&url)?;
+    // `loadkey` always meets the full challenge, and drops any cached pass.
+    db::cache::forget_relay_trust(conn, &url)?;
     authenticate_official_relay(&url)?;
     let token = match api_key.filter(|s| !s.is_empty()) {
         Some(token) => token,
@@ -2379,7 +2862,14 @@ fn loadkey_in_store(conn: &Connection, api_key: Option<String>, url: Option<Stri
 }
 
 fn run_relay(db_path: &Path, command: RelayCommand) -> Result<()> {
-    env::with_db(db_path, |conn| relay_in_store(conn, command))
+    // `relay push` stays the carrier for the producer commands until they
+    // push for themselves, so only a pull is called legacy for now.
+    let pulled = matches!(command, RelayCommand::Pull { .. });
+    env::with_db(db_path, |conn| relay_in_store(conn, command))?;
+    if pulled {
+        legacy::notice("relay pull", legacy::PULL);
+    }
+    Ok(())
 }
 
 fn relay_in_store(conn: &Connection, command: RelayCommand) -> Result<()> {
@@ -2395,48 +2885,20 @@ fn relay_in_store(conn: &Connection, command: RelayCommand) -> Result<()> {
             }
             let (url, api_key) =
                 resolve_relay_auth(conn, url, api_key, relay::ApiKeyScope::InboxPush)?;
-            let trees = export_local_public_trees(conn)?;
-            let mut uploaded = 0usize;
+            let mut items = Vec::new();
             for path in env::read_dir(&dir)? {
                 if path.extension().and_then(|s| s.to_str()) != Some("kqpb") {
                     continue;
                 }
-                let bytes = env::read(&path)?;
-                let attach_trees = !trees.is_empty() && uploaded == 0;
-                let accepted = if expires.is_some() || attach_trees {
-                    let trees = if attach_trees { trees.as_slice() } else { &[] };
-                    relay::push_inbox_with_trees_until(
-                        &env::EnvRelay,
-                        &url,
-                        &api_key,
-                        &bytes,
-                        trees,
-                        expires.as_deref(),
-                    )?
-                } else {
-                    relay::push_inbox(&env::EnvRelay, &url, &api_key, &bytes)?
-                };
-                outln!(
-                    "{} -> id {} ({})",
-                    path.display(),
-                    accepted.id,
-                    accepted.recipient_fingerprint
-                );
-                uploaded += 1;
+                items.push((path.display().to_string(), env::read(&path)?));
             }
-            if uploaded == 0 {
+            if items.is_empty() {
                 return Err(Error::RelayRequest(format!(
                     "no .kqpb files in {}",
                     dir.display()
                 )));
             }
-            if !trees.is_empty() {
-                outln!(
-                    "Updated relay public-tree context ({} tree{})",
-                    trees.len(),
-                    if trees.len() == 1 { "" } else { "s" }
-                );
-            }
+            push_packages(conn, &url, &api_key, &items, expires.as_deref(), |_| {})?;
         }
         RelayCommand::Pull {
             import,
@@ -2580,24 +3042,30 @@ fn relay_in_store(conn: &Connection, command: RelayCommand) -> Result<()> {
                     continue;
                 }
                 if let Some(sk) = share_sk.as_ref() {
-                    match org_update::import_any(conn, &bytes, sk)? {
-                        org_update::ImportedEnvelope::Bridge(summary) => outln!(
-                            "Imported envelope {} as private bridge {} gen {}",
-                            item.id,
-                            summary.uid,
-                            summary.generation
-                        ),
-                        org_update::ImportedEnvelope::Update(applied) => outln!(
-                            "Imported envelope {}: {}",
-                            item.id,
-                            describe_applied_update(&applied)
-                        ),
-                    }
+                    import_envelope(conn, item.id, &bytes, sk)?;
                 }
             }
             if let Some(cursor) = listed.next_after {
                 outln!("More envelopes remain; pass --after {cursor} to continue");
             }
+        }
+    }
+    Ok(())
+}
+
+/// Import one bridge or org-update envelope and say what it did.
+fn import_envelope(conn: &Connection, id: i64, bytes: &[u8], sk: &[u8; 32]) -> Result<()> {
+    match org_update::import_any(conn, bytes, sk)? {
+        org_update::ImportedEnvelope::Bridge(summary) => outln!(
+            "Imported envelope {id} as private bridge {} gen {}",
+            summary.uid,
+            summary.generation
+        ),
+        org_update::ImportedEnvelope::Update(applied) => {
+            outln!(
+                "Imported envelope {id}: {}",
+                describe_applied_update(&applied)
+            )
         }
     }
     Ok(())
@@ -3090,9 +3558,11 @@ fn open_slot_secrets(entry: &str) -> Result<device::SlotSecrets> {
     if path.is_empty() || label.is_empty() {
         return Err(usage("--slot must be container=label"));
     }
-    let container = env::fs(|fs| device::open_in(fs, Path::new(path)))?;
-    let passphrase = env::prompt_passphrase(&format!("Passphrase for {label}: "))?;
-    env::fs(|fs| device::open_slot_in(fs, &container, label, &passphrase))
+    profile::slot_secrets(entry, || {
+        let container = env::fs(|fs| device::open_in(fs, Path::new(path)))?;
+        let passphrase = env::prompt_passphrase(&format!("Passphrase for {label}: "))?;
+        env::fs(|fs| device::open_slot_in(fs, &container, label, &passphrase))
+    })
 }
 
 fn add_slot_shares(

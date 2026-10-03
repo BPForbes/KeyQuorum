@@ -10,6 +10,10 @@ path = "src/lib.rs"
 
 [features]
 default = []
+# Exercises compatibility commands retained while callers migrate to the
+# everyday one-shot CLI. CI may enable this explicitly; the default suite
+# concentrates on the replacement commands.
+legacy-tests = []
 # Compiles mailbox-host *capabilities* (hidden `host` subcommand). This is
 # not authorization: a trusted provider also needs a KeyQuorum-signed
 # provider.kqcert and the matching relay private key. Default

@@ -121,6 +121,20 @@ pub fn get(conn: &Connection, relay_url: &str, scope: &str) -> Result<Option<Sto
     }
 }
 
+/// Whether any key is stored for this relay. Counts rows only; no bearer is
+/// unwrapped.
+pub fn has_any_for_url(conn: &Connection, relay_url: &str) -> Result<bool> {
+    let url = normalize_url(relay_url);
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM relay_credentials WHERE relay_url = ?1 LIMIT 1",
+            params![url],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
 pub fn get_for_scope(conn: &Connection, scope: &str) -> Result<Vec<StoredRelayKey>> {
     let mut stmt = conn.prepare(
         "SELECT relay_url, scope, key_hash, wrap_key, wrap_nonce, wrapped_token,

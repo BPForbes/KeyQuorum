@@ -237,7 +237,7 @@ impl LabVm {
         let ran = match argv[0].as_str() {
             "keyquorum" => match Cli::try_parse_from(&argv) {
                 Ok(parsed) => {
-                    let (ran, vm) = env::scoped(self, || cli::run(&parsed.db, parsed.command));
+                    let (ran, vm) = env::scoped(self, || cli::run_cli(parsed));
                     self = vm;
                     ran
                 }
