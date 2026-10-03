@@ -5,7 +5,7 @@ const DB: &str = "keyquorum --db /home/alice/keyquorum.sqlite";
 
 fn ok(env: &mut MemoryEnv, line: &str) -> String {
     let (result, out) = env.keyquorum(line);
-    assert!(result.is_ok(), "{line}: {result:?}\n{out}");
+    assert!(result.is_ok(), "{line}: the command failed");
     out
 }
 

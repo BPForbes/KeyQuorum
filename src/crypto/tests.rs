@@ -1,10 +1,12 @@
 use super::*;
+use crate::test_secrets::{other_passphrase, passphrase};
 
 #[test]
 fn derive_key_is_deterministic_for_same_password_and_salt() {
     let salt = random_salt();
-    let a = derive_key("correct horse battery staple", &salt).unwrap();
-    let b = derive_key("correct horse battery staple", &salt).unwrap();
+    let password = passphrase();
+    let a = derive_key(&password, &salt).unwrap();
+    let b = derive_key(&password, &salt).unwrap();
     assert_eq!(a, b);
 }
 
@@ -30,14 +32,15 @@ fn fill_random_fills_the_whole_buffer_differently_each_call() {
 #[test]
 fn derive_key_differs_for_different_passwords() {
     let salt = random_salt();
-    let a = derive_key("password-one", &salt).unwrap();
-    let b = derive_key("password-two", &salt).unwrap();
+    let one = passphrase();
+    let a = derive_key(&one, &salt).unwrap();
+    let b = derive_key(&other_passphrase(&one), &salt).unwrap();
     assert_ne!(a, b);
 }
 
 #[test]
 fn encrypt_decrypt_roundtrip() {
-    let key = derive_key("hunter2", &random_salt()).unwrap();
+    let key = derive_key(&passphrase(), &random_salt()).unwrap();
     let nonce = random_nonce();
     let plaintext = b"the quorum has been reached";
 
@@ -51,8 +54,9 @@ fn encrypt_decrypt_roundtrip() {
 fn decrypt_fails_with_wrong_key() {
     let salt = random_salt();
     let nonce = random_nonce();
-    let key = derive_key("hunter2", &salt).unwrap();
-    let wrong_key = derive_key("not-hunter2", &salt).unwrap();
+    let password = passphrase();
+    let key = derive_key(&password, &salt).unwrap();
+    let wrong_key = derive_key(&other_passphrase(&password), &salt).unwrap();
 
     let ciphertext = encrypt(&key, &nonce, b"top secret");
 

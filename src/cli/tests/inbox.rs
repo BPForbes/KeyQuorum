@@ -9,7 +9,7 @@ pub(super) const BOB: &str = "keyquorum --db /home/bob/keyquorum.sqlite";
 
 fn run(env: &mut MemoryEnv, line: &str) -> String {
     let (ok, out) = env.keyquorum(line);
-    assert!(ok.is_ok(), "{line}: {ok:?}");
+    assert!(ok.is_ok(), "{line}: the command failed");
     out
 }
 

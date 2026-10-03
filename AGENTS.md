@@ -528,6 +528,12 @@ Run format, lint, and tests before considering any change complete.
   `#[cfg(test)] #[path = "<module>/tests.rs"] mod tests;`. Nested files such as
   `src/relay/client.rs` load `src/relay/client/tests.rs` the same way. Shared
   test helpers belong in a `#[cfg(test)]` module, not in production code.
+- Tests never write a secret as a literal: passphrases, passwords, PINs and
+  nonces come from `crate::test_secrets` (`passphrase`, `other_passphrase`,
+  `pin`, `other_pin`, `bytes32`, `shared_passphrase`), drawn at run time. A
+  test's assertion message never formats a command's `Result`, error or
+  output: name the command line instead. Both keep CodeQL
+  (`rust/hard-coded-cryptographic-value`, `rust/cleartext-logging`) clean.
 
 ## Security
 

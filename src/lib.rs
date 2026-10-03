@@ -35,3 +35,6 @@ pub mod signing;
 pub mod storage;
 pub mod transfer;
 pub mod vault;
+
+#[cfg(test)]
+pub(crate) mod test_secrets;

@@ -1,6 +1,7 @@
 use super::terminal;
 use super::view::{Snapshot, StepStatus};
 use super::LabState;
+use crate::test_secrets::{other_passphrase, other_pin, passphrase, pin};
 
 fn lab() -> LabState {
     LabState::seed().expect("lab should seed")
@@ -862,9 +863,11 @@ fn an_unknown_recipient_is_a_usage_error_from_the_cli() {
 
 #[test]
 fn a_password_locked_file_is_protected_by_the_typed_password_not_a_demo_value() {
+    let password = passphrase();
+    let other = other_passphrase(&password);
     let mut state = lab();
     let outcome = state
-        .lock_password_file("my-note.txt", "top secret plan", "hunter2", None)
+        .lock_password_file("my-note.txt", "top secret plan", password.as_str(), None)
         .unwrap();
     assert!(outcome.ok, "{}", said(&outcome));
     let files = snap(&state).password_files;
@@ -874,15 +877,17 @@ fn a_password_locked_file_is_protected_by_the_typed_password_not_a_demo_value() 
     assert!(!files[0].pin_protected);
     let id = files[0].id;
 
-    // The seeded demo password does not open it: the typed password is the
-    // only one that unwraps this file, not `DEMO_PASSWORD`.
+    // Another password does not open it: the typed password is the only
+    // one that unwraps this file, whatever the lab answers prompts with.
     let denied = state
-        .unlock_password_file(id, "lab-demo-password", None)
+        .unlock_password_file(id, other.as_str(), None)
         .unwrap();
     assert!(!denied.ok);
     assert!(denied.opened.is_none());
 
-    let granted = state.unlock_password_file(id, "hunter2", None).unwrap();
+    let granted = state
+        .unlock_password_file(id, password.as_str(), None)
+        .unwrap();
     assert!(granted.ok, "{}", said(&granted));
     assert_eq!(
         granted.opened.map(|opened| opened.text),
@@ -892,34 +897,43 @@ fn a_password_locked_file_is_protected_by_the_typed_password_not_a_demo_value() 
 
 #[test]
 fn a_password_locked_file_with_a_custom_pin_needs_both_the_pin_and_the_password() {
+    let password = passphrase();
+    let pin = pin();
+    let wrong_pin = other_pin(&pin);
     let mut state = lab();
     let outcome = state
-        .lock_password_file("pinned.txt", "guarded", "correct-password", Some("7392"))
+        .lock_password_file(
+            "pinned.txt",
+            "guarded",
+            password.as_str(),
+            Some(pin.as_str()),
+        )
         .unwrap();
     assert!(outcome.ok, "{}", said(&outcome));
     let id = snap(&state).password_files[0].id;
 
     let wrong_pin = state
-        .unlock_password_file(id, "correct-password", Some("0000"))
+        .unlock_password_file(id, password.as_str(), Some(wrong_pin.as_str()))
         .unwrap();
     assert!(!wrong_pin.ok);
 
     let right = state
-        .unlock_password_file(id, "correct-password", Some("7392"))
+        .unlock_password_file(id, password.as_str(), Some(pin.as_str()))
         .unwrap();
     assert!(right.ok, "{}", said(&right));
 }
 
 #[test]
 fn only_the_owner_can_unlock_their_own_password_file() {
+    let alice_password = passphrase();
     let mut state = lab();
     state
-        .lock_password_file("mine.txt", "alice's secret", "alice-password", None)
+        .lock_password_file("mine.txt", "alice's secret", alice_password.as_str(), None)
         .unwrap();
     let id = snap(&state).password_files[0].id;
     state.switch_user("bob").unwrap();
     let outcome = state
-        .unlock_password_file(id, "alice-password", None)
+        .unlock_password_file(id, alice_password.as_str(), None)
         .unwrap();
     assert!(!outcome.ok);
 }
@@ -928,6 +942,9 @@ fn only_the_owner_can_unlock_their_own_password_file() {
 
 #[test]
 fn a_row_id_collision_across_stores_does_not_deny_the_real_owner() {
+    let alice_password = passphrase();
+    let bob_password = passphrase();
+    let alice_second = passphrase();
     // Fixes #36: each lab user has their own SQLite store, so Alice's and
     // Bob's first password-locked file are both row id 1 there. Looking a
     // file up by id alone used to resolve to whichever tracking entry was
@@ -935,13 +952,18 @@ fn a_row_id_collision_across_stores_does_not_deny_the_real_owner() {
     // file 1 was denied as belonging to Alice.
     let mut state = lab();
     state
-        .lock_password_file("alice-note.txt", "alice's secret", "alice-password", None)
+        .lock_password_file(
+            "alice-note.txt",
+            "alice's secret",
+            alice_password.as_str(),
+            None,
+        )
         .unwrap();
     let alice_id = snap(&state).password_files[0].id;
 
     state.switch_user("bob").unwrap();
     state
-        .lock_password_file("bob-note.txt", "bob's secret", "bob-password", None)
+        .lock_password_file("bob-note.txt", "bob's secret", bob_password.as_str(), None)
         .unwrap();
     let bob_id = snap(&state)
         .password_files
@@ -956,10 +978,12 @@ fn a_row_id_collision_across_stores_does_not_deny_the_real_owner() {
 
     // Bob can unlock, export, and share his own file 1...
     let unlocked = state
-        .unlock_password_file(bob_id, "bob-password", None)
+        .unlock_password_file(bob_id, bob_password.as_str(), None)
         .unwrap();
     assert!(unlocked.ok, "{}", said(&unlocked));
-    let exported = state.export_file(bob_id, "M.S.1", "bob-password").unwrap();
+    let exported = state
+        .export_file(bob_id, "M.S.1", bob_password.as_str())
+        .unwrap();
     assert!(exported.ok, "{}", said(&exported));
     let shared = state.create_file_share(bob_id, 3600, None).unwrap();
     assert!(shared.ok, "{}", said(&shared));
@@ -975,7 +999,7 @@ fn a_row_id_collision_across_stores_does_not_deny_the_real_owner() {
         .lock_password_file(
             "alice-second.txt",
             "alice's other secret",
-            "alice-second-password",
+            alice_second.as_str(),
             None,
         )
         .unwrap();
@@ -990,17 +1014,17 @@ fn a_row_id_collision_across_stores_does_not_deny_the_real_owner() {
         "a non-colliding id is the whole point of this half of the test"
     );
     let alice_unlock = state
-        .unlock_password_file(alice_second_id, "alice-second-password", None)
+        .unlock_password_file(alice_second_id, alice_second.as_str(), None)
         .unwrap();
     assert!(alice_unlock.ok, "{}", said(&alice_unlock));
 
     state.switch_user("bob").unwrap();
     let cross_owner_unlock = state
-        .unlock_password_file(alice_second_id, "alice-second-password", None)
+        .unlock_password_file(alice_second_id, alice_second.as_str(), None)
         .unwrap();
     assert!(!cross_owner_unlock.ok);
     let cross_owner_export = state
-        .export_file(alice_second_id, "M.S.1", "alice-second-password")
+        .export_file(alice_second_id, "M.S.1", alice_second.as_str())
         .unwrap();
     assert!(!cross_owner_export.ok);
     let cross_owner_share = state
@@ -1220,13 +1244,14 @@ fn transfer_copy_with_the_same_from_and_to_db_path_does_not_lose_the_new_device_
 
 #[test]
 fn export_file_seals_a_bundle_that_only_its_exporter_can_view() {
+    let password = passphrase();
     let mut state = lab();
     state
-        .lock_password_file("plan.txt", "confidential plan", "lock-pass", None)
+        .lock_password_file("plan.txt", "confidential plan", password.as_str(), None)
         .unwrap();
     let id = snap(&state).password_files[0].id;
 
-    let outcome = state.export_file(id, "M.S.2", "lock-pass").unwrap();
+    let outcome = state.export_file(id, "M.S.2", password.as_str()).unwrap();
     assert!(outcome.ok, "{}", said(&outcome));
     let exports = snap(&state).exports;
     assert_eq!(exports.len(), 1);
@@ -1251,33 +1276,37 @@ fn export_file_seals_a_bundle_that_only_its_exporter_can_view() {
 
 #[test]
 fn export_file_requires_owning_the_password_locked_file() {
+    let password = passphrase();
     let mut state = lab();
     state
-        .lock_password_file("plan.txt", "confidential plan", "lock-pass", None)
+        .lock_password_file("plan.txt", "confidential plan", password.as_str(), None)
         .unwrap();
     let id = snap(&state).password_files[0].id;
     state.switch_user("bob").unwrap();
-    let outcome = state.export_file(id, "M.S.2", "lock-pass").unwrap();
+    let outcome = state.export_file(id, "M.S.2", password.as_str()).unwrap();
     assert!(!outcome.ok);
 }
 
 #[test]
 fn export_file_rejects_the_wrong_password() {
+    let password = passphrase();
+    let wrong = other_passphrase(&password);
     let mut state = lab();
     state
-        .lock_password_file("plan.txt", "confidential plan", "lock-pass", None)
+        .lock_password_file("plan.txt", "confidential plan", password.as_str(), None)
         .unwrap();
     let id = snap(&state).password_files[0].id;
-    let outcome = state.export_file(id, "M.S.2", "not-the-password").unwrap();
+    let outcome = state.export_file(id, "M.S.2", wrong.as_str()).unwrap();
     assert!(!outcome.ok);
     assert!(snap(&state).exports.is_empty());
 }
 
 #[test]
 fn create_file_share_returns_a_token_once_and_only_the_owner_may_create_it() {
+    let password = passphrase();
     let mut state = lab();
     state
-        .lock_password_file("plan.txt", "confidential plan", "lock-pass", None)
+        .lock_password_file("plan.txt", "confidential plan", password.as_str(), None)
         .unwrap();
     let id = snap(&state).password_files[0].id;
 
@@ -1299,9 +1328,10 @@ fn create_file_share_returns_a_token_once_and_only_the_owner_may_create_it() {
 
 #[test]
 fn redeem_file_share_consumes_a_use_and_is_not_identity_scoped() {
+    let password = passphrase();
     let mut state = lab();
     state
-        .lock_password_file("plan.txt", "confidential plan", "lock-pass", None)
+        .lock_password_file("plan.txt", "confidential plan", password.as_str(), None)
         .unwrap();
     let id = snap(&state).password_files[0].id;
     let created = state.create_file_share(id, 3600, None).unwrap();
@@ -1324,9 +1354,10 @@ fn redeem_file_share_consumes_a_use_and_is_not_identity_scoped() {
 
 #[test]
 fn redeeming_with_the_wrong_token_is_refused() {
+    let password = passphrase();
     let mut state = lab();
     state
-        .lock_password_file("plan.txt", "confidential plan", "lock-pass", None)
+        .lock_password_file("plan.txt", "confidential plan", password.as_str(), None)
         .unwrap();
     let id = snap(&state).password_files[0].id;
     state.create_file_share(id, 3600, None).unwrap();
@@ -1339,9 +1370,10 @@ fn redeeming_with_the_wrong_token_is_refused() {
 
 #[test]
 fn revoke_file_share_prevents_further_redemption() {
+    let password = passphrase();
     let mut state = lab();
     state
-        .lock_password_file("plan.txt", "confidential plan", "lock-pass", None)
+        .lock_password_file("plan.txt", "confidential plan", password.as_str(), None)
         .unwrap();
     let id = snap(&state).password_files[0].id;
     let created = state.create_file_share(id, 3600, None).unwrap();
@@ -1365,9 +1397,10 @@ fn revoke_file_share_prevents_further_redemption() {
 
 #[test]
 fn only_the_owner_can_revoke_their_share() {
+    let password = passphrase();
     let mut state = lab();
     state
-        .lock_password_file("plan.txt", "confidential plan", "lock-pass", None)
+        .lock_password_file("plan.txt", "confidential plan", password.as_str(), None)
         .unwrap();
     let id = snap(&state).password_files[0].id;
     state.create_file_share(id, 3600, None).unwrap();
@@ -2139,7 +2172,7 @@ fn only_the_assigned_reviewer_can_resolve_the_seeded_memo_conflict() {
     let refused = state
         .history_resolve(MEMO, "left", None, None)
         .expect("action runs");
-    assert!(!refused.ok, "{}", refused.message);
+    assert!(!refused.ok, "the CLI refuses a conflicting author");
     assert!(tracked(&snap(&state), MEMO).forked);
 
     // Sarah is the assigned reviewer (M.S): an edited result settles it.

@@ -11,7 +11,7 @@ use std::path::Path;
 
 fn run(env: &mut MemoryEnv, line: &str) -> String {
     let (ok, out) = env.keyquorum(line);
-    assert!(ok.is_ok(), "{line}: {ok:?}\n{out}");
+    assert!(ok.is_ok(), "{line}: the command failed");
     out
 }
 
