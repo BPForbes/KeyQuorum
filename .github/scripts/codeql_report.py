@@ -210,7 +210,7 @@ def main():
     ap.add_argument("sarif", nargs="+")
     args = ap.parse_args()
 
-    failing, listed, out, gates = 0, 0, [], []
+    failing, listed, out, gates, test_lines = 0, 0, [], [], []
     for path in args.sarif:
         for rule, res in findings(path):
             sev, uri, text = render(args.repo_root, rule, res)
@@ -223,15 +223,28 @@ def main():
                 loc = (res.get("locations") or [{}])[0].get("physicalLocation", {})
                 line = loc.get("region", {}).get("startLine", "?")
                 gates.append(f"- {rule.get('id', '?')} at {uri}:{line}")
-            entry = ("GATE " if gate else "") + text + ("(in test code, does not fail the check)\n" if in_tests else "")
+            if in_tests and not gate:
+                # Test fixtures use made-up secrets on purpose. One line each,
+                # so the findings in shipped code stay readable.
+                loc = (res.get("locations") or [{}])[0].get("physicalLocation", {})
+                line = loc.get("region", {}).get("startLine", "?")
+                test_lines.append(f"- {sev}: {rule.get('id', '?')} at {uri}:{line} (test code)")
+                continue
+            entry = ("GATE " if gate else "") + text
             # Findings that fail the check come first, so they are never lost
-            # in a long list of lower-severity or test-code findings.
+            # in a long list of lower-severity findings.
             (out.insert(0, entry) if gate else out.append(entry))
 
     header = f"CodeQL: {listed} finding(s), {failing} failing the check (high or critical, shipped code)."
     if gates:
         header += "\nFailing the check:\n" + "\n".join(gates)
     body = header + "\n\n" + "\n".join(out)
+    if test_lines:
+        body += (
+            f"\nFindings in test code ({len(test_lines)}), listed but not failing the check:\n"
+            + "\n".join(test_lines)
+            + "\n"
+        )
     print(body)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:

@@ -63,7 +63,9 @@ class Report(unittest.TestCase):
     def test_the_same_finding_in_test_code_is_listed_but_does_not_fail(self):
         r = run_report([RULE_HIGH], [result(RULE_HIGH["id"], "src/crypto/tests.rs")])
         self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertIn("in test code, does not fail the check", r.stdout)
+        self.assertIn("Findings in test code (1), listed but not failing the check", r.stdout)
+        self.assertIn("- critical: rust/hard-coded-cryptographic-value at src/crypto/tests.rs:1 (test code)", r.stdout)
+        self.assertNotIn("Source quote", r.stdout, "test findings are one line, not a full block")
 
     def test_quality_finding_is_not_a_soc2_finding_and_does_not_fail(self):
         r = run_report([RULE_QUALITY], [result(RULE_QUALITY["id"], "lab/src/App.tsx", level="note")])
