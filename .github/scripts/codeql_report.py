@@ -144,15 +144,31 @@ def recommendation(rule):
     return first_sentence(m.group(1)) if m else "Follow the recommendation in the query help linked above."
 
 
+def all_rules(run):
+    """Every rule in the run, by id.
+
+    CodeQL writes the rules of its query packs under `tool.extensions`, not
+    `tool.driver.rules`, so both are read. Without that, a result has no
+    severity, no security tag and no help text, and nothing would ever fail.
+    """
+    tool = run.get("tool", {})
+    rules = {}
+    for component in [tool.get("driver", {})] + tool.get("extensions", []):
+        for r in component.get("rules", []) or []:
+            rules.setdefault(r["id"], r)
+    return rules
+
+
 def findings(path):
     with open(path, encoding="utf-8") as f:
         sarif = json.load(f)
     for run in sarif.get("runs", []):
-        rules = {r["id"]: r for r in run.get("tool", {}).get("driver", {}).get("rules", [])}
+        rules = all_rules(run)
         for res in run.get("results", []):
             if res.get("suppressions"):
                 continue
-            yield rules.get(res.get("ruleId"), {"id": res.get("ruleId", "?")}), res
+            rule_id = res.get("ruleId") or res.get("rule", {}).get("id", "?")
+            yield rules.get(rule_id, {"id": rule_id}), res
 
 
 def render(root, rule, res):

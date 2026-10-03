@@ -105,6 +105,8 @@ jobs:
       # Same form as the review rules in AGENTS.md: source, source quote, the
       # quoted lines, the SOC 2 criterion and the fix. Fails on a high or
       # critical finding in shipped code.
+      - name: Test the report script
+        run: python3 -m unittest discover -s .github/scripts
       - name: Report findings with their SOC 2 criterion
         run: python3 .github/scripts/codeql_report.py sarif-results/*.sarif
 
