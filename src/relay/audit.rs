@@ -318,18 +318,27 @@ impl Checkpoint {
     }
 
     /// Signed by a relay key whose certificate chains to the root, is not
-    /// revoked and was valid when the checkpoint was taken.
-    fn verify(&self, root_public_key: &[u8; 32], revoked: &HashSet<String>) -> Result<()> {
-        let certificate =
-            hex::decode(&self.certificate).map_err(|_| Error::IntegrityCheckFailed)?;
-        let cert = certificate_at(root_public_key, &certificate, &self.taken_at, revoked)?;
-        let signature: [u8; 64] = hex::decode(&self.signature)
-            .ok()
-            .and_then(|bytes| bytes.try_into().ok())
-            .ok_or(Error::IntegrityCheckFailed)?;
-        let preimage =
-            signing::relay_audit_checkpoint_preimage(&self.heads()?, &self.taken_at, &certificate)?;
-        signing::verify_signature(&cert.relay_public_key, &preimage, &signature)
+    /// revoked and was valid when the checkpoint was taken. Only a yes or a
+    /// no comes out: nothing read from the certificate leaves this check.
+    fn is_signed_by_trusted_relay(
+        &self,
+        root_public_key: &[u8; 32],
+        revoked: &HashSet<String>,
+    ) -> bool {
+        let checked = || -> Option<()> {
+            let certificate = hex::decode(&self.certificate).ok()?;
+            let cert =
+                certificate_at(root_public_key, &certificate, &self.taken_at, revoked).ok()?;
+            let signature: [u8; 64] = hex::decode(&self.signature).ok()?.try_into().ok()?;
+            let preimage = signing::relay_audit_checkpoint_preimage(
+                &self.heads().ok()?,
+                &self.taken_at,
+                &certificate,
+            )
+            .ok()?;
+            signing::verify_signature(&cert.relay_public_key, &preimage, &signature).ok()
+        };
+        checked().is_some()
     }
 }
 
@@ -452,8 +461,8 @@ pub fn verify(
     revoked: &HashSet<String>,
     checkpoint: Option<&Checkpoint>,
 ) -> Result<Vec<TableReport>> {
-    if let Some(checkpoint) = checkpoint {
-        checkpoint.verify(root_public_key, revoked)?;
+    if checkpoint.is_some_and(|c| !c.is_signed_by_trusted_relay(root_public_key, revoked)) {
+        return Err(Error::IntegrityCheckFailed);
     }
     let mut reports = Vec::new();
     for table in AuditTable::ALL {
