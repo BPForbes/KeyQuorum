@@ -125,9 +125,10 @@ pub fn validate_relay_url(url: &str) -> Result<()> {
     parse_relay_url(url).map(|_| ())
 }
 
-/// Parse once with the same WHATWG parser `ureq` uses, then validate that
-/// parsed host. Callers must reuse the returned `Url` for the request so a
-/// string-level host check cannot disagree with the connect target.
+/// Parse once with the WHATWG parser, then validate that parsed host.
+/// Callers must reuse the returned `Url` (whose serialization is canonical)
+/// for the request so a string-level host check cannot disagree with the
+/// connect target.
 fn parse_relay_url(raw: &str) -> Result<Url> {
     let raw = raw.trim();
     if raw.contains('\\') {
@@ -209,44 +210,62 @@ pub struct UreqTransport;
 #[cfg(not(target_arch = "wasm32"))]
 impl RelayTransport for UreqTransport {
     fn send(&self, request: RelayHttpRequest) -> Result<RelayHttpResponse> {
-        let mut req = http_agent().request_url(request.method, &request.url);
+        let mut req = ureq::http::Request::builder()
+            .method(request.method)
+            .uri(request.url.as_str());
         if let Some(bearer) = &request.bearer {
-            req = req.set("Authorization", &format!("Bearer {bearer}"));
+            req = req.header("Authorization", format!("Bearer {bearer}"));
         }
         if let Some(content_type) = request.content_type {
-            req = req.set("Content-Type", content_type);
+            req = req.header("Content-Type", content_type);
         }
         let result = if request.method == "GET" {
-            req.call()
+            req.body(())
+                .map_err(|e| Error::RelayRequest(e.to_string()))
+                .and_then(|req| {
+                    http_agent()
+                        .run(req)
+                        .map_err(|e| Error::RelayRequest(e.to_string()))
+                })
         } else {
-            req.send_bytes(&request.body)
+            req.body(request.body)
+                .map_err(|e| Error::RelayRequest(e.to_string()))
+                .and_then(|req| {
+                    http_agent()
+                        .run(req)
+                        .map_err(|e| Error::RelayRequest(e.to_string()))
+                })
         };
-        let (status, resp) = match result {
-            Ok(resp) => (resp.status(), resp),
-            Err(ureq::Error::Status(code, resp)) => (code, resp),
-            Err(e) => return Err(Error::RelayRequest(e.to_string())),
-        };
+        let resp = result?;
+        let status = resp.status().as_u16();
         let mut body = Vec::new();
-        std::io::Read::read_to_end(&mut resp.into_reader(), &mut body)
+        std::io::Read::read_to_end(&mut resp.into_body().into_reader(), &mut body)
             .map_err(|e| Error::RelayRequest(e.to_string()))?;
         Ok(RelayHttpResponse { status, body })
     }
 }
 
+/// Status codes come back as responses, not errors, so the caller sees the
+/// relay's body; no redirects are followed, and no proxy is taken from the
+/// environment.
 #[cfg(not(target_arch = "wasm32"))]
-fn http_agent_builder() -> ureq::AgentBuilder {
-    ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(10))
-        .timeout_read(Duration::from_secs(20))
-        .timeout_write(Duration::from_secs(20))
-        .timeout(Duration::from_secs(30))
-        .redirects(0)
+fn http_agent_config() -> ureq::config::ConfigBuilder<ureq::typestate::AgentScope> {
+    ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(10)))
+        .timeout_send_request(Some(Duration::from_secs(20)))
+        .timeout_send_body(Some(Duration::from_secs(20)))
+        .timeout_recv_response(Some(Duration::from_secs(20)))
+        .timeout_recv_body(Some(Duration::from_secs(20)))
+        .timeout_global(Some(Duration::from_secs(30)))
+        .max_redirects(0)
+        .http_status_as_error(false)
+        .proxy(None)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn http_agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
-    AGENT.get_or_init(|| http_agent_builder().build())
+    AGENT.get_or_init(|| ureq::Agent::new_with_config(http_agent_config().build()))
 }
 
 fn request(
