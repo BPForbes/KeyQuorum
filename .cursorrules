@@ -99,11 +99,15 @@ relay key (`signing::relay_audit_anchor_preimage`) at startup, on every scan,
 after each host `keys` command and after an HTTP revocation, and
 `audit::verify` (`host keys events --verify`) trusts an anchor only when its
 certificate chains to the provider root, is not revoked, and was valid at
-`signed_at`; rows after the newest trusted anchor are pending.
+`signed_at`; rows after the newest trusted anchor are pending. `signed_at` is
+the signer's word, so `host keys checkpoint` signs every table's count and head
+into an owner-only file the operator keeps off the relay, and `--checkpoint` on
+`--verify` requires the chain to match it and refuses an anchor over rows past
+it dated before it (`signing::relay_audit_checkpoint_preimage`).
 `GET /audit/api-keys` takes any live key and returns only the events that
 pertain to it (`api_key::events_visible_to`; an admin key sees all). Each
 client gets `--rate-limit-per-minute` requests (600 by default, 0 is off; 429
-with `Retry-After`), keyed by peer address, or by the last `X-Forwarded-For`
+with `Retry-After`), keyed by peer address (an IPv6 one by its /64), or by the last `X-Forwarded-For`
 entry behind `--behind-tls-proxy`, in a table capped at
 `MAX_RATE_LIMITED_CLIENTS`. `identity
 generate` and `root generate` write the private key only to
@@ -138,7 +142,10 @@ request (18), answer (19), file (15, only after an accepted file request from
 that person and a `file share` after it), receipt (16, only for a file
 received from them), snapshot (17, after a completed delivery). It stores
 nothing: `require_step` reads the sender's own copy (`outbox add --file`), whose
-history already records each step; `request_event` and `REQUEST_EVENTS` are
+history already records each step. It cannot open the sealed letter, so it
+confirms only that the named copy shows the step before with that peer, not
+that the letter is about that copy or request; the receiving commands bind
+those when they open it. `request_event` and `REQUEST_EVENTS` are
 the helpers `file_cmd` uses too. A `KQXB` is not a step (unsigned, every
 revision) and a `KQTX` never travels with a file. The `./outbox` directory
 `send --offline` writes is unrelated.
@@ -201,7 +208,9 @@ the sender and answered with a signed accept/reject, both checked against
 the signing key the opening store has registered for the claimed label.
 The bridge inbox carries them like any other non-device letter. Tracked
 files travel as `KIND_FILE_HISTORY` / `KIND_FILE_HISTORY_ACK` (15, 16) in the
-same module: the sender signs the header and the container's hash, and the
+same module: the sender signs the header and a keyed commitment to the container (`crypto::commit`
+under a random key sealed in the letter; protected content is never hashed bare, and a
+commitment is only ever compared, `HistoryAck::confirms`), and the
 container carries only the delivered revision and its ancestors
 (`TrackedFile::extract_revision`, which also keeps events that name no
 revision, such as a rename), so an untrusted newer revision never

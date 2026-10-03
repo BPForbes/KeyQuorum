@@ -22,7 +22,7 @@ use axum::{Json, Router};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tower_http::timeout::TimeoutLayer;
@@ -606,11 +606,46 @@ pub const MAX_RATE_LIMITED_CLIENTS: usize = 65_536;
 
 const RATE_WINDOW: Duration = Duration::from_secs(60);
 
-/// A fixed one-minute window per client address.
+/// Who a request is counted against. An IPv6 client is its /64 network, the
+/// smallest block one subscriber is normally given, so one host cycling
+/// through its own addresses is still one client. Requests with no peer
+/// address and new clients past [`MAX_RATE_LIMITED_CLIENTS`] each have
+/// their own bucket, so neither crowds out the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ClientKey {
+    V4(Ipv4Addr),
+    V6Network(u64),
+    UnknownPeer,
+    Overflow,
+}
+
+impl ClientKey {
+    fn of(ip: IpAddr) -> Self {
+        match ip.to_canonical() {
+            IpAddr::V4(v4) => Self::V4(v4),
+            IpAddr::V6(v6) => Self::V6Network((v6.to_bits() >> 64) as u64),
+        }
+    }
+}
+
+impl std::fmt::Display for ClientKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::V4(ip) => write!(f, "{ip}"),
+            Self::V6Network(network) => {
+                write!(f, "{}/64", Ipv6Addr::from_bits(u128::from(*network) << 64))
+            }
+            Self::UnknownPeer => f.write_str("unknown peer"),
+            Self::Overflow => f.write_str("overflow"),
+        }
+    }
+}
+
+/// A fixed one-minute window per client (see [`ClientKey`]).
 pub struct RateLimiter {
     per_minute: u32,
     trust_forwarded: bool,
-    clients: Mutex<HashMap<IpAddr, (Instant, u32)>>,
+    clients: Mutex<HashMap<ClientKey, (Instant, u32)>>,
 }
 
 impl RateLimiter {
@@ -622,8 +657,12 @@ impl RateLimiter {
         }
     }
 
-    /// `Ok` to serve the request, or how long until `client` may retry.
+    /// `Ok` to serve a request from `client`, or how long until it may retry.
     pub fn check(&self, client: IpAddr, now: Instant) -> std::result::Result<(), Duration> {
+        self.check_key(ClientKey::of(client), now)
+    }
+
+    fn check_key(&self, client: ClientKey, now: Instant) -> std::result::Result<(), Duration> {
         let mut clients = self
             .clients
             .lock()
@@ -631,10 +670,15 @@ impl RateLimiter {
         if !clients.contains_key(&client) && clients.len() >= MAX_RATE_LIMITED_CLIENTS {
             clients.retain(|_, (start, _)| now.duration_since(*start) < RATE_WINDOW);
         }
-        let key = if clients.contains_key(&client) || clients.len() < MAX_RATE_LIMITED_CLIENTS {
+        // The unknown-peer bucket is one fixed entry, never displaced by
+        // the overflow it is kept apart from.
+        let key = if client == ClientKey::UnknownPeer
+            || clients.contains_key(&client)
+            || clients.len() < MAX_RATE_LIMITED_CLIENTS
+        {
             client
         } else {
-            IpAddr::from([0u8; 16])
+            ClientKey::Overflow
         };
         let entry = clients.entry(key).or_insert((now, 0));
         if now.duration_since(entry.0) >= RATE_WINDOW {
@@ -647,7 +691,7 @@ impl RateLimiter {
         Ok(())
     }
 
-    fn client(&self, request: &Request) -> IpAddr {
+    fn client(&self, request: &Request) -> ClientKey {
         if self.trust_forwarded {
             // The proxy appends the address it saw, so only the last entry
             // is the proxy's word; earlier ones are whatever the client sent.
@@ -660,14 +704,13 @@ impl RateLimiter {
                 .next_back()
                 .and_then(|last| last.trim().parse::<IpAddr>().ok());
             if let Some(ip) = forwarded {
-                return ip;
+                return ClientKey::of(ip);
             }
         }
         request
             .extensions()
             .get::<ConnectInfo<SocketAddr>>()
-            .map(|info| info.0.ip())
-            .unwrap_or(IpAddr::from([0u8; 16]))
+            .map_or(ClientKey::UnknownPeer, |info| ClientKey::of(info.0.ip()))
     }
 }
 
@@ -677,7 +720,7 @@ async fn rate_limit(
     next: Next,
 ) -> Response {
     let client = limiter.client(&request);
-    match limiter.check(client, Instant::now()) {
+    match limiter.check_key(client, Instant::now()) {
         Ok(()) => next.run(request).await,
         Err(retry_after) => {
             tracing::warn!(%client, "relay rate limit exceeded");

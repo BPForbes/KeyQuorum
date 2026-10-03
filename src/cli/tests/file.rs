@@ -1416,6 +1416,20 @@ fn a_trusted_revision_is_delivered_accepted_and_acknowledged() {
         ),
     );
     assert!(out.contains("CurrentTrustedRevision"), "{out}");
+    // The attempt records a keyed commitment to the container it sealed,
+    // never a bare digest of the content it carries.
+    let sent =
+        crate::file_history::TrackedFile::decode(&env.fs.read(Path::new(KQTF)).unwrap()).unwrap();
+    let attempt = sent
+        .events()
+        .iter()
+        .find(|e| e.event_type == crate::file_history::HistoryEventType::ShareAttempted)
+        .expect("attempt recorded");
+    assert_eq!(
+        attempt.details.get("container_commitment").map(str::len),
+        Some(64)
+    );
+    assert_eq!(attempt.details.get("container_hash"), None);
 
     let letter = dir_file(&env, "/out");
     let (result, out) = receive_as_mb(&mut env, "--out /work/received.kqtf");

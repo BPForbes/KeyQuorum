@@ -1,14 +1,18 @@
 //! Password-based key derivation and symmetric encryption primitives shared
-//! by the password vault and password-locked-file features.
+//! by the password vault and password-locked-file features, and the keyed
+//! commitment that stands in for a hash of sensitive content.
 
 use crate::error::Error;
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
 use argon2::{Algorithm, Argon2, Params, Version};
+use hmac::{Hmac, Mac};
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 use rand::{Rng, RngExt};
+use sha2::Sha256;
 use std::fmt;
+use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
 pub const SALT_LEN: usize = 16;
@@ -107,6 +111,33 @@ pub fn decrypt(
         .decrypt(Nonce::from_slice(nonce), ciphertext)
         .map(Zeroizing::new)
         .map_err(|_| DecryptError)
+}
+
+/// A keyed commitment to sensitive content: HMAC-SHA256 under `key`, over
+/// the length-prefixed `domain` and then `data`.
+///
+/// Protected content (a file's plaintext, a tracked container that holds it)
+/// is never hashed bare: a plain SHA-256 of it is a fingerprint anyone holding
+/// the digest could confirm a guess against. Under a random key that travels
+/// only inside the sealed letter, the commitment proves to the two parties
+/// that they hold the same bytes and tells anyone else nothing. Compare two
+/// commitments only with [`commitments_match`].
+pub fn commit(key: &[u8; KEY_LEN], domain: &[u8], data: &[u8]) -> [u8; 32] {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC takes any key length");
+    mac.update(
+        &u32::try_from(domain.len())
+            .unwrap_or(u32::MAX)
+            .to_be_bytes(),
+    );
+    mac.update(domain);
+    mac.update(data);
+    mac.finalize().into_bytes().into()
+}
+
+/// Whether two commitments are the same, in constant time. This is the only
+/// answer a caller gets about committed content: a yes or a no.
+pub fn commitments_match(a: &[u8; 32], b: &[u8; 32]) -> bool {
+    a.ct_eq(b).into()
 }
 
 #[cfg(test)]

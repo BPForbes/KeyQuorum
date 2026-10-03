@@ -223,7 +223,12 @@ fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
                 }
             }
         }
-        KeysCommand::Events { key, verify, krl } => {
+        KeysCommand::Events {
+            key,
+            verify,
+            krl,
+            checkpoint,
+        } => {
             let events = match key {
                 Some(id) => relay::api_key_events_for_key(conn, id)?,
                 None => relay::api_key_events(conn)?,
@@ -241,8 +246,29 @@ fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
                 );
             }
             if verify {
-                return verify_audit(conn, krl);
+                return verify_audit(conn, krl, checkpoint);
             }
+        }
+        KeysCommand::Checkpoint {
+            out,
+            cert,
+            relay_key,
+            krl,
+        } => {
+            let (identity, _) = load_serve_identity(cert, relay_key, krl)?;
+            let taken_at = provider::system_now_utc_millis()?;
+            let checkpoint = relay::audit::checkpoint(conn, &identity, &taken_at)?;
+            locked_files::write_owner_only(&out, &checkpoint.encode()?)?;
+            for head in &checkpoint.heads {
+                println!(
+                    "{}: {} rows, head {}",
+                    head.table, head.row_count, head.head_hash
+                );
+            }
+            println!(
+                "Wrote checkpoint {} (taken {taken_at}); keep it off this relay",
+                out.display()
+            );
         }
         KeysCommand::Revoke {
             id,
@@ -290,11 +316,23 @@ fn anchor_audit(conn: &rusqlite::Connection, identity: &ProviderIdentity) {
 /// `keys events --verify`: every chain re-walked and every anchor checked
 /// against the compiled-in provider root. Fails if any chain is broken or
 /// any anchor is refused.
-fn verify_audit(conn: &rusqlite::Connection, krl: Option<PathBuf>) -> Result<()> {
+fn verify_audit(
+    conn: &rusqlite::Connection,
+    krl: Option<PathBuf>,
+    checkpoint: Option<PathBuf>,
+) -> Result<()> {
     let krl = path_or_env(krl, "KEYQUORUM_PROVIDER_KRL");
     let revoked =
         provider::load_revocation_list(&KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY, krl.as_deref())?;
-    let reports = relay::audit::verify(conn, &KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY, &revoked)?;
+    let checkpoint = checkpoint
+        .map(|path| relay::audit::Checkpoint::decode(&std::fs::read(path)?))
+        .transpose()?;
+    let reports = relay::audit::verify(
+        conn,
+        &KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY,
+        &revoked,
+        checkpoint.as_ref(),
+    )?;
     let mut intact = true;
     for report in &reports {
         let chain = match report.broken_at {
@@ -308,8 +346,19 @@ fn verify_audit(conn: &rusqlite::Connection, krl: Option<PathBuf>) -> Result<()>
             ),
             None => "no trusted anchor".to_string(),
         };
+        let against = match &report.checkpoint {
+            None => String::new(),
+            Some(c) if c.matches => format!(
+                ", matches checkpoint through row {} ({})",
+                c.row_count, c.taken_at
+            ),
+            Some(c) => format!(
+                ", DOES NOT MATCH checkpoint at row {} ({})",
+                c.row_count, c.taken_at
+            ),
+        };
         println!(
-            "{}: {} rows, {chain}, {anchor}, {} pending, {} rejected anchor(s)",
+            "{}: {} rows, {chain}, {anchor}{against}, {} pending, {} rejected anchor(s)",
             report.table,
             report.rows,
             report.pending_rows(),

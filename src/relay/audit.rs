@@ -13,6 +13,18 @@
 //! the certificate chains to the provider root, is not revoked, and was
 //! valid (`issued_at` to `expires_at`) at the anchor's `signed_at`. Rows
 //! after the newest accepted anchor are reported as pending, not trusted.
+//!
+//! An anchor's `signed_at` is the signer's own word, so it alone cannot
+//! stop someone who holds a relay key after its certificate expired (and
+//! can write the database) from rebuilding the chain and signing a new
+//! anchor dated inside the old validity window. A [`Checkpoint`] closes
+//! that: every table's row count and head, signed when it is taken and
+//! kept by the operator off the relay (write-once storage they control).
+//! Given one, [`verify`] requires the chain to still reach that head at that
+//! row, and refuses any anchor that covers rows past the checkpoint yet
+//! claims a `signed_at` before it was taken. A key expired by then can no
+//! longer vouch for anything, so only the time since the newest checkpoint
+//! is left to a key's own word, and the operator decides how short that is.
 //! Nothing here records or signs a bearer, a key hash or a challenge.
 
 use super::service::ProviderIdentity;
@@ -21,11 +33,13 @@ use crate::error::{Error, Result};
 use crate::provider::{self, Certificate};
 use crate::signing;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
 const ENTRY_DOMAIN: &[u8] = b"KQ-RELAY-AUDIT-ENTRY-v1";
 const GENESIS: [u8; 32] = [0u8; 32];
+const CHECKPOINT_FORMAT: &str = "KQ-RELAY-AUDIT-CHECKPOINT-v1";
 
 /// An audit table this module chains and anchors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -246,6 +260,120 @@ pub fn anchor(conn: &Connection, identity: &ProviderIdentity, signed_at: &str) -
     })
 }
 
+/// One table's place in a [`Checkpoint`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckpointHead {
+    pub table: String,
+    pub row_count: u64,
+    /// Hex chain head at `row_count` (all zeros for an empty table).
+    pub head_hash: String,
+}
+
+/// Every audit table's row count and chain head at `taken_at`, signed by
+/// the relay key. Its strength is where it is kept: off the relay, where
+/// whoever can write the relay database cannot rewrite it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Checkpoint {
+    pub format: String,
+    pub taken_at: String,
+    pub heads: Vec<CheckpointHead>,
+    /// Hex `provider.kqcert` naming the signing key.
+    pub certificate: String,
+    /// Hex Ed25519 signature over [`signing::relay_audit_checkpoint_preimage`].
+    pub signature: String,
+}
+
+impl Checkpoint {
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        serde_json::to_vec_pretty(self).map_err(|_| Error::IntegrityCheckFailed)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let checkpoint: Self =
+            serde_json::from_slice(bytes).map_err(|_| Error::IntegrityCheckFailed)?;
+        if checkpoint.format != CHECKPOINT_FORMAT {
+            return Err(Error::IntegrityCheckFailed);
+        }
+        Ok(checkpoint)
+    }
+
+    fn heads(&self) -> Result<Vec<(&str, u64, [u8; 32])>> {
+        self.heads
+            .iter()
+            .map(|h| {
+                let hash = decode_hash(&h.head_hash).ok_or(Error::IntegrityCheckFailed)?;
+                Ok((h.table.as_str(), h.row_count, hash))
+            })
+            .collect()
+    }
+
+    /// The row count and head this checkpoint holds for `table`; an empty
+    /// table, or one it does not name, is at row 0.
+    fn head_for(&self, table: AuditTable) -> Result<(u64, [u8; 32])> {
+        Ok(self
+            .heads()?
+            .into_iter()
+            .find(|(name, _, _)| *name == table.name())
+            .map_or((0, GENESIS), |(_, count, hash)| (count, hash)))
+    }
+
+    /// Signed by a relay key whose certificate chains to the root, is not
+    /// revoked and was valid when the checkpoint was taken.
+    fn verify(&self, root_public_key: &[u8; 32], revoked: &HashSet<String>) -> Result<()> {
+        let certificate =
+            hex::decode(&self.certificate).map_err(|_| Error::IntegrityCheckFailed)?;
+        let cert = certificate_at(root_public_key, &certificate, &self.taken_at, revoked)?;
+        let signature: [u8; 64] = hex::decode(&self.signature)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or(Error::IntegrityCheckFailed)?;
+        let preimage =
+            signing::relay_audit_checkpoint_preimage(&self.heads()?, &self.taken_at, &certificate)?;
+        signing::verify_signature(&cert.relay_public_key, &preimage, &signature)
+    }
+}
+
+/// Take a [`Checkpoint`] of every audit table now (`taken_at`), signed with
+/// the relay key, for the operator to store off the relay.
+pub fn checkpoint(
+    conn: &Connection,
+    identity: &ProviderIdentity,
+    taken_at: &str,
+) -> Result<Checkpoint> {
+    let mut heads = Vec::new();
+    for table in AuditTable::ALL {
+        let (count, hash) = head(conn, table)?.unwrap_or((0, GENESIS));
+        heads.push((table.name(), count, hash));
+    }
+    let preimage =
+        signing::relay_audit_checkpoint_preimage(&heads, taken_at, &identity.certificate)?;
+    let signature = signing::sign(&identity.relay_private_key, &preimage);
+    Ok(Checkpoint {
+        format: CHECKPOINT_FORMAT.to_string(),
+        taken_at: taken_at.to_string(),
+        heads: heads
+            .into_iter()
+            .map(|(table, row_count, hash)| CheckpointHead {
+                table: table.to_string(),
+                row_count,
+                head_hash: hex::encode(hash),
+            })
+            .collect(),
+        certificate: hex::encode(&identity.certificate),
+        signature: hex::encode(signature),
+    })
+}
+
+/// How a table stood against the checkpoint [`verify`] was given.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckpointReport {
+    pub row_count: u64,
+    pub taken_at: String,
+    /// The chain still reaches the checkpoint's head at its row. When it
+    /// does not, the rows the checkpoint covered were rewritten.
+    pub matches: bool,
+}
+
 /// The newest anchor [`verify`] accepted for a table.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrustedAnchor {
@@ -265,14 +393,25 @@ pub struct TableReport {
     pub broken_at: Option<i64>,
     pub trusted: Option<TrustedAnchor>,
     /// Anchors that failed: bad signature, a certificate that was not valid
-    /// when it was signed, or a head that does not match the chain.
+    /// when it was signed, a head that does not match the chain, or (given a
+    /// checkpoint) rows past the checkpoint vouched for by an anchor dated
+    /// before it.
     pub rejected_anchors: u64,
+    /// Present when [`verify`] was given a checkpoint.
+    pub checkpoint: Option<CheckpointReport>,
 }
 
 impl TableReport {
-    /// Rows the newest accepted anchor vouches for.
+    /// Rows the newest accepted anchor, or a matching checkpoint, vouches
+    /// for.
     pub fn anchored_rows(&self) -> u64 {
-        self.trusted.as_ref().map_or(0, |a| a.row_count)
+        let anchored = self.trusted.as_ref().map_or(0, |a| a.row_count);
+        let checkpointed = self
+            .checkpoint
+            .as_ref()
+            .filter(|c| c.matches)
+            .map_or(0, |c| c.row_count);
+        anchored.max(checkpointed)
     }
 
     /// Rows written since the newest accepted anchor.
@@ -280,9 +419,12 @@ impl TableReport {
         self.rows.saturating_sub(self.anchored_rows())
     }
 
-    /// The chain holds and no anchor was refused.
+    /// The chain holds, no anchor was refused, and the chain still matches
+    /// the checkpoint, if one was given.
     pub fn is_intact(&self) -> bool {
-        self.broken_at.is_none() && self.rejected_anchors == 0
+        self.broken_at.is_none()
+            && self.rejected_anchors == 0
+            && self.checkpoint.as_ref().is_none_or(|c| c.matches)
     }
 }
 
@@ -300,12 +442,19 @@ fn certificate_at(
     Ok(cert)
 }
 
-/// Re-walk every chain and check every anchor against the provider root.
+/// Re-walk every chain and check every anchor against the provider root,
+/// and, given the operator's off-relay `checkpoint`, check the chain against
+/// it and refuse anchors that predate it but cover rows past it. A
+/// checkpoint that does not verify is an error, never ignored.
 pub fn verify(
     conn: &Connection,
     root_public_key: &[u8; 32],
     revoked: &HashSet<String>,
+    checkpoint: Option<&Checkpoint>,
 ) -> Result<Vec<TableReport>> {
+    if let Some(checkpoint) = checkpoint {
+        checkpoint.verify(root_public_key, revoked)?;
+    }
     let mut reports = Vec::new();
     for table in AuditTable::ALL {
         let rows = read_rows(conn, table, "")?;
@@ -322,6 +471,18 @@ pub fn verify(
             }
             heads.push(expected);
         }
+
+        let checkpointed = checkpoint
+            .map(|c| c.head_for(table).map(|head| (c, head)))
+            .transpose()?;
+        let checkpoint_report = checkpointed.map(|(c, (count, head_hash))| CheckpointReport {
+            row_count: count,
+            taken_at: c.taken_at.clone(),
+            matches: usize::try_from(count)
+                .ok()
+                .and_then(|count| heads.get(count))
+                == Some(&head_hash),
+        });
 
         let mut trusted: Option<TrustedAnchor> = None;
         let mut rejected_anchors = 0;
@@ -346,6 +507,13 @@ pub fn verify(
                 let head_hash = decode_hash(&head_hex)?;
                 if heads.get(usize::try_from(count).ok()?) != Some(&head_hash) {
                     return None;
+                }
+                // Rows past the checkpoint did not exist when it was taken,
+                // so an anchor over them dated earlier was backdated.
+                if let Some((c, (checkpoint_rows, _))) = &checkpointed {
+                    if count > *checkpoint_rows && signed_at.as_str() < c.taken_at.as_str() {
+                        return None;
+                    }
                 }
                 let cert =
                     certificate_at(root_public_key, &certificate, &signed_at, revoked).ok()?;
@@ -384,6 +552,7 @@ pub fn verify(
             broken_at,
             trusted,
             rejected_anchors,
+            checkpoint: checkpoint_report,
         });
     }
     Ok(reports)

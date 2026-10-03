@@ -755,6 +755,12 @@ own history shows where the exchange stands:
 4. **receipt** (`file receive` writes it): the receiver's signed accept or reject of a file received from them.
 5. **snapshot** (`file send-history`): either side's history, once a delivery between them completed.
 
+The outbox cannot open a sealed letter, so this check confirms only that the
+copy you name shows the step before this one with that person; it does not
+prove the letter is about that copy or that request. The receiving commands
+bind each letter to its own file and request when they open it (`file receive`,
+`file open-answer`, `file ack`), and `file share` itself works outside the ring.
+
 ```sh
 keyquorum file request --file-id ID --name report.txt --to M.A --as M.B --output-dir req
 keyquorum outbox add req/*.kqpb --to M.A --as M.B               # step 1, no copy needed

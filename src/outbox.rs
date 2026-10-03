@@ -23,7 +23,10 @@
 //! recipient's key stops a queued send. A tracked-file letter must also come
 //! in its exchange's order (request, answer, file, receipt, snapshot): the
 //! owner names their copy of the file and [`exchange::require_step`] reads
-//! that copy's history.
+//! that copy's history. The ring cannot open the letter, so that confirms the
+//! step before it exists in the named copy with that recipient, not that the
+//! letter belongs to that copy or request; the receiver binds those when it
+//! opens the letter.
 //!
 //! This module owns `outbox_rings` and `outbox_slots` and decides no other
 //! rule: keys are `keys`, framing is `envelope`, the exchange order is

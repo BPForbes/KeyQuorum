@@ -47,9 +47,10 @@ fn the_ring_is_first_in_first_out_and_wraps_around() {
         "an empty ring sends nothing"
     );
 
-    for n in 0..3u8 {
-        let item = push(&p.conn, "alice", "bob", &letter(&p.bob, &[n]), None).expect("push");
-        assert_eq!(item.index, u32::from(n));
+    let queued: Vec<Vec<u8>> = (0..3u8).map(|n| letter(&p.bob, &[n])).collect();
+    for (n, bytes) in (0u32..).zip(&queued) {
+        let item = push(&p.conn, "alice", "bob", bytes, None).expect("push");
+        assert_eq!(item.index, n);
         assert_eq!(item.kind, KIND_FILE_DELIVERY);
     }
     let full = ring(&p.conn, "alice").unwrap();
@@ -64,10 +65,11 @@ fn the_ring_is_first_in_first_out_and_wraps_around() {
     ));
     assert_eq!(list(&p.conn, "alice").unwrap().len(), 3);
 
-    // The read pointer gives the oldest first and frees its slot.
+    // The read pointer gives the oldest first, exactly as it was queued,
+    // and frees its slot.
     let (first, bytes) = sent_by(&p.conn, "alice").expect("one sent");
     assert_eq!(first.index, 0);
-    assert_eq!(bytes, letter_body_check(&bytes));
+    assert_eq!(bytes, queued[0]);
     let partial = ring(&p.conn, "alice").unwrap();
     assert_eq!(
         (
@@ -80,7 +82,8 @@ fn the_ring_is_first_in_first_out_and_wraps_around() {
     );
 
     // The next item is written into the freed slot 0: the ring wraps.
-    let wrapped = push(&p.conn, "alice", "bob", &letter(&p.bob, b"w"), None).expect("push");
+    let wrapped_bytes = letter(&p.bob, b"w");
+    let wrapped = push(&p.conn, "alice", "bob", &wrapped_bytes, None).expect("push");
     assert_eq!(wrapped.index, 0);
     let order: Vec<u32> = list(&p.conn, "alice")
         .unwrap()
@@ -89,7 +92,13 @@ fn the_ring_is_first_in_first_out_and_wraps_around() {
         .collect();
     assert_eq!(order, vec![1, 2, 0]);
 
-    while sent_by(&p.conn, "alice").is_some() {}
+    let rest: Vec<Vec<u8>> = std::iter::from_fn(|| sent_by(&p.conn, "alice"))
+        .map(|(_, bytes)| bytes)
+        .collect();
+    assert_eq!(
+        rest,
+        vec![queued[1].clone(), queued[2].clone(), wrapped_bytes]
+    );
     let empty = ring(&p.conn, "alice").unwrap();
     assert_eq!((empty.state(), empty.sent_total), (RingState::Empty, 4));
     let rows: i64 = p
@@ -97,12 +106,6 @@ fn the_ring_is_first_in_first_out_and_wraps_around() {
         .query_row("SELECT COUNT(*) FROM outbox_slots", [], |r| r.get(0))
         .unwrap();
     assert_eq!(rows, 0, "sent slots are deleted, not kept");
-}
-
-/// The bytes handed to the sender are the bytes that were queued.
-fn letter_body_check(bytes: &[u8]) -> Vec<u8> {
-    envelope::parse_outer(bytes).expect("still a whole letter");
-    bytes.to_vec()
 }
 
 #[test]

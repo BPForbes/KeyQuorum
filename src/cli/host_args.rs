@@ -188,6 +188,25 @@ pub enum KeysCommand {
         /// With --verify: signed revocation list (or KEYQUORUM_PROVIDER_KRL)
         #[arg(long, requires = "verify")]
         krl: Option<PathBuf>,
+        /// With --verify: the newest checkpoint from `keys checkpoint`, kept
+        /// off the relay. The chain must still match it, and no anchor dated
+        /// before it may vouch for rows after it
+        #[arg(long, requires = "verify")]
+        checkpoint: Option<PathBuf>,
+    },
+    /// Sign every audit table's row count and chain head now into a new
+    /// owner-only file, to keep off the relay (write-once storage you
+    /// control). `keys events --verify --checkpoint` checks against it.
+    Checkpoint {
+        /// Where to write the checkpoint (never overwritten)
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        cert: Option<PathBuf>,
+        #[arg(long)]
+        relay_key: Option<PathBuf>,
+        #[arg(long)]
+        krl: Option<PathBuf>,
     },
     /// Revoke a key now. With the relay identity (flags or environment) the
     /// revocation is also signed into the audit chain at once; without it,

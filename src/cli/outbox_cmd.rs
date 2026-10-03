@@ -12,7 +12,7 @@
 
 use super::env::{self, outln};
 use super::inbox::kind_name;
-use super::{file_cmd, resolve_relay_auth, usage};
+use super::{file_cmd, resolve_relay_auth, sanitize_label, usage};
 use crate::db::profile;
 use crate::error::Result;
 use crate::outbox::{self, QueuedItem, Ring};
@@ -173,15 +173,27 @@ fn send(
                 ApiKeyScope::InboxPush,
             )?);
         }
-        let item = outbox::send_next(conn, owner, |item, bytes| match &output_dir {
+        // Files are never overwritten, so a letter left in the directory by
+        // a send whose dequeue then failed would block the retry the ring
+        // promises. One this attempt wrote is removed again when the
+        // dequeue fails; one already there with the same bytes (a crash
+        // between the write and the commit) counts as written.
+        let mut written = None;
+        let sent_item = outbox::send_next(conn, owner, |item, bytes| match &output_dir {
             Some(dir) => {
+                // Labels are not restricted to filename-safe characters; a
+                // recipient like `../x` must not escape the directory.
                 let path = dir.join(format!(
                     "{}-{}.kqpb",
-                    item.recipient,
+                    sanitize_label(&item.recipient)?,
                     &item.content_hash[..16]
                 ));
+                if env::exists(&path) && env::read(&path)? == bytes {
+                    written = Some((path, false));
+                    return Ok(());
+                }
                 env::write_new(&path, bytes)?;
-                outln!("Wrote {}", path.display());
+                written = Some((path, true));
                 Ok(())
             }
             None => {
@@ -190,7 +202,23 @@ fn send(
                 outln!("Relay stored letter {}", accepted.id);
                 Ok(())
             }
-        })?;
+        });
+        let item = match sent_item {
+            Ok(item) => {
+                match &written {
+                    Some((path, true)) => outln!("Wrote {}", path.display()),
+                    Some((path, false)) => outln!("Already written {}", path.display()),
+                    None => {}
+                }
+                item
+            }
+            Err(err) => {
+                if let Some((path, true)) = &written {
+                    let _ = env::remove_file(path);
+                }
+                return Err(err);
+            }
+        };
         match item {
             Some(item) => {
                 print_item("Sent", &item);

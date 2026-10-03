@@ -73,7 +73,12 @@ the file, and its own history shows where the exchange stands: a
 \emph{request} needs nothing first; an \emph{answer} needs a request from that
 person; the \emph{file} needs a file request from them that you accepted,
 followed by \code{file share}; a \emph{receipt} needs a file received from
-them; a \emph{snapshot} needs a completed delivery between you. An export
+them; a \emph{snapshot} needs a completed delivery between you. The outbox
+cannot open a sealed letter, so the check confirms only that the copy you name
+shows the step before this one with that person, not that the letter is about
+that copy or that request; the receiving commands (\code{file receive},
+\code{file open-answer}, \code{file ack}) bind each letter to its file and
+request when they open it. An export
 bundle is not a step (it is unsigned and carries every revision, trusted or
 not), and a device transfer package never travels with a file.
 

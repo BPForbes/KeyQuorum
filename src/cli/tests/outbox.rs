@@ -285,3 +285,106 @@ fn a_tracked_file_crosses_rings_only_in_its_exchange_order() {
         "{compared}"
     );
 }
+
+const ALICE_STORE: &str = "/home/alice/keyquorum.sqlite";
+
+/// Queue a letter for `label`, whose key is registered only in Alice's store.
+fn queue_for(env: &mut MemoryEnv, label: &str) -> Vec<u8> {
+    run(env, &format!("{ALICE} outbox"));
+    let conn = env.store(ALICE_STORE);
+    let (_, public) = crate::keys::generate_encryption_keypair();
+    crate::keys::register_key(conn, label, crate::keys::KeyType::Encryption, &public).unwrap();
+    let letter = crate::envelope::seal(
+        crate::envelope::PACKAGE,
+        crate::envelope::KIND_FILE_DELIVERY,
+        &public,
+        b"sealed",
+    )
+    .unwrap();
+    crate::outbox::push(conn, "alice", label, &letter, None).unwrap();
+    letter
+}
+
+#[test]
+fn an_offline_send_keeps_every_letter_inside_its_directory() {
+    let mut env = two_people_on_a_relay();
+    let letter = queue_for(&mut env, "../evil");
+    let sent = run(
+        &mut env,
+        &format!("{ALICE} outbox send --output-dir /out/letters"),
+    );
+    assert!(sent.contains("Wrote /out/letters/.._evil-"), "{sent}");
+    let written = only_file(&env, "/out/letters");
+    assert_eq!(env.fs.read(Path::new(&written)).unwrap(), letter);
+    let outside = env.fs.list(Path::new("/out")).unwrap_or_default();
+    assert_eq!(outside, vec![Path::new("/out/letters").to_path_buf()]);
+}
+
+#[test]
+fn a_failed_dequeue_takes_the_written_letter_back_and_the_retry_sends_it() {
+    let mut env = two_people_on_a_relay();
+    let letter = queue_for(&mut env, "carol");
+    // The letter is written, then freeing the slot fails (a full disk, say).
+    env.store(ALICE_STORE)
+        .execute_batch(
+            "CREATE TRIGGER full_disk BEFORE DELETE ON outbox_slots
+             BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+        )
+        .unwrap();
+    let message = fails(&mut env, &format!("{ALICE} outbox send --output-dir /out"));
+    assert!(message.contains("disk full"), "{message}");
+    assert!(
+        env.fs
+            .list(Path::new("/out"))
+            .unwrap_or_default()
+            .is_empty(),
+        "the letter written for the failed send is removed"
+    );
+    let status = run(&mut env, &format!("{ALICE} outbox"));
+    assert!(status.contains("1 of 32 slots held"), "{status}");
+    assert!(status.contains("0 sent"), "{status}");
+
+    env.store(ALICE_STORE)
+        .execute_batch("DROP TRIGGER full_disk;")
+        .unwrap();
+    let sent = run(&mut env, &format!("{ALICE} outbox send --output-dir /out"));
+    assert!(sent.contains("Sent slot 0"), "{sent}");
+    assert_eq!(
+        env.fs.read(Path::new(&only_file(&env, "/out"))).unwrap(),
+        letter
+    );
+}
+
+#[test]
+fn a_letter_already_written_with_the_same_bytes_counts_as_sent() {
+    use sha2::{Digest, Sha256};
+    let mut env = two_people_on_a_relay();
+    let letter = queue_for(&mut env, "carol");
+    // A crash between writing the letter and committing the dequeue leaves
+    // the file behind; the retry must not be blocked by it.
+    let name = format!(
+        "/out/carol-{}.kqpb",
+        &hex::encode(Sha256::digest(&letter))[..16]
+    );
+    env.fs.write(Path::new(&name), &letter).unwrap();
+    let sent = run(&mut env, &format!("{ALICE} outbox send --output-dir /out"));
+    assert!(sent.contains(&format!("Already written {name}")), "{sent}");
+    assert!(sent.contains("Sent slot 0"), "{sent}");
+
+    // A different file at that name is never overwritten, and nothing moves.
+    let letter = queue_for(&mut env, "dave");
+    let name = format!(
+        "/out/dave-{}.kqpb",
+        &hex::encode(Sha256::digest(&letter))[..16]
+    );
+    env.fs
+        .write(Path::new(&name), b"someone else's file")
+        .unwrap();
+    fails(&mut env, &format!("{ALICE} outbox send --output-dir /out"));
+    assert_eq!(
+        env.fs.read(Path::new(&name)).unwrap(),
+        b"someone else's file"
+    );
+    let status = run(&mut env, &format!("{ALICE} outbox"));
+    assert!(status.contains("1 of 32 slots held"), "{status}");
+}

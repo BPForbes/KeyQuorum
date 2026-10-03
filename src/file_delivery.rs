@@ -10,7 +10,15 @@
 //!
 //! The recipient answers with [`envelope::KIND_FILE_DELIVERY_ACK`], sealed
 //! back to the sender and signed by the recipient, echoing the delivery id
-//! and a hash of the contents, and saying whether it accepted the file.
+//! and the content commitment, and saying whether it accepted the file.
+//!
+//! Contents are never hashed bare. Each letter carries, sealed, a fresh
+//! random commitment key, and the signatures and answers cover
+//! [`crypto::commit`] of the contents (or the tracked container) under it.
+//! Only the two parties hold that key, so the commitment an answer echoes,
+//! or a history event records, fingerprints nothing for anyone else, and
+//! the only question asked of it is whether two commitments match
+//! ([`DeliveryAck::confirms`], [`HistoryAck::confirms`]).
 //!
 //! Both open functions check the signature against the signing key *this
 //! store* has registered for the claimed label, never a key the letter
@@ -25,6 +33,7 @@
 //! by the receiver from the container's own proofs and policy, never by the
 //! letter. Its acknowledgement is [`envelope::KIND_FILE_HISTORY_ACK`].
 
+use crate::crypto;
 use crate::envelope::{
     self, hash_len_prefixed, push_len_prefixed, push_len_prefixed_u32, take_array,
     take_len_prefixed, take_len_prefixed_u32, take_u8, utf8, PACKAGE,
@@ -34,11 +43,17 @@ use crate::private_bridge;
 use crate::signing;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
-const LETTER_DOMAIN: &[u8] = b"KQ-FILE-DELIVERY-v1";
-const ACK_DOMAIN: &[u8] = b"KQ-FILE-DELIVERY-ACK-v1";
-const HISTORY_LETTER_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-DELIVERY-v1";
-const HISTORY_ACK_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-DELIVERY-ACK-v1";
+// v2: the letters carry a commitment key and sign a keyed commitment to
+// the contents where v1 signed their bare SHA-256; a v1 letter or answer
+// does not verify as v2.
+const LETTER_DOMAIN: &[u8] = b"KQ-FILE-DELIVERY-v2";
+const ACK_DOMAIN: &[u8] = b"KQ-FILE-DELIVERY-ACK-v2";
+const HISTORY_LETTER_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-DELIVERY-v2";
+const HISTORY_ACK_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-DELIVERY-ACK-v2";
+const CONTENT_COMMITMENT_DOMAIN: &[u8] = b"KQ-FILE-DELIVERY-CONTENT-v1";
+const CONTAINER_COMMITMENT_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-CONTAINER-v1";
 const SNAPSHOT_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-SNAPSHOT-v1";
 
 pub mod exchange;
@@ -62,7 +77,7 @@ pub struct Outgoing<'a> {
 
 pub struct SealedLetter {
     pub delivery_id: [u8; 16],
-    pub content_hash: [u8; 32],
+    pub content_commitment: [u8; 32],
     pub bytes: Vec<u8>,
 }
 
@@ -74,7 +89,7 @@ pub struct FileLetter {
     pub return_public: [u8; 32],
     pub file_name: String,
     pub contents: Vec<u8>,
-    pub content_hash: [u8; 32],
+    pub content_commitment: [u8; 32],
 }
 
 /// An opened, signature-checked acknowledgement.
@@ -82,14 +97,27 @@ pub struct FileLetter {
 pub struct DeliveryAck {
     pub delivery_id: [u8; 16],
     pub recipient_label: String,
-    pub content_hash: [u8; 32],
+    pub content_commitment: [u8; 32],
     pub accepted: bool,
+}
+
+impl DeliveryAck {
+    /// Whether this answer is about the contents `sealed` committed to (the
+    /// sender's [`SealedLetter::content_commitment`]), in constant time.
+    pub fn confirms(&self, sealed: &[u8; 32]) -> bool {
+        crypto::commitments_match(&self.content_commitment, sealed)
+    }
 }
 
 pub fn seal_letter(outgoing: &Outgoing<'_>) -> Result<SealedLetter> {
     let mut delivery_id = [0u8; 16];
     crate::crypto::fill_random(&mut delivery_id);
-    let content_hash: [u8; 32] = Sha256::digest(outgoing.contents).into();
+    let commitment_key = crypto::random_key();
+    let content_commitment = crypto::commit(
+        &commitment_key,
+        CONTENT_COMMITMENT_DOMAIN,
+        outgoing.contents,
+    );
     let preimage = letter_preimage(
         outgoing.recipient_encryption_public,
         &delivery_id,
@@ -97,11 +125,11 @@ pub fn seal_letter(outgoing: &Outgoing<'_>) -> Result<SealedLetter> {
         outgoing.recipient_label,
         outgoing.sender_encryption_public,
         outgoing.file_name,
-        &content_hash,
+        &content_commitment,
     )?;
     let signature = signing::sign(outgoing.sender_signing_secret, &preimage);
 
-    let mut plain = Vec::new();
+    let mut plain = Zeroizing::new(Vec::new());
     push_head(
         &mut plain,
         &delivery_id,
@@ -110,6 +138,7 @@ pub fn seal_letter(outgoing: &Outgoing<'_>) -> Result<SealedLetter> {
         outgoing.sender_encryption_public,
         outgoing.file_name,
     )?;
+    plain.extend_from_slice(&commitment_key[..]);
     push_len_prefixed_u32(&mut plain, outgoing.contents)?;
     plain.extend_from_slice(&signature);
     let bytes = envelope::seal(
@@ -120,7 +149,7 @@ pub fn seal_letter(outgoing: &Outgoing<'_>) -> Result<SealedLetter> {
     )?;
     Ok(SealedLetter {
         delivery_id,
-        content_hash,
+        content_commitment,
         bytes,
     })
 }
@@ -136,9 +165,10 @@ pub fn open_letter(
         open_kind(bytes, recipient_secret, envelope::KIND_FILE_DELIVERY)?;
     let mut data = payload.as_slice();
     let head = take_head(&mut data)?;
+    let commitment_key = Zeroizing::new(take_array::<32>(&mut data)?);
     let contents = take_len_prefixed_u32(&mut data)?.to_vec();
     let signature = take_signature(&mut data)?;
-    let content_hash: [u8; 32] = Sha256::digest(&contents).into();
+    let content_commitment = crypto::commit(&commitment_key, CONTENT_COMMITMENT_DOMAIN, &contents);
     let preimage = letter_preimage(
         &recipient_public,
         &head.delivery_id,
@@ -146,7 +176,7 @@ pub fn open_letter(
         &head.recipient_label,
         &head.return_public,
         &head.file_name,
-        &content_hash,
+        &content_commitment,
     )?;
     verify_signed_by(conn, &head.sender_label, &preimage, &signature)?;
     Ok(FileLetter {
@@ -156,7 +186,7 @@ pub fn open_letter(
         return_public: head.return_public,
         file_name: head.file_name,
         contents,
-        content_hash,
+        content_commitment,
     })
 }
 
@@ -170,14 +200,14 @@ pub fn seal_ack(
         &letter.return_public,
         &letter.delivery_id,
         &letter.recipient_label,
-        &letter.content_hash,
+        &letter.content_commitment,
         accepted,
     )?;
     let signature = signing::sign(recipient_signing_secret, &preimage);
     let mut plain = Vec::new();
     plain.extend_from_slice(&letter.delivery_id);
     push_len_prefixed(&mut plain, letter.recipient_label.as_bytes())?;
-    plain.extend_from_slice(&letter.content_hash);
+    plain.extend_from_slice(&letter.content_commitment);
     plain.push(u8::from(accepted));
     plain.extend_from_slice(&signature);
     envelope::seal(
@@ -196,21 +226,21 @@ pub fn open_ack(conn: &Connection, sender_secret: &[u8; 32], bytes: &[u8]) -> Re
     let mut data = payload.as_slice();
     let delivery_id: [u8; 16] = take_array(&mut data)?;
     let recipient_label = utf8(take_len_prefixed(&mut data)?)?;
-    let content_hash: [u8; 32] = take_array(&mut data)?;
+    let content_commitment: [u8; 32] = take_array(&mut data)?;
     let accepted = take_accepted(&mut data)?;
     let signature = take_signature(&mut data)?;
     let preimage = ack_preimage(
         &return_public,
         &delivery_id,
         &recipient_label,
-        &content_hash,
+        &content_commitment,
         accepted,
     )?;
     verify_signed_by(conn, &recipient_label, &preimage, &signature)?;
     Ok(DeliveryAck {
         delivery_id,
         recipient_label,
-        content_hash,
+        content_commitment,
         accepted,
     })
 }
@@ -222,7 +252,7 @@ fn letter_preimage(
     recipient_label: &str,
     return_public: &[u8; 32],
     file_name: &str,
-    content_hash: &[u8; 32],
+    content_commitment: &[u8; 32],
 ) -> Result<[u8; 32]> {
     let mut hasher = Sha256::new();
     hasher.update(LETTER_DOMAIN);
@@ -232,7 +262,7 @@ fn letter_preimage(
     hash_len_prefixed(&mut hasher, recipient_label.as_bytes())?;
     hasher.update(return_public);
     hash_len_prefixed(&mut hasher, file_name.as_bytes())?;
-    hasher.update(content_hash);
+    hasher.update(content_commitment);
     Ok(hasher.finalize().into())
 }
 
@@ -240,7 +270,7 @@ fn ack_preimage(
     return_public: &[u8; 32],
     delivery_id: &[u8; 16],
     recipient_label: &str,
-    content_hash: &[u8; 32],
+    content_commitment: &[u8; 32],
     accepted: bool,
 ) -> Result<[u8; 32]> {
     let mut hasher = Sha256::new();
@@ -248,7 +278,7 @@ fn ack_preimage(
     hasher.update(return_public);
     hasher.update(delivery_id);
     hash_len_prefixed(&mut hasher, recipient_label.as_bytes())?;
-    hasher.update(content_hash);
+    hasher.update(content_commitment);
     hasher.update([u8::from(accepted)]);
     Ok(hasher.finalize().into())
 }
@@ -276,7 +306,7 @@ pub struct OutgoingHistory<'a> {
 
 pub struct SealedHistoryLetter {
     pub delivery_id: [u8; 16],
-    pub container_hash: [u8; 32],
+    pub container_commitment: [u8; 32],
     pub bytes: Vec<u8>,
 }
 
@@ -296,7 +326,7 @@ pub struct HistoryLetter {
     /// from `container` before relying on the letter.
     pub content_proof: [u8; 32],
     pub container: Vec<u8>,
-    pub container_hash: [u8; 32],
+    pub container_commitment: [u8; 32],
 }
 
 /// An opened, signature-checked answer to a tracked-file letter.
@@ -306,14 +336,28 @@ pub struct HistoryAck {
     pub recipient_label: String,
     pub file_id: [u8; 16],
     pub revision_id: [u8; 32],
-    pub container_hash: [u8; 32],
+    pub container_commitment: [u8; 32],
     pub accepted: bool,
+}
+
+impl HistoryAck {
+    /// Whether this answer is about the container `sealed` committed to (the
+    /// sender's [`SealedHistoryLetter::container_commitment`], as its
+    /// `SHARE_ATTEMPTED` event recorded it), in constant time.
+    pub fn confirms(&self, sealed: &[u8; 32]) -> bool {
+        crypto::commitments_match(&self.container_commitment, sealed)
+    }
 }
 
 pub fn seal_history_letter(outgoing: &OutgoingHistory<'_>) -> Result<SealedHistoryLetter> {
     let mut delivery_id = [0u8; 16];
     crate::crypto::fill_random(&mut delivery_id);
-    let container_hash: [u8; 32] = Sha256::digest(outgoing.container).into();
+    let commitment_key = crypto::random_key();
+    let container_commitment = crypto::commit(
+        &commitment_key,
+        CONTAINER_COMMITMENT_DOMAIN,
+        outgoing.container,
+    );
     let preimage = history_letter_preimage(&HistoryHeader {
         recipient_public: outgoing.recipient_encryption_public,
         delivery_id: &delivery_id,
@@ -326,11 +370,11 @@ pub fn seal_history_letter(outgoing: &OutgoingHistory<'_>) -> Result<SealedHisto
         history_root: &outgoing.history_root,
         decision: outgoing.decision,
         content_proof: &outgoing.content_proof,
-        container_hash: &container_hash,
+        container_commitment: &container_commitment,
     })?;
     let signature = signing::sign(outgoing.sender_signing_secret, &preimage);
 
-    let mut plain = Vec::new();
+    let mut plain = Zeroizing::new(Vec::new());
     push_head(
         &mut plain,
         &delivery_id,
@@ -344,6 +388,7 @@ pub fn seal_history_letter(outgoing: &OutgoingHistory<'_>) -> Result<SealedHisto
     plain.extend_from_slice(&outgoing.history_root);
     plain.push(outgoing.decision);
     plain.extend_from_slice(&outgoing.content_proof);
+    plain.extend_from_slice(&commitment_key[..]);
     push_len_prefixed_u32(&mut plain, outgoing.container)?;
     plain.extend_from_slice(&signature);
     let bytes = envelope::seal(
@@ -354,7 +399,7 @@ pub fn seal_history_letter(outgoing: &OutgoingHistory<'_>) -> Result<SealedHisto
     )?;
     Ok(SealedHistoryLetter {
         delivery_id,
-        container_hash,
+        container_commitment,
         bytes,
     })
 }
@@ -381,9 +426,11 @@ pub fn open_history_letter(
     let history_root: [u8; 32] = take_array(&mut data)?;
     let decision = take_u8(&mut data)?;
     let content_proof: [u8; 32] = take_array(&mut data)?;
+    let commitment_key = Zeroizing::new(take_array::<32>(&mut data)?);
     let container = take_len_prefixed_u32(&mut data)?.to_vec();
     let signature = take_signature(&mut data)?;
-    let container_hash: [u8; 32] = Sha256::digest(&container).into();
+    let container_commitment =
+        crypto::commit(&commitment_key, CONTAINER_COMMITMENT_DOMAIN, &container);
     let preimage = history_letter_preimage(&HistoryHeader {
         recipient_public: &recipient_public,
         delivery_id: &delivery_id,
@@ -396,7 +443,7 @@ pub fn open_history_letter(
         history_root: &history_root,
         decision,
         content_proof: &content_proof,
-        container_hash: &container_hash,
+        container_commitment: &container_commitment,
     })?;
     verify_signed_by(conn, &sender_label, &preimage, &signature)?;
     Ok(HistoryLetter {
@@ -411,7 +458,7 @@ pub fn open_history_letter(
         decision,
         content_proof,
         container,
-        container_hash,
+        container_commitment,
     })
 }
 
@@ -427,7 +474,7 @@ pub fn seal_history_ack(
             recipient_label: letter.recipient_label.clone(),
             file_id: letter.file_id,
             revision_id: letter.revision_id,
-            container_hash: letter.container_hash,
+            container_commitment: letter.container_commitment,
             accepted,
         },
         &letter.return_public,
@@ -438,7 +485,7 @@ pub fn seal_history_ack(
     push_len_prefixed(&mut plain, letter.recipient_label.as_bytes())?;
     plain.extend_from_slice(&letter.file_id);
     plain.extend_from_slice(&letter.revision_id);
-    plain.extend_from_slice(&letter.container_hash);
+    plain.extend_from_slice(&letter.container_commitment);
     plain.push(u8::from(accepted));
     plain.extend_from_slice(&signature);
     envelope::seal(
@@ -463,7 +510,7 @@ pub fn open_history_ack(
     let recipient_label = utf8(take_len_prefixed(&mut data)?)?;
     let file_id: [u8; 16] = take_array(&mut data)?;
     let revision_id: [u8; 32] = take_array(&mut data)?;
-    let container_hash: [u8; 32] = take_array(&mut data)?;
+    let container_commitment: [u8; 32] = take_array(&mut data)?;
     let accepted = take_accepted(&mut data)?;
     let signature = take_signature(&mut data)?;
     let ack = HistoryAck {
@@ -471,7 +518,7 @@ pub fn open_history_ack(
         recipient_label,
         file_id,
         revision_id,
-        container_hash,
+        container_commitment,
         accepted,
     };
     let preimage = history_ack_preimage(&ack, &return_public)?;
@@ -819,7 +866,7 @@ struct HistoryHeader<'a> {
     history_root: &'a [u8; 32],
     decision: u8,
     content_proof: &'a [u8; 32],
-    container_hash: &'a [u8; 32],
+    container_commitment: &'a [u8; 32],
 }
 
 fn history_letter_preimage(header: &HistoryHeader<'_>) -> Result<[u8; 32]> {
@@ -836,7 +883,7 @@ fn history_letter_preimage(header: &HistoryHeader<'_>) -> Result<[u8; 32]> {
     hasher.update(header.history_root);
     hasher.update([header.decision]);
     hasher.update(header.content_proof);
-    hasher.update(header.container_hash);
+    hasher.update(header.container_commitment);
     Ok(hasher.finalize().into())
 }
 
@@ -848,7 +895,7 @@ fn history_ack_preimage(ack: &HistoryAck, return_public: &[u8; 32]) -> Result<[u
     hash_len_prefixed(&mut hasher, ack.recipient_label.as_bytes())?;
     hasher.update(ack.file_id);
     hasher.update(ack.revision_id);
-    hasher.update(ack.container_hash);
+    hasher.update(ack.container_commitment);
     hasher.update([u8::from(ack.accepted)]);
     Ok(hasher.finalize().into())
 }

@@ -22,6 +22,7 @@ const FILE_FINALIZE_DOMAIN: &[u8] = b"KQ-FILE-FINALIZE-v1";
 const FILE_HISTORY_EVENT_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-EVENT-v1";
 const FILE_BRIDGE_APPROVAL_DOMAIN: &[u8] = b"KQ-FILE-BRIDGE-APPROVAL-v1";
 const RELAY_AUDIT_ANCHOR_DOMAIN: &[u8] = b"KQ-RELAY-AUDIT-ANCHOR-v1";
+const RELAY_AUDIT_CHECKPOINT_DOMAIN: &[u8] = b"KQ-RELAY-AUDIT-CHECKPOINT-v1";
 
 /// Verifies `signature` over `message` under `public_key`. Uses
 /// `verify_strict` rather than `verify` — it rejects the non-canonical
@@ -220,6 +221,32 @@ pub fn relay_audit_anchor_preimage(
     hasher.update(row_count.to_be_bytes());
     hasher.update(head_hash);
     hash_len_prefixed(&mut hasher, signed_at.as_bytes())?;
+    hasher.update(Sha256::digest(certificate));
+    Ok(hasher.finalize().into())
+}
+
+/// What a relay signs for an audit checkpoint the operator keeps off the
+/// relay: every table's row count and chain head, when it was taken, and
+/// the certificate that names the signing key. Domain-separated from the
+/// per-table anchor, so one can never pass for the other.
+pub fn relay_audit_checkpoint_preimage(
+    heads: &[(&str, u64, [u8; 32])],
+    taken_at: &str,
+    certificate: &[u8],
+) -> Result<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    hasher.update(RELAY_AUDIT_CHECKPOINT_DOMAIN);
+    hasher.update(
+        u32::try_from(heads.len())
+            .map_err(|_| Error::BundleFieldTooLarge)?
+            .to_be_bytes(),
+    );
+    for (table, row_count, head_hash) in heads {
+        hash_len_prefixed(&mut hasher, table.as_bytes())?;
+        hasher.update(row_count.to_be_bytes());
+        hasher.update(head_hash);
+    }
+    hash_len_prefixed(&mut hasher, taken_at.as_bytes())?;
     hasher.update(Sha256::digest(certificate));
     Ok(hasher.finalize().into())
 }

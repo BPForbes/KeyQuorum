@@ -500,6 +500,39 @@ fn provider_host_keys_list_parses() {
         "keyquorum",
         "host",
         "keys",
+        "events",
+        "--verify",
+        "--checkpoint",
+        "audit.checkpoint",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "keys",
+        "events",
+        "--checkpoint",
+        "audit.checkpoint",
+    ])
+    .is_err());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "keys",
+        "checkpoint",
+        "--out",
+        "audit.checkpoint",
+        "--cert",
+        "provider.kqcert",
+        "--relay-key",
+        "relay.key",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from(["keyquorum", "host", "keys", "checkpoint"]).is_err());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "keys",
         "revoke",
         "3",
         "--cert",

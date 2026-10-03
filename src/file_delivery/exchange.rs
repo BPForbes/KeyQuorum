@@ -21,7 +21,14 @@
 //! Nothing new is stored to know where an exchange stands: every step is
 //! already recorded, hash-chained, in the sender's own copy of the file
 //! (`FILE_REQUESTED`, `REQUEST_ANSWERED`, `SHARE_ATTEMPTED`,
-//! `SHARE_DELIVERED`), so [`require_step`] reads that history. An export
+//! `SHARE_DELIVERED`), so [`require_step`] reads that history.
+//!
+//! That is all it can judge: the letter is sealed to the peer, so nothing
+//! here reads its file id, request id or delivery id. [`require_step`]
+//! confirms that the copy the sender names shows the step before this one
+//! with that peer, not that the letter is about that copy or that request.
+//! The receiving side binds each letter to its own file and request when it
+//! opens it (`file receive`, `file open-answer`, `file ack`). An export
 //! bundle (`KQXB`) is not a step (it is unsigned and carries every revision,
 //! trusted or not), and a device transfer package (`KQTX`) never travels
 //! with a file: it moves a person's own identity between their own devices.

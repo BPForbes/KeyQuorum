@@ -34,7 +34,7 @@ fn seeded() -> Connection {
 }
 
 fn report(conn: &Connection, root: &[u8; 32], table: AuditTable) -> TableReport {
-    verify(conn, root, &empty_revoked())
+    verify(conn, root, &empty_revoked(), None)
         .expect("verify")
         .into_iter()
         .find(|r| r.table == table.name())
@@ -160,7 +160,7 @@ fn an_anchor_counts_only_while_its_certificate_was_valid() {
 
     // Signed by a revoked certificate: refused.
     let revoked: HashSet<String> = ["KQP-000184".to_string()].into();
-    let r = verify(&inside, &root, &revoked).expect("verify");
+    let r = verify(&inside, &root, &revoked, None).expect("verify");
     assert!(r.iter().all(|t| t.trusted.is_none()));
 }
 
@@ -185,4 +185,108 @@ fn migration_chains_rows_written_before_the_chain_existed() {
         report(&conn, &root, AuditTable::ProviderAuthEvents).anchored_rows(),
         2
     );
+}
+
+fn report_against(
+    conn: &Connection,
+    root: &[u8; 32],
+    checkpoint: &Checkpoint,
+    table: AuditTable,
+) -> TableReport {
+    verify(conn, root, &empty_revoked(), Some(checkpoint))
+        .expect("verify")
+        .into_iter()
+        .find(|r| r.table == table.name())
+        .expect("table report")
+}
+
+#[test]
+fn an_expired_key_cannot_backdate_an_anchor_past_a_checkpoint() {
+    // The certificate was valid from 2026-01-01 to 2026-03-01.
+    let (identity, root) = relay_identity("2026-03-01 00:00:00");
+    let conn = seeded();
+    anchor(&conn, &identity, "2026-02-01 00:00:00.000").expect("anchor");
+    // The operator takes a checkpoint and keeps it off the relay.
+    let checkpoint = Checkpoint::decode(
+        &checkpoint(&conn, &identity, "2026-02-15 00:00:00.000")
+            .expect("checkpoint")
+            .encode()
+            .expect("encode"),
+    )
+    .expect("decode");
+    let r = report_against(&conn, &root, &checkpoint, AuditTable::ApiKeyEvents);
+    assert!(r.is_intact(), "{r:?}");
+    assert_eq!(r.anchored_rows(), 3);
+    assert!(r.checkpoint.as_ref().is_some_and(|c| c.matches));
+
+    // Later, with the key long expired, someone who can write the database
+    // adds a row and signs an anchor over it dated inside the old window.
+    relay::revoke_api_key(&conn, 2).expect("revoke");
+    anchor(&conn, &identity, "2026-02-10 00:00:00.000").expect("backdated anchor");
+    // Without the checkpoint, the signer's own date is all there is.
+    assert_eq!(
+        report(&conn, &root, AuditTable::ApiKeyEvents).pending_rows(),
+        0
+    );
+    // With it, the anchor covers a row that did not exist when the
+    // checkpoint was taken, yet claims to be older: refused.
+    let r = report_against(&conn, &root, &checkpoint, AuditTable::ApiKeyEvents);
+    assert_eq!(r.rejected_anchors, 1);
+    assert_eq!((r.anchored_rows(), r.pending_rows()), (3, 1));
+    assert!(!r.is_intact());
+}
+
+#[test]
+fn rewriting_rows_a_checkpoint_covers_is_detected_even_with_a_fresh_anchor() {
+    let (identity, root) = relay_identity("2027-01-01 00:00:00");
+    let conn = seeded();
+    let checkpoint = checkpoint(&conn, &identity, SIGNED_AT).expect("checkpoint");
+
+    // Rewrite a row, rebuild the chain and sign it again with the real key.
+    conn.execute(
+        "UPDATE api_key_events SET actor = 'admin:9' WHERE id = 1",
+        [],
+    )
+    .expect("tamper");
+    conn.execute("UPDATE api_key_events SET entry_hash = NULL", [])
+        .expect("clear");
+    backfill(&conn).expect("rebuild");
+    anchor(&conn, &identity, "2026-07-01 00:00:00.000").expect("anchor");
+    assert!(report(&conn, &root, AuditTable::ApiKeyEvents).is_intact());
+
+    let r = report_against(&conn, &root, &checkpoint, AuditTable::ApiKeyEvents);
+    assert!(r.checkpoint.as_ref().is_some_and(|c| !c.matches), "{r:?}");
+    assert!(!r.is_intact());
+    // The untouched table still matches.
+    let other = report_against(&conn, &root, &checkpoint, AuditTable::ProviderAuthEvents);
+    assert!(other.is_intact(), "{other:?}");
+}
+
+#[test]
+fn a_checkpoint_must_be_signed_by_a_trusted_relay_key() {
+    let (identity, root) = relay_identity("2027-01-01 00:00:00");
+    let conn = seeded();
+    let good = checkpoint(&conn, &identity, SIGNED_AT).expect("checkpoint");
+
+    // Any edit to what was signed is refused, never ignored.
+    let mut edited = good.clone();
+    edited.heads[0].row_count = 1;
+    assert!(verify(&conn, &root, &empty_revoked(), Some(&edited)).is_err());
+    let mut redated = good.clone();
+    redated.taken_at = "2026-06-02 12:00:00.000".into();
+    assert!(verify(&conn, &root, &empty_revoked(), Some(&redated)).is_err());
+
+    // A key certified by another root cannot write one.
+    let (forger, _) = relay_identity("2027-01-01 00:00:00");
+    let forged = checkpoint(&conn, &forger, SIGNED_AT).expect("checkpoint");
+    assert!(verify(&conn, &root, &empty_revoked(), Some(&forged)).is_err());
+
+    // Nor can a key whose certificate had expired when it was taken.
+    let (short, short_root) = relay_identity("2026-03-01 00:00:00");
+    let late = checkpoint(&conn, &short, "2026-04-01 00:00:00.000").expect("checkpoint");
+    assert!(verify(&conn, &short_root, &empty_revoked(), Some(&late)).is_err());
+
+    // And the file is only this format.
+    assert!(Checkpoint::decode(b"{}").is_err());
+    assert!(verify(&conn, &root, &empty_revoked(), Some(&good)).is_ok());
 }

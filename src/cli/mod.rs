@@ -2209,7 +2209,7 @@ fn deliver_then_commit(
     Ok(pending.keep())
 }
 
-fn sanitize_label(label: &str) -> Result<String> {
+pub(super) fn sanitize_label(label: &str) -> Result<String> {
     let mut out = String::with_capacity(label.len());
     for ch in label.chars() {
         if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {

@@ -949,8 +949,8 @@ async fn audit_events_are_scoped_to_the_caller_and_revocations_are_signed_at_onc
 
     // The revocation is already vouched for by this relay's key.
     let conn = db.lock().expect("db");
-    let reports =
-        relay::audit::verify(&conn, &issued.root_public, &Default::default()).expect("verify");
+    let reports = relay::audit::verify(&conn, &issued.root_public, &Default::default(), None)
+        .expect("verify");
     let events = reports
         .iter()
         .find(|r| r.table == "api_key_events")
@@ -990,6 +990,55 @@ fn rate_limiter_memory_stays_bounded_under_many_addresses() {
         let _ = limiter.check(ip, now);
     }
     assert!(limiter.clients.lock().unwrap().len() <= super::MAX_RATE_LIMITED_CLIENTS + 1);
+}
+
+#[test]
+fn rate_limiter_counts_an_ipv6_network_as_one_client() {
+    use std::net::{IpAddr, Ipv6Addr};
+    use std::time::Instant;
+    let limiter = super::RateLimiter::new(2, false);
+    let now = Instant::now();
+    let host = |network: u16, interface: u16| -> IpAddr {
+        Ipv6Addr::new(0x2001, 0xdb8, 0, network, 0, 0, 0, interface).into()
+    };
+    // Two addresses in one /64 share its allowance.
+    assert!(limiter.check(host(1, 1), now).is_ok());
+    assert!(limiter.check(host(1, 2), now).is_ok());
+    assert!(limiter.check(host(1, 3), now).is_err());
+    // The next /64 is another client.
+    assert!(limiter.check(host(2, 1), now).is_ok());
+    // An IPv4-mapped address counts as the IPv4 client it is.
+    let v4: IpAddr = [192, 0, 2, 7].into();
+    assert!(limiter.check(v4, now).is_ok());
+    assert!(limiter
+        .check(Ipv6Addr::from(0xffff_c000_0207_u128).into(), now)
+        .is_ok());
+    assert!(limiter.check(v4, now).is_err());
+}
+
+#[test]
+fn rate_limiter_keeps_overflow_apart_from_requests_with_no_peer_address() {
+    use std::net::IpAddr;
+    use std::time::Instant;
+    let limiter = super::RateLimiter::new(1, false);
+    let now = Instant::now();
+    // Fill the table with active clients; the next new one overflows.
+    for i in 0..super::MAX_RATE_LIMITED_CLIENTS as u32 {
+        let ip: IpAddr = std::net::Ipv4Addr::from(i).into();
+        assert!(limiter.check(ip, now).is_ok());
+    }
+    let late: IpAddr = [203, 0, 113, 1].into();
+    assert!(limiter.check(late, now).is_ok(), "first overflow request");
+    assert!(limiter.check([203, 0, 113, 2].into(), now).is_err());
+    // A request with no peer address does not draw on the overflow bucket,
+    // nor does the unspecified address a client could present.
+    assert!(limiter
+        .check_key(super::ClientKey::UnknownPeer, now)
+        .is_ok());
+    assert!(
+        limiter.check(IpAddr::from([0u8; 16]), now).is_err(),
+        "`::` is an ordinary (here overflowing) client, not the unknown-peer bucket"
+    );
 }
 
 async fn health_from(app: &axum::Router, forwarded: Option<&str>) -> axum::http::Response<Body> {

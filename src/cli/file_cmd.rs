@@ -2277,7 +2277,10 @@ fn share(
         .with("to", to)
         .with("delivery_id", &delivery)
         .with("decision", &format!("{:?}", decision.decision))
-        .with("container_hash", &hex::encode(sealed.container_hash));
+        .with(
+            "container_commitment",
+            &hex::encode(sealed.container_commitment),
+        );
     if delivered != candidate {
         // A fallback: name what was asked for and why it stayed behind,
         // as the candidate's trust state (never its content).
@@ -2823,7 +2826,10 @@ fn receive(
                     .with("from", &letter.sender_label)
                     .with("freshness", freshness.name())
                     .with("delivery_id", &hex::encode(letter.delivery_id))
-                    .with("container_hash", &hex::encode(letter.container_hash)),
+                    .with(
+                        "container_commitment",
+                        &hex::encode(letter.container_commitment),
+                    ),
             )
         };
         match (into, out) {
@@ -2932,7 +2938,12 @@ fn record_ack(
             let entries = e.details.entries();
             file.file_id == ack.file_id
                 && e.revision_id == Some(ack.revision_id)
-                && entries.contains(&("container_hash".into(), hex::encode(ack.container_hash)))
+                // Only ever compared: a yes or a no. A v1 history's bare
+                // `container_hash` is not a commitment and answers nothing.
+                && e.details
+                    .get("container_commitment")
+                    .and_then(|v| <[u8; 32]>::try_from(hex::decode(v).ok()?).ok())
+                    .is_some_and(|sealed| ack.confirms(&sealed))
                 && entries.contains(&("to".into(), ack.recipient_label.clone()))
         })
         .ok_or_else(|| usage("that acknowledgement does not answer any delivery from this file"))?;

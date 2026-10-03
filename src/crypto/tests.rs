@@ -81,3 +81,33 @@ fn decrypted_plaintext_is_zeroed_on_drop() {
     let plaintext: zeroize::Zeroizing<Vec<u8>> = decrypt(&key, &nonce, &ciphertext).unwrap();
     assert_eq!(plaintext.as_slice(), b"secret");
 }
+
+#[test]
+fn a_commitment_depends_on_its_key_domain_and_content() {
+    let key = random_key();
+    let other = random_key();
+    let base = commit(&key, b"KQ-TEST", b"secret report");
+    assert_eq!(base, commit(&key, b"KQ-TEST", b"secret report"));
+    assert!(commitments_match(
+        &base,
+        &commit(&key, b"KQ-TEST", b"secret report")
+    ));
+    // Without the key, the commitment confirms no guess at the content.
+    assert!(!commitments_match(
+        &base,
+        &commit(&other, b"KQ-TEST", b"secret report")
+    ));
+    assert!(!commitments_match(
+        &base,
+        &commit(&key, b"KQ-OTHER", b"secret report")
+    ));
+    assert!(!commitments_match(
+        &base,
+        &commit(&key, b"KQ-TEST", b"secret repor")
+    ));
+    // The domain is length-prefixed, so its boundary with the data is fixed.
+    assert!(!commitments_match(
+        &commit(&key, b"KQ-TESTs", b"ecret report"),
+        &base
+    ));
+}

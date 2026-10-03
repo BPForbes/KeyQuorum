@@ -205,6 +205,7 @@ pub const SAFE_DETAIL_KEYS: &[&str] = &[
     "by",
     "bundle_type",
     "candidate",
+    "container_commitment",
     "container_hash",
     "custody",
     "denied",
