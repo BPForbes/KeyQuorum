@@ -101,6 +101,56 @@ fn setup_with_a_relay_loads_its_key_and_doctor_asks_for_the_other() {
 }
 
 #[test]
+fn doctor_checks_the_relay_the_commands_use() {
+    let mut env = MemoryEnv::with_relay();
+    env.now = Some("2026-10-02 12:00".into());
+    ok(
+        &mut env,
+        &format!("{DB} setup --device /usb/alice --label alice"),
+    );
+    ok(&mut env, &format!("{DB} use --url https://profile.test"));
+    // Commands prefer KEYQUORUM_RELAY_URL over the stored default; so must doctor.
+    env.vars
+        .insert("KEYQUORUM_RELAY_URL".into(), "https://env.test".into());
+    let (_, out) = env.keyquorum(&format!("{DB} doctor"));
+    assert!(out.contains("ok    relay https://env.test"), "{out}");
+    assert!(!out.contains("profile.test"), "{out}");
+}
+
+#[test]
+fn loadkey_uses_the_stored_relay_when_no_url_is_given() {
+    let mut env = MemoryEnv::with_relay();
+    env.now = Some("2026-10-02 12:00".into());
+    env.vars.remove("KEYQUORUM_RELAY_URL");
+    let push = env.relay_key(ApiKeyScope::InboxPush, None);
+    ok(
+        &mut env,
+        &format!("{DB} setup --device /usb/alice --label alice"),
+    );
+    ok(&mut env, &format!("{DB} use --url {RELAY_URL}"));
+    let out = ok(&mut env, &format!("{DB} loadkey {push}"));
+    assert!(out.contains("Stored inbox.push API key"), "{out}");
+    let (result, _) = env.keyquorum(&format!("keyquorum --db /home/none.sqlite loadkey {push}"));
+    let message = result.unwrap_err().to_string();
+    assert!(message.contains("keyquorum use --url"), "{message}");
+}
+
+#[test]
+fn an_existing_key_is_reused_only_for_the_same_label_kind_and_when_active() {
+    use crate::keys::{self, KeyType};
+    let conn = crate::db::open_in_memory().unwrap();
+    let public = [7u8; 32];
+    let id = keys::register_key(&conn, "alice", KeyType::Encryption, &public).unwrap();
+    let ensure =
+        |label: &str, kind| super::super::setup::ensure_registered(&conn, label, kind, &public);
+    assert!(!ensure("alice", KeyType::Encryption).unwrap(), "reused");
+    assert!(ensure("bob", KeyType::Encryption).is_err(), "other label");
+    assert!(ensure("alice", KeyType::Signing).is_err(), "other kind");
+    keys::revoke_key(&conn, id).unwrap();
+    assert!(ensure("alice", KeyType::Encryption).is_err(), "revoked");
+}
+
+#[test]
 fn doctor_with_nothing_set_says_how_to_start() {
     let mut env = MemoryEnv::default();
     let (result, out) = env.keyquorum(&format!("{DB} doctor"));

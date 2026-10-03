@@ -2662,6 +2662,10 @@ fn authenticate_relay_for_stored_key(conn: &Connection, url: &str, key_hash: &st
     let cached = profile::caching(conn);
     if cached && db::cache::relay_trust_hit(conn, url, &krl_digest, key_hash, &now)? {
         profile::mark_relay_proven(url);
+        errln!(
+            "note: reusing a relay check from the last {} minutes for {url} (--no-cache to repeat it)",
+            db::cache::TTL_MINUTES
+        );
         return Ok(());
     }
     let cert = authenticate_official_relay(url)?;
@@ -2682,7 +2686,7 @@ fn authenticate_relay_for_stored_key(conn: &Connection, url: &str, key_hash: &st
     Ok(())
 }
 
-fn configured_relay_url(
+pub(crate) fn configured_relay_url(
     conn: &Connection,
     explicit: Option<String>,
     scope: relay::ApiKeyScope,
@@ -2823,18 +2827,21 @@ fn run_loadkey(db_path: &Path, api_key: Option<String>, url: Option<String>) -> 
 }
 
 fn loadkey_in_store(conn: &Connection, api_key: Option<String>, url: Option<String>) -> Result<()> {
-    let url = if let Some(url) = url.filter(|s| !s.is_empty()) {
-        db::relay_credential::normalize_url(&url)
-    } else {
-        match env::var("KEYQUORUM_RELAY_URL") {
-            Ok(url) if !url.is_empty() => db::relay_credential::normalize_url(&url),
-            _ => {
-                return Err(Error::RelayRequest(
-                    "relay URL required (--url or KEYQUORUM_RELAY_URL)".into(),
-                ))
+    let url =
+        if let Some(url) = url.filter(|s| !s.is_empty()) {
+            db::relay_credential::normalize_url(&url)
+        } else {
+            match env::var("KEYQUORUM_RELAY_URL") {
+                Ok(url) if !url.is_empty() => db::relay_credential::normalize_url(&url),
+                _ => match db::profile::get(conn, db::profile::DEFAULT_RELAY_URL)? {
+                    Some(url) => db::relay_credential::normalize_url(&url),
+                    None => return Err(Error::RelayRequest(
+                        "relay URL required (--url, KEYQUORUM_RELAY_URL or `keyquorum use --url`)"
+                            .into(),
+                    )),
+                },
             }
-        }
-    };
+        };
     relay::validate_relay_url(&url)?;
     // `loadkey` always meets the full challenge, and drops any cached pass.
     db::cache::forget_relay_trust(conn, &url)?;

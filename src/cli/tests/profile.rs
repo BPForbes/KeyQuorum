@@ -213,10 +213,20 @@ mod relay_trust {
         let after_loadkey = challenges(&env);
         assert_eq!(after_loadkey, 1, "loadkey always runs the full challenge");
 
+        let start = env.stderr.len();
         send(&mut env, "");
         assert_eq!(challenges(&env), after_loadkey + 1, "first send checks");
+        let first = String::from_utf8_lossy(&env.stderr[start..]).to_string();
+        assert!(!first.contains("reusing a relay check"), "{first}");
+        let start = env.stderr.len();
         send(&mut env, "");
         assert_eq!(challenges(&env), after_loadkey + 1, "second send reuses it");
+        let second = String::from_utf8_lossy(&env.stderr[start..]).to_string();
+        assert!(
+            second.contains("reusing a relay check from the last 15 minutes")
+                && second.contains("--no-cache"),
+            "{second}"
+        );
 
         env.now = Some("2026-10-02 12:14".into());
         send(&mut env, "");

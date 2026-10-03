@@ -99,6 +99,57 @@ fn send_then_inbox_open_delivers_the_file_and_the_answer_comes_back() {
 }
 
 #[test]
+fn a_failed_answer_upload_can_be_retried_without_touching_the_saved_file() {
+    let mut env = two_people_on_a_relay();
+    run(
+        &mut env,
+        &format!("{ALICE} send /home/alice/note.txt --to bob"),
+    );
+    env.relay.as_mut().unwrap().fail_uploads = true;
+    let (result, _) = env.keyquorum(&format!("{BOB} inbox open"));
+    assert!(result.is_err(), "the answer could not be uploaded");
+    assert_eq!(
+        env.fs.read(Path::new("received/note.txt")).unwrap(),
+        b"lunch at noon",
+        "the file is kept"
+    );
+
+    env.relay.as_mut().unwrap().fail_uploads = false;
+    let again = run(&mut env, &format!("{BOB} inbox open"));
+    assert!(again.contains("Already saved note.txt"), "{again}");
+    assert!(
+        again.contains("Relay stored letter"),
+        "answer posted: {again}"
+    );
+    assert_eq!(
+        env.fs.read(Path::new("received/note.txt")).unwrap(),
+        b"lunch at noon"
+    );
+    let answered = run(&mut env, &format!("{ALICE} inbox open"));
+    assert!(answered.contains(" accepted by bob"), "{answered}");
+    let done = run(&mut env, &format!("{BOB} inbox open"));
+    assert!(done.contains("(nothing waiting)"), "{done}");
+}
+
+#[test]
+fn a_different_file_already_at_the_save_path_is_still_refused() {
+    let mut env = two_people_on_a_relay();
+    run(
+        &mut env,
+        &format!("{ALICE} send /home/alice/note.txt --to bob"),
+    );
+    env.fs
+        .write_new(Path::new("received/note.txt"), b"something else")
+        .unwrap();
+    let (result, _) = env.keyquorum(&format!("{BOB} inbox open"));
+    assert!(result.is_err());
+    assert_eq!(
+        env.fs.read(Path::new("received/note.txt")).unwrap(),
+        b"something else"
+    );
+}
+
+#[test]
 fn a_letter_is_opened_once_and_a_later_pull_resumes_after_it() {
     let mut env = two_people_on_a_relay();
     run(

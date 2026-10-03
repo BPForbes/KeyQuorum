@@ -171,6 +171,9 @@ fn send_quorum_file(conn: &Connection, id: i64, args: SendOpts) -> Result<()> {
         return Err(usage("--revision applies only to a tracked file"));
     }
     let (output_dir, push) = transport(conn, &args)?;
+    // An unregistered recipient is refused before anything is unlocked, so the
+    // attempt is not recorded at the file's gate for a send that cannot happen.
+    deliver_cmd::registered_encryption_key(conn, &args.to)?;
     let plaintext = zeroize::Zeroizing::new(unlock_quorum_file(
         conn,
         id,

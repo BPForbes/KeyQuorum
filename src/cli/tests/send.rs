@@ -51,6 +51,20 @@ fn files_under(env: &MemoryEnv, dir: &str) -> Vec<String> {
 }
 
 #[test]
+fn an_unregistered_recipient_is_refused_before_anything_is_unlocked() {
+    let mut env = with_recipient();
+    let (result, _) = env.keyquorum(&format!(
+        "keyquorum {DB} send --quorum-file 1 --to NOBODY --as M.A --slot /usb/ma=M.A {BOTH} --output-dir /out"
+    ));
+    let message = result.unwrap_err().to_string();
+    assert!(
+        message.contains("no encryption key is registered for NOBODY"),
+        "{message}"
+    );
+    assert!(files_under(&env, "/out").is_empty());
+}
+
+#[test]
 fn a_quorum_file_is_unlocked_in_memory_sealed_and_opened_by_the_recipient() {
     let mut env = with_recipient();
     let before = files_under(&env, "/work");

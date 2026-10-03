@@ -2934,10 +2934,10 @@ impl LabState {
 
     // ----- delivery -------------------------------------------------------
 
-    /// Send a file with `keyquorum send` (which pushes to the relay). A quorum-locked
-    /// file is first opened to a temporary file with `access quorum
-    /// --state 1 --output` (so only someone who can open it can send it),
-    /// which is removed afterward.
+    /// Send a file with `keyquorum send` (which pushes to the relay). A
+    /// quorum-locked file goes by `send --quorum-file` against the org store:
+    /// it is unlocked in memory with the inserted slots (so only someone who
+    /// can open it can send it) and no plaintext is written to disk.
     pub fn send(&mut self, file_key: &str, recipient_key: &str) -> Result<Outcome> {
         let Some(recipient) = self.user_index(recipient_key) else {
             return Ok(Outcome::done(

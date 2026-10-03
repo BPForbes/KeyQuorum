@@ -144,31 +144,45 @@ fn check_identity(conn: &Connection, report: &mut Report) -> Result<()> {
     Ok(())
 }
 
+/// The relay each scope would use is chosen by the same function `send` and
+/// `inbox` call, so the report cannot describe a different relay from the one
+/// the command talks to.
 fn check_relay(conn: &Connection, report: &mut Report) -> Result<()> {
-    let url = match stored::get(conn, stored::DEFAULT_RELAY_URL)? {
-        Some(url) => Some(url),
-        None => env::var("KEYQUORUM_RELAY_URL")
-            .ok()
-            .filter(|u| !u.is_empty()),
-    };
-    let Some(url) = url else {
-        report
-            .info("no relay is set; sends go to ./outbox (add one with `keyquorum use --url URL`)");
-        return Ok(());
-    };
-    report.ok(&format!("relay {url}"));
+    let mut shown: Vec<String> = Vec::new();
+    let mut any = false;
     for (scope, purpose) in [
         (relay::ApiKeyScope::InboxPush, "sending"),
         (relay::ApiKeyScope::InboxPull, "receiving"),
     ] {
-        if db::relay_credential::get(conn, &url, scope.as_str())?.is_some() {
-            report.ok(&format!("a {} key is loaded for {purpose}", scope.as_str()));
-        } else {
-            report.fix(
-                &format!("no {} key is loaded for {purpose}", scope.as_str()),
-                &format!("keyquorum loadkey --url {url}"),
-            );
+        match super::configured_relay_url(conn, None, scope) {
+            Err(err) => {
+                any = true;
+                report.fix(
+                    &format!("the relay for {purpose} cannot be chosen: {err}"),
+                    "keyquorum use --url URL (or pass --url, or unset KEYQUORUM_RELAY_URL)",
+                );
+            }
+            Ok(None) => {}
+            Ok(Some(url)) => {
+                any = true;
+                if !shown.contains(&url) {
+                    report.ok(&format!("relay {url}"));
+                    shown.push(url.clone());
+                }
+                if db::relay_credential::get(conn, &url, scope.as_str())?.is_some() {
+                    report.ok(&format!("a {} key is loaded for {purpose}", scope.as_str()));
+                } else {
+                    report.fix(
+                        &format!("no {} key is loaded for {purpose}", scope.as_str()),
+                        &format!("keyquorum loadkey --url {url}"),
+                    );
+                }
+            }
         }
+    }
+    if !any {
+        report
+            .info("no relay is set; sends go to ./outbox (add one with `keyquorum use --url URL`)");
     }
     Ok(())
 }

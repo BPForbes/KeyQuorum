@@ -41,8 +41,22 @@ pub(super) fn ensure_registered(
     kind: KeyType,
     public: &[u8; 32],
 ) -> Result<bool> {
-    if keys::get_key_by_public_key(conn, public).is_ok() {
-        return Ok(false);
+    if let Ok(existing) = keys::get_key_by_public_key(conn, public) {
+        if existing.label == label && existing.key_type == kind && existing.revoked_at.is_none() {
+            return Ok(false);
+        }
+        return Err(usage(&format!(
+            "this {} key is already registered in this store as {} {} ({}); \
+             pick another key or label",
+            kind.as_str(),
+            existing.key_type.as_str(),
+            existing.label,
+            if existing.revoked_at.is_some() {
+                "revoked"
+            } else {
+                "active"
+            }
+        )));
     }
     if !keys::active_keys_for(conn, label, kind)?.is_empty() {
         return Err(usage(&format!(

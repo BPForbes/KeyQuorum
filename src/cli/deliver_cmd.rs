@@ -191,8 +191,15 @@ pub fn run(conn: &Connection, command: DeliverCommand) -> Result<()> {
                 };
                 match target {
                     Some(path) => {
-                        env::write_new(&path, &letter.contents)?;
-                        outln!("Saved {} to {}", letter.file_name, path.display());
+                        // A retry after a failed answer upload finds the file
+                        // it saved the first time; the same bytes are not a
+                        // conflict, anything else still refuses.
+                        if env::exists(&path) && env::read(&path)? == letter.contents {
+                            outln!("Already saved {} to {}", letter.file_name, path.display());
+                        } else {
+                            env::write_new(&path, &letter.contents)?;
+                            outln!("Saved {} to {}", letter.file_name, path.display());
+                        }
                     }
                     None => env::stdout_bytes(&letter.contents)?,
                 }

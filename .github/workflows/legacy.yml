@@ -16,16 +16,17 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: legacy-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   legacy:
     name: legacy
+    # On the job, not the workflow: a run whose job is skipped must not cancel
+    # a legacy run that is already going.
+    concurrency:
+      group: legacy-${{ github.ref }}
+      cancel-in-progress: true
     if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'legacy')
     uses: ./.github/workflows/tests.yml
     with:
