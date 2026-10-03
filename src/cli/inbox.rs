@@ -13,8 +13,9 @@
 //! idempotent by delivery id, so losing that record only repeats an answer.
 //!
 //! A letter that asks for a decision (a file or change request), an answer to
-//! a request, a history snapshot, or an acknowledgement of a tracked file is
-//! listed with the command that opens it; none of those is guessed.
+//! a request, or an acknowledgement of a tracked file is listed with the
+//! command that opens it; none of those is guessed. A history snapshot is
+//! opened by the sweep, and compared with a copy only when `--file` names one.
 
 use super::deliver_cmd::DeliverCommand;
 use super::env::{self, errln, outln};

@@ -1010,7 +1010,14 @@ fn request_command(conn: &Connection, command: FileCommand) -> Result<()> {
                 share_file,
                 file,
             } = *opts;
-            open_request(conn, &letter, share_file.as_deref(), slot.as_deref(), file)
+            open_request(
+                conn,
+                &letter,
+                share_file.as_deref(),
+                slot.as_deref(),
+                file,
+                true,
+            )
         }
         FileCommand::AnswerRequest(opts) => {
             let AnswerRequestOpts {
@@ -2187,7 +2194,7 @@ pub(super) mod inbox {
         file: Option<PathBuf>,
         transport: Transport,
     ) -> Result<()> {
-        open_request(conn, letter, None, Some(slot), file.clone())?;
+        open_request(conn, letter, None, Some(slot), file.clone(), false)?;
         let secrets = recipient_secrets(Some(slot.to_string()), None, None)?;
         answer_request(conn, letter, accepted, secrets, file, transport)
     }
@@ -2482,6 +2489,7 @@ fn open_request(
     share_file: Option<&str>,
     slot: Option<&str>,
     file: Option<PathBuf>,
+    hint_answer: bool,
 ) -> Result<()> {
     let secret = super::encryption_secret_from(share_file, slot)?;
     let request = file_delivery::open_request(conn, &secret, &env::read(letter_path)?)?;
@@ -2531,10 +2539,12 @@ fn open_request(
         index_after(conn, &copy);
         outln!("Recorded in {}", path.display());
     }
-    outln!(
-        "Answer with `file answer-request --letter {} --decision accept|decline`",
-        letter_path.display()
-    );
+    if hint_answer {
+        outln!(
+            "Answer with `file answer-request --letter {} --decision accept|decline`",
+            letter_path.display()
+        );
+    }
     Ok(())
 }
 
@@ -2594,9 +2604,8 @@ fn answer_request(
     );
     if accepted && request.kind == file_delivery::RequestKind::File {
         outln!(
-            "Send the file with `file share <file> --to {} --as {} --slot …`",
-            request.requester_label,
-            request.holder_label
+            "Send the file with `keyquorum send <file> --to {}`",
+            request.requester_label
         );
     }
     let letter = Letter {

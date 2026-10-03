@@ -234,6 +234,9 @@ fn a_request_needs_a_decision_and_the_answer_is_recorded_where_you_say() {
         &format!("inbox open {req} {} --accept --file {KQTF}", o.a),
     );
     assert!(answered.contains("Accepted file request"), "{answered}");
+    // The answer is already given and the file goes by `send`: no stale advice.
+    assert!(!answered.contains("answer-request"), "{answered}");
+    assert!(!answered.contains("file share"), "{answered}");
     let history = file_ok(&mut o.env, &format!("history {KQTF}"));
     assert!(history.contains("FileRequested"), "{history}");
 

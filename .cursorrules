@@ -423,7 +423,7 @@ between drives, and an explicit flag beats the profile) and keeps the output lin
 it parses (`(delivery <id>)`, `Relay stored letter`, `From X to Y`, `Delivery <id>
 accepted|rejected`) stable. Switching user, inserting a drive and receiving a letter
 settle mail in the lab (`LabState::settle_mail_and_answers`: `inbox list`, `inbox open`
-for answers, then `file ack` / `file open-answer` for the tracked files and requests
+for answers, then `inbox open <id> --file` for the tracked files and requests
 the person sent, only while their slot is in); a quorum file is sent by one
 `send --quorum-file` run against the org store (it holds the file's shares and its own push key),
 unlocking through the same `unlock_quorum_file` as `access quorum --state 1`, so nothing is written to disk.

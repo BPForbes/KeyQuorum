@@ -3120,8 +3120,7 @@ impl LabState {
     /// What happens by itself when a person is present with their slot in:
     /// the relay is checked (`inbox list`), acknowledgements to their
     /// deliveries are opened (`inbox open`), and answers to the tracked
-    /// files and requests they sent are recorded (`file ack`, `file
-    /// open-answer`). Each is the real command, shown in the transcript;
+    /// files and requests they sent are recorded (`inbox open <id> --file`). Each is the real command, shown in the transcript;
     /// deciding to accept or refuse something stays a click.
     fn settle_mail_and_answers(&mut self) -> Vec<TraceStep> {
         let (mut trace, _) = self.check_mail();

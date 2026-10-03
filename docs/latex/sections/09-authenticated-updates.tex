@@ -38,11 +38,12 @@ keyquorum generate --type signing --label M --register \
 # Restructure: after `add`, `revoke --evict`, or `bind`, announce the new
 # shape. Each active leaf gets its own visible slice at the next generation.
 # Root (M) is effective immediately. A label with a parent, such as M.S,
-# writes a proposal and waits. Each write below gets its own --output-dir
-# and its own upload: these can overlap in which leaves they address (a
-# proposal for M.S can name the same leaves the root's own restructure
-# just did), and package writers never overwrite an existing file.
-# --push uploads the envelopes in the same command, after the change is saved.
+# writes a proposal and waits. --push uploads the envelopes in the same
+# command, after the change is saved; each command stages them in its own
+# folder under ./outbox. With --output-dir instead, give each command its own
+# directory: these can overlap in which leaves they address (a proposal for
+# M.S can name the same leaves the root's own restructure just did), and
+# package writers never overwrite an existing file.
 keyquorum tree restructure 1 --as M   --signing-key-file M.sign.key --push
 keyquorum tree restructure 1 --as M.S --signing-key-file M.S.sign.key --push
 keyquorum tree countersign 1 --as M   --signing-key-file M.sign.key --push

@@ -62,8 +62,9 @@ trust decision; each of those is computed again from the store every time.
 
 The relay entry is the one that stands in for a challenge. A relay proves a
 KeyQuorum-signed certificate and signs a random challenge; a cached pass
-instead reuses that earlier result for the same URL while the revocation list,
-the stored key hash and the certificate's expiry are unchanged. It is never
+instead reuses that earlier result for the same URL while the revocation list
+and the stored key hash are unchanged, for at most 15 minutes and never past
+the expiry of the certificate that was checked. It is never
 written for a failure, and \code{loadkey} always runs the full challenge.
 What it does not do is prove who answers \emph{now}: for up to 15 minutes a
 reused pass trusts the earlier proof of that URL, so someone who took over the
