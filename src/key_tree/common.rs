@@ -7,7 +7,7 @@ pub(super) fn register_encryption_key(
     conn: &Connection,
     label: &str,
 ) -> (i64, crypto_box::SecretKey) {
-    let secret_key = crypto_box::SecretKey::generate(&mut rand::rngs::OsRng);
+    let secret_key = crypto_box::SecretKey::generate(&mut rand_core::OsRng);
     let public_key = *secret_key.public_key().as_bytes();
     let id = keys::register_key(conn, label, KeyType::Encryption, &public_key)
         .expect("register_key should succeed");

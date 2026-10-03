@@ -1891,7 +1891,7 @@ fn seal_secret(
     plain.extend_from_slice(wrap_salt);
     plain.extend_from_slice(secret);
     Ok(crypto_box::PublicKey::from_bytes(*recipient_pub)
-        .seal(&mut rand::rngs::OsRng, &plain)
+        .seal(&mut rand_core::OsRng, &plain)
         .expect("crypto_box sealing should not fail for an in-memory secret"))
 }
 

@@ -16,6 +16,18 @@ fn random_key_differs_across_calls() {
 }
 
 #[test]
+fn fill_random_fills_the_whole_buffer_differently_each_call() {
+    let mut a = [0u8; 64];
+    let mut b = [0u8; 64];
+    fill_random(&mut a);
+    fill_random(&mut b);
+    assert_ne!(a, b);
+    assert_ne!(a, [0u8; 64]);
+    // A 64-byte buffer is filled to its end, not just its first word.
+    assert_ne!(a[32..], [0u8; 32]);
+}
+
+#[test]
 fn derive_key_differs_for_different_passwords() {
     let salt = random_salt();
     let a = derive_key("password-one", &salt).unwrap();

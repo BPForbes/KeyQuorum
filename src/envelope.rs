@@ -144,7 +144,7 @@ pub fn seal(
         return Err(Error::InvalidPublicKey);
     }
     let sealed = crypto_box::PublicKey::from_bytes(*recipient_public_key)
-        .seal(&mut rand::rngs::OsRng, payload)
+        .seal(&mut rand_core::OsRng, payload)
         .expect("crypto_box sealing should not fail for an in-memory payload");
     let payload_len = u32::try_from(sealed.len()).map_err(|_| Error::BundleFieldTooLarge)?;
     let mut out = Vec::with_capacity(42 + sealed.len());

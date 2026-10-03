@@ -23,7 +23,7 @@ fn rejects_remote_http_and_allows_loopback_and_https() {
 #[test]
 fn rejects_backslash_host_confusion() {
     // Manual authority splitting treated `localhost` as the host; the
-    // WHATWG parser (and ureq) treat `\` as `/`, so the host is the
+    // WHATWG parser treats `\` as `/`, so the host is the
     // attacker and HTTP would leak the bearer if we allowed it.
     let confused = r"http://attacker.example\@localhost";
     assert!(validate_relay_url(confused).is_err());
@@ -45,11 +45,13 @@ fn stalled_peer_is_terminated_by_timeout() {
         std::thread::sleep(Duration::from_secs(5));
         drop(stream);
     });
-    let agent = http_agent_builder()
-        .timeout(Duration::from_millis(400))
-        .build();
+    let agent = ureq::Agent::new_with_config(
+        http_agent_config()
+            .timeout_global(Some(Duration::from_millis(400)))
+            .build(),
+    );
     let started = std::time::Instant::now();
-    let result = agent.get(&format!("http://{addr}/")).call();
+    let result = agent.get(format!("http://{addr}/")).call();
     assert!(result.is_err());
     assert!(started.elapsed() < Duration::from_secs(2));
 }

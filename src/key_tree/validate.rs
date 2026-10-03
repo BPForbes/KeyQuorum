@@ -82,7 +82,7 @@ fn validate_rejects_zero_threshold() {
 #[test]
 fn validate_rejects_signing_key_as_leaf() {
     let conn = db::open_in_memory().expect("schema should apply");
-    let signing_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+    let signing_key = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
     let public_key = signing_key.verifying_key().to_bytes();
     let id = keys::register_key(&conn, "signer", KeyType::Signing, &public_key)
         .expect("register_key should succeed");

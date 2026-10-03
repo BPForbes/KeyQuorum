@@ -22,8 +22,6 @@ use super::revision::{FileRevision, NewRevision, RevisionGraph, StoredRevision};
 use super::verify::verify_structure;
 use crate::envelope::{push_len_prefixed, take_len_prefixed, take_u32, utf8};
 use crate::error::{Error, Result};
-use rand::rngs::OsRng;
-use rand::RngCore;
 
 pub const CONTAINER_MAGIC: &[u8; 4] = b"KQTF";
 /// Version 5 lets a revision's payload be absent (destroyed at expiry).
@@ -159,7 +157,7 @@ impl TrackedFile {
             return Err(Error::InvalidTrackedFile);
         }
         let mut event_id = [0u8; 16];
-        OsRng.fill_bytes(&mut event_id);
+        crate::crypto::fill_random(&mut event_id);
         let event = HistoryEvent::seal(
             event_id,
             self.events.len() as u64,

@@ -28,8 +28,6 @@ use crate::file_history::{
 };
 use crate::{authority, file_delivery, key_tree, private_bridge, signing, transfer};
 use clap::Subcommand;
-use rand::rngs::OsRng;
-use rand::RngCore;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
@@ -1606,7 +1604,7 @@ fn track(
         generation_for(conn, scope)?,
     );
     let mut file_id = [0u8; 16];
-    OsRng.fill_bytes(&mut file_id);
+    crate::crypto::fill_random(&mut file_id);
 
     let mut file = TrackedFile::with_policy(file_id, &name, policy.clone());
     let revision = file.check_in(
@@ -3556,7 +3554,7 @@ fn checkin_result(
     slot: &str,
 ) -> Result<()> {
     let mut random = [0u8; 8];
-    OsRng.fill_bytes(&mut random);
+    crate::crypto::fill_random(&mut random);
     let mut name = kqtf.as_os_str().to_owned();
     name.push(format!(".result-{}.tmp", hex::encode(random)));
     let from = PathBuf::from(name);
