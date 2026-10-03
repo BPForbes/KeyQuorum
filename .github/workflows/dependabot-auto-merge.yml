@@ -32,7 +32,11 @@ permissions:
 
 jobs:
   auto-merge:
-    if: github.actor == 'dependabot[bot]'
+    # Only GitHub Actions updates merge themselves. Cargo and npm updates (which
+    # include the cryptographic crates) are left for a person to review.
+    if: >-
+      github.actor == 'dependabot[bot]' &&
+      startsWith(github.head_ref, 'dependabot/github_actions/')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

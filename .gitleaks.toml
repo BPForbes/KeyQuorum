@@ -1,0 +1,20 @@
+# gitleaks configuration (see .github/workflows/security.yml).
+title = "KeyQuorum"
+
+[extend]
+useDefault = true
+
+# The Lab is a public demonstration: its seeded people, USB passphrases
+# (`lab-demo-<label>`) and demo password are published on purpose and protect
+# nothing (see the "Default credentials" section of the Lab manual). Lockfiles
+# are lists of package checksums and trip the generic API-key rule. Nothing
+# else is allowed through.
+[allowlist]
+description = "Published Lab demo passphrases, and lockfile checksums"
+paths = [
+  '''(^|/)Cargo\.lock$''',
+  '''(^|/)package-lock\.json$''',
+]
+regexes = [
+  '''lab-demo-[A-Za-z0-9._-]+''',
+]

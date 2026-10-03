@@ -1,0 +1,45 @@
+# Software bill of materials: a CycloneDX list of every dependency in the Rust
+# crate and the Lab, kept as a workflow artifact so a release or an audit can
+# say exactly what was built. Nothing is committed or published.
+
+name: SBOM
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sbom:
+    name: sbom
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-cyclonedx
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: lab/package-lock.json
+      - name: Rust crate
+        run: cargo cyclonedx --format json --override-filename keyquorum.cdx
+      - name: Lab
+        working-directory: lab
+        run: |
+          npm ci --ignore-scripts
+          npx --yes @cyclonedx/cyclonedx-npm --omit dev --output-format JSON --output-file lab.cdx.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sbom-${{ github.sha }}
+          path: |
+            keyquorum.cdx.json
+            lab/lab.cdx.json
+          if-no-files-found: error
+          retention-days: 90
