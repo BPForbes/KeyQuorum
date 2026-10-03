@@ -60,7 +60,7 @@ pub use server::{
     anchor_now, check_bind, router, AppState, RateLimiter, MAX_RATE_LIMITED_CLIENTS,
     REQUEST_TIMEOUT,
 };
-pub use service::{ApiKeyEventView, ProviderIdentity, MAX_ENVELOPE_BYTES};
+pub use service::{ProviderIdentity, MAX_ENVELOPE_BYTES};
 
 use crate::error::{Error, Result};
 use rusqlite::{Connection, OptionalExtension};

@@ -115,7 +115,7 @@ pub enum InboxCommand {
     Open(OpenArgs),
 }
 
-fn kind_name(kind: u8) -> &'static str {
+pub(super) fn kind_name(kind: u8) -> &'static str {
     match kind {
         envelope::KIND_FILE_DELIVERY => "file delivery",
         envelope::KIND_FILE_DELIVERY_ACK => "answer to your delivery",

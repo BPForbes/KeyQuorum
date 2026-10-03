@@ -123,19 +123,24 @@ body only through `relay_error_text` (control characters dropped, 512 chars).
 capacity (32 by default, 1 to 1024, changed only while empty), a write
 pointer, a read pointer, a `size` of held slots and `sent_total`; its state is
 `Empty`, `Partial` or `Full`. `push` writes at the write pointer and a full
-ring refuses rather than overwrite an unsent item. Only `send_next`, inside
-one immediate transaction that re-checks trust, hands the read-pointer item to
-the sender and, if that succeeds, wipes the slot (zeroblob plus
+ring refuses rather than overwrite an unsent letter. Only `send_next`, inside
+one immediate transaction that re-checks trust, hands the read-pointer letter
+to the sender and, if that succeeds, wipes the slot (zeroblob plus
 `secure_delete`) and advances; a failed or refused send moves nothing.
-`drop_next` discards the head unsent. It carries `KQPB`, `KQXB`, `KQBS`, `KQBN`
-and `KQHS` only (`ItemKind::detect` checks each is well formed) and refuses
-`KQTF`, `KQTX`, slot tokens and provider files. A recipient is trusted when
-the store has an active encryption key for them (`keys::active_keys_for`); a
-`KQPB`/`KQXB` item must be sealed to one of those keys
-(`envelope::parse_outer_as`), and a `KQBN` notice must name them
-(`private_bridge::notice_labels`). The owner must hold an active key in the
-store. Letters go to the relay with the stored push key or to
-`--output-dir`; other kinds need `--output-dir`. The `./outbox` directory
+`drop_next` discards the head unsent. A `KQPB` is the passport: the ring
+holds nothing else (raw `KQXB`, `KQBS`, `KQBN`, `KQHS`, `KQTF` are refused and
+travel inside a letter), and device kinds 9 to 12 are refused
+(`envelope::is_device_workflow_kind`). The letter must be sealed to an active
+encryption key the store holds for the recipient (`keys::is_active_key`, the
+same check `org_update` and `file_delivery::recipient_owns_key` use).
+`src/file_delivery/exchange.rs` owns the order of a tracked file's letters:
+request (18), answer (19), file (15, only after an accepted file request from
+that person and a `file share` after it), receipt (16, only for a file
+received from them), snapshot (17, after a completed delivery). It stores
+nothing: `require_step` reads the sender's own copy (`outbox add --file`), whose
+history already records each step; `request_event` and `REQUEST_EVENTS` are
+the helpers `file_cmd` uses too. A `KQXB` is not a step (unsigned, every
+revision) and a `KQTX` never travels with a file. The `./outbox` directory
 `send --offline` writes is unrelated.
 
 A hardware key with no `device_placements` row is its own device: that is the

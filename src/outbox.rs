@@ -1,33 +1,39 @@
-//! Each person's outbox: a fixed-capacity ring buffer of the `.kq*` files
-//! they have queued for other people, kept in their own store.
+//! Each person's outbox: a fixed-capacity ring buffer of the sealed letters
+//! (`KQPB`) they have queued for other people, kept in their own store.
 //!
 //! The ring has a write pointer (`write_index`), a read pointer
 //! (`read_index`) and a `size`, the number of slots held: queued and not
 //! yet sent. [`push`] writes at the write pointer. Only [`send_next`], a
-//! send to the item's trusted recipient, moves the read pointer, and the
+//! send to the letter's trusted recipient, moves the read pointer, and the
 //! slot it frees is wiped. [`RingState`] says how the ring can be used: an
-//! `Empty` ring has nothing to send, and a `Full` one refuses new items. It
-//! never overwrites an item that has not been sent.
+//! `Empty` ring has nothing to send, and a `Full` one refuses new letters.
+//! It never overwrites one that has not been sent.
 //!
-//! Data goes only to whom it pertains to. A recipient is trusted when this
-//! store has an active encryption key registered for them. A sealed item
-//! (`KQPB`, `KQXB`) must be sealed to one of those keys, and an eviction
-//! notice (`KQBN`) must name the recipient. Both checks run when the item is
-//! queued and again before it is sent, so revoking the recipient's key
-//! stops a queued send. Tracked files (`KQTF`, which carry content in the
-//! clear), transfer packages, slot tokens and provider files are refused:
-//! they travel by their own commands.
+//! A `KQPB` is the passport: nothing crosses from one person's ring to
+//! another's except inside a sealed, signed letter. Every other `.kq*` file
+//! travels inside one: a tracked file (`KQTF`) as a tracked-file letter, a
+//! history snapshot (`KQHS`) as a snapshot letter, and an export bundle or
+//! signature artifact as an ordinary delivery (`keyquorum send`). Device
+//! letters (`KQTX` and relocations) are refused: they move a person's own
+//! identity between their own devices, through the device mailbox.
 //!
-//! This module owns `outbox_rings` and `outbox_slots`. It decides no other
-//! rule: the key registry is `keys`, the formats are `envelope`, `signing`,
-//! `private_bridge` and `file_history`.
+//! A recipient is trusted when this store holds an active encryption key for
+//! them and the letter is sealed to it ([`keys::is_active_key`]), checked
+//! when the letter is queued and again before it is sent, so revoking the
+//! recipient's key stops a queued send. A tracked-file letter must also come
+//! in its exchange's order (request, answer, file, receipt, snapshot): the
+//! owner names their copy of the file and [`exchange::require_step`] reads
+//! that copy's history.
+//!
+//! This module owns `outbox_rings` and `outbox_slots` and decides no other
+//! rule: keys are `keys`, framing is `envelope`, the exchange order is
+//! `file_delivery::exchange`.
 
 use crate::envelope;
 use crate::error::{Error, Result};
-use crate::file_history::{HistorySnapshot, SNAPSHOT_MAGIC};
+use crate::file_delivery::exchange::{self, Step};
+use crate::file_history::TrackedFile;
 use crate::keys::{self, KeyType};
-use crate::private_bridge;
-use crate::signing;
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
@@ -37,80 +43,6 @@ pub const DEFAULT_CAPACITY: u32 = 32;
 pub const MAX_CAPACITY: u32 = 1024;
 /// Largest single item, so a ring's footprint in the store stays bounded.
 pub const MAX_ITEM_BYTES: usize = 16 * 1024 * 1024;
-
-/// A file kind the outbox carries, named by its magic.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ItemKind {
-    /// `KQPB`: a sealed letter, the one kind a relay carries.
-    Package,
-    /// `KQXB`: a sealed export bundle.
-    ExportBundle,
-    /// `KQBS`: a private-bridge signature artifact.
-    BridgeSignature,
-    /// `KQBN`: a private-bridge eviction notice.
-    EvictionNotice,
-    /// `KQHS`: a tracked file's history snapshot (no content).
-    HistorySnapshot,
-}
-
-impl ItemKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Package => "KQPB",
-            Self::ExportBundle => "KQXB",
-            Self::BridgeSignature => "KQBS",
-            Self::EvictionNotice => "KQBN",
-            Self::HistorySnapshot => "KQHS",
-        }
-    }
-
-    /// The file extension the item is written out with.
-    pub fn extension(self) -> &'static str {
-        match self {
-            Self::Package => "kqpb",
-            Self::ExportBundle => "kqxb",
-            Self::BridgeSignature => "kqbs",
-            Self::EvictionNotice => "kqbn",
-            Self::HistorySnapshot => "kqhs",
-        }
-    }
-
-    fn parse(s: &str) -> Result<Self> {
-        match s {
-            "KQPB" => Ok(Self::Package),
-            "KQXB" => Ok(Self::ExportBundle),
-            "KQBS" => Ok(Self::BridgeSignature),
-            "KQBN" => Ok(Self::EvictionNotice),
-            "KQHS" => Ok(Self::HistorySnapshot),
-            _ => Err(Error::OutboxItemRefused),
-        }
-    }
-
-    /// Recognize `bytes` by its magic and check that it is a whole,
-    /// well-formed item of that kind. Anything else is refused.
-    pub fn detect(bytes: &[u8]) -> Result<Self> {
-        let magic = bytes.get(..4).ok_or(Error::OutboxItemRefused)?;
-        let kind = if magic == envelope::PACKAGE.magic() {
-            envelope::parse_outer_as(envelope::PACKAGE, bytes)?;
-            Self::Package
-        } else if magic == envelope::EXPORT_BUNDLE.magic() {
-            envelope::parse_outer_as(envelope::EXPORT_BUNDLE, bytes)?;
-            Self::ExportBundle
-        } else if magic == b"KQBS" {
-            signing::decode_bridge_signature(bytes)?;
-            Self::BridgeSignature
-        } else if magic == b"KQBN" {
-            private_bridge::notice_labels(bytes)?;
-            Self::EvictionNotice
-        } else if magic == SNAPSHOT_MAGIC {
-            HistorySnapshot::decode(bytes)?;
-            Self::HistorySnapshot
-        } else {
-            return Err(Error::OutboxItemRefused);
-        };
-        Ok(kind)
-    }
-}
 
 /// How the ring can be used right now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -181,7 +113,8 @@ impl Ring {
 pub struct QueuedItem {
     /// Which slot of the ring holds it.
     pub index: u32,
-    pub kind: ItemKind,
+    /// The letter's kind byte, from its outer header.
+    pub kind: u8,
     pub recipient: String,
     pub content_hash: String,
     pub len: usize,
@@ -233,34 +166,26 @@ fn require_owner(conn: &Connection, owner: &str) -> Result<()> {
     }
 }
 
-/// Whether `recipient` may receive `bytes` of `kind` from this store: they
-/// have an active encryption key here, and the item pertains to them.
-fn require_trusted(conn: &Connection, recipient: &str, kind: ItemKind, bytes: &[u8]) -> Result<()> {
-    let keys = keys::active_keys_for(conn, recipient, KeyType::Encryption)?;
-    if keys.is_empty() {
-        return Err(Error::UntrustedRecipient);
+/// The letter's kind and the key it is sealed to, from its outer header.
+/// Anything that is not a whole `KQPB` letter, or is a device letter, is
+/// refused.
+fn passport(bytes: &[u8]) -> Result<(u8, [u8; 32])> {
+    let (kind, sealed_to, _) =
+        envelope::parse_outer(bytes).map_err(|_| Error::OutboxItemRefused)?;
+    if envelope::is_device_workflow_kind(kind) {
+        return Err(Error::OutboxItemRefused);
     }
-    let sealed_to = match kind {
-        ItemKind::Package => Some(envelope::parse_outer_as(envelope::PACKAGE, bytes)?.1),
-        ItemKind::ExportBundle => Some(envelope::parse_outer_as(envelope::EXPORT_BUNDLE, bytes)?.1),
-        _ => None,
-    };
-    if let Some(sealed_to) = sealed_to {
-        if !keys
-            .iter()
-            .any(|key| key.public_key.as_slice() == sealed_to)
-        {
-            return Err(Error::UntrustedRecipient);
-        }
+    Ok((kind, sealed_to))
+}
+
+/// The recipient is trusted for this letter: it is sealed to an active
+/// encryption key this store holds for them.
+fn require_trusted(conn: &Connection, recipient: &str, sealed_to: &[u8; 32]) -> Result<()> {
+    if keys::is_active_key(conn, recipient, KeyType::Encryption, sealed_to)? {
+        Ok(())
+    } else {
+        Err(Error::UntrustedRecipient)
     }
-    if kind == ItemKind::EvictionNotice
-        && !private_bridge::notice_labels(bytes)?
-            .iter()
-            .any(|label| label == recipient)
-    {
-        return Err(Error::UntrustedRecipient);
-    }
-    Ok(())
 }
 
 /// Change the number of slots. Only an empty ring can be resized, so no
@@ -284,16 +209,33 @@ pub fn set_capacity(conn: &Connection, owner: &str, capacity: u32) -> Result<Rin
     })
 }
 
-/// Queue `bytes` for `recipient` at the write pointer. Refused when the
-/// ring is full, the file is not a kind the outbox carries, or the
-/// recipient is not trusted for it.
-pub fn push(conn: &Connection, owner: &str, recipient: &str, bytes: &[u8]) -> Result<QueuedItem> {
+/// Queue the letter `bytes` for `recipient` at the write pointer. Refused
+/// when the ring is full, the file is not a person-to-person `KQPB`, the
+/// recipient is not trusted for it, or, for a tracked-file letter, when
+/// `copy` (the owner's copy of the file) does not show the step before it.
+pub fn push(
+    conn: &Connection,
+    owner: &str,
+    recipient: &str,
+    bytes: &[u8],
+    copy: Option<&TrackedFile>,
+) -> Result<QueuedItem> {
     if bytes.len() > MAX_ITEM_BYTES {
         return Err(Error::BundleFieldTooLarge);
     }
-    let kind = ItemKind::detect(bytes)?;
+    let (kind, sealed_to) = passport(bytes)?;
     require_owner(conn, owner)?;
-    require_trusted(conn, recipient, kind, bytes)?;
+    require_trusted(conn, recipient, &sealed_to)?;
+    match (Step::for_kind(kind), copy) {
+        (None | Some(Step::Request), _) => {}
+        (Some(step), Some(copy)) => exchange::require_step(copy, owner, recipient, step)?,
+        (Some(step), None) => {
+            return Err(Error::ExchangeOutOfOrder(format!(
+                "a {} needs your copy of the file it concerns, so its order can be checked",
+                step.name()
+            )))
+        }
+    }
     crate::db::with_immediate_transaction(conn, || {
         let ring = ensure_ring(conn, owner)?;
         if ring.state() == RingState::Full {
@@ -303,9 +245,9 @@ pub fn push(conn: &Connection, owner: &str, recipient: &str, bytes: &[u8]) -> Re
         let content_hash = hex::encode(Sha256::digest(bytes));
         conn.execute(
             "INSERT INTO outbox_slots
-             (owner_label, slot_index, kind, recipient_label, content, content_hash)
+             (owner_label, slot_index, envelope_kind, recipient_label, content, content_hash)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![owner, index, kind.as_str(), recipient, bytes, content_hash],
+            params![owner, index, kind, recipient, bytes, content_hash],
         )?;
         conn.execute(
             "UPDATE outbox_rings
@@ -318,9 +260,9 @@ pub fn push(conn: &Connection, owner: &str, recipient: &str, bytes: &[u8]) -> Re
 }
 
 fn item_at(conn: &Connection, owner: &str, index: u32) -> Result<Option<QueuedItem>> {
-    let row: Option<(u32, String, String, String, i64, String)> = conn
+    let row: Option<(u32, u8, String, String, i64, String)> = conn
         .query_row(
-            "SELECT slot_index, kind, recipient_label, content_hash, length(content), queued_at
+            "SELECT slot_index, envelope_kind, recipient_label, content_hash, length(content), queued_at
              FROM outbox_slots WHERE owner_label = ?1 AND slot_index = ?2",
             params![owner, index],
             |row| {
@@ -338,7 +280,7 @@ fn item_at(conn: &Connection, owner: &str, index: u32) -> Result<Option<QueuedIt
     row.map(|(index, kind, recipient, content_hash, len, queued_at)| {
         Ok(QueuedItem {
             index,
-            kind: ItemKind::parse(&kind)?,
+            kind,
             recipient,
             content_hash,
             len: usize::try_from(len).map_err(|_| Error::IntegrityCheckFailed)?,
@@ -409,7 +351,8 @@ pub fn send_next(
         if hex::encode(Sha256::digest(&*bytes)) != item.content_hash {
             return Err(Error::IntegrityCheckFailed);
         }
-        require_trusted(conn, &item.recipient, item.kind, &bytes)?;
+        let (_, sealed_to) = passport(&bytes)?;
+        require_trusted(conn, &item.recipient, &sealed_to)?;
         deliver(&item, &bytes)?;
         release_head(conn, owner, &ring, true)?;
         Ok(Some(item))

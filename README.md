@@ -729,32 +729,45 @@ A letter that reaches you as a file, with no relay, is still opened with the
 
 ### Outbox ring buffer
 
-`keyquorum outbox` keeps your own queue of `.kq*` files for other people in your
-store: a ring of fixed size (32 slots unless you change it) with a write pointer,
-a read pointer, and a count of slots held. `add` writes at the write pointer;
-`send` sends from the read pointer, oldest first, and only a send that succeeds
-moves it on and wipes the slot. A full ring refuses new files rather than
-overwrite one that has not been sent, and an empty one has nothing to send.
+`keyquorum outbox` keeps your own queue of sealed letters for other people in
+your store: a ring of fixed size (32 slots unless you change it) with a write
+pointer, a read pointer, and a count of slots held. `add` writes at the write
+pointer; `send` sends from the read pointer, oldest first, and only a send that
+succeeds moves it on and wipes the slot. A full ring refuses new letters rather
+than overwrite one that has not been sent, and an empty one has nothing to send.
+
+A `.kqpb` letter is the passport: it is the only thing that crosses from your
+ring to someone else's. Everything else travels inside one, signed: a tracked
+file (`.kqtf`) as `file share` seals it, a history snapshot (`.kqhs`) as
+`file send-history` seals it, and an export bundle or signature artifact as an
+ordinary `send`. Device letters (key copies and moves) go between your own
+devices, never to another person. A letter goes only to a trusted recipient:
+it must be sealed to the encryption key your store has registered for them,
+checked when you queue it and again when you send it, so revoking their key
+stops a queued send.
+
+A tracked file's letters also go in order, and `--file` names your copy, whose
+own history shows where the exchange stands:
+
+1. **request** (`file request`): asks the holder for the file; needs nothing first.
+2. **answer** (`file answer-request`): the holder's signed accept or decline of that request.
+3. **file** (`file share`): the trusted revision, only after the holder accepted a file request from that person.
+4. **receipt** (`file receive` writes it): the receiver's signed accept or reject of a file received from them.
+5. **snapshot** (`file send-history`): either side's history, once a delivery between them completed.
 
 ```sh
-keyquorum send report.pdf --to M.A --output-dir ./letters   # seal, don't upload yet
-keyquorum outbox add ./letters/*.kqpb --to M.A               # queue for M.A
-keyquorum outbox                                              # index, size, state
-keyquorum outbox send --all                                   # upload, oldest first
+keyquorum file request --file-id ID --name report.txt --to M.A --as M.B --output-dir req
+keyquorum outbox add req/*.kqpb --to M.A --as M.B               # step 1, no copy needed
+keyquorum outbox send --as M.B                                   # to the relay, oldest first
+keyquorum outbox add ans/*.kqpb --to M.B --as M.A --file report.kqtf   # step 2, checked
+keyquorum outbox                                                 # index, size, state
 ```
 
-A file goes only to a trusted recipient it pertains to: their encryption key
-must be registered in your store, a sealed letter (`.kqpb`) or export bundle
-(`.kqxb`) must be sealed to that key, and an eviction notice (`.kqbn`) must name
-them. That is checked when you queue it and again when you send it, so revoking
-the recipient's key stops a queued send. Signature artifacts (`.kqbs`) and
-history snapshots (`.kqhs`) are carried too. Tracked files (`.kqtf`, which hold
-content in the clear) are not: send those with `send`. Letters go to the relay
-with your stored push key or to `--output-dir`; every other kind needs
-`--output-dir`. `outbox drop` discards the oldest item without sending it, and
+`outbox drop` discards the oldest letter without sending it, and
 `outbox capacity N` (1 to 1024) resizes an empty ring. `--as LABEL` picks whose
-outbox; the default is your label from `keyquorum use`. (The `./outbox`
-directory `send --offline` writes to is a plain folder, not this ring.)
+outbox; the default is your label from `keyquorum use`. Letters go to the relay
+with your stored push key, or to `--output-dir`. (The `./outbox` directory
+`send --offline` writes to is a plain folder, not this ring.)
 
 ### Mailbox
 

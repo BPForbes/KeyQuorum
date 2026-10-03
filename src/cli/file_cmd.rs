@@ -17,6 +17,7 @@ use super::gate_link::{self, Gate};
 use super::review_view::ReviewView;
 use super::{open_slot_secrets, read_key_array_32, usage};
 use crate::error::{Error, Result};
+use crate::file_delivery::exchange::{request_event, REQUEST_EVENTS};
 use crate::file_history::{
     current_revision, diff_text, evaluate_revision_trust, event_attested, index, is_finalized,
     latest_finalized_ancestor, latest_trusted_revision, proof_descriptor,
@@ -2330,35 +2331,6 @@ struct RequestArgs {
 }
 
 /// An event of one of `kinds` that carries `request_id`, in this copy.
-fn recorded_request<'a>(
-    file: &'a TrackedFile,
-    kinds: &[HistoryEventType],
-    request_id: &str,
-) -> Option<&'a crate::file_history::HistoryEvent> {
-    file.events().iter().find(|event| {
-        kinds.contains(&event.event_type)
-            && event
-                .details
-                .entries()
-                .iter()
-                .any(|(key, value)| key == "request_id" && value == request_id)
-    })
-}
-
-fn event_detail<'a>(event: &'a crate::file_history::HistoryEvent, key: &str) -> Option<&'a str> {
-    event
-        .details
-        .entries()
-        .iter()
-        .find(|(k, _)| k == key)
-        .map(|(_, v)| v.as_str())
-}
-
-const REQUEST_EVENTS: [HistoryEventType; 2] = [
-    HistoryEventType::FileRequested,
-    HistoryEventType::ChangeRequested,
-];
-
 fn request_event_type(kind: file_delivery::RequestKind) -> HistoryEventType {
     match kind {
         file_delivery::RequestKind::File => HistoryEventType::FileRequested,
@@ -2512,7 +2484,7 @@ fn open_request(
     if let Some(path) = file {
         let mut copy = load_live(conn, &path, Some(&request.holder_label), "open-request")?;
         check_same_file(&copy, request.file_id)?;
-        if recorded_request(&copy, &REQUEST_EVENTS, &id).is_some() {
+        if request_event(&copy, &REQUEST_EVENTS, &id).is_some() {
             outln!("Already recorded in {}", path.display());
             return Ok(());
         }
@@ -2565,11 +2537,11 @@ fn answer_request(
     if let Some(path) = file {
         let mut copy = load_live(conn, &path, Some(&request.holder_label), "answer-request")?;
         check_same_file(&copy, request.file_id)?;
-        match recorded_request(&copy, &[HistoryEventType::RequestAnswered], &id) {
-            Some(prior) if event_detail(prior, "decision") != Some(decision) => {
+        match request_event(&copy, &[HistoryEventType::RequestAnswered], &id) {
+            Some(prior) if prior.details.get("decision") != Some(decision) => {
                 return Err(usage(&format!(
                     "request {id} was already answered as {}",
-                    event_detail(prior, "decision").unwrap_or("something else")
+                    prior.details.get("decision").unwrap_or("something else")
                 )));
             }
             Some(_) => outln!("Already recorded in {}", path.display()),
@@ -2642,17 +2614,17 @@ fn open_answer(
     };
     let mut copy = load_live(conn, &path, None, "open-answer")?;
     check_same_file(&copy, answer.file_id)?;
-    let sent = recorded_request(&copy, &REQUEST_EVENTS, &id)
+    let sent = request_event(&copy, &REQUEST_EVENTS, &id)
         .ok_or_else(|| usage("this copy shows no request with that id"))?;
-    if event_detail(sent, "request_kind") != Some(answer.kind.name())
-        || event_detail(sent, "to") != Some(answer.holder_label.as_str())
+    if sent.details.get("request_kind") != Some(answer.kind.name())
+        || sent.details.get("to") != Some(answer.holder_label.as_str())
     {
         return Err(usage("the answer does not match the request recorded here"));
     }
-    match recorded_request(&copy, &[HistoryEventType::RequestAnswered], &id) {
-        Some(prior) if event_detail(prior, "decision") != Some(decision) => Err(usage(&format!(
+    match request_event(&copy, &[HistoryEventType::RequestAnswered], &id) {
+        Some(prior) if prior.details.get("decision") != Some(decision) => Err(usage(&format!(
             "request {id} was already recorded as {}",
-            event_detail(prior, "decision").unwrap_or("something else")
+            prior.details.get("decision").unwrap_or("something else")
         ))),
         Some(_) => {
             outln!("Already recorded in {}", path.display());

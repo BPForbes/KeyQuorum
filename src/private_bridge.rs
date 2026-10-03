@@ -1853,32 +1853,6 @@ fn encode_notice(
     Ok(out)
 }
 
-/// Every label a `.kqbn` notice names: the member removed, those who remain,
-/// and those it asks to notify. Used to send a notice only to someone it
-/// concerns. Refuses anything that is not a whole, well-formed notice.
-pub fn notice_labels(bytes: &[u8]) -> Result<Vec<String>> {
-    let mut data = bytes;
-    if bytes.len() < 6 || &bytes[..4] != NOTICE_MAGIC {
-        return Err(Error::InvalidBridgePackage);
-    }
-    data = &data[4..];
-    if take_u8(&mut data)? != NOTICE_VERSION || !matches!(take_u8(&mut data)?, 1 | 2) {
-        return Err(Error::InvalidBridgePackage);
-    }
-    let _uid = utf8(take_len_prefixed(&mut data)?)?;
-    let mut labels = vec![utf8(take_len_prefixed(&mut data)?)?];
-    for _list in 0..2 {
-        let n = u16::from_be_bytes(take_array(&mut data)?);
-        for _ in 0..n {
-            labels.push(utf8(take_len_prefixed(&mut data)?)?);
-        }
-    }
-    if !data.is_empty() {
-        return Err(Error::InvalidBridgePackage);
-    }
-    Ok(labels)
-}
-
 fn unseal_local_secret(
     conn: &Connection,
     uid: &str,

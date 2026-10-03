@@ -1,9 +1,11 @@
 //! `keyquorum outbox`: queue sealed letters in your ring buffer and send them
-//! oldest first, only to the recipient they are sealed to.
+//! oldest first, only to the recipient they are sealed to, and a tracked
+//! file's letters only in their exchange's order.
 
+use super::file::{ok as file_ok, slot, DB, KQTF};
 use super::inbox::{two_people_on_a_relay, ALICE, BOB};
 use super::memory_env::MemoryEnv;
-use crate::envelope;
+use super::request::{holder_and_requester, only};
 use crate::storage::Storage;
 use std::path::Path;
 
@@ -45,7 +47,7 @@ fn a_queued_letter_is_sent_from_the_read_pointer_and_opened_by_its_recipient() {
     );
 
     let queued = run(&mut env, &format!("{ALICE} outbox add {letter} --to bob"));
-    assert!(queued.contains("slot 0: KQPB to bob"), "{queued}");
+    assert!(queued.contains("slot 0: file delivery to bob"), "{queued}");
     assert!(
         queued.contains("1 of 32 slots held, 31 free (partial)"),
         "{queued}"
@@ -54,7 +56,7 @@ fn a_queued_letter_is_sent_from_the_read_pointer_and_opened_by_its_recipient() {
 
     let sent = run(&mut env, &format!("{ALICE} outbox send"));
     assert!(sent.contains("Relay stored letter"), "{sent}");
-    assert!(sent.contains("Sent slot 0: KQPB to bob"), "{sent}");
+    assert!(sent.contains("Sent slot 0: file delivery to bob"), "{sent}");
     assert!(
         sent.contains("(empty); read index 1, write index 1; 1 sent"),
         "{sent}"
@@ -78,58 +80,45 @@ fn a_letter_goes_only_to_the_person_it_is_sealed_to() {
         &format!("{ALICE} outbox add {letter} --to nobody"),
     );
     assert!(message.contains("not trusted for this item"), "{message}");
-    // A tracked or plain file is not an outbox item.
+    // A plain file is not a letter: it travels inside one, via `send`.
     let message = fails(
         &mut env,
         &format!("{ALICE} outbox add /home/alice/note.txt --to bob"),
     );
-    assert!(message.contains("the outbox carries only"), "{message}");
+    assert!(
+        message.contains("the outbox carries only sealed letters"),
+        "{message}"
+    );
     let status = run(&mut env, &format!("{ALICE} outbox"));
     assert!(status.contains("(empty)"), "{status}");
 }
 
 #[test]
-fn a_full_ring_refuses_new_items_and_other_kinds_need_a_directory() {
+fn a_full_ring_refuses_new_letters_and_only_an_empty_one_is_resized() {
     let mut env = two_people_on_a_relay();
     run(&mut env, &format!("{ALICE} outbox capacity 1"));
     let letter = alice_letter_for_bob(&mut env);
     run(&mut env, &format!("{ALICE} outbox add {letter} --to bob"));
     let message = fails(&mut env, &format!("{ALICE} outbox add {letter} --to bob"));
     assert!(message.contains("outbox is full"), "{message}");
+    let held = run(&mut env, &format!("{ALICE} outbox"));
+    assert!(held.contains("1 of 1 slots held, 0 free (full)"), "{held}");
     let message = fails(&mut env, &format!("{ALICE} outbox capacity 4"));
     assert!(
         message.contains("only an empty outbox can be resized"),
         "{message}"
     );
-    run(&mut env, &format!("{ALICE} outbox send"));
-
-    // An eviction notice naming bob: not a letter, so not for the relay.
-    let mut notice = b"KQBN".to_vec();
-    notice.extend_from_slice(&[2, 1]);
-    for field in [&b"bridge-uid"[..], b"carol"] {
-        envelope::push_len_prefixed(&mut notice, field).unwrap();
-    }
-    notice.extend_from_slice(&1u16.to_be_bytes());
-    envelope::push_len_prefixed(&mut notice, b"bob").unwrap();
-    notice.extend_from_slice(&0u16.to_be_bytes());
-    env.fs
-        .write_new(Path::new("/home/alice/evicted.kqbn"), &notice)
-        .unwrap();
-    run(
-        &mut env,
-        &format!("{ALICE} outbox add /home/alice/evicted.kqbn --to bob"),
-    );
-    let message = fails(&mut env, &format!("{ALICE} outbox send"));
-    assert!(message.contains("pass --output-dir"), "{message}");
-    let held = run(&mut env, &format!("{ALICE} outbox"));
-    assert!(held.contains("1 of 1 slots held, 0 free (full)"), "{held}");
 
     let written = run(&mut env, &format!("{ALICE} outbox send --output-dir /out"));
-    assert!(written.contains("Sent slot 0: KQBN to bob"), "{written}");
+    assert!(
+        written.contains("Sent slot 0: file delivery to bob"),
+        "{written}"
+    );
     assert_eq!(
         env.fs.read(Path::new(&only_file(&env, "/out"))).unwrap(),
-        notice
+        env.fs.read(Path::new(&letter)).unwrap()
     );
+    run(&mut env, &format!("{ALICE} outbox capacity 4"));
 }
 
 #[test]
@@ -138,7 +127,10 @@ fn drop_discards_the_oldest_item_without_sending_it() {
     let letter = alice_letter_for_bob(&mut env);
     run(&mut env, &format!("{ALICE} outbox add {letter} --to bob"));
     let dropped = run(&mut env, &format!("{ALICE} outbox drop"));
-    assert!(dropped.contains("Dropped slot 0: KQPB to bob"), "{dropped}");
+    assert!(
+        dropped.contains("Dropped slot 0: file delivery to bob"),
+        "{dropped}"
+    );
     let status = run(&mut env, &format!("{ALICE} outbox"));
     assert!(
         status.contains("(empty)") && status.contains("0 sent"),
@@ -146,4 +138,150 @@ fn drop_discards_the_oldest_item_without_sending_it() {
     );
     let listed = run(&mut env, &format!("{BOB} inbox"));
     assert!(!listed.contains("file delivery"), "{listed}");
+}
+
+/// `keyquorum --db DB outbox ...` in the one store the `file` tests share.
+fn outbox(env: &mut MemoryEnv, args: &str) -> crate::error::Result<String> {
+    let (result, out) = env.keyquorum(&format!("keyquorum {DB} outbox {args}"));
+    result.map(|()| out)
+}
+
+/// Queue the one letter in `dir` and send it from the ring into `wire`.
+fn through_ring(env: &mut MemoryEnv, who: &str, to: &str, dir: &str, file: &str, wire: &str) {
+    let letter = only(env, dir);
+    outbox(env, &format!("add {letter} --to {to} --as {who} {file}"))
+        .unwrap_or_else(|e| panic!("{who} queues {letter}: {e}"));
+    let sent = outbox(env, &format!("send --as {who} --output-dir {wire}")).unwrap();
+    assert!(sent.contains("Sent slot"), "{sent}");
+}
+
+#[test]
+fn a_tracked_file_crosses_rings_only_in_its_exchange_order() {
+    let mut env = holder_and_requester();
+    let id = hex::encode(
+        crate::file_history::TrackedFile::decode(&env.fs.read(Path::new(KQTF)).unwrap())
+            .unwrap()
+            .file_id,
+    );
+    let holder_copy = format!("--file {KQTF}");
+
+    // The holder cannot push the file into the exchange unasked: sharing it
+    // outside the ring still works, but the ring refuses the letter.
+    file_ok(
+        &mut env,
+        &format!(
+            "share {KQTF} --to M.B --as M.A --slot {} --output-dir /early",
+            slot("M.A")
+        ),
+    );
+    let early = only(&env, "/early");
+    let refused = outbox(
+        &mut env,
+        &format!("add {early} --to M.B --as M.A {holder_copy}"),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        refused.contains("out of order: first a file request from M.B that you accepted"),
+        "{refused}"
+    );
+    // A later step without the copy that shows its order is refused too.
+    let refused = outbox(&mut env, &format!("add {early} --to M.B --as M.A"))
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("needs your copy of the file"), "{refused}");
+
+    // 1. Passport: the requester's request needs nothing before it.
+    file_ok(
+        &mut env,
+        &format!(
+            "request --file-id {id} --name report.txt --to M.A --as M.B --slot {} --output-dir /req",
+            slot("M.B")
+        ),
+    );
+    through_ring(&mut env, "M.B", "M.A", "/req", "", "/wire1");
+
+    // 2. Agreement: the holder opens the request and answers it, signed.
+    let request = only(&env, "/wire1");
+    file_ok(
+        &mut env,
+        &format!(
+            "open-request --letter {request} --slot {} --file {KQTF}",
+            slot("M.A")
+        ),
+    );
+    file_ok(
+        &mut env,
+        &format!(
+            "answer-request --letter {request} --decision accept --slot {} --file {KQTF} --ack-dir /ans",
+            slot("M.A")
+        ),
+    );
+    through_ring(&mut env, "M.A", "M.B", "/ans", &holder_copy, "/wire2");
+    let answer = only(&env, "/wire2");
+    assert!(file_ok(
+        &mut env,
+        &format!("open-answer --answer {answer} --slot {}", slot("M.B"))
+    )
+    .contains("accepted by M.A"));
+
+    // 3. The tracked file itself, now that a request was accepted.
+    file_ok(
+        &mut env,
+        &format!(
+            "share {KQTF} --to M.B --as M.A --slot {} --output-dir /out",
+            slot("M.A")
+        ),
+    );
+    through_ring(&mut env, "M.A", "M.B", "/out", &holder_copy, "/wire3");
+
+    // 4. Receipt: only for a file the requester received from the holder.
+    let delivery = only(&env, "/wire3");
+    file_ok(
+        &mut env,
+        &format!(
+            "receive --letter {delivery} --slot {} --ack-dir /ack --out /work/b.kqtf",
+            slot("M.B")
+        ),
+    );
+    through_ring(
+        &mut env,
+        "M.B",
+        "M.A",
+        "/ack",
+        "--file /work/b.kqtf",
+        "/wire4",
+    );
+
+    // 5. History: once the holder has recorded the receipt, a snapshot.
+    let receipt = only(&env, "/wire4");
+    file_ok(
+        &mut env,
+        &format!("ack {KQTF} --ack {receipt} --slot {}", slot("M.A")),
+    );
+    file_ok(
+        &mut env,
+        &format!(
+            "send-history {KQTF} --to M.B --as M.A --slot {} --output-dir /snap",
+            slot("M.A")
+        ),
+    );
+    through_ring(&mut env, "M.A", "M.B", "/snap", &holder_copy, "/wire5");
+    let snapshot = only(&env, "/wire5");
+    let compared = file_ok(
+        &mut env,
+        &format!(
+            "open-history --letter {snapshot} --slot {} --against /work/b.kqtf",
+            slot("M.B")
+        ),
+    );
+    // The snapshot is signed and compared with the receiver's copy. Each
+    // side has recorded its own events since the delivery (the holder the
+    // request, answer and receipt; the receiver its receipt), so the two
+    // chains are reported as they are, not forced to agree.
+    assert!(compared.contains("sender signature verified"), "{compared}");
+    assert!(
+        compared.contains("Compared with /work/b.kqtf"),
+        "{compared}"
+    );
 }

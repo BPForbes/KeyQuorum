@@ -49,31 +49,40 @@ at the file's gate as any unlock is.
 
 \subsection{Your outbox ring buffer}
 
-\code{keyquorum outbox} keeps each person's queue of \file{.kq*} files in
-their own store: a ring of fixed size (32 slots unless changed with
+\code{keyquorum outbox} keeps each person's queue of sealed letters in their
+own store: a ring of fixed size (32 slots unless changed with
 \code{outbox capacity N}, 1 to 1024, while it is empty) with a write pointer,
-a read pointer and a count of slots held. \code{outbox add FILE --to LABEL}
+a read pointer and a count of slots held. \code{outbox add LETTER --to LABEL}
 writes at the write pointer. \code{outbox send} sends from the read pointer,
 oldest first, and only a send that succeeds moves it on and wipes the slot.
-A full ring refuses new files rather than overwrite one that has not been sent;
-an empty ring has nothing to send. \code{outbox drop} discards the oldest item
-unsent.
+A full ring refuses new letters rather than overwrite one that has not been
+sent; an empty ring has nothing to send. \code{outbox drop} discards the
+oldest letter unsent.
 
-A file goes only to a trusted recipient it pertains to: their encryption key
-must be registered in the store; a sealed letter (\file{.kqpb}) or export
-bundle (\file{.kqxb}) must be sealed to that key; an eviction notice
-(\file{.kqbn}) must name them. Both checks run when the file is queued and
-again when it is sent, so revoking the recipient's key stops a queued send.
-Signature artifacts (\file{.kqbs}) and history snapshots (\file{.kqhs}) are
-carried too; tracked files (\file{.kqtf}), which hold content in the clear, are
-not. Letters go to the relay with your stored push key or to
-\flag{--output-dir}; every other kind needs \flag{--output-dir}.
+A \file{.kqpb} letter is the passport: it is the only thing that crosses from
+one person's ring to another's. Every other file travels inside one, signed:
+a tracked file (\file{.kqtf}) as \code{file share} seals it, a history
+snapshot (\file{.kqhs}) as \code{file send-history} seals it, an export bundle
+or signature artifact as an ordinary \code{send}. Device letters go between a
+person's own devices, never to another person. A letter must be sealed to the
+encryption key the store has registered for its recipient, checked when it is
+queued and again when it is sent.
+
+A tracked file's letters also go in order. \flag{--file} names your copy of
+the file, and its own history shows where the exchange stands: a
+\emph{request} needs nothing first; an \emph{answer} needs a request from that
+person; the \emph{file} needs a file request from them that you accepted,
+followed by \code{file share}; a \emph{receipt} needs a file received from
+them; a \emph{snapshot} needs a completed delivery between you. An export
+bundle is not a step (it is unsigned and carries every revision, trusted or
+not), and a device transfer package never travels with a file.
 
 \begin{verbatim}
-keyquorum send report.pdf --to M.A --output-dir ./letters
-keyquorum outbox add ./letters/*.kqpb --to M.A
-keyquorum outbox
-keyquorum outbox send --all
+keyquorum file request --file-id ID --name report.txt --to M.A \
+    --as M.B --output-dir req
+keyquorum outbox add req/*.kqpb --to M.A --as M.B
+keyquorum outbox send --as M.B
+keyquorum outbox add ans/*.kqpb --to M.B --as M.A --file report.kqtf
 \end{verbatim}
 
 \subsection{Legacy procedure (still possible, not recommended)}

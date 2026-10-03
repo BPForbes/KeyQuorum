@@ -1,19 +1,21 @@
 //! `keyquorum outbox`: your outbox ring buffer, over `crate::outbox`.
 //!
-//! `outbox add` queues `.kq*` files for a trusted recipient at the write
-//! pointer. `outbox send` sends from the read pointer, oldest first: a
-//! sealed letter (`.kqpb`) goes to the relay with your stored push key, or
-//! to `--output-dir`; every other kind only to `--output-dir`, because a
-//! relay carries letters alone. Only a send that succeeds moves the read
+//! `outbox add` queues sealed letters (`.kqpb`, the passport between two
+//! people's rings) for a trusted recipient at the write pointer; a
+//! tracked-file letter also names your copy of the file (`--file`), whose
+//! history shows whether the step before it has happened. `outbox send`
+//! sends from the read pointer, oldest first, to the relay with your stored
+//! push key or to `--output-dir`. Only a send that succeeds moves the read
 //! pointer. `outbox` alone shows the ring: index, size, free slots and its
-//! state (empty, partial, full). The rules (which kinds, which recipients,
-//! full and empty) are `outbox`'s; this command adds none of its own.
+//! state (empty, partial, full). The rules are `outbox`'s and
+//! `file_delivery::exchange`'s; this command adds none of its own.
 
 use super::env::{self, outln};
-use super::{resolve_relay_auth, usage};
+use super::inbox::kind_name;
+use super::{file_cmd, resolve_relay_auth, usage};
 use crate::db::profile;
 use crate::error::Result;
-use crate::outbox::{self, ItemKind, QueuedItem, Ring};
+use crate::outbox::{self, QueuedItem, Ring};
 use crate::relay::{self, ApiKeyScope};
 use clap::{Args, Subcommand};
 use rusqlite::Connection;
@@ -32,21 +34,26 @@ pub struct OutboxOpts {
 pub enum OutboxCommand {
     /// Show the ring and what it holds, oldest first (the default)
     Status,
-    /// Queue files for one recipient. Each must be a .kqpb, .kqxb, .kqbs,
-    /// .kqbn or .kqhs file that pertains to them
+    /// Queue sealed letters (.kqpb) for one recipient, each sealed to the
+    /// encryption key registered here for them
     Add {
         #[arg(required = true)]
         files: Vec<PathBuf>,
         /// Recipient label (their encryption key must be registered here)
         #[arg(long)]
         to: String,
+        /// Your copy of the tracked file the letters concern: needed for an
+        /// answer, a tracked file, a receipt or a snapshot, whose order is
+        /// read from this copy's history
+        #[arg(long)]
+        file: Option<PathBuf>,
     },
     /// Send the oldest item (or, with --all, every item in order)
     Send {
         /// Keep sending until the ring is empty or a send fails
         #[arg(long)]
         all: bool,
-        /// Write items here instead of uploading letters to the relay
+        /// Write the letters here instead of uploading them to the relay
         #[arg(long)]
         output_dir: Option<PathBuf>,
         /// Relay base URL (default: `keyquorum use --url`)
@@ -89,7 +96,7 @@ fn print_item(prefix: &str, item: &QueuedItem) {
     outln!(
         "{prefix} slot {}: {} to {} ({} bytes, sha256 {}, queued {})",
         item.index,
-        item.kind.as_str(),
+        kind_name(item.kind),
         item.recipient,
         item.len,
         &item.content_hash[..16],
@@ -107,10 +114,11 @@ pub(crate) fn run(conn: &Connection, opts: OutboxOpts) -> Result<()> {
                 print_item(" ", &item);
             }
         }
-        OutboxCommand::Add { files, to } => {
+        OutboxCommand::Add { files, to, file } => {
+            let copy = file.as_deref().map(file_cmd::load).transpose()?;
             for path in files {
                 let bytes = env::read(&path)?;
-                let item = outbox::push(conn, &owner, &to, &bytes)?;
+                let item = outbox::push(conn, &owner, &to, &bytes, copy.as_ref())?;
                 print_item(&format!("Queued {}:", path.display()), &item);
             }
             print_ring(&outbox::ring(conn, &owner)?);
@@ -149,20 +157,13 @@ fn send(
     if let Some(dir) = &output_dir {
         env::create_dir_all(dir)?;
     }
-    // The relay is resolved (and proven) once, and only if a letter will
-    // actually go to it.
+    // The relay is resolved (and proven) once, before the first send, and
+    // only when letters go to it.
     let mut relay_auth = None;
     let mut sent = 0;
     loop {
-        let Some(head) = outbox::list(conn, owner)?.into_iter().next() else {
+        if outbox::ring(conn, owner)?.state() == outbox::RingState::Empty {
             break;
-        };
-        if output_dir.is_none() && head.kind != ItemKind::Package {
-            return Err(usage(&format!(
-                "slot {} holds a {} item, which a relay does not carry: pass --output-dir",
-                head.index,
-                head.kind.as_str()
-            )));
         }
         if output_dir.is_none() && relay_auth.is_none() {
             relay_auth = Some(resolve_relay_auth(
@@ -175,10 +176,9 @@ fn send(
         let item = outbox::send_next(conn, owner, |item, bytes| match &output_dir {
             Some(dir) => {
                 let path = dir.join(format!(
-                    "{}-{}.{}",
+                    "{}-{}.kqpb",
                     item.recipient,
-                    &item.content_hash[..16],
-                    item.kind.extension()
+                    &item.content_hash[..16]
                 ));
                 env::write_new(&path, bytes)?;
                 outln!("Wrote {}", path.display());

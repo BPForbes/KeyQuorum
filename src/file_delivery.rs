@@ -43,6 +43,7 @@ const HISTORY_LETTER_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-DELIVERY-v1";
 const HISTORY_ACK_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-DELIVERY-ACK-v1";
 const SNAPSHOT_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-SNAPSHOT-v1";
 
+pub mod exchange;
 mod request;
 pub use request::{
     open_request, open_request_answer, seal_request, seal_request_answer, FileRequest,
@@ -570,10 +571,11 @@ pub fn recipient_owns_key(
     opened_with: &[u8; 32],
 ) -> Result<bool> {
     let public = crate::keys::encryption_public_from_secret(opened_with);
-    Ok(
-        crate::keys::active_keys_for(conn, recipient_label, crate::keys::KeyType::Encryption)?
-            .iter()
-            .any(|key| key.public_key.as_slice() == public.as_slice()),
+    crate::keys::is_active_key(
+        conn,
+        recipient_label,
+        crate::keys::KeyType::Encryption,
+        &public,
     )
 }
 

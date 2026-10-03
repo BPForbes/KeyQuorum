@@ -588,7 +588,8 @@ CREATE TABLE IF NOT EXISTS inbox_letters (
 );
 
 -- Per-person outbox ring buffer (`src/outbox.rs`): a fixed number of slots
--- holding the .kq* files a person has queued for trusted recipients. The
+-- holding the sealed letters (.kqpb) a person has queued for trusted
+-- recipients. The
 -- write pointer takes new items; only a send to the trusted recipient moves
 -- the read pointer, and a sent slot is wiped and freed. `size` is how many
 -- slots are held (queued, not yet sent); a full ring refuses new items and
@@ -609,7 +610,8 @@ CREATE TABLE IF NOT EXISTS outbox_rings (
 CREATE TABLE IF NOT EXISTS outbox_slots (
     owner_label     TEXT NOT NULL REFERENCES outbox_rings (owner_label) ON DELETE CASCADE,
     slot_index      INTEGER NOT NULL,
-    kind            TEXT NOT NULL CHECK (kind IN ('KQPB', 'KQXB', 'KQBS', 'KQBN', 'KQHS')),
+    -- The letter's kind byte (`envelope::KIND_*`); only KQPB letters are held.
+    envelope_kind   INTEGER NOT NULL CHECK (envelope_kind BETWEEN 0 AND 255),
     recipient_label TEXT NOT NULL,
     content         BLOB NOT NULL,
     content_hash    TEXT NOT NULL,

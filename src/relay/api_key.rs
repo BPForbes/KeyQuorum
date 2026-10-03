@@ -176,8 +176,9 @@ pub fn admin_actor(id: i64) -> String {
     format!("admin:{id}")
 }
 
-/// One row of the API-key lifecycle audit trail (`api_key_events`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One row of the API-key lifecycle audit trail (`api_key_events`), as the
+/// host prints it and `GET /audit/api-keys` returns it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct ApiKeyEvent {
     pub id: i64,
     pub api_key_id: i64,

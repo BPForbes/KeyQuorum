@@ -1406,11 +1406,12 @@ fn require_addressed_here(
     recipient_label: &str,
     recipient_public_key: &[u8; 32],
 ) -> Result<()> {
-    let held = keys::active_keys_for(conn, recipient_label, KeyType::Encryption)?;
-    if held
-        .iter()
-        .any(|key| key.public_key == recipient_public_key)
-    {
+    if keys::is_active_key(
+        conn,
+        recipient_label,
+        KeyType::Encryption,
+        recipient_public_key,
+    )? {
         Ok(())
     } else {
         Err(Error::UpdateRecipientMismatch)

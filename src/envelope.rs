@@ -46,13 +46,6 @@ pub struct Format {
 
 /// Private-bridge packages and organization updates: the `.kqpb` files
 /// the mailbox relay carries.
-impl Format {
-    /// The four magic bytes that open every envelope of this format.
-    pub fn magic(self) -> &'static [u8; 4] {
-        self.magic
-    }
-}
-
 pub const PACKAGE: Format = Format {
     magic: b"KQPB",
     version: 2,
@@ -169,17 +162,11 @@ pub fn seal(
 /// kind, recipient public key, and the declared sealed length. Does not
 /// unseal the letter.
 pub fn parse_outer(bytes: &[u8]) -> Result<(u8, [u8; 32], &[u8])> {
-    parse_outer_as(PACKAGE, bytes)
-}
-
-/// [`parse_outer`] for any [`Format`]: the same header, checked against
-/// that format's magic and version.
-pub fn parse_outer_as(format: Format, bytes: &[u8]) -> Result<(u8, [u8; 32], &[u8])> {
     let mut data = bytes;
-    if take_n(&mut data, 4)? != format.magic {
+    if take_n(&mut data, 4)? != PACKAGE.magic {
         return Err(Error::InvalidBridgePackage);
     }
-    if take_u8(&mut data)? != format.version {
+    if take_u8(&mut data)? != PACKAGE.version {
         return Err(Error::InvalidBridgePackage);
     }
     let kind = take_u8(&mut data)?;

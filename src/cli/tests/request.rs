@@ -8,7 +8,7 @@ use crate::storage::Storage;
 use std::path::Path;
 
 /// M.A holds a tracked `report.txt`; M.A and M.B can both receive letters.
-fn holder_and_requester() -> MemoryEnv {
+pub(super) fn holder_and_requester() -> MemoryEnv {
     let mut env = org();
     for dir in ["ma", "mb"] {
         let label = dir.to_uppercase().replacen('M', "M.", 1);
@@ -26,7 +26,7 @@ fn file_id_hex(env: &MemoryEnv) -> String {
     hex::encode(file.file_id)
 }
 
-fn only(env: &MemoryEnv, dir: &str) -> String {
+pub(super) fn only(env: &MemoryEnv, dir: &str) -> String {
     let files = env.fs.list(Path::new(dir)).unwrap_or_default();
     assert_eq!(files.len(), 1, "{dir}: {files:?}");
     files[0].display().to_string()

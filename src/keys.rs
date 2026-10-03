@@ -156,6 +156,20 @@ pub fn active_keys_for(
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// Whether `public_key` is one of `label`'s unrevoked keys of `key_type`.
+/// The one check behind "this letter is addressed to a key this store holds
+/// for that person" (`org_update`, `file_delivery`, `outbox`).
+pub fn is_active_key(
+    conn: &Connection,
+    label: &str,
+    key_type: KeyType,
+    public_key: &[u8],
+) -> Result<bool> {
+    Ok(active_keys_for(conn, label, key_type)?
+        .iter()
+        .any(|key| key.public_key.as_slice() == public_key))
+}
+
 /// The id of the key with these bytes, registering it under `label` if
 /// this store has not seen it. Refuses to hand back a key registered for
 /// the *other* purpose: the same bytes cannot be both an encryption key
@@ -208,6 +222,18 @@ pub fn parse_key_text(contents: &str) -> Result<Vec<u8>> {
         return Ok(raw);
     }
     hex::decode(trimmed).map_err(|_| Error::InvalidPublicKey)
+}
+
+/// [`parse_key_text`] for exactly 32 bytes, zeroed on drop along with the
+/// decoded buffer: the reader for private keys as well as public ones.
+pub fn parse_key_32(contents: &str) -> Result<Zeroizing<[u8; 32]>> {
+    let bytes = Zeroizing::new(parse_key_text(contents)?);
+    let mut key = Zeroizing::new([0u8; 32]);
+    if bytes.len() != key.len() {
+        return Err(Error::InvalidPublicKey);
+    }
+    key.copy_from_slice(&bytes);
+    Ok(key)
 }
 
 pub fn encryption_public_from_secret(secret: &[u8; 32]) -> [u8; 32] {

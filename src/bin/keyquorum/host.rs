@@ -8,6 +8,7 @@
 //! mint keys: they receive a `kq_…` bearer. The `kql_…` issuer is an
 //! internal operator lock created only after that identity check.
 
+use keyquorum::cli;
 use keyquorum::cli::host_args::{
     HostCommand, IdentityCommand, KeysCommand, PolicyCommand, RootCommand,
 };
@@ -438,10 +439,11 @@ fn run_identity(command: IdentityCommand) -> Result<()> {
     }
 }
 
-/// Writes a fresh keypair: the private key owner-only (0600) and never to
-/// stdout or a log, so it cannot land in terminal scrollback, CI logs or
-/// shell history. Neither file may already exist, and the private key is
-/// written first so a failure leaves no public key without its pair.
+/// Writes a fresh keypair through the CLI's owner-only hex writer: the
+/// private key never goes to stdout or a log, so it cannot land in terminal
+/// scrollback, CI logs or shell history. Neither file may already exist,
+/// and the private key is written first, so a failure leaves no public key
+/// without its pair.
 fn write_keypair(what: &str, public_key_out: &Path, private_key_out: &Path) -> Result<()> {
     if public_key_out.exists() {
         return Err(Error::Io(std::io::Error::new(
@@ -450,10 +452,8 @@ fn write_keypair(what: &str, public_key_out: &Path, private_key_out: &Path) -> R
         )));
     }
     let (secret, public) = provider::generate_relay_identity();
-    let secret_hex = Zeroizing::new(hex::encode(*secret));
-    locked_files::write_owner_only(private_key_out, secret_hex.as_bytes())?;
-    if let Err(err) = locked_files::write_owner_only(public_key_out, hex::encode(public).as_bytes())
-    {
+    cli::write_hex_file(private_key_out, &secret[..])?;
+    if let Err(err) = cli::write_hex_file(public_key_out, &public) {
         let _ = std::fs::remove_file(private_key_out);
         return Err(err);
     }
@@ -526,21 +526,8 @@ fn path_or_env(flag: Option<PathBuf>, env_name: &str) -> Option<PathBuf> {
         })
 }
 
-/// Key text and its decoded bytes are zeroed on drop: the same reader
-/// loads the relay and provider-root private keys.
-fn key_array_32(text: &str) -> Result<Zeroizing<[u8; 32]>> {
-    let bytes = Zeroizing::new(keys::parse_key_text(text)?);
-    let mut key = Zeroizing::new([0u8; 32]);
-    if bytes.len() != key.len() {
-        return Err(Error::InvalidPublicKey);
-    }
-    key.copy_from_slice(&bytes);
-    Ok(key)
-}
-
 fn read_key_array_32(path: &Path) -> Result<Zeroizing<[u8; 32]>> {
-    let contents = Zeroizing::new(std::fs::read_to_string(path)?);
-    key_array_32(&contents)
+    cli::read_key_array_32(path).map(Zeroizing::new)
 }
 
 fn read_root_key(path: Option<PathBuf>) -> Result<Zeroizing<[u8; 32]>> {
@@ -548,7 +535,7 @@ fn read_root_key(path: Option<PathBuf>) -> Result<Zeroizing<[u8; 32]>> {
         return read_key_array_32(&path);
     }
     match std::env::var("KEYQUORUM_PROVIDER_ROOT_KEY").map(Zeroizing::new) {
-        Ok(value) if !value.is_empty() => key_array_32(&value),
+        Ok(value) if !value.is_empty() => keys::parse_key_32(&value),
         _ => Err(Error::InvalidProviderCertificate),
     }
 }

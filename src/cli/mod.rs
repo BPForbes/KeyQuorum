@@ -4090,14 +4090,16 @@ fn write_reassembled_secret(secret: &[u8], output: Option<&Path>) -> Result<()> 
 }
 
 fn read_key_bytes(path: &Path) -> Result<Vec<u8>> {
-    let contents = env::read_to_string(path)?;
+    let contents = zeroize::Zeroizing::new(env::read_to_string(path)?);
     keys::parse_key_text(&contents)
 }
 
-pub(crate) fn read_key_array_32(path: &Path) -> Result<[u8; 32]> {
-    read_key_bytes(path)?
-        .try_into()
-        .map_err(|_| Error::InvalidPublicKey)
+/// A 32-byte key file (hex, PEM or OpenSSH `.pub`). The file's text and the
+/// decoded buffer are zeroed; private keys are read this way too, so wrap
+/// the result in `Zeroizing` when it is one. Shared with the provider host.
+pub fn read_key_array_32(path: &Path) -> Result<[u8; 32]> {
+    let contents = zeroize::Zeroizing::new(env::read_to_string(path)?);
+    Ok(*keys::parse_key_32(&contents)?)
 }
 
 fn read_hex_bytes(path: &Path) -> Result<Vec<u8>> {
@@ -4111,8 +4113,11 @@ fn read_hex_array_64(path: &Path) -> Result<[u8; 64]> {
         .map_err(|_| Error::InvalidPublicKey)
 }
 
-fn write_hex_file(path: &Path, bytes: &[u8]) -> Result<()> {
-    env::write_new(path, hex::encode(bytes).as_bytes())
+/// Write `bytes` as hex to a new owner-only file (never overwritten).
+/// Shared with the provider host's key generation.
+pub fn write_hex_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    let text = zeroize::Zeroizing::new(hex::encode(bytes));
+    env::write_new(path, text.as_bytes())
 }
 
 /// A CLI-argument-shape problem — a missing conditionally-required flag, a

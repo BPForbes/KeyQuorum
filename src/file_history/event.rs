@@ -268,6 +268,14 @@ impl EventDetails {
         &self.0
     }
 
+    /// The value of the first entry named `key`.
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
     /// The first key not in [`SAFE_DETAIL_KEYS`], if any.
     pub fn unsafe_key(&self) -> Option<&str> {
         self.0

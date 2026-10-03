@@ -1,14 +1,13 @@
 //! Axum router for the mailbox relay. Handlers never unseal envelopes.
 
+use super::api_key::ApiKeyEvent;
 use super::client::{
     DevicePackageList, DevicePackagePush, ErrorBody, InboxAccepted, InboxEnvelope, InboxList,
     InboxPush, KeyCheckRequest, KeyCheckResponse, ProviderIdentityRequest,
     ProviderIdentityResponse,
 };
 use super::device_directory::{DeviceDescriptor, DeviceSlotDescriptor};
-use super::service::{
-    self, ApiKeyEventView, ApiKeyView, HttpError, ProviderIdentity, MAX_ENVELOPE_BYTES,
-};
+use super::service::{self, ApiKeyView, HttpError, ProviderIdentity, MAX_ENVELOPE_BYTES};
 use crate::error::Error;
 use crate::key_tree::{PublicEdge, PublicNode, PublicTree};
 use axum::body::Bytes;
@@ -221,7 +220,7 @@ impl Modify for SecurityAddon {
             DeviceSlotDescriptor,
             ErrorBody,
             ApiKeyView,
-            ApiKeyEventView,
+            ApiKeyEvent,
             PublicTree,
             PublicNode,
             PublicEdge,
@@ -432,7 +431,7 @@ pub fn anchor_now(conn: &Connection, identity: &ProviderIdentity) -> crate::erro
     path = "/audit/api-keys",
     tag = "audit",
     responses(
-        (status = 200, description = "Events about the caller's own key (every event for an admin key)", body = [ApiKeyEventView]),
+        (status = 200, description = "Events about the caller's own key (every event for an admin key)", body = [ApiKeyEvent]),
         (status = 401, description = "Unauthorized", body = ErrorBody)
     ),
     security(("api_key" = []))
@@ -440,7 +439,7 @@ pub fn anchor_now(conn: &Connection, identity: &ProviderIdentity) -> crate::erro
 async fn get_audit_events(
     State(state): State<AppState>,
     ApiToken(token): ApiToken,
-) -> Result<Json<Vec<ApiKeyEventView>>, ApiError> {
+) -> Result<Json<Vec<ApiKeyEvent>>, ApiError> {
     let events = with_conn(&state, move |conn| service::audit_events(conn, &token)).await?;
     Ok(Json(events))
 }

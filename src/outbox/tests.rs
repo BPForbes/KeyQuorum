@@ -1,5 +1,6 @@
 use super::*;
 use crate::envelope::{self, EXPORT_BUNDLE, KIND_FILE_DELIVERY, PACKAGE};
+use crate::file_delivery::exchange::Step;
 use crate::keys::{self, KeyType};
 use std::cell::RefCell;
 
@@ -25,21 +26,6 @@ fn letter(to: &[u8; 32], body: &[u8]) -> Vec<u8> {
     envelope::seal(PACKAGE, KIND_FILE_DELIVERY, to, body).expect("seal")
 }
 
-/// A `.kqbn` notice naming `removed`, `remaining` and nobody to notify.
-fn notice(removed: &str, remaining: &[&str]) -> Vec<u8> {
-    let mut out = b"KQBN".to_vec();
-    out.push(2);
-    out.push(1);
-    envelope::push_len_prefixed(&mut out, b"bridge-uid").unwrap();
-    envelope::push_len_prefixed(&mut out, removed.as_bytes()).unwrap();
-    out.extend_from_slice(&(remaining.len() as u16).to_be_bytes());
-    for label in remaining {
-        envelope::push_len_prefixed(&mut out, label.as_bytes()).unwrap();
-    }
-    out.extend_from_slice(&0u16.to_be_bytes());
-    out
-}
-
 fn sent_by(conn: &Connection, owner: &str) -> Option<(QueuedItem, Vec<u8>)> {
     let out = RefCell::new(None);
     let item = send_next(conn, owner, |item, bytes| {
@@ -62,9 +48,9 @@ fn the_ring_is_first_in_first_out_and_wraps_around() {
     );
 
     for n in 0..3u8 {
-        let item = push(&p.conn, "alice", "bob", &letter(&p.bob, &[n])).expect("push");
+        let item = push(&p.conn, "alice", "bob", &letter(&p.bob, &[n]), None).expect("push");
         assert_eq!(item.index, u32::from(n));
-        assert_eq!(item.kind, ItemKind::Package);
+        assert_eq!(item.kind, KIND_FILE_DELIVERY);
     }
     let full = ring(&p.conn, "alice").unwrap();
     assert_eq!(
@@ -73,7 +59,7 @@ fn the_ring_is_first_in_first_out_and_wraps_around() {
     );
     // Full: refused, and nothing already held is overwritten.
     assert!(matches!(
-        push(&p.conn, "alice", "bob", &letter(&p.bob, b"x")),
+        push(&p.conn, "alice", "bob", &letter(&p.bob, b"x"), None),
         Err(Error::OutboxFull)
     ));
     assert_eq!(list(&p.conn, "alice").unwrap().len(), 3);
@@ -94,7 +80,7 @@ fn the_ring_is_first_in_first_out_and_wraps_around() {
     );
 
     // The next item is written into the freed slot 0: the ring wraps.
-    let wrapped = push(&p.conn, "alice", "bob", &letter(&p.bob, b"w")).expect("push");
+    let wrapped = push(&p.conn, "alice", "bob", &letter(&p.bob, b"w"), None).expect("push");
     assert_eq!(wrapped.index, 0);
     let order: Vec<u32> = list(&p.conn, "alice")
         .unwrap()
@@ -120,51 +106,86 @@ fn letter_body_check(bytes: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-fn items_go_only_to_a_trusted_recipient_they_pertain_to() {
+fn letters_go_only_to_the_trusted_recipient_they_are_sealed_to() {
     let p = people();
     // No key registered for dave: not trusted.
     let (_, dave) = keys::generate_encryption_keypair();
     assert!(matches!(
-        push(&p.conn, "alice", "dave", &letter(&dave, b"x")),
+        push(&p.conn, "alice", "dave", &letter(&dave, b"x"), None),
         Err(Error::UntrustedRecipient)
     ));
     // Sealed to carol, addressed to bob: refused.
     assert!(matches!(
-        push(&p.conn, "alice", "bob", &letter(&p.carol, b"x")),
+        push(&p.conn, "alice", "bob", &letter(&p.carol, b"x"), None),
         Err(Error::UntrustedRecipient)
     ));
-    // The same rule for export bundles.
-    let bundle = envelope::seal(EXPORT_BUNDLE, 1, &p.carol, b"bundle").unwrap();
-    assert!(matches!(
-        push(&p.conn, "alice", "bob", &bundle),
-        Err(Error::UntrustedRecipient)
-    ));
-    assert_eq!(
-        push(&p.conn, "alice", "carol", &bundle).unwrap().kind,
-        ItemKind::ExportBundle
-    );
-    // A notice goes only to someone it names.
-    assert!(matches!(
-        push(&p.conn, "alice", "carol", &notice("dave", &["bob"])),
-        Err(Error::UntrustedRecipient)
-    ));
-    assert_eq!(
-        push(&p.conn, "alice", "bob", &notice("dave", &["bob"]))
-            .unwrap()
-            .kind,
-        ItemKind::EvictionNotice
-    );
     // An owner this store does not know has no ring.
     assert!(matches!(
-        push(&p.conn, "mallory", "bob", &letter(&p.bob, b"x")),
+        push(&p.conn, "mallory", "bob", &letter(&p.bob, b"x"), None),
         Err(Error::NodeNotFound)
     ));
 }
 
 #[test]
+fn only_a_kqpb_passport_crosses_between_rings() {
+    let p = people();
+    // An export bundle sealed to bob is still not a letter: it travels
+    // inside one (`keyquorum send`), signed.
+    let bundle = envelope::seal(EXPORT_BUNDLE, 1, &p.bob, b"bundle").unwrap();
+    // A device letter moves someone's own identity between their own
+    // devices; it never goes to another person's ring.
+    let device = envelope::seal(PACKAGE, envelope::KIND_DEVICE_TRANSFER, &p.bob, b"KQTX").unwrap();
+    for refused in [
+        bundle,
+        device,
+        b"KQTF\x07tracked file content in the clear".to_vec(),
+        b"KQHS\x01snapshot".to_vec(),
+        b"KQBN\x02notice".to_vec(),
+        b"not a kq file".to_vec(),
+    ] {
+        assert!(
+            matches!(
+                push(&p.conn, "alice", "bob", &refused, None),
+                Err(Error::OutboxItemRefused)
+            ),
+            "{refused:?}"
+        );
+    }
+    assert_eq!(ring(&p.conn, "alice").unwrap().state(), RingState::Empty);
+}
+
+#[test]
+fn a_tracked_file_letter_needs_the_copy_that_shows_its_order() {
+    let p = people();
+    // A request opens an exchange and needs nothing before it.
+    let request = envelope::seal(PACKAGE, envelope::KIND_FILE_REQUEST, &p.bob, b"r").unwrap();
+    assert_eq!(
+        push(&p.conn, "alice", "bob", &request, None).unwrap().kind,
+        envelope::KIND_FILE_REQUEST
+    );
+    // Every later step is checked against the sender's copy of the file.
+    for kind in [
+        envelope::KIND_FILE_REQUEST_ANSWER,
+        envelope::KIND_FILE_HISTORY,
+        envelope::KIND_FILE_HISTORY_ACK,
+        envelope::KIND_FILE_HISTORY_SNAPSHOT,
+    ] {
+        assert!(Step::for_kind(kind).is_some());
+        let later = envelope::seal(PACKAGE, kind, &p.bob, b"x").unwrap();
+        assert!(
+            matches!(
+                push(&p.conn, "alice", "bob", &later, None),
+                Err(Error::ExchangeOutOfOrder(_))
+            ),
+            "kind {kind}"
+        );
+    }
+}
+
+#[test]
 fn revoking_the_recipient_stops_a_queued_send_and_moves_nothing() {
     let p = people();
-    push(&p.conn, "alice", "bob", &letter(&p.bob, b"x")).expect("push");
+    push(&p.conn, "alice", "bob", &letter(&p.bob, b"x"), None).expect("push");
     let bob_key = keys::active_keys_for(&p.conn, "bob", KeyType::Encryption).unwrap()[0].id;
     keys::revoke_key(&p.conn, bob_key).expect("revoke");
 
@@ -190,7 +211,7 @@ fn revoking_the_recipient_stops_a_queued_send_and_moves_nothing() {
 #[test]
 fn a_failed_delivery_keeps_the_item_at_the_read_pointer() {
     let p = people();
-    push(&p.conn, "alice", "bob", &letter(&p.bob, b"x")).expect("push");
+    push(&p.conn, "alice", "bob", &letter(&p.bob, b"x"), None).expect("push");
     assert!(send_next(&p.conn, "alice", |_, _| Err(Error::RelayRequest(
         "down".into()
     )))
@@ -204,23 +225,12 @@ fn a_failed_delivery_keeps_the_item_at_the_read_pointer() {
 }
 
 #[test]
-fn only_outbox_kinds_of_a_bounded_size_are_queued() {
+fn an_oversized_letter_is_refused() {
     let p = people();
-    for refused in [
-        b"KQTF\x07tracked file content in the clear".to_vec(),
-        b"KQTX\x01transfer package".to_vec(),
-        b"not a kq file".to_vec(),
-        b"KQPB".to_vec(),
-    ] {
-        assert!(
-            push(&p.conn, "alice", "bob", &refused).is_err(),
-            "{refused:?}"
-        );
-    }
     let mut huge = letter(&p.bob, b"x");
     huge.resize(MAX_ITEM_BYTES + 1, 0);
     assert!(matches!(
-        push(&p.conn, "alice", "bob", &huge),
+        push(&p.conn, "alice", "bob", &huge, None),
         Err(Error::BundleFieldTooLarge)
     ));
     assert_eq!(ring(&p.conn, "alice").unwrap().state(), RingState::Empty);
@@ -230,7 +240,7 @@ fn only_outbox_kinds_of_a_bounded_size_are_queued() {
 fn only_an_empty_ring_is_resized() {
     let p = people();
     assert_eq!(ring(&p.conn, "alice").unwrap().capacity, DEFAULT_CAPACITY);
-    push(&p.conn, "alice", "bob", &letter(&p.bob, b"x")).expect("push");
+    push(&p.conn, "alice", "bob", &letter(&p.bob, b"x"), None).expect("push");
     assert!(matches!(
         set_capacity(&p.conn, "alice", 4),
         Err(Error::OutboxNotEmpty)
@@ -244,8 +254,22 @@ fn only_an_empty_ring_is_resized() {
 #[test]
 fn each_person_has_their_own_ring() {
     let p = people();
-    push(&p.conn, "alice", "bob", &letter(&p.bob, b"from alice")).expect("alice");
-    push(&p.conn, "bob", "carol", &letter(&p.carol, b"from bob")).expect("bob");
+    push(
+        &p.conn,
+        "alice",
+        "bob",
+        &letter(&p.bob, b"from alice"),
+        None,
+    )
+    .expect("alice");
+    push(
+        &p.conn,
+        "bob",
+        "carol",
+        &letter(&p.carol, b"from bob"),
+        None,
+    )
+    .expect("bob");
     assert_eq!(ring(&p.conn, "alice").unwrap().size, 1);
     assert_eq!(ring(&p.conn, "bob").unwrap().size, 1);
     let (item, _) = sent_by(&p.conn, "bob").expect("bob sends");
@@ -255,43 +279,4 @@ fn each_person_has_their_own_ring() {
         1,
         "alice's ring is untouched"
     );
-}
-
-#[test]
-fn signatures_and_history_snapshots_are_carried_to_registered_recipients() {
-    let p = people();
-    let signature = crate::signing::encode_bridge_signature(&crate::signing::BridgeSignature {
-        uid: "bridge-uid".into(),
-        generation: 1,
-        bridge_salt: [1; crate::crypto::SALT_LEN],
-        signature_salt: [2; crate::crypto::SALT_LEN],
-        signer_label: "alice".into(),
-        signer_public_key: [3; 32],
-        bridge_signature: [4; 64],
-        personal_signature: [5; 64],
-    })
-    .unwrap();
-    assert_eq!(
-        push(&p.conn, "alice", "bob", &signature).unwrap().kind,
-        ItemKind::BridgeSignature
-    );
-    let file_id = [9u8; 16];
-    let snapshot = crate::file_history::HistorySnapshot {
-        file_id,
-        history_root: crate::file_history::genesis_hash(&file_id),
-        events: Vec::new(),
-    }
-    .encode()
-    .unwrap();
-    assert_eq!(
-        push(&p.conn, "alice", "carol", &snapshot).unwrap().kind,
-        ItemKind::HistorySnapshot
-    );
-    // Unsealed kinds still need a registered recipient.
-    assert!(matches!(
-        push(&p.conn, "alice", "dave", &snapshot),
-        Err(Error::UntrustedRecipient)
-    ));
-    // A truncated artifact is not accepted as one.
-    assert!(push(&p.conn, "alice", "bob", &signature[..signature.len() - 1]).is_err());
 }
