@@ -388,3 +388,27 @@ fn a_letter_already_written_with_the_same_bytes_counts_as_sent() {
     let status = run(&mut env, &format!("{ALICE} outbox"));
     assert!(status.contains("1 of 32 slots held"), "{status}");
 }
+
+#[test]
+fn outbox_refusals_lists_what_was_turned_away_and_why() {
+    let mut env = two_people_on_a_relay();
+    let none = run(&mut env, &format!("{ALICE} outbox refusals"));
+    assert!(none.contains("Outbox for alice has refused nothing"));
+
+    let letter = alice_letter_for_bob(&mut env);
+    fails(&mut env, &format!("{ALICE} outbox add {letter} --to alice"));
+    fails(
+        &mut env,
+        &format!("{ALICE} outbox add /home/alice/note.txt --to bob"),
+    );
+
+    let listed = run(&mut env, &format!("{ALICE} outbox refusals"));
+    let lines: Vec<&str> = listed.lines().collect();
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].contains("to bob  unreadable  no_passport: not a sealed letter"));
+    assert!(lines[1].contains("to alice  file delivery  unrecognised_destination"));
+    let status = run(&mut env, &format!("{ALICE} outbox"));
+    assert!(status.contains("Last refused at departure: to bob") && status.contains("no_passport"));
+    let one = run(&mut env, &format!("{ALICE} outbox refusals --limit 1"));
+    assert_eq!(one.lines().count(), 1);
+}

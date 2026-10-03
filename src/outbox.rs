@@ -28,9 +28,18 @@
 //! letter belongs to that copy or request; the receiver binds those when it
 //! opens the letter.
 //!
-//! This module owns `outbox_rings` and `outbox_slots` and decides no other
-//! rule: keys are `keys`, framing is `envelope`, the exchange order is
-//! `file_delivery::exchange`.
+//! In border terms: the `KQPB` is the passport; the destination printed on
+//! it is the recipient key it is sealed to, which must be one this store
+//! recognises; an accepted request answer is the visa a tracked file needs;
+//! device letters are residence papers that never cross. A letter turned
+//! away at departure is recorded in `outbox_refusals` ([`Refusal`],
+//! [`refusals`]): who it was for, its kind and step, and the rule it broke,
+//! never the letter. A delivery that fails in transit (the relay is down) is
+//! not a refusal and leaves the letter queued.
+//!
+//! This module owns `outbox_rings`, `outbox_slots` and `outbox_refusals` and
+//! decides no other rule: keys are `keys`, framing is `envelope`, the
+//! exchange order is `file_delivery::exchange`.
 
 use crate::envelope;
 use crate::error::{Error, Result};
@@ -46,6 +55,79 @@ pub const DEFAULT_CAPACITY: u32 = 32;
 pub const MAX_CAPACITY: u32 = 1024;
 /// Largest single item, so a ring's footprint in the store stays bounded.
 pub const MAX_ITEM_BYTES: usize = 16 * 1024 * 1024;
+/// Refusals kept per owner; older ones are dropped as new ones arrive.
+pub const MAX_REFUSALS_KEPT: u32 = 256;
+
+/// Why the ring turned a letter away at departure. Stored by name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// Not a whole `KQPB` letter: no passport.
+    NoPassport,
+    /// A device letter: residence papers that never leave your own devices.
+    DeviceLetter,
+    /// Not sealed to an active key this store holds for the recipient.
+    UnrecognisedDestination,
+    /// A tracked-file letter whose step before it is missing.
+    OutOfOrder,
+    /// Every slot is held by a letter not yet sent.
+    RingFull,
+    /// Larger than [`MAX_ITEM_BYTES`].
+    Oversized,
+    /// The held letter no longer matches what was queued.
+    Tampered,
+}
+
+impl Refusal {
+    pub const ALL: [Refusal; 7] = [
+        Refusal::NoPassport,
+        Refusal::DeviceLetter,
+        Refusal::UnrecognisedDestination,
+        Refusal::OutOfOrder,
+        Refusal::RingFull,
+        Refusal::Oversized,
+        Refusal::Tampered,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoPassport => "no_passport",
+            Self::DeviceLetter => "device_letter",
+            Self::UnrecognisedDestination => "unrecognised_destination",
+            Self::OutOfOrder => "out_of_order",
+            Self::RingFull => "ring_full",
+            Self::Oversized => "oversized",
+            Self::Tampered => "tampered",
+        }
+    }
+
+    fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.as_str() == name)
+    }
+
+    /// The error a caller sees for this refusal.
+    fn error(self, step: Option<&str>) -> Error {
+        match self {
+            Self::NoPassport | Self::DeviceLetter => Error::OutboxItemRefused,
+            Self::UnrecognisedDestination => Error::UntrustedRecipient,
+            Self::OutOfOrder => Error::ExchangeOutOfOrder(step.unwrap_or_default().to_string()),
+            Self::RingFull => Error::OutboxFull,
+            Self::Oversized => Error::BundleFieldTooLarge,
+            Self::Tampered => Error::IntegrityCheckFailed,
+        }
+    }
+}
+
+/// One letter the ring turned away. Holds nothing from the letter itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefusalRecord {
+    pub recipient: String,
+    /// The letter's kind byte, when it had a readable outer header.
+    pub kind: Option<u8>,
+    /// For a tracked-file letter refused out of order, what was missing.
+    pub step: Option<String>,
+    pub refusal: Refusal,
+    pub refused_at: String,
+}
 
 /// How the ring can be used right now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -172,23 +254,90 @@ fn require_owner(conn: &Connection, owner: &str) -> Result<()> {
 /// The letter's kind and the key it is sealed to, from its outer header.
 /// Anything that is not a whole `KQPB` letter, or is a device letter, is
 /// refused.
-fn passport(bytes: &[u8]) -> Result<(u8, [u8; 32])> {
-    let (kind, sealed_to, _) =
-        envelope::parse_outer(bytes).map_err(|_| Error::OutboxItemRefused)?;
+fn passport(bytes: &[u8]) -> std::result::Result<(u8, [u8; 32]), Refusal> {
+    let (kind, sealed_to, _) = envelope::parse_outer(bytes).map_err(|_| Refusal::NoPassport)?;
     if envelope::is_device_workflow_kind(kind) {
-        return Err(Error::OutboxItemRefused);
+        return Err(Refusal::DeviceLetter);
     }
     Ok((kind, sealed_to))
 }
 
 /// The recipient is trusted for this letter: it is sealed to an active
 /// encryption key this store holds for them.
-fn require_trusted(conn: &Connection, recipient: &str, sealed_to: &[u8; 32]) -> Result<()> {
-    if keys::is_active_key(conn, recipient, KeyType::Encryption, sealed_to)? {
-        Ok(())
-    } else {
-        Err(Error::UntrustedRecipient)
+fn is_trusted(conn: &Connection, recipient: &str, sealed_to: &[u8; 32]) -> Result<bool> {
+    keys::is_active_key(conn, recipient, KeyType::Encryption, sealed_to)
+}
+
+/// A refusal: recorded for `owner`, then returned as the caller's error.
+struct Denied {
+    refusal: Refusal,
+    kind: Option<u8>,
+    step: Option<String>,
+}
+
+impl Denied {
+    fn new(refusal: Refusal, kind: Option<u8>) -> Self {
+        Self {
+            refusal,
+            kind,
+            step: None,
+        }
     }
+
+    /// Record the refusal and give the error it stands for. Recording is
+    /// best effort: a refusal is never turned into a different failure.
+    fn record(self, conn: &Connection, owner: &str, recipient: &str) -> Error {
+        let _ = record_refusal(conn, owner, recipient, &self);
+        self.refusal.error(self.step.as_deref())
+    }
+}
+
+fn record_refusal(conn: &Connection, owner: &str, recipient: &str, denied: &Denied) -> Result<()> {
+    conn.execute(
+        "INSERT INTO outbox_refusals (owner_label, recipient_label, envelope_kind, step, rule)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            owner,
+            recipient,
+            denied.kind,
+            denied.step,
+            denied.refusal.as_str()
+        ],
+    )?;
+    conn.execute(
+        "DELETE FROM outbox_refusals WHERE owner_label = ?1 AND id NOT IN
+         (SELECT id FROM outbox_refusals WHERE owner_label = ?1 ORDER BY id DESC LIMIT ?2)",
+        params![owner, MAX_REFUSALS_KEPT],
+    )?;
+    Ok(())
+}
+
+/// The letters `owner`'s ring turned away, newest first, at most `limit`.
+pub fn refusals(conn: &Connection, owner: &str, limit: u32) -> Result<Vec<RefusalRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT recipient_label, envelope_kind, step, rule, refused_at
+         FROM outbox_refusals WHERE owner_label = ?1 ORDER BY id DESC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![owner, limit], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<u8>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+        ))
+    })?;
+    rows.map(|row| {
+        let (recipient, kind, step, rule, refused_at) = row?;
+        Ok(RefusalRecord {
+            recipient,
+            kind,
+            step,
+            refusal: Refusal::parse(&rule).ok_or(Error::IntegrityCheckFailed)?,
+            refused_at,
+        })
+    })
+    .collect()
 }
 
 /// Change the number of slots. Only an empty ring can be resized, so no
@@ -223,22 +372,75 @@ pub fn push(
     bytes: &[u8],
     copy: Option<&TrackedFile>,
 ) -> Result<QueuedItem> {
-    if bytes.len() > MAX_ITEM_BYTES {
-        return Err(Error::BundleFieldTooLarge);
-    }
-    let (kind, sealed_to) = passport(bytes)?;
+    // An owner this store does not know has no ring, and nothing to record.
     require_owner(conn, owner)?;
-    require_trusted(conn, recipient, &sealed_to)?;
-    match (Step::for_kind(kind), copy) {
-        (None | Some(Step::Request), _) => {}
-        (Some(step), Some(copy)) => exchange::require_step(copy, owner, recipient, step)?,
-        (Some(step), None) => {
-            return Err(Error::ExchangeOutOfOrder(format!(
-                "a {} needs your copy of the file it concerns, so its order can be checked",
-                step.name()
-            )))
-        }
+    match departure_check(conn, owner, recipient, bytes, copy)? {
+        Ok(kind) => queue(conn, owner, recipient, bytes, kind).map_err(|err| match err {
+            Error::OutboxFull => {
+                Denied::new(Refusal::RingFull, Some(kind)).record(conn, owner, recipient)
+            }
+            other => other,
+        }),
+        Err(denied) => Err(denied.record(conn, owner, recipient)),
     }
+}
+
+/// Every check a letter meets before it may be queued, in border order:
+/// size, passport, destination, then the visa (its exchange step). The
+/// outer `Result` is a failure to check; the inner one is the verdict.
+fn departure_check(
+    conn: &Connection,
+    owner: &str,
+    recipient: &str,
+    bytes: &[u8],
+    copy: Option<&TrackedFile>,
+) -> Result<std::result::Result<u8, Denied>> {
+    if bytes.len() > MAX_ITEM_BYTES {
+        return Ok(Err(Denied::new(Refusal::Oversized, None)));
+    }
+    let (kind, sealed_to) = match passport(bytes) {
+        Ok(found) => found,
+        Err(refusal) => {
+            let kind = envelope::parse_outer(bytes).ok().map(|(kind, _, _)| kind);
+            return Ok(Err(Denied::new(refusal, kind)));
+        }
+    };
+    if !is_trusted(conn, recipient, &sealed_to)? {
+        return Ok(Err(Denied::new(
+            Refusal::UnrecognisedDestination,
+            Some(kind),
+        )));
+    }
+    let missing = match (Step::for_kind(kind), copy) {
+        (None | Some(Step::Request), _) => None,
+        (Some(step), Some(copy)) => match exchange::require_step(copy, owner, recipient, step) {
+            Ok(()) => None,
+            Err(Error::ExchangeOutOfOrder(missing)) => Some(missing),
+            Err(other) => return Err(other),
+        },
+        (Some(step), None) => Some(format!(
+            "a {} needs your copy of the file it concerns, so its order can be checked",
+            step.name()
+        )),
+    };
+    Ok(match missing {
+        Some(missing) => Err(Denied {
+            refusal: Refusal::OutOfOrder,
+            kind: Some(kind),
+            step: Some(missing),
+        }),
+        None => Ok(kind),
+    })
+}
+
+/// Write a checked letter at the write pointer.
+fn queue(
+    conn: &Connection,
+    owner: &str,
+    recipient: &str,
+    bytes: &[u8],
+    kind: u8,
+) -> Result<QueuedItem> {
     crate::db::with_immediate_transaction(conn, || {
         let ring = ensure_ring(conn, owner)?;
         if ring.state() == RingState::Full {
@@ -340,7 +542,9 @@ pub fn send_next(
     owner: &str,
     deliver: impl FnOnce(&QueuedItem, &[u8]) -> Result<()>,
 ) -> Result<Option<QueuedItem>> {
-    crate::db::with_immediate_transaction(conn, || {
+    // A refusal is recorded after the transaction, which rolls back.
+    let mut denied: Option<(String, Denied)> = None;
+    let sent = crate::db::with_immediate_transaction(conn, || {
         let ring = ring(conn, owner)?;
         if ring.state() == RingState::Empty {
             return Ok(None);
@@ -351,15 +555,35 @@ pub fn send_next(
             params![owner, ring.read_index],
             |row| row.get(0),
         )?);
-        if hex::encode(Sha256::digest(&*bytes)) != item.content_hash {
-            return Err(Error::IntegrityCheckFailed);
+        // Checked again at the gate: the slot is what was queued, it is
+        // still a passport, and its destination is still recognised.
+        let verdict = if hex::encode(Sha256::digest(&*bytes)) != item.content_hash {
+            Some(Refusal::Tampered)
+        } else {
+            match passport(&bytes) {
+                Err(refusal) => Some(refusal),
+                Ok((_, sealed_to)) if !is_trusted(conn, &item.recipient, &sealed_to)? => {
+                    Some(Refusal::UnrecognisedDestination)
+                }
+                Ok(_) => None,
+            }
+        };
+        if let Some(refusal) = verdict {
+            let error = refusal.error(None);
+            denied = Some((
+                item.recipient.clone(),
+                Denied::new(refusal, Some(item.kind)),
+            ));
+            return Err(error);
         }
-        let (_, sealed_to) = passport(&bytes)?;
-        require_trusted(conn, &item.recipient, &sealed_to)?;
         deliver(&item, &bytes)?;
         release_head(conn, owner, &ring, true)?;
         Ok(Some(item))
-    })
+    });
+    match (sent, denied) {
+        (Err(_), Some((recipient, denied))) => Err(denied.record(conn, owner, &recipient)),
+        (sent, _) => sent,
+    }
 }
 
 /// Discard the item at the read pointer without sending it (the owner's

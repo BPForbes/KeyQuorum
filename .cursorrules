@@ -136,7 +136,13 @@ holds nothing else (raw `KQXB`, `KQBS`, `KQBN`, `KQHS`, `KQTF` are refused and
 travel inside a letter), and device kinds 9 to 12 are refused
 (`envelope::is_device_workflow_kind`). The letter must be sealed to an active
 encryption key the store holds for the recipient (`keys::is_active_key`, the
-same check `org_update` and `file_delivery::recipient_owns_key` use).
+same check `org_update` and `file_delivery::recipient_owns_key` use). Every
+letter turned away at departure, by `push` or at `send_next`'s gate, is recorded
+in `outbox_refusals` (`outbox::Refusal`: `no_passport`, `device_letter`,
+`unrecognised_destination`, `out_of_order`, `ring_full`, `oversized`,
+`tampered`; recipient, kind and missing step, never the letter or its hash; the
+newest `MAX_REFUSALS_KEPT` per owner), after the rolled-back transaction, and
+`outbox refusals` lists them; a delivery that fails in transit is not a refusal.
 `src/file_delivery/exchange.rs` owns the order of a tracked file's letters:
 request (18), answer (19), file (15, only after an accepted file request from
 that person and a `file share` after it), receipt (16, only for a file

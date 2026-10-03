@@ -769,6 +769,16 @@ keyquorum outbox add ans/*.kqpb --to M.B --as M.A --file report.kqtf   # step 2,
 keyquorum outbox                                                 # index, size, state
 ```
 
+In border terms: the `.kqpb` is the passport, the recipient key it is sealed
+to is the destination printed on it, an accepted request answer is the visa a
+tracked file needs, and device letters are residence papers that never cross.
+A letter turned away at departure is recorded in your store with the rule it
+broke (`no_passport`, `device_letter`, `unrecognised_destination`,
+`out_of_order`, `ring_full`, `oversized`, `tampered`), never the letter
+itself; `outbox refusals` lists them, newest first, and `outbox` shows the
+last one. A delivery that fails in transit is not a refusal: the letter stays
+queued for the retry.
+
 `outbox drop` discards the oldest letter without sending it, and
 `outbox capacity N` (1 to 1024) resizes an empty ring. `--as LABEL` picks whose
 outbox; the default is your label from `keyquorum use`. Letters go to the relay

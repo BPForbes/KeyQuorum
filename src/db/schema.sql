@@ -618,3 +618,20 @@ CREATE TABLE IF NOT EXISTS outbox_slots (
     queued_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (owner_label, slot_index)
 );
+
+-- Letters the outbox turned away at departure (`src/outbox.rs`,
+-- `outbox::Refusal`): who it was for, its kind and exchange step when known,
+-- and the rule it broke. Never the letter, its hash or anything sealed in it.
+-- Only the newest `outbox::MAX_REFUSALS_KEPT` per owner are kept.
+CREATE TABLE IF NOT EXISTS outbox_refusals (
+    id              INTEGER PRIMARY KEY,
+    owner_label     TEXT NOT NULL,
+    recipient_label TEXT NOT NULL,
+    envelope_kind   INTEGER CHECK (envelope_kind BETWEEN 0 AND 255),
+    step            TEXT,
+    rule            TEXT NOT NULL CHECK (rule IN ('no_passport', 'device_letter',
+                        'unrecognised_destination', 'out_of_order', 'ring_full',
+                        'oversized', 'tampered')),
+    refused_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS outbox_refusals_owner ON outbox_refusals (owner_label, id);

@@ -7,15 +7,17 @@
 //! sends from the read pointer, oldest first, to the relay with your stored
 //! push key or to `--output-dir`. Only a send that succeeds moves the read
 //! pointer. `outbox` alone shows the ring: index, size, free slots and its
-//! state (empty, partial, full). The rules are `outbox`'s and
-//! `file_delivery::exchange`'s; this command adds none of its own.
+//! state (empty, partial, full). `outbox refusals` lists the letters the ring
+//! turned away at departure and the rule each broke. The rules are
+//! `outbox`'s and `file_delivery::exchange`'s; this command adds none of its
+//! own.
 
 use super::env::{self, outln};
 use super::inbox::kind_name;
 use super::{file_cmd, resolve_relay_auth, sanitize_label, usage};
 use crate::db::profile;
 use crate::error::Result;
-use crate::outbox::{self, QueuedItem, Ring};
+use crate::outbox::{self, QueuedItem, Refusal, Ring};
 use crate::relay::{self, ApiKeyScope};
 use clap::{Args, Subcommand};
 use rusqlite::Connection;
@@ -67,6 +69,13 @@ pub enum OutboxCommand {
     Drop,
     /// Set the number of slots (1 to 1024). Only an empty ring is resized
     Capacity { slots: u32 },
+    /// The letters the ring turned away at departure, newest first, and the
+    /// rule each broke (the letters themselves are not kept)
+    Refusals {
+        /// How many to show
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+    },
 }
 
 fn owner(conn: &Connection, as_label: Option<String>) -> Result<String> {
@@ -92,6 +101,21 @@ fn print_ring(ring: &Ring) {
     );
 }
 
+/// What a refusal means, in a sentence.
+fn refusal_text(refusal: Refusal) -> &'static str {
+    match refusal {
+        Refusal::NoPassport => "not a sealed letter (.kqpb): no passport",
+        Refusal::DeviceLetter => "a device letter: it never leaves your own devices",
+        Refusal::UnrecognisedDestination => {
+            "not sealed to an active key this store holds for the recipient"
+        }
+        Refusal::OutOfOrder => "out of order: the step before it is missing",
+        Refusal::RingFull => "the outbox was full",
+        Refusal::Oversized => "larger than the outbox takes",
+        Refusal::Tampered => "the held letter no longer matched what was queued",
+    }
+}
+
 fn print_item(prefix: &str, item: &QueuedItem) {
     outln!(
         "{prefix} slot {}: {} to {} ({} bytes, sha256 {}, queued {})",
@@ -112,6 +136,35 @@ pub(crate) fn run(conn: &Connection, opts: OutboxOpts) -> Result<()> {
             print_ring(&outbox::ring(conn, &owner)?);
             for item in outbox::list(conn, &owner)? {
                 print_item(" ", &item);
+            }
+            if let Some(last) = outbox::refusals(conn, &owner, 1)?.first() {
+                outln!(
+                    "Last refused at departure: to {} at {} ({}); see `keyquorum outbox refusals`",
+                    last.recipient,
+                    last.refused_at,
+                    last.refusal.as_str()
+                );
+            }
+        }
+        OutboxCommand::Refusals { limit } => {
+            let refused = outbox::refusals(conn, &owner, limit)?;
+            if refused.is_empty() {
+                outln!("Outbox for {owner} has refused nothing");
+            }
+            for record in refused {
+                let kind = record.kind.map_or("unreadable", kind_name);
+                outln!(
+                    "{}  to {}  {}  {}: {}{}",
+                    record.refused_at,
+                    record.recipient,
+                    kind,
+                    record.refusal.as_str(),
+                    refusal_text(record.refusal),
+                    record
+                        .step
+                        .map(|step| format!(" ({step})"))
+                        .unwrap_or_default()
+                );
             }
         }
         OutboxCommand::Add { files, to, file } => {

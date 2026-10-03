@@ -82,6 +82,16 @@ request when they open it. An export
 bundle is not a step (it is unsigned and carries every revision, trusted or
 not), and a device transfer package never travels with a file.
 
+In border terms, the \file{.kqpb} is the passport, the recipient key it is
+sealed to is the destination printed on it, an accepted request answer is the
+visa a tracked file needs, and device letters are residence papers that never
+cross. A letter the outbox turns away at departure is recorded in your own
+store with the rule it broke (\code{no\_passport}, \code{device\_letter},
+\code{unrecognised\_destination}, \code{out\_of\_order}, \code{ring\_full},
+\code{oversized}, \code{tampered}), never the letter itself;
+\code{outbox refusals} lists them. A delivery that fails in transit is not a
+refusal, and the letter stays queued.
+
 \begin{verbatim}
 keyquorum file request --file-id ID --name report.txt --to M.A \
     --as M.B --output-dir req

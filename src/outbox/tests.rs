@@ -283,3 +283,143 @@ fn each_person_has_their_own_ring() {
         "alice's ring is untouched"
     );
 }
+
+fn rules(conn: &Connection, owner: &str) -> Vec<Refusal> {
+    refusals(conn, owner, MAX_REFUSALS_KEPT)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.refusal)
+        .collect()
+}
+
+#[test]
+fn every_letter_turned_away_at_departure_is_recorded_with_its_rule() {
+    let p = people();
+    set_capacity(&p.conn, "alice", 1).expect("capacity");
+    let (_, dave) = keys::generate_encryption_keypair();
+    let device = envelope::seal(PACKAGE, envelope::KIND_DEVICE_TRANSFER, &p.bob, b"KQTX").unwrap();
+    let mut huge = letter(&p.bob, b"x");
+    huge.resize(MAX_ITEM_BYTES + 1, 0);
+    let answer = envelope::seal(PACKAGE, envelope::KIND_FILE_REQUEST_ANSWER, &p.bob, b"a").unwrap();
+
+    assert!(push(&p.conn, "alice", "bob", &huge, None).is_err());
+    assert!(push(&p.conn, "alice", "bob", b"not a kq file", None).is_err());
+    assert!(push(&p.conn, "alice", "bob", &device, None).is_err());
+    assert!(push(&p.conn, "alice", "dave", &letter(&dave, b"x"), None).is_err());
+    assert!(push(&p.conn, "alice", "bob", &answer, None).is_err());
+    push(&p.conn, "alice", "bob", &letter(&p.bob, b"one"), None).expect("fits");
+    assert!(matches!(
+        push(&p.conn, "alice", "bob", &letter(&p.bob, b"two"), None),
+        Err(Error::OutboxFull)
+    ));
+
+    // Newest first, each with the rule it broke.
+    assert_eq!(
+        rules(&p.conn, "alice"),
+        vec![
+            Refusal::RingFull,
+            Refusal::OutOfOrder,
+            Refusal::UnrecognisedDestination,
+            Refusal::DeviceLetter,
+            Refusal::NoPassport,
+            Refusal::Oversized,
+        ]
+    );
+    let recorded = refusals(&p.conn, "alice", MAX_REFUSALS_KEPT).unwrap();
+    let out_of_order = &recorded[1];
+    assert_eq!(out_of_order.kind, Some(envelope::KIND_FILE_REQUEST_ANSWER));
+    assert!(out_of_order
+        .step
+        .as_deref()
+        .is_some_and(|s| s.contains("needs your copy")));
+    assert_eq!(recorded[2].recipient, "dave");
+    assert_eq!(recorded[4].kind, None, "no readable header, no kind");
+
+    // The record holds nothing from the letter: no content, no hash.
+    let columns: Vec<String> = p
+        .conn
+        .prepare("SELECT name FROM pragma_table_info('outbox_refusals')")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(columns
+        .iter()
+        .all(|c| !c.contains("content") && !c.contains("hash")));
+
+    // An owner this store does not know has nothing recorded.
+    assert!(push(&p.conn, "mallory", "bob", b"junk", None).is_err());
+    assert!(rules(&p.conn, "mallory").is_empty());
+}
+
+#[test]
+fn a_letter_stopped_at_the_gate_is_recorded_though_the_send_rolls_back() {
+    let p = people();
+    push(&p.conn, "alice", "bob", &letter(&p.bob, b"x"), None).expect("push");
+
+    // A failed delivery is not a refusal: nothing is recorded.
+    assert!(send_next(&p.conn, "alice", |_, _| Err(Error::RelayRequest(
+        "down".into()
+    )))
+    .is_err());
+    assert!(rules(&p.conn, "alice").is_empty());
+
+    // The held letter is altered: refused as tampered, never handed out.
+    p.conn
+        .execute(
+            "UPDATE outbox_slots SET content = zeroblob(length(content))",
+            [],
+        )
+        .unwrap();
+    let mut called = false;
+    assert!(matches!(
+        send_next(&p.conn, "alice", |_, _| {
+            called = true;
+            Ok(())
+        }),
+        Err(Error::IntegrityCheckFailed)
+    ));
+    assert!(!called);
+    assert_eq!(rules(&p.conn, "alice"), vec![Refusal::Tampered]);
+    drop_next(&p.conn, "alice").unwrap();
+
+    // The recipient's key is revoked after queuing: stopped at the gate.
+    push(&p.conn, "alice", "bob", &letter(&p.bob, b"y"), None).expect("push");
+    let bob_key = keys::active_keys_for(&p.conn, "bob", KeyType::Encryption).unwrap()[0].id;
+    keys::revoke_key(&p.conn, bob_key).expect("revoke");
+    assert!(matches!(
+        send_next(&p.conn, "alice", |_, _| Ok(())),
+        Err(Error::UntrustedRecipient)
+    ));
+    assert_eq!(
+        rules(&p.conn, "alice"),
+        vec![Refusal::UnrecognisedDestination, Refusal::Tampered]
+    );
+    let ring_now = ring(&p.conn, "alice").unwrap();
+    assert_eq!(
+        (ring_now.size, ring_now.sent_total),
+        (1, 0),
+        "nothing moved"
+    );
+}
+
+#[test]
+fn only_the_newest_refusals_are_kept() {
+    let p = people();
+    for _ in 0..MAX_REFUSALS_KEPT + 5 {
+        assert!(push(&p.conn, "alice", "bob", b"junk", None).is_err());
+    }
+    assert!(push(&p.conn, "bob", "carol", b"junk", None).is_err());
+    let kept: i64 = p
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM outbox_refusals WHERE owner_label = 'alice'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept, i64::from(MAX_REFUSALS_KEPT));
+    assert_eq!(rules(&p.conn, "bob").len(), 1, "each owner keeps their own");
+    assert_eq!(refusals(&p.conn, "alice", 3).unwrap().len(), 3);
+}
