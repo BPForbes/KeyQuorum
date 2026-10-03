@@ -49,7 +49,7 @@ path = "src/bin/keyquorum-device.rs"
 rusqlite = { version = "0.40", features = ["bundled"] }
 argon2 = "0.5"
 aes-gcm = "0.10"
-rand = "0.8"
+rand = "0.10"
 sha2 = "0.10"
 hex = "0.4"
 libc = "0.2"
