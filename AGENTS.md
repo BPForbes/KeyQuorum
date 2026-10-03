@@ -484,27 +484,38 @@ These apply to every automated reviewer (CodeRabbit, Codex, Claude) and to human
 Review as if an auditor will read the finding. KeyQuorum handles key material, so a
 finding that is only a nit is still reported, but marked as one.
 
-### Every finding must carry all four parts
+### Every finding must carry all five parts
 
 A finding that lacks any part is not posted.
 
 1. **Source** — why it is a violation, as a pointer that can be checked: a rule in
    `CLAUDE.md` / `AGENTS.md` (name the section), a file and line in this repository, or an
-   external standard (RFC and section, NIST SP number, RustSec or CVE id, vendor
-   documentation). Never "best practice" with no source.
-2. **Quote** — the exact offending lines from the diff, in a code block, copied
+   official external source (RFC and section, NIST SP number, RustSec or CVE id, the AICPA
+   Trust Services Criteria, vendor or language documentation). Reviewers may and should
+   search the web for it, and prefer primary and official sources over blogs or forums.
+   Never "best practice" with no source.
+2. **Source quote** — quote the source itself: the sentence or clause that states the
+   requirement, copied verbatim in a block quote, with its URL (or file and line) and the
+   date it was read. A link alone is not a quote. If the source cannot be retrieved, say
+   "source not retrieved" and do not rate the finding above minor.
+3. **Quote** — the exact offending lines from the diff, in a code block, copied
    verbatim with their file path and line numbers. Do not paraphrase code.
-3. **SOC 2** — the Trust Services Criterion it affects (id and name, from the table
+4. **SOC 2** — the Trust Services Criterion it affects (id and name, from the table
    below) and one sentence on how this change weakens that control. If no criterion
    applies, write `SOC 2: none (correctness)` and mark the finding minor. Do not
    stretch a criterion to fit.
-4. **Fix** — the concrete change, as a diff or replacement lines.
+5. **Fix** — the concrete change, as a diff or replacement lines.
+
+There is no length limit on a finding or a review: use as many words, quotes and
+links as the evidence needs. A one-line headline first, then the detail, is
+recommended so the finding can still be skimmed.
 
 Format:
 
 ````
 **<severity>: <title>**
-Source: <rule, file:line or standard>
+Source: <rule, file:line or official source with URL>
+Source quote: > <verbatim sentence from the source> (<URL or file:line>, read <date>)
 Quote (`path:line`):
 ```<lang>
 <verbatim lines>

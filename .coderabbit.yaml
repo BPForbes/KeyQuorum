@@ -10,11 +10,14 @@
 language: "en-US"
 early_access: false
 
-# Limited to 250 characters by CodeRabbit.
+# CodeRabbit limits this field to 250 characters, so it only points at the rule.
+# The full requirement (five parts, official web sources quoted, no length
+# limit) is in the "**" path instruction below and in AGENTS.md, which have no
+# such limit.
 tone_instructions: >-
-  Strict and exact. Every finding quotes the offending lines, cites its source
-  (rule, file:line or standard) and names the SOC 2 criterion. No source or
-  criterion: do not post. Never paraphrase code.
+  Strict. Each finding quotes the code, cites and quotes an official source
+  (web allowed, with URL) and names the SOC 2 criterion. No source, no post.
+  Long, detailed comments are welcome.
 
 reviews:
   profile: "assertive"
@@ -37,18 +40,26 @@ reviews:
     - path: "**"
       instructions: >
         Follow the "Review guidelines (strict, SOC 2)" section of AGENTS.md.
-        Every finding must have four parts, or it is not posted: (1) Source -
+        Every finding must have five parts, or it is not posted: (1) Source -
         the AGENTS.md or CLAUDE.md rule (name the section), a file:line in this
-        repository, or an external standard such as an RFC section, NIST SP,
-        RustSec or CVE id; (2) Quote - the exact offending lines from the diff
-        in a code block with path and line numbers, copied verbatim; (3) SOC 2 -
-        the Trust Services Criterion id and name (for example CC6.1, CC6.6,
-        CC6.7, CC7.2, CC8.1, C1.1, A1.2, PI1.2) and one sentence on how the
-        change weakens it, or "SOC 2: none (correctness)" for a minor finding
-        when no criterion applies; (4) Fix - the concrete replacement. Mark
-        each finding blocker, high, major or minor as defined there. Verify
-        every claim against the current code, and do not repeat a finding that
-        was fixed or answered.
+        repository, or an official external source found on the web (an RFC
+        section, a NIST SP, a RustSec or CVE id, the AICPA Trust Services
+        Criteria, vendor or language documentation); prefer primary and official
+        sources over blogs and forums; (2) Source quote - the sentence that
+        states the requirement, copied verbatim in a block quote with its URL
+        (or file:line) and the date read; a link alone is not a quote, and if the
+        source cannot be retrieved say "source not retrieved" and rate the
+        finding minor at most; (3) Quote - the exact offending lines from the
+        diff in a code block with path and line numbers, copied verbatim, never
+        paraphrased; (4) SOC 2 - the Trust Services Criterion id and name (for
+        example CC6.1, CC6.6, CC6.7, CC7.2, CC8.1, C1.1, A1.2, PI1.2) and one
+        sentence on how the change weakens it, or "SOC 2: none (correctness)"
+        for a minor finding when no criterion applies; (5) Fix - the concrete
+        replacement. Mark each finding blocker, high, major or minor as defined
+        there. Verify every claim against the current code, and do not repeat a
+        finding that was fixed or answered. There is no limit on the length of a
+        comment or a review: use as many words, quotes and links as the evidence
+        needs. A one-line headline first, then the detail, is recommended.
     - path: "src/**/*.rs"
       instructions: >
         Security-sensitive Rust that handles cryptographic key material,
@@ -159,6 +170,9 @@ reviews:
           each gap and quote the lines.
 
 knowledge_base:
+  # Let reviews look up official sources on the web to cite and quote them.
+  web_search:
+    enabled: true
   code_guidelines:
     enabled: true
     filePatterns:
