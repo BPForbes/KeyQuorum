@@ -11,8 +11,6 @@ use crate::relay::{DeviceDescriptor, DeviceSlotDescriptor};
 use crate::signing;
 use crate::storage::{NativeStorage, Storage};
 use crate::transfer::{self, AuthenticatedPackage};
-use rand::rngs::OsRng;
-use rand::RngCore;
 use zeroize::Zeroizing;
 
 const ACK_DOMAIN: &[u8] = b"KQ-DEVICE-ACK-v1";
@@ -227,7 +225,7 @@ pub fn seal_relocate_in(
     let secrets = device::open_slot_in(storage, source, label, passphrase)?;
     let return_public = secrets.encryption_public;
     let mut relocate_id = [0u8; 16];
-    OsRng.fill_bytes(&mut relocate_id);
+    crate::crypto::fill_random(&mut relocate_id);
     let mut body = Vec::new();
     body.extend_from_slice(&relocate_id);
     body.extend_from_slice(source.device_id());

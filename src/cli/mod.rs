@@ -22,7 +22,6 @@ use crate::{
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use env::{errln, out, outln};
-use rand::RngCore;
 use rusqlite::Connection;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -1281,7 +1280,7 @@ fn deliver_commit_push(
             // operation. Reusing the shared outbox could send unrelated
             // offline letters when the person follows the recovery command.
             let mut id = [0u8; 8];
-            rand::rngs::OsRng.fill_bytes(&mut id);
+            crate::crypto::fill_random(&mut id);
             PathBuf::from("outbox").join(format!("retry-{}", hex::encode(id)))
         }
     };

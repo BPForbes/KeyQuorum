@@ -99,7 +99,7 @@ pub fn run(mailbox_db: &Path, org_db: &Path, command: HostCommand) -> Result<()>
 
 fn print_new_licensee(issuer: &relay::CreatedLicensee) {
     eprintln!("Created internal operator key (shown once):");
-    eprintln!("  {}", issuer.token);
+    eprintln!("  {}", issuer.token.as_str());
     eprintln!("This mints customer API keys on this host. It is not a customer credential.");
     eprintln!("Store this; it cannot be recovered from the database.");
 }
@@ -203,7 +203,7 @@ fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
             if let Some(expires) = &created.info.expires_at {
                 println!("expires: {expires}");
             }
-            println!("token (shown once): {}", created.token);
+            println!("token (shown once): {}", created.token.as_str());
             anchor_audit(conn, &identity);
         }
         KeysCommand::List => {
@@ -271,7 +271,7 @@ fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
             let identity = authorize_mint(conn, "keys.rotate", cert, relay_key, krl, licensee_key)?;
             let created = relay::rotate_api_key(conn, id)?;
             println!("Rotated API key {id} -> {}", created.info.id);
-            println!("token (shown once): {}", created.token);
+            println!("token (shown once): {}", created.token.as_str());
             anchor_audit(conn, &identity);
         }
     }

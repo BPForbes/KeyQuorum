@@ -20,7 +20,7 @@ struct Org {
 }
 
 fn register_encryption(conn: &Connection, label: &str) -> (i64, crypto_box::SecretKey) {
-    let secret = crypto_box::SecretKey::generate(&mut rand::rngs::OsRng);
+    let secret = crypto_box::SecretKey::generate(&mut rand_core::OsRng);
     let public = *secret.public_key().as_bytes();
     let id = keys::register_key(conn, label, KeyType::Encryption, &public).expect("register");
     (id, secret)
@@ -822,8 +822,8 @@ fn import_any_routes_bridge_and_update_envelopes_from_one_inbox() {
     let (peer_secret, peer_signing) = keys::generate_signing_keypair();
     let _ = peer_secret;
     let (_, own_signing) = register_signing(&conn, "M.S.1");
-    let peer = crypto_box::SecretKey::generate(&mut rand::rngs::OsRng);
-    let manager = crypto_box::SecretKey::generate(&mut rand::rngs::OsRng);
+    let peer = crypto_box::SecretKey::generate(&mut rand_core::OsRng);
+    let manager = crypto_box::SecretKey::generate(&mut rand_core::OsRng);
     let created = private_bridge::create(
         &db::open_in_memory().expect("schema"),
         None,

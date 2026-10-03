@@ -196,6 +196,8 @@ impl MemoryEnv {
         )
         .expect("relay key")
         .token
+        .as_str()
+        .to_owned()
     }
 
     /// The store at `path`, once a command has opened it.

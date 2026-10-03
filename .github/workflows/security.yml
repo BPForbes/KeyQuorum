@@ -109,6 +109,16 @@ jobs:
         run: python3 -m unittest discover -s .github/scripts
       - name: Report findings with their SOC 2 criterion
         run: python3 .github/scripts/codeql_report.py sarif-results/*.sarif
+      # The full SARIF (every finding with its data-flow path) is kept as
+      # evidence, whether or not the report step passed.
+      - name: Keep the SARIF
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: codeql-sarif-${{ matrix.language }}-${{ github.sha }}
+          path: sarif-results
+          if-no-files-found: warn
+          retention-days: 90
 
   # One stable check name for all CodeQL languages, for branch protection.
   codeql-gate:

@@ -55,14 +55,14 @@ pub fn fingerprint(public_key: &[u8]) -> String {
 
 /// Pure, no I/O: generates a new X25519 keypair for wrapping quorum shares.
 pub fn generate_encryption_keypair() -> (Zeroizing<[u8; 32]>, [u8; 32]) {
-    let secret = crypto_box::SecretKey::generate(&mut rand::rngs::OsRng);
+    let secret = crypto_box::SecretKey::generate(&mut rand_core::OsRng);
     let public = *secret.public_key().as_bytes();
     (Zeroizing::new(secret.to_bytes()), public)
 }
 
 /// Pure, no I/O: generates a new Ed25519 keypair for signature verification.
 pub fn generate_signing_keypair() -> (Zeroizing<[u8; 32]>, [u8; 32]) {
-    let signing_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+    let signing_key = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
     let public = signing_key.verifying_key().to_bytes();
     (Zeroizing::new(signing_key.to_bytes()), public)
 }

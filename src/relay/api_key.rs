@@ -6,8 +6,6 @@
 use crate::error::{Error, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use rand::rngs::OsRng;
-use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -16,10 +14,23 @@ const TOKEN_LEN: usize = 32;
 const TOKEN_PREFIX: &str = "kq_";
 const LICENSEE_PREFIX: &str = "kql_";
 
-#[derive(Clone, Debug)]
+/// The internal operator issuer, as minted: its bearer is shown once, zeroed
+/// on drop, and never printed by `Debug`.
+#[derive(Clone)]
 pub struct CreatedLicensee {
-    pub token: String,
+    pub token: Zeroizing<String>,
 }
+
+impl std::fmt::Debug for CreatedLicensee {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreatedLicensee")
+            .field("token", &REDACTED)
+            .finish()
+    }
+}
+
+/// What `Debug` shows in place of a bearer.
+const REDACTED: &str = "<redacted>";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApiKeyScope {
@@ -71,10 +82,21 @@ pub struct ApiKeyInfo {
     pub last_used_at: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+/// A newly minted key: its bearer is shown once, zeroed on drop, and never
+/// printed by `Debug` (only the non-secret `info` is).
+#[derive(Clone)]
 pub struct CreatedApiKey {
     pub info: ApiKeyInfo,
-    pub token: String,
+    pub token: Zeroizing<String>,
+}
+
+impl std::fmt::Debug for CreatedApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreatedApiKey")
+            .field("info", &self.info)
+            .field("token", &REDACTED)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -92,27 +114,30 @@ pub struct AuthedKey {
     pub recipient_fingerprint: Option<String>,
 }
 
-fn generate_prefixed_bearer(prefix: &str) -> (String, String) {
+fn generate_prefixed_bearer(prefix: &str) -> (Zeroizing<String>, String) {
     let mut raw = Zeroizing::new([0u8; TOKEN_LEN]);
-    OsRng.fill_bytes(&mut *raw);
-    let token = format!("{prefix}{}", URL_SAFE_NO_PAD.encode(*raw));
+    crate::crypto::fill_random(&mut *raw);
+    let encoded = Zeroizing::new(URL_SAFE_NO_PAD.encode(*raw));
+    let token = Zeroizing::new(format!("{prefix}{}", encoded.as_str()));
     let token_hash = hex::encode(Sha256::digest(*raw));
     (token, token_hash)
 }
 
-fn generate_bearer() -> (String, String) {
+fn generate_bearer() -> (Zeroizing<String>, String) {
     generate_prefixed_bearer(TOKEN_PREFIX)
 }
 
 fn hash_prefixed(token: &str, prefix: &str) -> Result<String> {
     let rest = token.strip_prefix(prefix).ok_or(Error::InvalidApiKey)?;
-    let raw = URL_SAFE_NO_PAD
-        .decode(rest)
-        .map_err(|_| Error::InvalidApiKey)?;
+    let raw = Zeroizing::new(
+        URL_SAFE_NO_PAD
+            .decode(rest)
+            .map_err(|_| Error::InvalidApiKey)?,
+    );
     if raw.len() != TOKEN_LEN {
         return Err(Error::InvalidApiKey);
     }
-    Ok(hex::encode(Sha256::digest(raw)))
+    Ok(hex::encode(Sha256::digest(&*raw)))
 }
 
 /// SHA-256 of the 32 raw bearer bytes, as lowercase hex. The relay and

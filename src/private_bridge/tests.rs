@@ -5,7 +5,7 @@ use crate::keys::KeyType;
 use std::collections::BTreeSet;
 
 fn enc(conn: &Connection, label: &str) -> (crypto_box::SecretKey, [u8; 32]) {
-    let secret = crypto_box::SecretKey::generate(&mut rand::rngs::OsRng);
+    let secret = crypto_box::SecretKey::generate(&mut rand_core::OsRng);
     let public = *secret.public_key().as_bytes();
     keys::register_key(conn, label, KeyType::Encryption, &public).expect("register");
     (secret, public)

@@ -5,8 +5,9 @@ use crate::error::Error;
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
 use argon2::{Algorithm, Argon2, Params, Version};
-use rand::rngs::OsRng;
-use rand::{Rng, RngCore};
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
+use rand::{Rng, RngExt};
 use std::fmt;
 use zeroize::Zeroizing;
 
@@ -27,17 +28,30 @@ impl fmt::Display for DecryptError {
 
 impl std::error::Error for DecryptError {}
 
+/// The operating system's random source. Panics if it fails, as `rand` 0.8's
+/// `OsRng` did. Libraries that take a `rand_core` 0.6 RNG (`ed25519-dalek`,
+/// `crypto_box`, the Shamir dealer) are given `rand_core::OsRng` instead,
+/// which reads the same source.
+fn os_rng() -> UnwrapErr<SysRng> {
+    UnwrapErr(SysRng)
+}
+
+/// Fills `dest` from the operating system's random source.
+pub fn fill_random(dest: &mut [u8]) {
+    os_rng().fill_bytes(dest);
+}
+
 /// A fresh salt from the operating system's random source. Drawn directly into
 /// the array, with no zero-filled buffer, so a scanner cannot mistake the
 /// buffer's initial value for a hard-coded salt.
 pub fn random_salt() -> [u8; SALT_LEN] {
-    OsRng.gen()
+    os_rng().random()
 }
 
 /// A fresh AES-GCM nonce from the operating system's random source (see
 /// [`random_salt`]). Never reused: every encryption draws its own.
 pub fn random_nonce() -> [u8; NONCE_LEN] {
-    OsRng.gen()
+    os_rng().random()
 }
 
 /// Generates a random 256-bit data key for hardware-key-quorum file
@@ -45,7 +59,7 @@ pub fn random_nonce() -> [u8; NONCE_LEN] {
 /// returned buffer is zeroed on drop.
 pub fn random_key() -> Zeroizing<[u8; KEY_LEN]> {
     let mut key = Zeroizing::new([0u8; KEY_LEN]);
-    OsRng.fill_bytes(&mut key[..]);
+    fill_random(&mut key[..]);
     key
 }
 

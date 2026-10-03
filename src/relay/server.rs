@@ -30,6 +30,7 @@ use tower_http::trace::TraceLayer;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
+use zeroize::Zeroizing;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -69,7 +70,8 @@ impl AppState {
     }
 }
 
-struct ApiToken(String);
+/// The caller's bearer, zeroed when the request is done with it.
+struct ApiToken(Zeroizing<String>);
 
 impl<S> FromRequestParts<S> for ApiToken
 where
@@ -82,19 +84,19 @@ where
     }
 }
 
-fn token_from_headers(headers: &HeaderMap) -> Result<String, ApiError> {
+fn token_from_headers(headers: &HeaderMap) -> Result<Zeroizing<String>, ApiError> {
     if let Some(value) = headers.get(AUTHORIZATION) {
         let s = value.to_str().map_err(|_| ApiError::unauthorized())?;
         if let Some(token) = s.strip_prefix("Bearer ") {
             if !token.is_empty() {
-                return Ok(token.to_string());
+                return Ok(Zeroizing::new(token.to_string()));
             }
         }
     }
     if let Some(value) = headers.get("x-api-key") {
         let s = value.to_str().map_err(|_| ApiError::unauthorized())?;
         if !s.is_empty() {
-            return Ok(s.to_string());
+            return Ok(Zeroizing::new(s.to_string()));
         }
     }
     Err(ApiError::unauthorized())

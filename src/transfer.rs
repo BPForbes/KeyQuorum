@@ -24,8 +24,6 @@ use crate::private_bridge::parent_node_label;
 use crate::signing;
 use crate::storage::{NativeStorage, Storage};
 use ed25519_dalek::SigningKey;
-use rand::rngs::OsRng;
-use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -2330,7 +2328,7 @@ fn sha256(bytes: &[u8]) -> [u8; 32] {
 
 fn random_id() -> [u8; 16] {
     let mut id = [0u8; 16];
-    OsRng.fill_bytes(&mut id);
+    crate::crypto::fill_random(&mut id);
     id
 }
 

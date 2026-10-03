@@ -512,7 +512,10 @@ async fn keycheck_route_is_public() {
                 .method("POST")
                 .uri("/keycheck")
                 .header("Content-Type", "application/json")
-                .body(Body::from(format!(r#"{{"token":"{}"}}"#, created.token)))
+                .body(Body::from(format!(
+                    r#"{{"token":"{}"}}"#,
+                    created.token.as_str()
+                )))
                 .unwrap(),
         )
         .await
@@ -709,7 +712,9 @@ async fn device_routes_are_api_blocked_and_keep_packages_opaque() {
         },
     )
     .expect("device push")
-    .token;
+    .token
+    .as_str()
+    .to_owned();
     let device_pull = relay::create_api_key(
         &conn,
         &NewApiKey {
@@ -720,7 +725,9 @@ async fn device_routes_are_api_blocked_and_keep_packages_opaque() {
         },
     )
     .expect("device pull")
-    .token;
+    .token
+    .as_str()
+    .to_owned();
     let inbox_push = push_key(&conn);
     let letter = crate::envelope::seal(
         crate::envelope::PACKAGE,

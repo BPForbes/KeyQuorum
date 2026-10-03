@@ -822,7 +822,9 @@ impl LabState {
                 ttl_seconds: None,
             },
         )?
-        .token)
+        .token
+        .as_str()
+        .to_owned())
     }
 
     /// Keep the encryption key `keyquorum-device public` printed as

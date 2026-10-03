@@ -22,8 +22,6 @@ use crate::error::{Error, Result};
 use crate::keys::{self, KeyType};
 use crate::signing;
 use crate::storage::{NativeStorage, Storage};
-use rand::rngs::OsRng;
-use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -166,7 +164,7 @@ pub fn init_in(storage: &mut dyn Storage, path: &Path) -> Result<Container> {
         return Err(Error::InvalidDevice);
     }
     let mut device_id = [0u8; DEVICE_ID_LEN];
-    OsRng.fill_bytes(&mut device_id);
+    crate::crypto::fill_random(&mut device_id);
     let (secret, verify_key) = keys::generate_signing_keypair();
     storage.write_new(&path.join("device.skey"), secret.as_slice())?;
     let container = Container {

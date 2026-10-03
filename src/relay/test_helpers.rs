@@ -31,6 +31,8 @@ pub(crate) fn push_key(conn: &rusqlite::Connection) -> String {
     )
     .expect("push key")
     .token
+    .as_str()
+    .to_owned()
 }
 
 pub(crate) fn pull_key(conn: &rusqlite::Connection, fingerprint: &str) -> String {
@@ -45,6 +47,8 @@ pub(crate) fn pull_key(conn: &rusqlite::Connection, fingerprint: &str) -> String
     )
     .expect("pull key")
     .token
+    .as_str()
+    .to_owned()
 }
 
 pub(crate) fn admin_key(conn: &rusqlite::Connection) -> String {
@@ -59,6 +63,8 @@ pub(crate) fn admin_key(conn: &rusqlite::Connection) -> String {
     )
     .expect("admin key")
     .token
+    .as_str()
+    .to_owned()
 }
 
 pub(crate) fn split_node(label: &str, parent: Option<&str>) -> PublicNode {

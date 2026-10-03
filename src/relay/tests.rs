@@ -664,7 +664,7 @@ fn api_key_lifecycle_is_recorded_without_bearers() {
             |row| row.get(0),
         )
         .expect("dump");
-    assert!(!dump.contains(&created.token) && !dump.contains(&hash));
+    assert!(!dump.contains(created.token.as_str()) && !dump.contains(&hash));
 }
 
 #[test]
@@ -699,4 +699,31 @@ fn http_revocation_records_the_admin_key_that_revoked() {
         Err(Error::ApiKeyScopeDenied)
     ));
     assert_eq!(key_events(&conn).len(), before);
+}
+
+#[test]
+fn minted_bearers_never_appear_in_debug_output() {
+    let conn = relay::open_in_memory().expect("schema");
+    let created = relay::create_api_key(
+        &conn,
+        &NewApiKey {
+            scope: ApiKeyScope::InboxPush,
+            recipient_fingerprint: None,
+            label: Some("ops".into()),
+            ttl_seconds: None,
+        },
+    )
+    .expect("create");
+    let shown = format!("{created:?}");
+    assert!(!shown.contains(created.token.as_str()), "{shown}");
+    assert!(
+        shown.contains("<redacted>") && shown.contains("ops"),
+        "{shown}"
+    );
+
+    let issuer = relay::bootstrap_licensee_if_empty(&conn)
+        .expect("bootstrap")
+        .expect("a new issuer");
+    let shown = format!("{issuer:?}");
+    assert!(!shown.contains(issuer.token.as_str()) && shown.contains("<redacted>"));
 }

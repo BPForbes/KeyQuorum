@@ -27,8 +27,6 @@ use crate::envelope::{
 };
 use crate::error::{Error, Result};
 use crate::signing;
-use rand::rngs::OsRng;
-use rand::RngCore;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 
@@ -121,7 +119,7 @@ pub fn seal_request(outgoing: &OutgoingRequest<'_>) -> Result<SealedRequest> {
         return Err(Error::BundleFieldTooLarge);
     }
     let mut request_id = [0u8; 16];
-    OsRng.fill_bytes(&mut request_id);
+    crate::crypto::fill_random(&mut request_id);
     let base = outgoing.base_revision.unwrap_or([0u8; 32]);
     let preimage = request_preimage(
         outgoing.recipient_encryption_public,

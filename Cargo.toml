@@ -49,7 +49,9 @@ path = "src/bin/keyquorum-device.rs"
 rusqlite = { version = "0.40", features = ["bundled"] }
 argon2 = "0.5"
 aes-gcm = "0.10"
-rand = "0.8"
+rand = "0.10"
+# ed25519-dalek, crypto_box and the Shamir dealer take a rand_core 0.6 RNG.
+rand_core = { version = "0.6", features = ["getrandom"] }
 sha2 = "0.10"
 hex = "0.4"
 libc = "0.2"
@@ -66,9 +68,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 axum = { version = "0.8", optional = true }
 tokio = { version = "1", optional = true, features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
-tower-http = { version = "0.6", optional = true, features = ["trace", "timeout"] }
-utoipa = "5"
-utoipa-swagger-ui = { version = "9", optional = true, features = ["axum"] }
+tower-http = { version = "0.7", optional = true, features = ["trace", "timeout"] }
+utoipa = "6"
+utoipa-swagger-ui = { version = "10", optional = true, features = ["axum"] }
 url = "2"
 tracing = { version = "0.1", optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
@@ -79,10 +81,12 @@ tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter
 # lab (wasm32) never prompts a TTY and never talks to a real relay.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rpassword = "7.5"
-ureq = "2"
+ureq = "3"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
+# rand 0.10's SysRng, through getrandom 0.4, in the browser.
+getrandom_04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
 
 [dev-dependencies]
 tempfile = "3"
