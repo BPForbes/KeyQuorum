@@ -407,6 +407,9 @@ fn recipient_from(
 /// Run `issue` with a writer that creates `out` owner-only, never
 /// overwriting. If `issue` fails after the file was written (the key change
 /// did not commit), the file is removed, so a retry is not refused by it.
+/// That is compensation, not atomicity: a crash between the write and the
+/// commit can leave a bundle for a key that was never created, which the
+/// operator removes before retrying (it opens nothing).
 fn into_file<T>(
     out: &Path,
     issue: impl FnOnce(Box<dyn FnOnce(&[u8]) -> Result<()> + '_>) -> Result<T>,

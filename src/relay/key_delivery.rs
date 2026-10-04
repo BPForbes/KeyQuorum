@@ -16,12 +16,26 @@
 //! expires with it, and `keys revoke` ends both sooner. A bundle replaces
 //! the old key at once, as `rotate` always did.
 //!
+//! A letter is only worth sending if the customer can collect it. Only an
+//! `inbox.pull` key bound to the recipient reads that mailbox, so
+//! [`rotate_as_letter`] refuses a key of any other scope unless such a key
+//! is live for the same recipient ([`Error::DeliveryNotCollectable`]), before
+//! it changes anything; the way out for the rest is [`rotate_as_bundle`].
+//!
+//! A bundle is a file, and a file is outside the database transaction:
+//! the write happens while it is open and a failure the process survives
+//! removes it, but a crash between the write and the commit can leave a
+//! bundle for a key that was never created. That bundle opens nothing (the
+//! relay never stored the key), and since files are never overwritten the
+//! operator removes it before retrying. The mailbox letter has no such gap:
+//! it commits with the key.
+//!
 //! Whom a key was sealed to is kept in `api_key_deliveries`, so a rotation
 //! needs no `--recipient-key` again. That table never holds a bearer, a
 //! hash of one, or the sealed bytes: a bundle is named by its SHA-256 and a
 //! letter by its mailbox id.
 
-use super::api_key::{self, ApiKeyInfo, CreatedApiKey, NewApiKey, OldKey};
+use super::api_key::{self, ApiKeyInfo, ApiKeyScope, CreatedApiKey, NewApiKey, OldKey};
 use super::{mailbox, ProviderIdentity};
 use crate::api_key_delivery::{self, KeyIssue, DEVICE_ID_LEN};
 use crate::db::relay_credential::normalize_url;
@@ -130,6 +144,11 @@ pub fn rotate_as_letter(
 ) -> Result<Delivered> {
     crate::db::with_immediate_transaction(conn, || {
         let recipient = resolve_recipient(conn, id, recipient)?;
+        let collectable = api_key::info(conn, id)?.scope == ApiKeyScope::InboxPull.as_str()
+            || api_key::has_live_pull_key(conn, &keys::fingerprint(&recipient.public_key))?;
+        if !collectable {
+            return Err(Error::DeliveryNotCollectable);
+        }
         let created = api_key::rotate_with(conn, id, OldKey::ExpireAfter(grace_seconds))?;
         let until: Option<String> = conn.query_row(
             "SELECT expires_at FROM api_keys WHERE id = ?1",

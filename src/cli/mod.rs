@@ -2947,8 +2947,10 @@ fn open_key_issue(bytes: &[u8], secret: &[u8; 32]) -> Result<crate::api_key_deli
 /// bundle and a letter alike. The issue's own URL is the relay, and it must
 /// be the one the caller is loading for when the caller names one; an issue
 /// bound to a device loads only from that device. Then the full relay
-/// challenge and `POST /keycheck` run as for a typed key: the issue is
-/// believed about nothing the relay does not confirm.
+/// challenge runs as for a typed key, and the relay that answers it must be
+/// the one whose key signed the issue before any bearer is sent; only then
+/// does `POST /keycheck` run: the issue is believed about nothing the relay
+/// does not confirm.
 #[inline(never)]
 fn install_key_issue(
     conn: &Connection,
@@ -2968,7 +2970,14 @@ fn install_key_issue(
     }
     relay::validate_relay_url(&url)?;
     db::cache::forget_relay_trust(conn, &url)?;
-    authenticate_official_relay(&url)?;
+    // The relay answering at this URL must be the relay that signed the issue,
+    // not merely some relay the root authorizes: the bearer is sent to it next.
+    // The signing key is compared, so a certificate renewed under the same key
+    // still loads; a relay that moved to a new key is a new issue.
+    let challenged = authenticate_official_relay(&url)?;
+    if challenged.relay_public_key != opened.certificate.relay_public_key {
+        return Err(Error::KeyIssueRelayMismatch);
+    }
     let check = relay::check_key(&env::EnvRelay, &url, &issue.token)?;
     if !check.valid
         || check.id != Some(issue.key_id)

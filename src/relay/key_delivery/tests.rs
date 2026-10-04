@@ -220,38 +220,119 @@ fn a_rotation_by_letter_stores_the_letter_and_keeps_the_old_key_for_the_grace_pe
     assert_eq!(letter_expiry.as_deref(), Some(until.as_str()));
 }
 
-#[test]
-fn a_rotation_by_letter_needs_a_recipient_and_a_positive_grace() {
-    let conn = relay::open_in_memory().expect("schema");
-    let (identity, _) = identity();
-    let plain = relay::create_api_key(
-        &conn,
+fn unsealed_key(conn: &Connection, scope: ApiKeyScope, fingerprint: Option<String>) -> i64 {
+    relay::create_api_key(
+        conn,
         &NewApiKey {
-            scope: ApiKeyScope::InboxPush,
-            recipient_fingerprint: None,
+            scope,
+            recipient_fingerprint: fingerprint,
             label: None,
             ttl_seconds: None,
         },
     )
-    .expect("create");
+    .expect("create")
+    .info
+    .id
+}
+
+fn mailbox_rows(conn: &Connection) -> i64 {
+    conn.query_row("SELECT COUNT(*) FROM mailbox", [], |r| r.get(0))
+        .expect("count")
+}
+
+#[test]
+fn a_rotation_by_letter_needs_a_recipient_and_a_positive_grace() {
+    let conn = relay::open_in_memory().expect("schema");
+    let (identity, _) = identity();
+    let plain = unsealed_key(&conn, ApiKeyScope::InboxPush, None);
     assert!(matches!(
-        rotate_as_letter(&conn, &identity, plain.info.id, None, 3_600),
+        rotate_as_letter(&conn, &identity, plain, None, 3_600),
         Err(Error::DeliveryRecipientMissing)
     ));
     let (_, public) = keys::generate_encryption_keypair();
+    let pull = create_as_bundle(
+        &conn,
+        &identity,
+        &pull_key(),
+        &recipient(public),
+        |_| Ok(()),
+    )
+    .expect("create_as_bundle")
+    .info
+    .id;
     assert!(matches!(
-        rotate_as_letter(&conn, &identity, plain.info.id, Some(recipient(public)), 0),
+        rotate_as_letter(&conn, &identity, pull, None, 0),
         Err(Error::InvalidApiKeyRequest)
     ));
     assert_eq!(
         events(&conn),
-        vec![(plain.info.id, "created".into(), None)],
+        vec![
+            (plain, "created".into(), None),
+            (pull, "created".into(), None)
+        ],
         "a refused rotation records nothing"
     );
-    let mailbox: i64 = conn
-        .query_row("SELECT COUNT(*) FROM mailbox", [], |r| r.get(0))
-        .expect("count");
-    assert_eq!(mailbox, 0);
+    assert_eq!(mailbox_rows(&conn), 0);
+}
+
+#[test]
+fn a_letter_is_refused_for_a_key_nothing_the_customer_holds_can_collect_it_with() {
+    let (identity, _) = identity();
+    let (_, public) = keys::generate_encryption_keypair();
+    let fingerprint = keys::fingerprint(&public);
+    for (scope, bound) in [
+        (ApiKeyScope::InboxPush, None),
+        (ApiKeyScope::Admin, None),
+        (ApiKeyScope::DevicePush, None),
+        (ApiKeyScope::DevicePull, Some(fingerprint.clone())),
+    ] {
+        let conn = relay::open_in_memory().expect("schema");
+        let id = unsealed_key(&conn, scope, bound);
+        let result = rotate_as_letter(&conn, &identity, id, Some(recipient(public)), 3_600);
+        assert!(
+            matches!(result, Err(Error::DeliveryNotCollectable)),
+            "a {} key has no way to collect a mailbox letter",
+            scope.as_str()
+        );
+        let keys = relay::list_api_keys(&conn).expect("list");
+        assert_eq!(keys.len(), 1, "no replacement was created");
+        assert_eq!(keys[0].revoked_at, None);
+        assert_eq!(keys[0].expires_at, None, "the old key was not given an end");
+        assert_eq!(mailbox_rows(&conn), 0, "no letter was stored");
+        assert_eq!(events(&conn), vec![(id, "created".into(), None)]);
+        let deliveries: i64 = conn
+            .query_row("SELECT COUNT(*) FROM api_key_deliveries", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(deliveries, 0, "no delivery was recorded");
+    }
+}
+
+#[test]
+fn another_scope_rotates_by_letter_only_while_a_live_pull_key_is_bound_to_the_recipient() {
+    let conn = relay::open_in_memory().expect("schema");
+    let (identity, _) = identity();
+    let (_, public) = keys::generate_encryption_keypair();
+    let fingerprint = keys::fingerprint(&public);
+    let push = unsealed_key(&conn, ApiKeyScope::InboxPush, None);
+    assert!(matches!(
+        rotate_as_letter(&conn, &identity, push, Some(recipient(public)), 3_600),
+        Err(Error::DeliveryNotCollectable)
+    ));
+
+    // The customer's own pull key, bound to the recipient, is what collects it.
+    let pull = unsealed_key(&conn, ApiKeyScope::InboxPull, Some(fingerprint));
+    let rotated = rotate_as_letter(&conn, &identity, push, Some(recipient(public)), 3_600)
+        .expect("a live pull key for the recipient can collect the letter");
+    assert!(matches!(rotated.via, Via::Letter { .. }));
+    assert_eq!(mailbox_rows(&conn), 1);
+
+    // Once that pull key is revoked, the next push key is refused again.
+    relay::revoke_api_key(&conn, pull).expect("revoke");
+    assert!(matches!(
+        rotate_as_letter(&conn, &identity, rotated.info.id, None, 3_600),
+        Err(Error::DeliveryNotCollectable)
+    ));
+    assert_eq!(mailbox_rows(&conn), 1, "the refusal stored no letter");
 }
 
 #[test]

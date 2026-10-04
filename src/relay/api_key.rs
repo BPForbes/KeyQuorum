@@ -384,6 +384,22 @@ pub enum OldKey {
     ExpireAfter(i64),
 }
 
+/// Whether a live `inbox.pull` key is bound to `fingerprint` (a recipient key's
+/// SHA-256): the one scope that can collect a mailbox letter addressed to it.
+/// Live means not revoked and not past its own expiry.
+pub fn has_live_pull_key(conn: &Connection, fingerprint: &str) -> Result<bool> {
+    let fingerprint = normalize_fingerprint(fingerprint)?;
+    let found: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM api_keys
+         WHERE scope = 'inbox.pull' AND recipient_fingerprint = ?1
+           AND revoked_at IS NULL
+           AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))",
+        params![fingerprint],
+        |row| row.get(0),
+    )?;
+    Ok(found > 0)
+}
+
 /// A key's record, as `list` shows it. Never the bearer or its hash.
 pub fn info(conn: &Connection, id: i64) -> Result<ApiKeyInfo> {
     load_info(conn, id)

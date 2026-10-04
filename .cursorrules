@@ -264,20 +264,30 @@ signature verifies under the key that certificate names, and the issue has
 not expired. `src/relay/key_delivery.rs` is the host side: `create_as_bundle`,
 `rotate_as_bundle` and `rotate_as_letter` mint the key and produce the
 sealed issue in one immediate transaction (a bundle is written while it is
-open and removed if the commit fails; a letter goes into this relay's own
-mailbox in the same transaction), record whom it was sealed to in
+open and removed if the command survives a failed commit, which is
+compensation, not crash-atomicity: a crash between the write and the commit
+can leave an orphan bundle that opens nothing and that the operator removes
+before retrying; a letter goes into this relay's own mailbox in the same
+transaction), record whom it was sealed to in
 `api_key_deliveries` (never a bearer, only a letter id or bundle SHA-256)
 and, for a letter, leave the old key usable for `--grace-seconds`
 (`DEFAULT_GRACE_SECONDS`, 24 h) so its holder can still pull, then expire it
-(`api_key::rotate_with`, `OldKey`); `keys revoke` ends it sooner. `host keys
+(`api_key::rotate_with`, `OldKey`); `keys revoke` ends it sooner.
+`rotate_as_letter` refuses a key the customer cannot collect the letter with
+(`Error::DeliveryNotCollectable`: only an `inbox.pull` key can read that
+mailbox, so any other scope needs a live `inbox.pull` key bound to the
+recipient, `api_key::has_live_pull_key`) before it changes anything; the rest
+rotate by bundle. `host keys
 create --recipient-key --relay-url --out` and `host keys rotate` drive it
 and never print a sealed bearer. On the client, `loadkey --bundle` (with
 `--slot` or `--share-file`) and `inbox open` on kind 20 share
 `cli::install_key_issue`: the issue's relay URL must be the one being loaded
 for, a device-bound issue loads only from that container, and then the full
-provider challenge and `POST /keycheck` run exactly as for a typed key before
-`relay_credentials` is written. The `kql_…` operator lock and the `KQPL`
-policy never travel this way.
+provider challenge runs exactly as for a typed key, and the relay that
+answers it must be the one whose signing key signed the issue (else
+`KeyIssueRelayMismatch`, before any bearer is sent); only then does
+`POST /keycheck` run and `relay_credentials` get written. The `kql_…`
+operator lock and the `KQPL` policy never travel this way.
 
 `src/storage.rs` is where container files and quorum ciphertext live:
 `NativeStorage` is plain `std::fs` (new files still go through

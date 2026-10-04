@@ -145,6 +145,10 @@ pub enum Error {
     /// A key is to be sealed to its customer, but no recipient key was
     /// recorded for it and none was given.
     DeliveryRecipientMissing,
+    /// A replacement is to wait in the mailbox, but nothing the customer
+    /// holds can collect it: the key's own scope cannot, and no live
+    /// `inbox.pull` key is bound to the recipient.
+    DeliveryNotCollectable,
 }
 
 impl fmt::Display for Error {
@@ -235,6 +239,10 @@ impl fmt::Display for Error {
             Error::DeliveryRecipientMissing => write!(
                 f,
                 "no recipient key is recorded for this API key; pass --recipient-key"
+            ),
+            Error::DeliveryNotCollectable => write!(
+                f,
+                "this key's scope cannot collect a mailbox letter and no live inbox.pull key is bound to its recipient; write a sealed bundle with --out instead"
             ),
             Error::InvalidTrackedFile => {
                 write!(f, "tracked file is malformed or its history fails verification")

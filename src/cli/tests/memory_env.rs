@@ -44,8 +44,14 @@ pub struct TestRelay {
     pub conn: Connection,
     pub identity: ProviderIdentity,
     root_public: [u8; 32],
+    /// The test root's signing key, kept so a test can certify a second
+    /// relay under the same root ([`MemoryEnv::other_relay_identity`]).
+    root_private: Zeroizing<[u8; 32]>,
     /// How many `POST /provider-identity` challenges commands have made.
     pub identity_challenges: usize,
+    /// How many `POST /keycheck` requests commands have made: the one request
+    /// that carries a bearer to the relay.
+    pub key_checks: usize,
     /// Make uploads (`POST /inbox`) fail as a dropped connection would.
     pub fail_uploads: bool,
     /// Let this many uploads through, then fail every later one.
@@ -88,6 +94,9 @@ impl Env for MemoryEnv {
         };
         if request.url.path() == "/provider-identity" {
             relay.identity_challenges += 1;
+        }
+        if request.url.path() == "/keycheck" {
+            relay.key_checks += 1;
         }
         if request.method == "POST" && request.url.path() == "/inbox" {
             let out_of_uploads = match relay.fail_uploads_after.as_mut() {
@@ -189,10 +198,37 @@ impl MemoryEnv {
                 relay_private_key: relay_private,
             },
             root_public,
+            root_private,
             identity_challenges: 0,
+            key_checks: 0,
             fail_uploads: false,
             fail_uploads_after: None,
         });
+    }
+
+    /// A second relay identity the same test root certifies: a different relay
+    /// key and serial, so the root vouches for both and only the signing key
+    /// tells them apart.
+    pub fn other_relay_identity(&self) -> ProviderIdentity {
+        let relay = self.relay.as_ref().expect("a relay");
+        let (relay_private, relay_public) = provider::generate_relay_identity();
+        let certificate = provider::issue_certificate(
+            &relay.root_private,
+            &provider::NewCertificate {
+                provider_id: "Other test relay",
+                serial: "TEST-2",
+                relay_public_key: &relay_public,
+                issued_at: "2026-01-01 00:00:00",
+                expires_at: "2999-12-31 23:59:00",
+                capabilities: provider::CAP_PROVIDER,
+                issuer_id: "TestRoot",
+            },
+        )
+        .expect("test certificate");
+        ProviderIdentity {
+            certificate,
+            relay_private_key: relay_private,
+        }
     }
 
     /// Mint a relay key of `scope` (inbox push needs no recipient).

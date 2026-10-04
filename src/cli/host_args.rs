@@ -241,10 +241,12 @@ pub enum KeysCommand {
     /// Replace a key. A key that was sealed to its customer is rotated the
     /// same way: the replacement is stored in the mailbox as a sealed letter
     /// the customer's next pull collects, and the old key stays usable for
-    /// --grace-seconds to collect it. With --out the replacement is written
-    /// as a sealed bundle and the old key is revoked at once. A key never
-    /// sealed to anyone is still printed once, unless --recipient-key says
-    /// whom to seal it to from now on.
+    /// --grace-seconds to collect it. That needs a key the customer can pull
+    /// with: an inbox.pull key, or any key whose recipient also holds a live
+    /// inbox.pull key; otherwise use --out. With --out the replacement is
+    /// written as a sealed bundle and the old key is revoked at once. A key
+    /// never sealed to anyone is still printed once, unless --recipient-key
+    /// says whom to seal it to from now on.
     Rotate {
         id: i64,
         #[arg(long)]

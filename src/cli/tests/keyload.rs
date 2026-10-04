@@ -186,6 +186,49 @@ fn a_bundle_for_another_relay_or_device_or_key_is_refused_and_nothing_is_stored(
 }
 
 #[test]
+fn a_bundle_signed_by_another_authorized_relay_is_refused_before_any_bearer_is_sent() {
+    let mut env = alice();
+    let device_id = alice_device_id(&env);
+    let hers = recipient(&env, Some(device_id));
+
+    // A second relay the same root vouches for signs the issue; the relay that
+    // answers at the URL is the first. Both certificates are valid.
+    let other = env.other_relay_identity();
+    let relay = env.relay.as_ref().expect("a relay");
+    let fs = &mut env.fs;
+    key_delivery::create_as_bundle(&relay.conn, &other, &pull_key(), &hers, |bytes| {
+        fs.write_new(Path::new(BUNDLE), bytes)
+    })
+    .expect("create_as_bundle");
+
+    let (result, _) = env.keyquorum(&format!("{ALICE} loadkey --bundle {BUNDLE}"));
+    assert!(matches!(result, Err(Error::KeyIssueRelayMismatch)));
+    let relay = env.relay.as_ref().expect("a relay");
+    assert!(
+        relay.identity_challenges >= 1,
+        "the relay was challenged first"
+    );
+    assert_eq!(
+        relay.key_checks, 0,
+        "no request carrying the bearer was sent"
+    );
+    assert!(
+        db::relay_credential::get(env.store(DB), RELAY_URL, "inbox.pull")
+            .expect("query")
+            .is_none(),
+        "a refused bundle stores nothing"
+    );
+
+    // The same recipient's bundle from the relay that answers loads, and only
+    // that load sends a key check.
+    let right = "/home/alice/right.kqkey";
+    let hers = recipient(&env, Some(device_id));
+    issue_bundle(&mut env, &hers, right);
+    run(&mut env, &format!("{ALICE} loadkey --bundle {right}"));
+    assert_eq!(env.relay.as_ref().expect("a relay").key_checks, 1);
+}
+
+#[test]
 fn a_bundle_sealed_to_a_key_file_loads_without_a_device_when_it_is_not_bound() {
     let mut env = alice();
     let (secret, public) = keys::generate_encryption_keypair();
