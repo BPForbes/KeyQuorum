@@ -41,8 +41,17 @@ relay only carries the sealed letter between them.
   wiped and the read pointer moved on. A failed upload moves nothing and the
   letter waits for \code{outbox send}. While a claim is under two minutes old,
   a second send or \code{outbox drop} cannot take that letter. A send that
-  crashed loses its claim after that, and the letter goes again; the relay and
-  an output directory both treat it as the same letter.
+  crashed loses its claim after that. If a claim could not be released, the
+  error says so, and \code{outbox send --take-over} (or \code{outbox drop
+  --take-over}) takes the letter at once.
+
+  Sending a letter twice still makes one letter. This holds for a take-over and
+  for a stalled send that finishes late. The relay keeps one copy per recipient
+  and content, and answers a repeat with the same letter id. In an output
+  directory the letter is written to a private \file{.part} file and moved into
+  place whole, never over a different file, and an identical file already there
+  counts as written. Only the send that still holds the claim frees the slot,
+  so the letter is counted as sent once.
   \item \textbf{Carried sealed.} The relay stores the letter for the
   recipient's key and never opens it.
   \item \textbf{Arrive in the recipient's inbox ring.} \code{inbox} pulls the

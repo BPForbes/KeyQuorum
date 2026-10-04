@@ -590,10 +590,23 @@ fn freshly_claimed(conn: &Connection, owner: &str, index: u32) -> Result<bool> {
 }
 
 fn in_progress() -> Error {
-    Error::Usage(
-        "the oldest letter in this outbox is being sent now; try again once that send ends"
-            .to_string(),
-    )
+    Error::Usage(format!(
+        "the oldest letter in this outbox is being sent now (claimed less than {CLAIM_LEASE_SECS} s ago); \
+         try again once that send ends, or, if no send is running, take it over with \
+         `keyquorum outbox send --take-over` (or `outbox drop --take-over`)"
+    ))
+}
+
+/// Whether a send or drop may take a head another send has freshly claimed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Claimed {
+    /// Leave it to that send: refused.
+    Respect,
+    /// Take it: safe, because delivering a letter again yields the same one
+    /// letter (the relay keeps one copy per recipient and content, and an
+    /// output directory takes an identical file as written), and only the
+    /// newest claim frees the slot.
+    TakeOver,
 }
 
 /// Send the item at the read pointer: re-check that its recipient is still
@@ -607,13 +620,39 @@ fn in_progress() -> Error {
 /// the send claims the head in one short transaction, delivers with no
 /// transaction open, and frees the slot in another, only if the head still
 /// carries its claim. A second send, or `drop_next`, refuses a head claimed
-/// less than [`CLAIM_LEASE_SECS`] ago, so two sends never hand out the same
-/// item at once. A send that crashed leaves a claim that lapses; the item is
-/// then sent again, which the relay and an output directory both take as the
-/// same letter.
+/// less than [`CLAIM_LEASE_SECS`] ago, so two sends do not hand out the same
+/// item at once. A send that crashed leaves a claim that lapses, or that
+/// [`send_next_taking_over`] takes at once.
+///
+/// Delivering the same letter twice (a lapsed claim's send still running, or
+/// a take-over) yields one letter, never two or a partial one: the relay keeps
+/// one copy per recipient and content and answers a repeat with the same
+/// letter id, and an output directory publishes a letter whole and takes an
+/// identical file as already written. Only the send whose claim the head still
+/// carries frees the slot, so it is counted once.
 pub fn send_next(
     conn: &Connection,
     owner: &str,
+    deliver: impl FnOnce(&QueuedItem, &[u8]) -> Result<()>,
+) -> Result<Option<QueuedItem>> {
+    send_head(conn, owner, Claimed::Respect, deliver)
+}
+
+/// [`send_next`], taking the head over even while another send's claim on it
+/// is fresh: for a claim a crashed send, or a release that failed, left
+/// behind. It can only repeat a delivery, which yields the same one letter.
+pub fn send_next_taking_over(
+    conn: &Connection,
+    owner: &str,
+    deliver: impl FnOnce(&QueuedItem, &[u8]) -> Result<()>,
+) -> Result<Option<QueuedItem>> {
+    send_head(conn, owner, Claimed::TakeOver, deliver)
+}
+
+fn send_head(
+    conn: &Connection,
+    owner: &str,
+    claimed: Claimed,
     deliver: impl FnOnce(&QueuedItem, &[u8]) -> Result<()>,
 ) -> Result<Option<QueuedItem>> {
     let claim = hex::encode(crate::crypto::random_nonce());
@@ -624,7 +663,7 @@ pub fn send_next(
         if ring.state() == RingState::Empty {
             return Ok(None);
         }
-        if freshly_claimed(conn, owner, ring.read_index)? {
+        if claimed == Claimed::Respect && freshly_claimed(conn, owner, ring.read_index)? {
             return Err(in_progress());
         }
         let item = item_at(conn, owner, ring.read_index)?.ok_or(Error::IntegrityCheckFailed)?;
@@ -668,15 +707,26 @@ pub fn send_next(
         (Ok(None), _) => return Ok(None),
         (Ok(Some(claimed)), _) => claimed,
     };
-    // On any failure the claim is freed so the next send takes the item at
-    // once; one that cannot be freed lapses.
+    // On any failure the claim is freed, in a transaction that waits for the
+    // store's lock like any other write, so the next send takes the item at
+    // once. If even that fails, the caller is told, with the way out.
     let unclaim = |err: Error| {
-        let _ = conn.execute(
-            "UPDATE outbox_slots SET claim_token = NULL, claimed_at = NULL
-             WHERE owner_label = ?1 AND claim_token = ?2",
-            params![owner, claim],
-        );
-        err
+        let released = crate::db::with_immediate_transaction(conn, || {
+            conn.execute(
+                "UPDATE outbox_slots SET claim_token = NULL, claimed_at = NULL
+                 WHERE owner_label = ?1 AND claim_token = ?2",
+                params![owner, claim],
+            )?;
+            Ok(())
+        });
+        match released {
+            Ok(()) => err,
+            Err(release) => Error::Usage(format!(
+                "{err}; the oldest letter stays queued, but its claim could not be released \
+                 ({release}): send it now with `keyquorum outbox send --take-over`, or it is \
+                 free again {CLAIM_LEASE_SECS} s after the claim was taken"
+            )),
+        }
     };
     deliver(&item, &bytes).map_err(unclaim)?;
     crate::db::with_immediate_transaction(conn, || {
@@ -713,12 +763,21 @@ pub fn send_next(
 /// call, for an item whose recipient is no longer trusted). Wiped like a
 /// sent slot, but not counted as sent. Refused while a send holds the head.
 pub fn drop_next(conn: &Connection, owner: &str) -> Result<Option<QueuedItem>> {
+    drop_head(conn, owner, Claimed::Respect)
+}
+
+/// [`drop_next`], even while another send's claim on the head is fresh.
+pub fn drop_next_taking_over(conn: &Connection, owner: &str) -> Result<Option<QueuedItem>> {
+    drop_head(conn, owner, Claimed::TakeOver)
+}
+
+fn drop_head(conn: &Connection, owner: &str, claimed: Claimed) -> Result<Option<QueuedItem>> {
     crate::db::with_immediate_transaction(conn, || {
         let ring = ring(conn, owner)?;
         if ring.state() == RingState::Empty {
             return Ok(None);
         }
-        if freshly_claimed(conn, owner, ring.read_index)? {
+        if claimed == Claimed::Respect && freshly_claimed(conn, owner, ring.read_index)? {
             return Err(in_progress());
         }
         let item = item_at(conn, owner, ring.read_index)?.ok_or(Error::IntegrityCheckFailed)?;

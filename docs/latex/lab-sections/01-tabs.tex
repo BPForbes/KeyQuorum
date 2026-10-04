@@ -85,7 +85,8 @@ travels''), because the buttons run the same commands:
   sealed to a key your store holds for the recipient, the destination. It must
   fit, and a tracked file must come in its exchange's order. The ring then
   sends the oldest letter first: it claims the letter, uploads it to the
-  in-page relay, and only then wipes its slot. A quorum file is unlocked where
+  in-page relay, and only then wipes its slot. Uploading the same letter again
+  returns the same letter, so a retried send never delivers twice. A quorum file is unlocked where
   its shares are, so it leaves through the organization store's outbox under
   your label.
   \item \textbf{Receive} runs \code{keyquorum inbox}, which pulls the letter

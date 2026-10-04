@@ -323,10 +323,10 @@ fn an_offline_send_keeps_every_letter_inside_its_directory() {
 }
 
 #[test]
-fn a_failed_dequeue_takes_the_written_letter_back_and_the_retry_sends_it() {
+fn a_failed_dequeue_leaves_the_published_letter_and_the_retry_counts_it_written() {
     let mut env = two_people_on_a_relay();
     let letter = queue_for(&mut env, "carol");
-    // The letter is written, then freeing the slot fails (a full disk, say).
+    // The letter is published, then freeing the slot fails (a full disk, say).
     env.store(ALICE_STORE)
         .execute_batch(
             "CREATE TRIGGER full_disk BEFORE DELETE ON outbox_slots
@@ -334,27 +334,79 @@ fn a_failed_dequeue_takes_the_written_letter_back_and_the_retry_sends_it() {
         )
         .unwrap();
     let message = fails(&mut env, &format!("{ALICE} outbox send --output-dir /out"));
-    assert!(message.contains("disk full"), "{message}");
-    assert!(
-        env.fs
-            .list(Path::new("/out"))
-            .unwrap_or_default()
-            .is_empty(),
-        "the letter written for the failed send is removed"
-    );
+    assert!(message.contains("disk full"));
+    // The letter stays published: another send may already have freed its
+    // slot, so it is never taken back. The ring still holds it.
+    let path = only_file(&env, "/out");
+    assert_eq!(env.fs.read(Path::new(&path)).unwrap(), letter);
     let status = run(&mut env, &format!("{ALICE} outbox"));
-    assert!(status.contains("1 of 32 slots held"), "{status}");
-    assert!(status.contains("0 sent"), "{status}");
+    assert!(status.contains("1 of 32 slots held"));
+    assert!(status.contains("0 sent"));
 
     env.store(ALICE_STORE)
         .execute_batch("DROP TRIGGER full_disk;")
         .unwrap();
     let sent = run(&mut env, &format!("{ALICE} outbox send --output-dir /out"));
-    assert!(sent.contains("Sent slot 0"), "{sent}");
+    assert!(sent.contains(&format!("Already written {path}")));
+    assert!(sent.contains("Sent slot 0"));
+    assert_eq!(only_file(&env, "/out"), path, "still one letter");
+}
+
+#[test]
+fn a_partial_letter_left_by_a_stopped_send_never_blocks_the_retry() {
+    use sha2::{Digest, Sha256};
+    let mut env = two_people_on_a_relay();
+    let letter = queue_for(&mut env, "carol");
+    let name = format!("carol-{}.kqpb", &hex::encode(Sha256::digest(&letter))[..16]);
+    // A send stopped halfway through writing its private copy.
+    let partial = format!("/out/.{name}.00112233445566778899aabb.part");
+    env.fs
+        .write(Path::new(&partial), &letter[..letter.len() / 2])
+        .unwrap();
+
+    let sent = run(&mut env, &format!("{ALICE} outbox send --output-dir /out"));
+    assert!(sent.contains(&format!("Wrote /out/{name}")));
     assert_eq!(
-        env.fs.read(Path::new(&only_file(&env, "/out"))).unwrap(),
-        letter
+        env.fs.read(Path::new(&format!("/out/{name}"))).unwrap(),
+        letter,
+        "published whole"
     );
+    assert!(
+        !env.fs.exists(Path::new(&partial)),
+        "the leftover is removed"
+    );
+    assert_eq!(only_file(&env, "/out"), format!("/out/{name}"));
+}
+
+#[test]
+fn a_stuck_claim_is_taken_over_and_the_letter_is_still_one_letter() {
+    let mut env = two_people_on_a_relay();
+    let letter = alice_letter_for_bob(&mut env);
+    run(&mut env, &format!("{ALICE} outbox add {letter} --to bob"));
+    // A send claimed it and never finished, and its release failed.
+    env.store(ALICE_STORE)
+        .execute(
+            "UPDATE outbox_slots
+             SET claim_token = 'stuck', claimed_at = CAST(strftime('%s', 'now') AS INTEGER)",
+            [],
+        )
+        .unwrap();
+    let message = fails(&mut env, &format!("{ALICE} outbox send"));
+    assert!(message.contains("outbox send --take-over"));
+    let message = fails(&mut env, &format!("{ALICE} outbox drop"));
+    assert!(message.contains("being sent now"));
+
+    let sent = run(&mut env, &format!("{ALICE} outbox send --take-over"));
+    assert!(sent.contains("Relay stored letter 1 for"));
+    assert!(sent.contains("Sent slot 1"));
+
+    // The stuck send coming back and delivering the same letter again gets
+    // the same letter on the relay, not a second one.
+    run(&mut env, &format!("{ALICE} outbox add {letter} --to bob"));
+    let again = run(&mut env, &format!("{ALICE} outbox send"));
+    assert!(again.contains("Relay stored letter 1 for"));
+    let listed = run(&mut env, &format!("{BOB} inbox"));
+    assert_eq!(listed.matches("file delivery").count(), 1);
 }
 
 #[test]

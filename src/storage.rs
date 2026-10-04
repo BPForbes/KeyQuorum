@@ -20,6 +20,16 @@ pub trait Storage {
     fn write_new(&mut self, path: &Path, contents: &[u8]) -> Result<()>;
     /// Replace `to` with `from`, removing `from`.
     fn rename(&mut self, from: &Path, to: &Path) -> Result<()>;
+    /// Move `from` to `to` without ever replacing an existing `to`: an
+    /// `AlreadyExists` error instead. The default checks, then renames, which
+    /// is whole for a store only one command touches at a time (the in-memory
+    /// ones); [`NativeStorage`] makes it atomic.
+    fn rename_new(&mut self, from: &Path, to: &Path) -> Result<()> {
+        if self.exists(to) {
+            return Err(already_exists(to));
+        }
+        self.rename(from, to)
+    }
     fn delete(&mut self, path: &Path) -> Result<()>;
     fn create_dir_all(&mut self, path: &Path) -> Result<()>;
     /// Best effort: remove `path` if it is an empty directory.
@@ -59,6 +69,21 @@ impl Storage for NativeStorage {
 
     fn rename(&mut self, from: &Path, to: &Path) -> Result<()> {
         Ok(fs::rename(from, to)?)
+    }
+
+    /// A hard link fails if `to` exists, so no other writer's file is ever
+    /// replaced; the source name is then removed. A filesystem without hard
+    /// links (FAT, say) falls back to check-then-rename.
+    fn rename_new(&mut self, from: &Path, to: &Path) -> Result<()> {
+        match fs::hard_link(from, to) {
+            Ok(()) => {
+                let _ = fs::remove_file(from);
+                Ok(())
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Err(err.into()),
+            Err(_) if to.exists() => Err(already_exists(to)),
+            Err(_) => Ok(fs::rename(from, to)?),
+        }
     }
 
     fn delete(&mut self, path: &Path) -> Result<()> {
@@ -111,6 +136,13 @@ impl MemoryStorage {
             .cloned()
             .collect()
     }
+}
+
+fn already_exists(path: &Path) -> Error {
+    Error::Io(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!("{} already exists", path.display()),
+    ))
 }
 
 fn not_found(path: &Path) -> Error {

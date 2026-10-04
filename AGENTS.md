@@ -140,8 +140,17 @@ upload never holds the store's one write lock), and, if that succeeds, wipes
 the slot (zeroblob plus `secure_delete`) and advances in another, only while the
 head still carries its claim; a failed or refused send moves nothing and frees
 the claim. A claim younger than `outbox::CLAIM_LEASE_SECS` (120) keeps a second
-send and `drop_next` off the head; a crashed send's claim lapses and the letter
-goes again, which the relay and an output directory take as the same letter.
+send and `drop_next` off the head; a crashed send's claim lapses, a release
+that fails (it runs in its own immediate transaction) is reported with the way
+out, and `send_next_taking_over` / `drop_next_taking_over` (`outbox send|drop
+--take-over`) take a stuck head at once. That is safe because delivery is
+idempotent: the relay keeps one row per recipient and content hash and answers
+a repeat with the same letter id, and `outbox_cmd::publish_letter` writes a
+private `.part` sibling and moves it into place with `Storage::rename_new`
+(never replacing a file; an identical one counts as written, leftovers are
+removed), so a repeated or overlapping delivery is still one letter; only the
+send whose claim the head carries frees the slot, and a published letter is
+never taken back.
 `drop_next` discards the head unsent. A `KQPB` is the passport: the ring
 holds nothing else (raw `KQXB`, `KQBS`, `KQBN`, `KQHS`, `KQTF` are refused and
 travel inside a letter), and device kinds 9 to 12 are refused

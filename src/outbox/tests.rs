@@ -496,3 +496,82 @@ fn a_claim_left_by_a_crashed_send_lapses_and_the_letter_goes_again() {
     let after = ring(&p.conn, "alice").unwrap();
     assert_eq!((after.state(), after.sent_total), (RingState::Empty, 1));
 }
+
+#[test]
+fn a_release_that_fails_is_reported_and_taking_over_sends_the_letter() {
+    let p = people();
+    push(&p.conn, "alice", "bob", &letter(&p.bob, b"x"), None).expect("push");
+    // Clearing a claim fails, as on a full disk.
+    p.conn
+        .execute_batch(
+            "CREATE TEMP TRIGGER stuck BEFORE UPDATE OF claim_token ON outbox_slots
+             WHEN NEW.claim_token IS NULL
+             BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+        )
+        .unwrap();
+    let failed = send_next(&p.conn, "alice", |_, _| {
+        Err(Error::RelayRequest("down".into()))
+    });
+    let Err(Error::Usage(message)) = failed else {
+        panic!("a release that fails is reported");
+    };
+    assert!(message.contains("down"));
+    assert!(message.contains("could not be released"));
+    assert!(message.contains("outbox send --take-over"));
+
+    // The claim is still fresh, so a plain send waits; a take-over sends it.
+    assert!(matches!(
+        send_next(&p.conn, "alice", |_, _| Ok(())),
+        Err(Error::Usage(_))
+    ));
+    assert!(send_next_taking_over(&p.conn, "alice", |_, _| Ok(()))
+        .expect("take over")
+        .is_some());
+    let after = ring(&p.conn, "alice").unwrap();
+    assert_eq!((after.state(), after.sent_total), (RingState::Empty, 1));
+}
+
+#[test]
+fn two_deliveries_of_one_letter_are_one_letter_and_one_send() {
+    let p = people();
+    push(&p.conn, "alice", "bob", &letter(&p.bob, b"x"), None).expect("push");
+    // Where letters land: one copy per content, as the relay keeps them.
+    let landed: RefCell<std::collections::BTreeSet<Vec<u8>>> = RefCell::default();
+    let first = send_next(&p.conn, "alice", |_, bytes| {
+        // While this send is still delivering, its claim is taken over and
+        // the letter delivered and the slot freed by the other send.
+        let other = send_next_taking_over(&p.conn, "alice", |_, bytes| {
+            landed.borrow_mut().insert(bytes.to_vec());
+            Ok(())
+        })
+        .expect("take over");
+        assert!(other.is_some());
+        landed.borrow_mut().insert(bytes.to_vec());
+        Ok(())
+    })
+    .expect("the first send ends cleanly");
+    assert!(first.is_some());
+    assert_eq!(landed.borrow().len(), 1, "one letter");
+    let after = ring(&p.conn, "alice").unwrap();
+    assert_eq!(
+        (after.state(), after.sent_total),
+        (RingState::Empty, 1),
+        "counted once, and nothing else was freed"
+    );
+}
+
+#[test]
+fn a_drop_can_take_over_a_stuck_claim() {
+    let p = people();
+    push(&p.conn, "alice", "bob", &letter(&p.bob, b"x"), None).expect("push");
+    p.conn
+        .execute(
+            "UPDATE outbox_slots
+             SET claim_token = 'stuck', claimed_at = CAST(strftime('%s', 'now') AS INTEGER)",
+            [],
+        )
+        .unwrap();
+    assert!(matches!(drop_next(&p.conn, "alice"), Err(Error::Usage(_))));
+    assert!(drop_next_taking_over(&p.conn, "alice").unwrap().is_some());
+    assert_eq!(ring(&p.conn, "alice").unwrap().state(), RingState::Empty);
+}

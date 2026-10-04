@@ -18,7 +18,7 @@ use super::env::{self, errln, outln};
 use super::inbox::kind_name;
 use super::{file_cmd, resolve_relay_auth, sanitize_label, usage};
 use crate::db::profile;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::file_delivery::exchange::Visa;
 use crate::file_history::{HistoryEventType, HistorySnapshot, TrackedFile};
 use crate::outbox::{self, QueuedItem, Refusal, Ring};
@@ -69,9 +69,18 @@ pub enum OutboxCommand {
         /// Push-scope API key (default: a key from `loadkey`)
         #[arg(long)]
         api_key: Option<String>,
+        /// Send the oldest letter even if another send claimed it under two
+        /// minutes ago (one that crashed, or whose release failed). Safe: a
+        /// letter delivered twice is still one letter
+        #[arg(long)]
+        take_over: bool,
     },
     /// Discard the oldest item without sending it (it is wiped)
-    Drop,
+    Drop {
+        /// Drop it even if another send claimed it under two minutes ago
+        #[arg(long)]
+        take_over: bool,
+    },
     /// Set the number of slots (1 to 1024). Only an empty ring is resized
     Capacity { slots: u32 },
     /// The letters the ring turned away at departure, newest first, and the
@@ -213,8 +222,13 @@ pub(crate) fn run(conn: &Connection, opts: OutboxOpts) -> Result<()> {
             output_dir,
             url,
             api_key,
-        } => send(conn, &owner, all, output_dir, url, api_key)?,
-        OutboxCommand::Drop => match outbox::drop_next(conn, &owner)? {
+            take_over,
+        } => send(conn, &owner, all, take_over, output_dir, (url, api_key))?,
+        OutboxCommand::Drop { take_over } => match if take_over {
+            outbox::drop_next_taking_over(conn, &owner)?
+        } else {
+            outbox::drop_next(conn, &owner)?
+        } {
             Some(item) => print_item("Dropped", &item),
             None => outln!("Outbox for {owner} is empty: nothing to drop"),
         },
@@ -308,6 +322,60 @@ pub(super) fn show_timeline(
     Ok(())
 }
 
+/// Put `bytes` at `path` whole or not at all, and never over a different
+/// file. The letter is written to a private sibling first and then moved into
+/// place without replacing anything (`Storage::rename_new`), so a crash or a
+/// second send of the same letter can leave no partial file at `path`.
+/// `Ok(false)` when `path` already holds these exact bytes.
+fn publish_letter(path: &Path, bytes: &[u8]) -> Result<bool> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(Error::InvalidPath)?;
+    let same_letter = |path: &Path| -> Result<bool> {
+        if env::read(path)? == bytes {
+            Ok(false)
+        } else {
+            Err(usage(&format!(
+                "{} holds a different file; it is never overwritten",
+                path.display()
+            )))
+        }
+    };
+    if env::exists(path) {
+        return same_letter(path);
+    }
+    let partial = path.with_file_name(format!(
+        ".{name}.{}.part",
+        hex::encode(crate::crypto::random_nonce())
+    ));
+    env::write_new(&partial, bytes)?;
+    let moved = env::fs(|fs| fs.rename_new(&partial, path));
+    if moved.is_err() {
+        let _ = env::remove_file(&partial);
+    }
+    let published = match moved {
+        Ok(()) => Ok(true),
+        // Another send published it first.
+        Err(_) if env::exists(path) => same_letter(path),
+        Err(err) => Err(err),
+    }?;
+    // Leftovers of this letter from a send that stopped before publishing.
+    // Removing one a still-running send holds is harmless: that send finds
+    // the letter published and counts it as written.
+    let stale = format!(".{name}.");
+    for sibling in env::read_dir(path.parent().unwrap_or(Path::new(".")))? {
+        let leftover = sibling
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with(&stale) && n.ends_with(".part"));
+        if leftover {
+            let _ = env::remove_file(&sibling);
+        }
+    }
+    Ok(published)
+}
+
 /// How far a send from the read pointer goes.
 enum Until {
     /// The oldest letter only.
@@ -322,12 +390,19 @@ fn send(
     conn: &Connection,
     owner: &str,
     all: bool,
+    take_over: bool,
     output_dir: Option<PathBuf>,
-    url: Option<String>,
-    api_key: Option<String>,
+    (url, api_key): (Option<String>, Option<String>),
 ) -> Result<()> {
     let until = if all { Until::Empty } else { Until::One };
-    let sent = drain(conn, owner, until, output_dir.as_deref(), url, api_key)?;
+    let sent = drain(
+        conn,
+        owner,
+        (until, take_over),
+        output_dir.as_deref(),
+        url,
+        api_key,
+    )?;
     if sent == 0 {
         outln!("Outbox for {owner} is empty: nothing to send");
     }
@@ -361,7 +436,7 @@ pub(super) fn carry_via_outbox(
         index: item.index,
         content_hash: item.content_hash.clone(),
     };
-    drain(conn, owner, until, output_dir, url, api_key).map(|_| ()).inspect_err(|_| {
+    drain(conn, owner, (until, false), output_dir, url, api_key).map(|_| ()).inspect_err(|_| {
         errln!("note: the letter stays in your outbox; `keyquorum outbox` shows it, `keyquorum outbox send` retries and `keyquorum outbox drop` discards the oldest");
     })
 }
@@ -371,7 +446,7 @@ pub(super) fn carry_via_outbox(
 fn drain(
     conn: &Connection,
     owner: &str,
-    until: Until,
+    (until, take_over): (Until, bool),
     output_dir: Option<&Path>,
     url: Option<String>,
     api_key: Option<String>,
@@ -395,13 +470,13 @@ fn drain(
                 ApiKeyScope::InboxPush,
             )?);
         }
-        // Files are never overwritten, so a letter left in the directory by
-        // a send whose dequeue then failed would block the retry the ring
-        // promises. One this attempt wrote is removed again when the
-        // dequeue fails; one already there with the same bytes (a crash
-        // between the write and the commit) counts as written.
+        // A letter is published whole (`publish_letter`), and one already
+        // there with the same bytes counts as written: a crash between the
+        // write and the dequeue, or another send of the same letter. A
+        // published letter is never taken back, since another send may have
+        // freed its slot already; the retry finds it written.
         let mut written = None;
-        let sent_item = outbox::send_next(conn, owner, |item, bytes| match output_dir {
+        let deliver = |item: &QueuedItem, bytes: &[u8]| match output_dir {
             Some(dir) => {
                 // Labels are not restricted to filename-safe characters; a
                 // recipient like `../x` must not escape the directory.
@@ -410,12 +485,8 @@ fn drain(
                     sanitize_label(&item.recipient)?,
                     &item.content_hash[..16]
                 ));
-                if env::exists(&path) && env::read(&path)? == bytes {
-                    written = Some((path, false));
-                    return Ok(());
-                }
-                env::write_new(&path, bytes)?;
-                written = Some((path, true));
+                let fresh = publish_letter(&path, bytes)?;
+                written = Some((path, fresh));
                 Ok(())
             }
             None => {
@@ -428,23 +499,17 @@ fn drain(
                 );
                 Ok(())
             }
-        });
-        let item = match sent_item {
-            Ok(item) => {
-                match &written {
-                    Some((path, true)) => outln!("Wrote {}", path.display()),
-                    Some((path, false)) => outln!("Already written {}", path.display()),
-                    None => {}
-                }
-                item
-            }
-            Err(err) => {
-                if let Some((path, true)) = &written {
-                    let _ = env::remove_file(path);
-                }
-                return Err(err);
-            }
         };
+        let item = if take_over {
+            outbox::send_next_taking_over(conn, owner, deliver)?
+        } else {
+            outbox::send_next(conn, owner, deliver)?
+        };
+        match &written {
+            Some((path, true)) => outln!("Wrote {}", path.display()),
+            Some((path, false)) => outln!("Already written {}", path.display()),
+            None => {}
+        }
         let Some(item) = item else { break };
         print_item("Sent", &item);
         sent += 1;

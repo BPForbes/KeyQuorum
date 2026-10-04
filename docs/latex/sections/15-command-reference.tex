@@ -218,8 +218,9 @@ which flags conflict with or require others.
   trusted recipients: show it (index, size, state); \code{add LETTER... --to
   LABEL} queues at the write pointer (\flag{--file} names your copy when a
   tracked-file letter's order must be checked), \code{send} (\flag{--all},
-  \flag{--output-dir}) sends from the read pointer, oldest first,
-  \code{drop} discards the oldest, \code{capacity N} resizes an empty ring,
+  \flag{--output-dir}, \flag{--take-over} for a letter a stopped send
+  still claims) sends from the read pointer, oldest first,
+  \code{drop} (\flag{--take-over}) discards the oldest, \code{capacity N} resizes an empty ring,
   \code{refusals} (\flag{--limit}) lists the letters turned away at
   departure and the rule each broke, \code{history} shows the ring's
   timeline (\flag{--snapshot FILE}, \flag{--check FILE};

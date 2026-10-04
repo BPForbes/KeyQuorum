@@ -801,9 +801,19 @@ with your stored push key, or to `--output-dir`. (The `./outbox` directory
 A send claims the oldest letter in a short transaction, uploads it with no
 transaction open (so the rest of your store stays writable), and only then
 wipes its slot. While a claim is under two minutes old, a second send or
-`outbox drop` cannot take that letter; if a send crashes, its claim lapses and
-the letter goes again, which the relay and an output directory treat as the
-same letter.
+`outbox drop` cannot take that letter. If a send crashed, or its claim could
+not be released (the error says so), `outbox send --take-over` (or
+`outbox drop --take-over`) takes the letter at once instead of waiting out the
+two minutes.
+
+Sending a letter twice still makes one letter, so a take-over, or a stalled
+send that finishes late, never duplicates anything. The relay keeps one copy
+per recipient and content and answers a repeat with the same letter id, and the
+recipient's inbox opens each letter id once. In an output directory a letter is
+written to a private `.part` file and moved into place whole, never over a
+different file; an identical file already there counts as written, and a
+leftover `.part` is removed. Only the send that still holds the claim frees the
+slot, so the letter is counted as sent once.
 
 #### The rings' timeline
 

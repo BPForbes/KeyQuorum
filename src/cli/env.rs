@@ -373,6 +373,10 @@ impl Storage for EnvStorage {
         fs(|fs| fs.rename(from, to))
     }
 
+    fn rename_new(&mut self, from: &Path, to: &Path) -> Result<()> {
+        fs(|fs| fs.rename_new(from, to))
+    }
+
     fn delete(&mut self, path: &Path) -> Result<()> {
         fs(|fs| fs.delete(path))
     }
