@@ -519,23 +519,63 @@ fn release_head(conn: &Connection, owner: &str, head: &Ring, sent: bool) -> Resu
     Ok(())
 }
 
+/// How long a send's claim on the head reserves it, in seconds. Longer than
+/// any one delivery takes (the relay client gives up after 30 s), so a live
+/// send keeps its claim, and a send that crashed loses it this long after.
+pub const CLAIM_LEASE_SECS: i64 = 120;
+
+/// Whether the slot at `index` carries a claim taken less than
+/// [`CLAIM_LEASE_SECS`] ago.
+fn freshly_claimed(conn: &Connection, owner: &str, index: u32) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM outbox_slots
+             WHERE owner_label = ?1 AND slot_index = ?2 AND claim_token IS NOT NULL
+               AND claimed_at > CAST(strftime('%s', 'now') AS INTEGER) - ?3",
+            params![owner, index, CLAIM_LEASE_SECS],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+fn in_progress() -> Error {
+    Error::Usage(
+        "the oldest letter in this outbox is being sent now; try again once that send ends"
+            .to_string(),
+    )
+}
+
 /// Send the item at the read pointer: re-check that its recipient is still
 /// trusted for it, hand it to `deliver`, and only when `deliver` succeeds
 /// free the slot and move the read pointer. A refused or failed send moves
 /// nothing, so order is kept and nothing is lost. `None` when the ring is
-/// empty. The ring stays locked for the whole send, so two sends from the
-/// same store never take the same item.
+/// empty.
+///
+/// The store is not locked while `deliver` runs (an upload can take up to the
+/// relay client's timeout, and SQLite has one writer per database). Instead
+/// the send claims the head in one short transaction, delivers with no
+/// transaction open, and frees the slot in another, only if the head still
+/// carries its claim. A second send, or `drop_next`, refuses a head claimed
+/// less than [`CLAIM_LEASE_SECS`] ago, so two sends never hand out the same
+/// item at once. A send that crashed leaves a claim that lapses; the item is
+/// then sent again, which the relay and an output directory both take as the
+/// same letter.
 pub fn send_next(
     conn: &Connection,
     owner: &str,
     deliver: impl FnOnce(&QueuedItem, &[u8]) -> Result<()>,
 ) -> Result<Option<QueuedItem>> {
+    let claim = hex::encode(crate::crypto::random_nonce());
     // A refusal is recorded after the transaction, which rolls back.
     let mut denied: Option<(String, Denied)> = None;
-    let sent = crate::db::with_immediate_transaction(conn, || {
+    let claimed = crate::db::with_immediate_transaction(conn, || {
         let ring = ring(conn, owner)?;
         if ring.state() == RingState::Empty {
             return Ok(None);
+        }
+        if freshly_claimed(conn, owner, ring.read_index)? {
+            return Err(in_progress());
         }
         let item = item_at(conn, owner, ring.read_index)?.ok_or(Error::IntegrityCheckFailed)?;
         let bytes: zeroize::Zeroizing<Vec<u8>> = zeroize::Zeroizing::new(conn.query_row(
@@ -564,24 +604,65 @@ pub fn send_next(
             ));
             return Err(error);
         }
-        deliver(&item, &bytes)?;
-        release_head(conn, owner, &ring, true)?;
-        Ok(Some(item))
+        conn.execute(
+            "UPDATE outbox_slots
+             SET claim_token = ?3, claimed_at = CAST(strftime('%s', 'now') AS INTEGER)
+             WHERE owner_label = ?1 AND slot_index = ?2",
+            params![owner, ring.read_index, claim],
+        )?;
+        Ok(Some((item, bytes)))
     });
-    match (sent, denied) {
-        (Err(_), Some((recipient, denied))) => Err(denied.record(conn, owner, &recipient)),
-        (sent, _) => sent,
-    }
+    let (item, bytes) = match (claimed, denied) {
+        (Err(_), Some((recipient, denied))) => return Err(denied.record(conn, owner, &recipient)),
+        (Err(err), None) => return Err(err),
+        (Ok(None), _) => return Ok(None),
+        (Ok(Some(claimed)), _) => claimed,
+    };
+    // On any failure the claim is freed so the next send takes the item at
+    // once; one that cannot be freed lapses.
+    let unclaim = |err: Error| {
+        let _ = conn.execute(
+            "UPDATE outbox_slots SET claim_token = NULL, claimed_at = NULL
+             WHERE owner_label = ?1 AND claim_token = ?2",
+            params![owner, claim],
+        );
+        err
+    };
+    deliver(&item, &bytes).map_err(unclaim)?;
+    crate::db::with_immediate_transaction(conn, || {
+        let ring = ring(conn, owner)?;
+        let still_ours: bool = ring.state() != RingState::Empty
+            && conn
+                .query_row(
+                    "SELECT 1 FROM outbox_slots
+                     WHERE owner_label = ?1 AND slot_index = ?2 AND claim_token = ?3",
+                    params![owner, ring.read_index, claim],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+        // Not ours any more only when the claim lapsed and a later send
+        // took (and freed) the item: it has gone, and that send counted it.
+        if still_ours {
+            release_head(conn, owner, &ring, true)?;
+        }
+        Ok(())
+    })
+    .map_err(unclaim)?;
+    Ok(Some(item))
 }
 
 /// Discard the item at the read pointer without sending it (the owner's
 /// call, for an item whose recipient is no longer trusted). Wiped like a
-/// sent slot, but not counted as sent.
+/// sent slot, but not counted as sent. Refused while a send holds the head.
 pub fn drop_next(conn: &Connection, owner: &str) -> Result<Option<QueuedItem>> {
     crate::db::with_immediate_transaction(conn, || {
         let ring = ring(conn, owner)?;
         if ring.state() == RingState::Empty {
             return Ok(None);
+        }
+        if freshly_claimed(conn, owner, ring.read_index)? {
+            return Err(in_progress());
         }
         let item = item_at(conn, owner, ring.read_index)?.ok_or(Error::IntegrityCheckFailed)?;
         release_head(conn, owner, &ring, false)?;

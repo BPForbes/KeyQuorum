@@ -211,6 +211,7 @@ fn pull(conn: &Connection, opts: &InboxOpts) -> Result<String> {
         relay::ApiKeyScope::InboxPull,
     )?;
     env::create_dir_all(&relay_dir(&opts.dir, &url))?;
+    sweep(conn, &opts.dir, &url)?;
     let mut after = db::inbox::cursor(conn, &url)?;
     loop {
         let page = relay::pull_inbox(
@@ -253,8 +254,7 @@ fn pull(conn: &Connection, opts: &InboxOpts) -> Result<String> {
             if !db::inbox::has_room(conn, &url)? {
                 // The cursor stays at the last letter held, so the rest are
                 // pulled once slots are free.
-                let (_, capacity) = db::inbox::usage(conn, &url)?;
-                errln!("note: your inbox holds {capacity} unopened letters, its limit; open or drop some (`keyquorum inbox open`, `keyquorum inbox drop <id>`) and the rest come on the next pull");
+                full_note(&db::inbox::usage(conn, &url)?);
                 return Ok(url);
             }
             if !env::exists(&path) {
@@ -422,13 +422,61 @@ fn require_unchanged(conn: &Connection, url: &str, id: i64, path: &Path) -> Resu
     }
 }
 
-/// The letter is delivered (or discarded): release its slot, mark it
-/// handled and delete its file, so nothing of it stays in the inbox.
+/// Why a pull stopped: which letters fill the ring, and which one to open or
+/// drop to make room.
+fn full_note(usage: &db::inbox::Usage) {
+    let db::inbox::Usage {
+        held,
+        span,
+        capacity,
+        head,
+    } = usage;
+    if held == span {
+        errln!("note: your inbox holds {held} unopened letters, its limit of {capacity}; open or drop some (`keyquorum inbox open`, `keyquorum inbox drop <id>`) and the rest come on the next pull");
+    } else if let Some(head) = head {
+        errln!("note: your inbox is full: {held} unopened letters span all {capacity} slots, and slots are reused from the oldest letter on; open or drop letter {head} (`keyquorum inbox open {head}`, `keyquorum inbox drop {head}`) and the rest come on the next pull");
+    }
+}
+
+/// The letter is delivered (or discarded): release its slot and mark it
+/// handled in one transaction, then delete its file, so nothing of it stays
+/// in the inbox. The delivery stands if the file cannot be deleted; the
+/// handled mark is the durable record, and [`sweep`] deletes it later.
 fn release(conn: &Connection, dir: &Path, url: &str, id: i64) -> Result<()> {
     db::inbox::deliver(conn, url, id)?;
-    let path = letter_path(dir, url, id);
-    if env::exists(&path) {
-        env::remove_file(&path)?;
+    remove_delivered(&letter_path(dir, url, id), id);
+    Ok(())
+}
+
+fn remove_delivered(path: &Path, id: i64) {
+    if env::exists(path) && env::remove_file(path).is_err() {
+        errln!(
+            "note: letter {id} is handled, but {} could not be deleted; the next inbox command tries again",
+            path.display()
+        );
+    }
+}
+
+/// Delete the file of every letter this store has handled whose file is
+/// still in the inbox directory (a delete that failed, or a run that ended
+/// between the commit and the delete). Never opens or re-delivers anything.
+fn sweep(conn: &Connection, dir: &Path, url: &str) -> Result<()> {
+    let relay_dir = relay_dir(dir, url);
+    if !env::exists(&relay_dir) {
+        return Ok(());
+    }
+    for path in env::read_dir(&relay_dir)? {
+        let Some(id) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(".kqpb"))
+            .and_then(|id| id.parse::<i64>().ok())
+        else {
+            continue;
+        };
+        if db::inbox::is_handled(conn, url, id)? {
+            remove_delivered(&path, id);
+        }
     }
     Ok(())
 }
@@ -445,7 +493,11 @@ fn drop_letter(conn: &Connection, args: DropArgs) -> Result<()> {
     if !db::inbox::is_known(conn, &url, args.id)? {
         return Err(usage(&format!("no letter {} in this inbox", args.id)));
     }
+    // A letter pulled before inboxes were namespaced by relay is moved into
+    // place first, so its file is the one deleted.
+    stored_letter_path(&args.opts.dir, &url, args.id)?;
     release(conn, &args.opts.dir, &url, args.id)?;
+    sweep(conn, &args.opts.dir, &url)?;
     outln!("Dropped letter {} unopened", args.id);
     Ok(())
 }

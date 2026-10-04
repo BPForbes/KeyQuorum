@@ -423,3 +423,76 @@ fn only_the_newest_refusals_are_kept() {
     assert_eq!(rules(&p.conn, "bob").len(), 1, "each owner keeps their own");
     assert_eq!(refusals(&p.conn, "alice", 3).unwrap().len(), 3);
 }
+
+#[test]
+fn a_send_in_flight_holds_no_transaction_and_keeps_the_head_from_others() {
+    let p = people();
+    push(&p.conn, "alice", "bob", &letter(&p.bob, b"x"), None).expect("push");
+    push(&p.conn, "alice", "carol", &letter(&p.carol, b"y"), None).expect("push");
+
+    let sent = send_next(&p.conn, "alice", |item, _| {
+        // Delivered with no transaction open, so the rest of the store can
+        // be written meanwhile.
+        assert!(p.conn.is_autocommit(), "no transaction during delivery");
+        keys::register_key(&p.conn, "dave", KeyType::Encryption, &[7; 32]).expect("other write");
+        // The claimed head is taken by neither another send nor a drop.
+        assert!(matches!(
+            send_next(&p.conn, "alice", |_, _| Ok(())),
+            Err(Error::Usage(_))
+        ));
+        assert!(matches!(drop_next(&p.conn, "alice"), Err(Error::Usage(_))));
+        assert_eq!(item.recipient, "bob");
+        Ok(())
+    })
+    .expect("send")
+    .expect("an item");
+    assert_eq!(sent.recipient, "bob");
+    let after = ring(&p.conn, "alice").unwrap();
+    assert_eq!((after.size, after.sent_total), (1, 1));
+}
+
+#[test]
+fn a_failed_delivery_frees_the_claim_at_once() {
+    let p = people();
+    push(&p.conn, "alice", "bob", &letter(&p.bob, b"x"), None).expect("push");
+    assert!(send_next(&p.conn, "alice", |_, _| Err(Error::RelayRequest(
+        "down".into()
+    )))
+    .is_err());
+    // The retry does not wait for the claim to lapse.
+    assert!(send_next(&p.conn, "alice", |_, _| Ok(()))
+        .expect("retry")
+        .is_some());
+    assert_eq!(ring(&p.conn, "alice").unwrap().state(), RingState::Empty);
+}
+
+#[test]
+fn a_claim_left_by_a_crashed_send_lapses_and_the_letter_goes_again() {
+    let p = people();
+    push(&p.conn, "alice", "bob", &letter(&p.bob, b"x"), None).expect("push");
+    // A send claimed the head and never came back.
+    p.conn
+        .execute(
+            "UPDATE outbox_slots
+             SET claim_token = 'crashed', claimed_at = CAST(strftime('%s', 'now') AS INTEGER)",
+            [],
+        )
+        .unwrap();
+    assert!(matches!(
+        send_next(&p.conn, "alice", |_, _| Ok(())),
+        Err(Error::Usage(_))
+    ));
+    assert!(matches!(drop_next(&p.conn, "alice"), Err(Error::Usage(_))));
+
+    p.conn
+        .execute(
+            "UPDATE outbox_slots SET claimed_at = claimed_at - ?1",
+            [CLAIM_LEASE_SECS + 1],
+        )
+        .unwrap();
+    assert!(send_next(&p.conn, "alice", |_, _| Ok(()))
+        .expect("send after the lease")
+        .is_some());
+    let after = ring(&p.conn, "alice").unwrap();
+    assert_eq!((after.state(), after.sent_total), (RingState::Empty, 1));
+}

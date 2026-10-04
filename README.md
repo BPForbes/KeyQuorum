@@ -719,9 +719,11 @@ held in a slot of your inbox ring with its hash, remembers where it stopped, and
 opens each letter once. A letter whose file changed on disk since it was pulled
 is not opened. Once a letter is delivered (opened by its command) its slot is
 released and its file deleted, so nothing of it stays in the inbox; `inbox drop
-ID` does the same for a letter you will not open. The inbox ring holds 256
+ID` does the same for a letter you will not open. A file that could not be
+deleted is deleted by the next `inbox` command. The inbox ring holds 256
 unopened letters; when it is full the pull stops and the rest stay on the relay
-until there is room. `inbox open` handles file deliveries, answers to your
+until there is room. Slots are reused from the oldest letter on, so if that
+letter is still unopened the note names it: open or drop it to make room. `inbox open` handles file deliveries, answers to your
 deliveries, tracked files (`--reject` refuses a file and says so in the answer;
 delivered files are kept in `./received`, `--save-dir`), history snapshots
 (`--file COPY` also compares one with a copy you name), and bridge and

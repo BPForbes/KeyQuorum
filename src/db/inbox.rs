@@ -98,15 +98,60 @@ pub fn deliver(conn: &Connection, relay_url: &str, letter_id: i64) -> Result<()>
     })
 }
 
-/// Letters held unopened, and how many the ring can hold.
-pub fn usage(conn: &Connection, relay_url: &str) -> Result<(u32, u32)> {
+/// How full an inbox ring is.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Usage {
+    /// Letters held unopened.
+    pub held: u32,
+    /// Slots from the oldest held letter to the newest, opened ones between
+    /// them included: a slot is reused only once every slot before it is
+    /// free, so this, not `held`, is what fills the ring.
+    pub span: u32,
+    pub capacity: u32,
+    /// The oldest held letter, the one whose slot frees the others.
+    pub head: Option<i64>,
+}
+
+pub fn usage(conn: &Connection, relay_url: &str) -> Result<Usage> {
     let held: u32 = conn.query_row(
         "SELECT count(*) FROM inbox_slots WHERE relay_url = ?1",
         params![relay_url],
         |row| row.get(0),
     )?;
-    let capacity = ring::load(conn, &TABLE, relay_url)?.map_or(RING_CAPACITY, |r| r.capacity);
-    Ok((held, capacity))
+    let Some(ring) = ring::load(conn, &TABLE, relay_url)? else {
+        return Ok(Usage {
+            held,
+            span: 0,
+            capacity: RING_CAPACITY,
+            head: None,
+        });
+    };
+    let head = conn
+        .query_row(
+            "SELECT letter_id FROM inbox_slots WHERE relay_url = ?1 AND slot_index = ?2",
+            params![relay_url, ring.read_index],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(Usage {
+        held,
+        span: ring.size,
+        capacity: ring.capacity,
+        head,
+    })
+}
+
+/// Whether the store has handled (delivered or dropped) this letter.
+pub fn is_handled(conn: &Connection, relay_url: &str, letter_id: i64) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM inbox_letters
+             WHERE relay_url = ?1 AND letter_id = ?2 AND status = 'handled'",
+            params![relay_url, letter_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
 }
 
 pub const PENDING: &str = "pending";

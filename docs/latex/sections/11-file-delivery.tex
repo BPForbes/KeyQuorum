@@ -27,9 +27,11 @@ answer; \flag{--ack-dir} writes answers to a directory instead of uploading them
 each held in a slot of your inbox ring with its hash, remembers where it
 stopped, and opens each letter once. A letter whose file changed on disk is not
 opened. Once a letter is delivered its slot is released and its file deleted;
-\code{inbox drop ID} does the same for a letter you will not open. The ring
+\code{inbox drop ID} does the same for a letter you will not open. A file that
+could not be deleted is deleted by the next \code{inbox} command. The ring
 holds 256 unopened letters; a full one stops the pull and the rest stay on the
-relay until there is room. It opens file deliveries, answers
+relay until there is room. Slots are reused from the oldest letter on, so when
+that letter is still unopened the note names it. It opens file deliveries, answers
 to your deliveries, tracked files, history snapshots, and bridge and
 organization updates. A letter that asks for a decision (a file or change
 request), an answer to a request, an acknowledgement of a tracked file and a

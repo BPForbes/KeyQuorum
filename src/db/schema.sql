@@ -645,6 +645,11 @@ CREATE TABLE IF NOT EXISTS outbox_slots (
     content         BLOB NOT NULL,
     content_hash    TEXT NOT NULL,
     queued_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    -- A send's claim on the head while it delivers outside any transaction
+    -- (`outbox::send_next`): a random token and when it was taken (Unix
+    -- seconds). It lapses after `outbox::CLAIM_LEASE_SECS`.
+    claim_token     TEXT,
+    claimed_at      INTEGER,
     PRIMARY KEY (owner_label, slot_index)
 );
 
