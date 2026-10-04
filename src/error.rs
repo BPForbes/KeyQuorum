@@ -128,6 +128,23 @@ pub enum Error {
     /// A tracked-file letter came before the step it depends on (see
     /// `file_delivery::exchange`); the text names the missing step.
     ExchangeOutOfOrder(String),
+    /// An `EXPORT_BUNDLE` (`KQXB`) frame is malformed or not sealed to the
+    /// key that tried to open it.
+    InvalidExportBundle,
+    /// A relay-issued API key letter or bundle is malformed, is not the
+    /// kind it claims, or its relay signature does not verify.
+    InvalidKeyIssue,
+    /// A relay-issued API key letter or bundle is past its own expiry.
+    KeyIssueExpired,
+    /// A relay-issued API key names a relay other than the one it was
+    /// loaded for.
+    KeyIssueRelayMismatch,
+    /// A relay-issued API key is bound to a device other than the one
+    /// opening it.
+    KeyIssueDeviceMismatch,
+    /// A key is to be sealed to its customer, but no recipient key was
+    /// recorded for it and none was given.
+    DeliveryRecipientMissing,
 }
 
 impl fmt::Display for Error {
@@ -201,6 +218,24 @@ impl fmt::Display for Error {
             Error::InvalidBridgePackage => {
                 write!(f, "private-bridge package is malformed or not for this key")
             }
+            Error::InvalidExportBundle => {
+                write!(f, "export bundle is malformed or not for this key")
+            }
+            Error::InvalidKeyIssue => write!(
+                f,
+                "API key letter is malformed or its relay signature does not verify"
+            ),
+            Error::KeyIssueExpired => write!(f, "API key letter has expired"),
+            Error::KeyIssueRelayMismatch => {
+                write!(f, "API key letter names a different relay")
+            }
+            Error::KeyIssueDeviceMismatch => {
+                write!(f, "API key letter is bound to a different device")
+            }
+            Error::DeliveryRecipientMissing => write!(
+                f,
+                "no recipient key is recorded for this API key; pass --recipient-key"
+            ),
             Error::InvalidTrackedFile => {
                 write!(f, "tracked file is malformed or its history fails verification")
             }

@@ -393,11 +393,24 @@ pub enum Command {
     /// Later relay commands reuse it after a hash re-check; prefer omitting
     /// the key so it is prompted (stays out of shell history).
     Loadkey {
-        /// Raw `kq_…` bearer. Prompted if omitted.
+        /// Raw `kq_…` bearer. Prompted if omitted (and no --bundle is given).
         api_key: Option<String>,
-        /// Relay base URL (or KEYQUORUM_RELAY_URL)
+        /// Relay base URL (or KEYQUORUM_RELAY_URL). With --bundle it must be
+        /// the relay the bundle names; left out, the bundle's own is used.
         #[arg(long)]
         url: Option<String>,
+        /// A sealed `.kqkey` bundle from your provider: opened with the slot
+        /// (or key file) it was sealed to, verified against the KeyQuorum
+        /// root, checked with the relay, then stored like a typed key
+        #[arg(long, conflicts_with = "api_key")]
+        bundle: Option<PathBuf>,
+        /// The slot the bundle was sealed to (container=label; default: the
+        /// one from `keyquorum use`)
+        #[arg(long, requires = "bundle", conflicts_with = "share_file")]
+        slot: Option<String>,
+        /// The X25519 private key file the bundle was sealed to
+        #[arg(long, requires = "bundle")]
+        share_file: Option<String>,
     },
     /// Copy or move an active key identity between two open devices.
     /// A ghost keeps the hierarchy and cannot be exported.
@@ -953,7 +966,13 @@ pub fn run_cli(cli: Cli) -> Result<()> {
 pub fn run(db_path: &Path, command: Command) -> Result<()> {
     match command {
         Command::Relay { command } => return run_relay(db_path, command),
-        Command::Loadkey { api_key, url } => return run_loadkey(db_path, api_key, url),
+        Command::Loadkey {
+            api_key,
+            url,
+            bundle,
+            slot,
+            share_file,
+        } => return run_loadkey(db_path, api_key, url, bundle, slot, share_file),
         Command::Transfer { command } => return transfer_cmd::run(command),
         // Dispatched here rather than in `run_in_store`, whose frame is the
         // largest in the crate, so they run with that much more stack to spare.
@@ -2829,8 +2848,139 @@ pub(crate) fn resolve_relay_auth(
     }
 }
 
-fn run_loadkey(db_path: &Path, api_key: Option<String>, url: Option<String>) -> Result<()> {
-    env::with_db(db_path, |conn| loadkey_in_store(conn, api_key, url))
+fn run_loadkey(
+    db_path: &Path,
+    api_key: Option<String>,
+    url: Option<String>,
+    bundle: Option<PathBuf>,
+    slot: Option<String>,
+    share_file: Option<String>,
+) -> Result<()> {
+    env::with_db(db_path, |conn| match bundle {
+        Some(path) => loadkey_bundle(conn, &path, url, slot.as_deref(), share_file.as_deref()),
+        None => loadkey_in_store(conn, api_key, url),
+    })
+}
+
+/// `loadkey --bundle`: a first relay key, handed over as a sealed `.kqkey`
+/// (`api_key_delivery`). Opened with the recipient's own key, verified,
+/// then stored exactly as a typed key is, after the same relay challenge.
+fn loadkey_bundle(
+    conn: &Connection,
+    path: &Path,
+    url: Option<String>,
+    slot: Option<&str>,
+    share_file: Option<&str>,
+) -> Result<()> {
+    let bytes = env::read(path)?;
+    let (secret, device_id) = match share_file {
+        Some(file) => (encryption_secret_from(Some(file), None)?, None),
+        None => {
+            let slot = profile::resolve_identity(conn, None, slot)?.slot;
+            (
+                encryption_secret_from(None, Some(&slot))?,
+                Some(device_id_of_slot(&slot)?),
+            )
+        }
+    };
+    let opened = open_key_issue(&bytes, &secret)?;
+    // The bundle says which relay the key is for. `--url`, or the relay the
+    // environment points at, must agree; the profile's default is not
+    // consulted, so a first key for a second relay still loads.
+    let expected = url
+        .filter(|u| !u.is_empty())
+        .or_else(|| {
+            env::var("KEYQUORUM_RELAY_URL")
+                .ok()
+                .filter(|u| !u.is_empty())
+        })
+        .map(|u| db::relay_credential::normalize_url(&u));
+    install_key_issue(conn, &opened, expected.as_deref(), device_id)
+}
+
+/// `inbox open` on a relay key letter: a rotated key, sealed to the slot
+/// that pulls this inbox and addressed to the relay it came from.
+pub(crate) fn install_key_letter(
+    conn: &Connection,
+    path: &Path,
+    url: &str,
+    slot: &str,
+) -> Result<()> {
+    let bytes = env::read(path)?;
+    let secret = encryption_secret_from(None, Some(slot))?;
+    let device_id = device_id_of_slot(slot)?;
+    let opened = open_key_issue(&bytes, &secret)?;
+    install_key_issue(
+        conn,
+        &opened,
+        Some(&db::relay_credential::normalize_url(url)),
+        Some(device_id),
+    )
+}
+
+/// Open and verify a key letter or bundle against this environment's
+/// provider root, clock and revocation list.
+fn open_key_issue(bytes: &[u8], secret: &[u8; 32]) -> Result<crate::api_key_delivery::Opened> {
+    let root = env::provider_root();
+    let (revoked, _) = revocation_list(&root)?;
+    let now = env::now_utc()?;
+    crate::api_key_delivery::open(bytes, secret, &root, &now, &revoked)
+}
+
+/// The one way a verified key issue becomes a stored relay key, for a
+/// bundle and a letter alike. The issue's own URL is the relay, and it must
+/// be the one the caller is loading for when the caller names one; an issue
+/// bound to a device loads only from that device. Then the full relay
+/// challenge and `POST /keycheck` run as for a typed key: the issue is
+/// believed about nothing the relay does not confirm.
+fn install_key_issue(
+    conn: &Connection,
+    opened: &crate::api_key_delivery::Opened,
+    expected_url: Option<&str>,
+    device_id: Option<[u8; 16]>,
+) -> Result<()> {
+    let issue = &opened.issue;
+    let url = db::relay_credential::normalize_url(&issue.relay_url);
+    if expected_url.is_some_and(|expected| expected != url) {
+        return Err(Error::KeyIssueRelayMismatch);
+    }
+    if let Some(bound) = issue.device_id {
+        if device_id != Some(bound) {
+            return Err(Error::KeyIssueDeviceMismatch);
+        }
+    }
+    relay::validate_relay_url(&url)?;
+    db::cache::forget_relay_trust(conn, &url)?;
+    authenticate_official_relay(&url)?;
+    let check = relay::check_key(&env::EnvRelay, &url, &issue.token)?;
+    if !check.valid
+        || check.id != Some(issue.key_id)
+        || check.scope.as_deref() != Some(issue.scope.as_str())
+    {
+        return Err(Error::InvalidKeyIssue);
+    }
+    persist_checked_key(conn, &url, &issue.token, &check)?;
+    outln!(
+        "Stored {} API key {} for {url} from a sealed {}",
+        issue.scope,
+        issue.key_id,
+        opened.carrier.noun()
+    );
+    if let Some(licence) = issue.licence.as_deref().map(str::trim) {
+        if !licence.is_empty() {
+            outln!("Licence: {licence}");
+        }
+    }
+    Ok(())
+}
+
+/// The id of the container a `--slot container=label` names.
+fn device_id_of_slot(entry: &str) -> Result<[u8; 16]> {
+    let (path, _) = entry
+        .rsplit_once('=')
+        .ok_or_else(|| usage("--slot must be container=label"))?;
+    let container = env::fs(|fs| device::open_in(fs, Path::new(path)))?;
+    Ok(*container.device_id())
 }
 
 fn loadkey_in_store(conn: &Connection, api_key: Option<String>, url: Option<String>) -> Result<()> {
@@ -2962,6 +3112,15 @@ fn relay_in_store(conn: &Connection, command: RelayCommand) -> Result<()> {
                     outln!("Wrote {}", path.display());
                 }
                 let kind = crate::envelope::kind(&bytes)?;
+                if kind == crate::envelope::KIND_API_KEY_ISSUE {
+                    // A rotated relay key is loaded, not imported: `inbox
+                    // open` verifies it and runs the relay check.
+                    outln!(
+                        "Envelope {} is a relay API key; load it with `keyquorum inbox open`",
+                        item.id
+                    );
+                    continue;
+                }
                 if kind == crate::envelope::KIND_FILE_HISTORY_SNAPSHOT {
                     // Opened by `file open-history`; nothing to import.
                     outln!(

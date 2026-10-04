@@ -25,11 +25,13 @@
 //! - [`EXPORT_BUNDLE`] (`KQXB`) — the portable credential and file
 //!   bundles in `export`, where the kind byte is the bundle type.
 //!
-//! Only `KQPB` has a decoder today; `export`'s `import` is still open (see
-//! README's Roadmap). The parsing side below is therefore `KQPB`-only and
-//! reports [`Error::InvalidBridgePackage`] on a malformed frame. A future
-//! bundle decoder should take a [`Format`] and its own error rather than
-//! borrowing that one, whose message names private bridges.
+//! [`parse_outer`] and [`open`] read `KQPB` and report
+//! [`Error::InvalidBridgePackage`] on a malformed frame; [`parse_outer_as`]
+//! and [`open_as`] take a [`Format`] and report [`Error::InvalidExportBundle`]
+//! for `KQXB`. Only the relay-issued API key bundle
+//! (`export::BUNDLE_TYPE_API_KEY`, opened by `api_key_delivery`) is decoded
+//! on the `KQXB` side so far; `export`'s `import` of the other bundle types
+//! is still open (see README's Roadmap).
 
 use crate::error::{Error, Result};
 use sha2::{Digest, Sha256};
@@ -109,6 +111,12 @@ pub const KIND_FILE_REQUEST: u8 = 18;
 /// The holder's signed accept or decline of a [`KIND_FILE_REQUEST`], sealed
 /// back to the requester.
 pub const KIND_FILE_REQUEST_ANSWER: u8 = 19;
+/// A customer API key issued by a relay (`api_key_delivery`): the bearer,
+/// its scope, the relay URL and the relay's certificate, signed by the
+/// relay key and sealed to the customer's encryption key. A rotated key
+/// travels this way through the mailbox; a first key travels as the same
+/// signed payload in an [`EXPORT_BUNDLE`] file (`export::BUNDLE_TYPE_API_KEY`).
+pub const KIND_API_KEY_ISSUE: u8 = 20;
 
 /// Kinds the device mailbox accepts. Every other `KQPB` kind belongs to
 /// the bridge inbox. The two stores do not mix.
@@ -162,21 +170,46 @@ pub fn seal(
 /// kind, recipient public key, and the declared sealed length. Does not
 /// unseal the letter.
 pub fn parse_outer(bytes: &[u8]) -> Result<(u8, [u8; 32], &[u8])> {
+    parse_outer_as(PACKAGE, bytes)
+}
+
+/// The error a malformed frame of `format` is reported as: the message
+/// names what the file claimed to be.
+fn framing_error(format: Format) -> Error {
+    if format == EXPORT_BUNDLE {
+        Error::InvalidExportBundle
+    } else {
+        Error::InvalidBridgePackage
+    }
+}
+
+/// [`parse_outer`] for either format. The magic and version must be
+/// `format`'s own; a `KQPB` is never read as a `KQXB` or the reverse.
+pub fn parse_outer_as(format: Format, bytes: &[u8]) -> Result<(u8, [u8; 32], &[u8])> {
+    let malformed = || framing_error(format);
     let mut data = bytes;
-    if take_n(&mut data, 4)? != PACKAGE.magic {
-        return Err(Error::InvalidBridgePackage);
+    if take_n(&mut data, 4).map_err(|_| malformed())? != format.magic {
+        return Err(malformed());
     }
-    if take_u8(&mut data)? != PACKAGE.version {
-        return Err(Error::InvalidBridgePackage);
+    if take_u8(&mut data).map_err(|_| malformed())? != format.version {
+        return Err(malformed());
     }
-    let kind = take_u8(&mut data)?;
-    let recipient_public_key = take_array::<32>(&mut data)?;
-    let payload_len = u32::from_be_bytes(take_array(&mut data)?) as usize;
-    let sealed = take_n(&mut data, payload_len)?;
+    let kind = take_u8(&mut data).map_err(|_| malformed())?;
+    let recipient_public_key = take_array::<32>(&mut data).map_err(|_| malformed())?;
+    let payload_len = u32::from_be_bytes(take_array(&mut data).map_err(|_| malformed())?) as usize;
+    let sealed = take_n(&mut data, payload_len).map_err(|_| malformed())?;
     if !data.is_empty() {
-        return Err(Error::InvalidBridgePackage);
+        return Err(malformed());
     }
     Ok((kind, recipient_public_key, sealed))
+}
+
+/// Which [`Format`] `bytes` claims by its magic, without reading further.
+pub fn format_of(bytes: &[u8]) -> Option<Format> {
+    let magic = bytes.get(..4)?;
+    [PACKAGE, EXPORT_BUNDLE]
+        .into_iter()
+        .find(|format| magic == format.magic)
 }
 
 /// The recipient X25519 public key the carrier routes on. Used by the
@@ -200,11 +233,21 @@ pub fn open(
     bytes: &[u8],
     recipient_secret: &[u8; 32],
 ) -> Result<(u8, [u8; 32], Zeroizing<Vec<u8>>)> {
-    let (kind, recipient_public_key, sealed) = parse_outer(bytes)?;
+    open_as(PACKAGE, bytes, recipient_secret)
+}
+
+/// [`open`] for either format, reporting a malformed or foreign frame as
+/// that format's own error.
+pub fn open_as(
+    format: Format,
+    bytes: &[u8],
+    recipient_secret: &[u8; 32],
+) -> Result<(u8, [u8; 32], Zeroizing<Vec<u8>>)> {
+    let (kind, recipient_public_key, sealed) = parse_outer_as(format, bytes)?;
     let secret_key = crypto_box::SecretKey::from(*recipient_secret);
     let payload = secret_key
         .unseal(sealed)
-        .map_err(|_| Error::InvalidBridgePackage)?;
+        .map_err(|_| framing_error(format))?;
     Ok((kind, recipient_public_key, Zeroizing::new(payload)))
 }
 

@@ -239,7 +239,9 @@ which flags conflict with or require others.
   directly. \\
 \code{loadkey} & Check a relay API key with \code{POST /keycheck} and
   store it (and its hash) on this instance for later relay commands to
-  reuse. \\
+  reuse. \flag{--bundle} loads a sealed \file{.kqkey} from the provider
+  instead of a typed key, opened with \flag{--slot} (default: the one from
+  \code{use}) or \flag{--share-file}, after the same identity check. \\
 \bottomrule
 \end{tabular}
 \end{center}

@@ -8,6 +8,7 @@
 //! mint keys: they receive a `kq_…` bearer. The `kql_…` issuer is an
 //! internal operator lock created only after that identity check.
 
+use keyquorum::api_key_delivery::MAX_LICENCE_BYTES;
 use keyquorum::cli;
 use keyquorum::cli::host_args::{
     HostCommand, IdentityCommand, KeysCommand, PolicyCommand, RootCommand,
@@ -19,6 +20,7 @@ use keyquorum::locked_files;
 use keyquorum::provider::hardware_auth::HardwareAuthority;
 use keyquorum::provider::policy::{self, HardwareAuthorityEntry, NewPolicy};
 use keyquorum::provider::{self, NewCertificate, KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY};
+use keyquorum::relay::key_delivery::{self, Delivered, Recipient, Via};
 use keyquorum::relay::{self, ApiKeyScope, AppState, NewApiKey, ProviderIdentity};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -184,26 +186,42 @@ fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
             relay_key,
             krl,
             licensee_key,
+            recipient_key,
+            out,
+            relay_url,
+            device_id,
+            licence_file,
         } => {
             let identity = authorize_mint(conn, "keys.create", cert, relay_key, krl, licensee_key)?;
-            let created = relay::create_api_key(
-                conn,
-                &NewApiKey {
-                    scope: ApiKeyScope::parse(&scope)?,
-                    recipient_fingerprint: fingerprint,
-                    label,
-                    ttl_seconds,
-                },
-            )?;
-            println!("Created API key {}", created.info.id);
-            println!("scope: {}", created.info.scope);
-            if let Some(fp) = &created.info.recipient_fingerprint {
-                println!("fingerprint: {fp}");
+            let new = NewApiKey {
+                scope: ApiKeyScope::parse(&scope)?,
+                recipient_fingerprint: fingerprint,
+                label,
+                ttl_seconds,
+            };
+            match (recipient_key, out) {
+                (Some(recipient_key), Some(out)) => {
+                    let recipient =
+                        recipient_from(&recipient_key, relay_url, device_id, licence_file)?;
+                    let delivered = into_file(&out, |write| {
+                        key_delivery::create_as_bundle(conn, &identity, &new, &recipient, write)
+                    })?;
+                    println!("Created API key {}", delivered.info.id);
+                    print_delivered(&delivered, Some(&out));
+                }
+                _ => {
+                    let created = relay::create_api_key(conn, &new)?;
+                    println!("Created API key {}", created.info.id);
+                    println!("scope: {}", created.info.scope);
+                    if let Some(fp) = &created.info.recipient_fingerprint {
+                        println!("fingerprint: {fp}");
+                    }
+                    if let Some(expires) = &created.info.expires_at {
+                        println!("expires: {expires}");
+                    }
+                    println!("token (shown once): {}", created.token.as_str());
+                }
             }
-            if let Some(expires) = &created.info.expires_at {
-                println!("expires: {expires}");
-            }
-            println!("token (shown once): {}", created.token.as_str());
             anchor_audit(conn, &identity);
         }
         KeysCommand::List => {
@@ -293,15 +311,137 @@ fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
             relay_key,
             krl,
             licensee_key,
+            recipient_key,
+            relay_url,
+            device_id,
+            licence_file,
+            out,
+            grace_seconds,
         } => {
             let identity = authorize_mint(conn, "keys.rotate", cert, relay_key, krl, licensee_key)?;
-            let created = relay::rotate_api_key(conn, id)?;
-            println!("Rotated API key {id} -> {}", created.info.id);
-            println!("token (shown once): {}", created.token.as_str());
+            let recorded = key_delivery::recipient_for(conn, id)?;
+            let recipient = match recipient_key {
+                Some(recipient_key) => {
+                    let url = relay_url.or_else(|| recorded.as_ref().map(|r| r.relay_url.clone()));
+                    Some(recipient_from(
+                        &recipient_key,
+                        url,
+                        device_id,
+                        licence_file,
+                    )?)
+                }
+                None => None,
+            };
+            if recipient.is_none() && recorded.is_none() && out.is_none() {
+                // Never sealed to anyone: handed over as before.
+                let created = relay::rotate_api_key(conn, id)?;
+                println!("Rotated API key {id} -> {}", created.info.id);
+                println!("token (shown once): {}", created.token.as_str());
+            } else if let Some(out) = out {
+                let delivered = into_file(&out, |write| {
+                    key_delivery::rotate_as_bundle(conn, &identity, id, recipient, write)
+                })?;
+                println!("Rotated API key {id} -> {}", delivered.info.id);
+                print_delivered(&delivered, Some(&out));
+            } else {
+                let delivered =
+                    key_delivery::rotate_as_letter(conn, &identity, id, recipient, grace_seconds)?;
+                println!("Rotated API key {id} -> {}", delivered.info.id);
+                print_delivered(&delivered, None);
+                if let Via::Letter {
+                    until: Some(until), ..
+                } = &delivered.via
+                {
+                    println!(
+                        "key {id} stays usable until {until} to collect it; `keys revoke {id}` ends it sooner"
+                    );
+                }
+            }
             anchor_audit(conn, &identity);
         }
     }
     Ok(())
+}
+
+/// Whom `keys create|rotate` seals a key to, from the operator's flags: the
+/// customer's public key, the relay URL the issue names, an optional device
+/// binding and an optional licence statement read from a file.
+fn recipient_from(
+    recipient_key: &str,
+    relay_url: Option<String>,
+    device_id: Option<String>,
+    licence_file: Option<PathBuf>,
+) -> Result<Recipient> {
+    let public_key = *keys::parse_key_32(recipient_key)?;
+    let relay_url = relay_url
+        .filter(|url| !url.trim().is_empty())
+        .ok_or_else(|| Error::Usage("--relay-url is required with --recipient-key".into()))?;
+    relay::validate_relay_url(&relay_url)?;
+    let device_id = match device_id {
+        None => None,
+        Some(hex) => Some(
+            hex::decode(hex.trim())
+                .ok()
+                .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+                .ok_or(Error::InvalidDevice)?,
+        ),
+    };
+    let licence = match licence_file {
+        None => None,
+        Some(path) => {
+            let text = std::fs::read_to_string(path)?;
+            if text.len() > MAX_LICENCE_BYTES {
+                return Err(Error::BundleFieldTooLarge);
+            }
+            Some(text)
+        }
+    };
+    Ok(Recipient {
+        public_key,
+        relay_url,
+        device_id,
+        licence,
+    })
+}
+
+/// Run `issue` with a writer that creates `out` owner-only, never
+/// overwriting. If `issue` fails after the file was written (the key change
+/// did not commit), the file is removed, so a retry is not refused by it.
+fn into_file<T>(
+    out: &Path,
+    issue: impl FnOnce(Box<dyn FnOnce(&[u8]) -> Result<()> + '_>) -> Result<T>,
+) -> Result<T> {
+    let wrote = std::cell::Cell::new(false);
+    let result = issue(Box::new(|bytes: &[u8]| {
+        locked_files::write_owner_only(out, bytes)?;
+        wrote.set(true);
+        Ok(())
+    }));
+    if result.is_err() && wrote.get() {
+        let _ = std::fs::remove_file(out);
+    }
+    result
+}
+
+/// What the operator sees of a sealed issue: never the bearer.
+fn print_delivered(delivered: &Delivered, out: Option<&Path>) {
+    println!("scope: {}", delivered.info.scope);
+    println!("sealed to: {}", delivered.recipient_fingerprint);
+    if let Some(expires) = &delivered.info.expires_at {
+        println!("expires: {expires}");
+    }
+    match (&delivered.via, out) {
+        (Via::Bundle { sha256 }, Some(path)) => {
+            println!("wrote {} (sha256 {sha256})", path.display());
+            println!(
+                "hand it to the customer for `keyquorum loadkey --bundle`; it is never printed"
+            );
+        }
+        (Via::Bundle { sha256 }, None) => println!("sealed bundle sha256 {sha256}"),
+        (Via::Letter { id, .. }, _) => {
+            println!("sealed letter {id} waits in the mailbox; the customer's next `keyquorum inbox open` loads it");
+        }
+    }
 }
 
 /// Sign the audit chains' new heads. The key change itself is already

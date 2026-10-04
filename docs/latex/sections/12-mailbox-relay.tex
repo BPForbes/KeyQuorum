@@ -49,6 +49,29 @@ standard error); \flag{--no-cache}, \code{KEYQUORUM_NO_CACHE=1} or
 fresh one. An optional signed revocation list can be pointed at with
 \code{KEYQUORUM_PROVIDER_KRL}.
 
+\subsection{Keys that arrive sealed}
+
+A provider can hand you a key without ever showing it. The bearer is sealed
+to your encryption key and signed by the relay, together with the relay URL,
+the key's id and scope, an optional expiry, the device it is bound to if
+any, the relay's certificate and a licence statement, and written as a
+\file{customer.kqkey} bundle (a \code{KQXB} export bundle,
+Section~\ref{sec:file-formats}). Load it with the slot it was sealed to:
+\code{loadkey} verifies the certificate against the KeyQuorum root, the
+relay's signature, the relay URL and the device, then runs the same identity
+challenge and \code{POST /keycheck} as for a typed key before storing it.
+
+\begin{lstlisting}
+keyquorum loadkey --bundle customer.kqkey        # the slot from `keyquorum use`
+keyquorum loadkey --bundle customer.kqkey --slot /usb/alice=alice --url https://relay.example.com
+\end{lstlisting}
+
+A key issued that way is rotated the same way: the replacement arrives in
+your inbox as a sealed \code{KQPB} letter (\code{inbox} lists it as
+\emph{relay API key}) and \code{inbox open} loads it in place of the old
+one, which stays usable long enough to collect it. Neither flow prints the
+bearer, and the provider's own operator lock never travels.
+
 \code{relay push} also uploads every public tree in \flag{--db} and
 \textbf{merges} it into the mailbox (unrelated nodes stay put). \code{relay
 pull} merges the returned slices into \flag{--db} (then \flag{--import}

@@ -14,7 +14,9 @@
 //!
 //! The outer framing is [`crate::envelope`]'s, under the
 //! [`crate::envelope::EXPORT_BUNDLE`] magic, with the bundle type as its
-//! kind byte: 1 = credential, 2 = unlocked file, 3 = tracked file. The
+//! kind byte: 1 = credential, 2 = unlocked file, 3 = tracked file,
+//! 4 = a relay-issued API key ([`BUNDLE_TYPE_API_KEY`], whose signed
+//! payload `api_key_delivery` builds and opens). The
 //! recipient's name/label stays inside the sealed payload rather than the
 //! outer header — a credential label or file name can be sensitive on its
 //! own, and the outer header is the one part of a bundle that's never encrypted.
@@ -36,6 +38,11 @@ use rusqlite::{params, Connection};
 const BUNDLE_TYPE_CREDENTIAL: u8 = 1;
 const BUNDLE_TYPE_FILE: u8 = 2;
 const BUNDLE_TYPE_TRACKED_FILE: u8 = 3;
+/// A customer API key issued by a relay, handed over as a file for a first
+/// key (`.kqkey`): the same relay-signed payload a rotated key carries as
+/// `envelope::KIND_API_KEY_ISSUE` through the mailbox. Appended after the
+/// tracked-file bundle; the bundle type byte is wire format.
+pub const BUNDLE_TYPE_API_KEY: u8 = 4;
 
 pub fn export_credential(
     conn: &Connection,
@@ -106,6 +113,16 @@ pub fn export_tracked_file(container: &[u8], recipient_public_key: &[u8; 32]) ->
     push_len_prefixed(&mut payload, tracked.logical_name.as_bytes())?;
     payload.extend_from_slice(container);
     encode_bundle(BUNDLE_TYPE_TRACKED_FILE, recipient_public_key, &payload)
+}
+
+/// Seal an already signed API key issue (`api_key_delivery::sign`) as a
+/// portable `KQXB` file for `recipient_public_key`. The payload is signed
+/// before it is sealed, so this adds no trust: it only chooses the carrier.
+pub fn export_api_key_issue(
+    signed_payload: &[u8],
+    recipient_public_key: &[u8; 32],
+) -> Result<Vec<u8>> {
+    encode_bundle(BUNDLE_TYPE_API_KEY, recipient_public_key, signed_payload)
 }
 
 fn encode_bundle(

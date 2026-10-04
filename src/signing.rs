@@ -23,6 +23,7 @@ const FILE_HISTORY_EVENT_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-EVENT-v1";
 const FILE_BRIDGE_APPROVAL_DOMAIN: &[u8] = b"KQ-FILE-BRIDGE-APPROVAL-v1";
 const RELAY_AUDIT_ANCHOR_DOMAIN: &[u8] = b"KQ-RELAY-AUDIT-ANCHOR-v1";
 const RELAY_AUDIT_CHECKPOINT_DOMAIN: &[u8] = b"KQ-RELAY-AUDIT-CHECKPOINT-v1";
+const RELAY_API_KEY_ISSUE_DOMAIN: &[u8] = b"KQ-RELAY-API-KEY-ISSUE-v1";
 
 /// Verifies `signature` over `message` under `public_key`. Uses
 /// `verify_strict` rather than `verify` — it rejects the non-canonical
@@ -223,6 +224,53 @@ pub fn relay_audit_anchor_preimage(
     hash_len_prefixed(&mut hasher, signed_at.as_bytes())?;
     hasher.update(Sha256::digest(certificate));
     Ok(hasher.finalize().into())
+}
+
+/// What a relay signs when it issues a customer API key sealed to that
+/// customer (`api_key_delivery`): every field of the sealed payload, with
+/// the certificate by digest as the audit anchors bind it, plus the
+/// recipient's own X25519 public key, so a payload re-sealed to anyone else
+/// fails. Absent optional fields hash as a zero presence byte, so no value
+/// of one can pass for the absence of another.
+#[allow(clippy::too_many_arguments)]
+pub fn relay_api_key_issue_preimage(
+    recipient_public_key: &[u8; 32],
+    relay_url: &str,
+    key_id: i64,
+    scope: &str,
+    token: &str,
+    issued_at: &str,
+    expires_at: Option<&str>,
+    device_id: Option<&[u8; 16]>,
+    certificate: &[u8],
+    licence: Option<&str>,
+) -> Result<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    hasher.update(RELAY_API_KEY_ISSUE_DOMAIN);
+    hasher.update(recipient_public_key);
+    hash_len_prefixed(&mut hasher, relay_url.as_bytes())?;
+    hasher.update(key_id.to_be_bytes());
+    hash_len_prefixed(&mut hasher, scope.as_bytes())?;
+    hash_len_prefixed(&mut hasher, token.as_bytes())?;
+    hash_len_prefixed(&mut hasher, issued_at.as_bytes())?;
+    hash_optional(&mut hasher, expires_at.map(str::as_bytes))?;
+    hash_optional(&mut hasher, device_id.map(|id| &id[..]))?;
+    hasher.update(Sha256::digest(certificate));
+    hash_optional(&mut hasher, licence.map(str::as_bytes))?;
+    Ok(hasher.finalize().into())
+}
+
+fn hash_optional(hasher: &mut Sha256, field: Option<&[u8]>) -> Result<()> {
+    match field {
+        Some(bytes) => {
+            hasher.update([1u8]);
+            hash_len_prefixed(hasher, bytes)
+        }
+        None => {
+            hasher.update([0u8]);
+            Ok(())
+        }
+    }
 }
 
 /// What a relay signs for an audit checkpoint the operator keeps off the

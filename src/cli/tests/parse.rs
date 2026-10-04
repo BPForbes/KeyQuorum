@@ -432,6 +432,42 @@ fn relay_push_with_dir_parses() {
 }
 
 #[test]
+fn loadkey_bundle_excludes_a_typed_key_and_takes_a_slot_or_key_file() {
+    assert!(Cli::try_parse_from(["keyquorum", "loadkey", "--bundle", "customer.kqkey"]).is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "loadkey",
+        "--bundle",
+        "customer.kqkey",
+        "--slot",
+        "/usb/alice=alice",
+        "--url",
+        "https://relay.example.com",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "loadkey",
+        "kq_example",
+        "--bundle",
+        "customer.kqkey"
+    ])
+    .is_err());
+    assert!(Cli::try_parse_from(["keyquorum", "loadkey", "--slot", "/usb/alice=alice"]).is_err());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "loadkey",
+        "--bundle",
+        "customer.kqkey",
+        "--slot",
+        "/usb/alice=alice",
+        "--share-file",
+        "alice.key"
+    ])
+    .is_err());
+}
+
+#[test]
 fn loadkey_parses_with_and_without_positional_key() {
     assert!(Cli::try_parse_from(["keyquorum", "loadkey"]).is_ok());
     assert!(Cli::try_parse_from([

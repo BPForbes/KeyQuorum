@@ -174,6 +174,24 @@ pub enum KeysCommand {
         /// Internal operator lock (`kql_…`). Prompted or KEYQUORUM_LICENSEE_KEY if omitted.
         #[arg(long)]
         licensee_key: Option<String>,
+        /// Seal the new key to this X25519 public key (hex, from the customer's
+        /// `keyquorum device public`) and write it as a `.kqkey` bundle at --out
+        /// instead of printing it. For inbox.pull and device.pull the key is
+        /// bound to this key's fingerprint, so --fingerprint may be left out
+        #[arg(long, requires = "out", requires = "relay_url")]
+        recipient_key: Option<String>,
+        /// Where to write the sealed bundle (created owner-only, never overwritten)
+        #[arg(long, requires = "recipient_key")]
+        out: Option<PathBuf>,
+        /// The relay URL the customer loads the key for, carried inside the bundle
+        #[arg(long, requires = "recipient_key")]
+        relay_url: Option<String>,
+        /// Bind the bundle to one container: its device id (hex, 16 bytes)
+        #[arg(long, requires = "recipient_key")]
+        device_id: Option<String>,
+        /// A UTF-8 licence statement to carry inside the sealed bundle
+        #[arg(long, requires = "recipient_key")]
+        licence_file: Option<PathBuf>,
     },
     List,
     /// Print the API-key lifecycle audit trail (created, rotated, revoked).
@@ -220,6 +238,13 @@ pub enum KeysCommand {
         #[arg(long)]
         krl: Option<PathBuf>,
     },
+    /// Replace a key. A key that was sealed to its customer is rotated the
+    /// same way: the replacement is stored in the mailbox as a sealed letter
+    /// the customer's next pull collects, and the old key stays usable for
+    /// --grace-seconds to collect it. With --out the replacement is written
+    /// as a sealed bundle and the old key is revoked at once. A key never
+    /// sealed to anyone is still printed once, unless --recipient-key says
+    /// whom to seal it to from now on.
     Rotate {
         id: i64,
         #[arg(long)]
@@ -230,5 +255,24 @@ pub enum KeysCommand {
         krl: Option<PathBuf>,
         #[arg(long)]
         licensee_key: Option<String>,
+        /// Seal the replacement to this X25519 public key (hex) from now on
+        #[arg(long)]
+        recipient_key: Option<String>,
+        /// The relay URL carried inside the issue (default: the one recorded for the key)
+        #[arg(long, requires = "recipient_key")]
+        relay_url: Option<String>,
+        /// Bind the issue to one container: its device id (hex, 16 bytes)
+        #[arg(long, requires = "recipient_key")]
+        device_id: Option<String>,
+        /// A UTF-8 licence statement to carry inside the sealed issue
+        #[arg(long, requires = "recipient_key")]
+        licence_file: Option<PathBuf>,
+        /// Write the replacement as a sealed `.kqkey` bundle here (never
+        /// overwritten) instead of a mailbox letter, revoking the old key now
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// How long the old key stays usable to collect a mailbox letter
+        #[arg(long, default_value_t = crate::relay::key_delivery::DEFAULT_GRACE_SECONDS)]
+        grace_seconds: i64,
     },
 }
