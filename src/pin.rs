@@ -14,6 +14,7 @@
 use crate::crypto;
 use crate::error::{Error, Result};
 use rusqlite::{params, Connection, OptionalExtension};
+use subtle::ConstantTimeEq;
 
 const MAX_ATTEMPTS: i64 = 8;
 
@@ -181,7 +182,13 @@ pub fn verify_pin(
     }
 
     let candidate_hash = crypto::derive_key(pin, &row.pin_salt)?;
-    if candidate_hash.as_slice() != row.pin_hash.as_slice() {
+    // Constant time, so how long a mismatch takes says nothing about how
+    // much of the stored hash it shared.
+    let matches: bool = candidate_hash
+        .as_slice()
+        .ct_eq(row.pin_hash.as_slice())
+        .into();
+    if !matches {
         conn.execute(
             "UPDATE pins SET attempt_count = attempt_count + 1 WHERE id = ?1",
             params![row.id],

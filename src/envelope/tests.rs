@@ -20,7 +20,7 @@ fn seal_round_trips_under_the_recipient_key() {
     let (k, addressed, payload) = open(&sealed, &secret.to_bytes()).expect("open");
     assert_eq!(k, KIND_TREE_UPDATE);
     assert_eq!(addressed, public);
-    assert_eq!(payload, b"letter");
+    assert_eq!(payload.as_slice(), b"letter");
 }
 
 #[test]

@@ -53,6 +53,10 @@ pub enum DeliverCommand {
         url: Option<String>,
         #[arg(long, requires = "push")]
         api_key: Option<String>,
+        /// Set by `keyquorum send`: queue the letter in the sender's outbox
+        /// ring and send it from there. Never a flag of `deliver send`.
+        #[arg(skip)]
+        via_outbox: bool,
     },
     /// Open a letter addressed to you: verify the sender, keep the file, and
     /// seal a signed acknowledgement back to them
@@ -117,6 +121,7 @@ pub fn run(conn: &Connection, command: DeliverCommand) -> Result<()> {
             push,
             url,
             api_key,
+            via_outbox,
         } => {
             let contents = env::read(&file)?;
             let file_name = match name {
@@ -139,6 +144,7 @@ pub fn run(conn: &Connection, command: DeliverCommand) -> Result<()> {
                     push,
                     url,
                     api_key,
+                    via_outbox,
                 },
             )?;
         }
@@ -264,6 +270,8 @@ pub(super) struct Outbound<'a> {
     pub(super) push: bool,
     pub(super) url: Option<String>,
     pub(super) api_key: Option<String>,
+    /// Queue in the sender's outbox ring and send from it (`keyquorum send`).
+    pub(super) via_outbox: bool,
 }
 
 #[inline(never)]
@@ -279,6 +287,7 @@ pub(super) fn seal_and_carry(conn: &Connection, out: Outbound<'_>) -> Result<()>
         push,
         url,
         api_key,
+        via_outbox,
     } = out;
     let (as_label, slot) =
         profile::resolve_signer(conn, as_label, slot, signing_key_file.as_deref())?;
@@ -301,6 +310,17 @@ pub(super) fn seal_and_carry(conn: &Connection, out: Outbound<'_>) -> Result<()>
         "Sealed {file_name} to {to} (delivery {})",
         hex::encode(sealed.delivery_id)
     );
+    if via_outbox {
+        let transport = (output_dir.as_deref(), url, api_key);
+        return super::outbox_cmd::carry_via_outbox(
+            conn,
+            &as_label,
+            to,
+            &letter.bytes,
+            None,
+            transport,
+        );
+    }
     carry(conn, &letter, output_dir.as_deref(), push, url, api_key)
 }
 

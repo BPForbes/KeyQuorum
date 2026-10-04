@@ -47,4 +47,13 @@ The `security` workflow runs RustSec advisories (`cargo audit`), `cargo deny`
 (advisories, licenses, sources), secret scanning (`gitleaks`), `npm audit` for the
 Lab and CodeQL for the Rust crate, the Lab's TypeScript and the workflows. CodeQL
 findings are reported with their SOC 2 criterion, and a high or critical finding
-fails the `codeql gate` check. Dependabot proposes dependency updates.
+fails the `codeql gate` check. The `lint` workflow runs `cargo fmt --check` and
+clippy with warnings as errors. Dependabot proposes dependency updates.
+
+## SOC 2 controls
+
+[`docs/soc2-controls.md`](docs/soc2-controls.md) maps each Trust Services
+Criterion to the control that implements it here and the test or workflow that
+evidences it. It also lists what an operator must provide (TLS termination,
+rate limiting, backups, log retention), the known limitations, and the log of
+past audits.

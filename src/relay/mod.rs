@@ -8,6 +8,7 @@
 //! that a personal SQLite store translates.
 
 mod api_key;
+pub mod audit;
 mod client;
 mod device_directory;
 mod device_mail;
@@ -18,11 +19,12 @@ mod server;
 pub mod service;
 
 pub use api_key::{
-    authenticate, authenticate_licensee, authorize_licensee_or_bootstrap,
-    bootstrap_licensee_if_empty, check_hash, check_token, create as create_api_key, hash_bearer,
-    list as list_api_keys, record_provider_auth_event, revoke as revoke_api_key,
-    rotate as rotate_api_key, ApiKeyInfo, ApiKeyScope, AuthedKey, CreatedApiKey, CreatedLicensee,
-    KeyCheck, NewApiKey,
+    authenticate, authenticate_any, authenticate_licensee, authorize_licensee_or_bootstrap,
+    bootstrap_licensee_if_empty, check_hash, check_token, create as create_api_key,
+    events as api_key_events, events_for_key as api_key_events_for_key,
+    events_visible_to as api_key_events_visible_to, hash_bearer, list as list_api_keys,
+    record_provider_auth_event, revoke as revoke_api_key, rotate as rotate_api_key, ApiKeyEvent,
+    ApiKeyInfo, ApiKeyScope, AuthedKey, CreatedApiKey, CreatedLicensee, KeyCheck, NewApiKey,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use client::UreqTransport;
@@ -54,7 +56,10 @@ pub use org_tree::{
     merge_public_tree, put_public_tree, slices_for_fingerprint,
 };
 #[cfg(feature = "provider")]
-pub use server::{router, AppState};
+pub use server::{
+    anchor_now, check_bind, router, AppState, RateLimiter, MAX_RATE_LIMITED_CLIENTS,
+    REQUEST_TIMEOUT,
+};
 pub use service::{ProviderIdentity, MAX_ENVELOPE_BYTES};
 
 use crate::error::{Error, Result};
@@ -89,7 +94,12 @@ pub fn open(path: &str) -> Result<Connection> {
         }
     }
     let conn = Connection::open(path)?;
+    // Owner-only before and after the schema, like the personal store: the
+    // relay database holds API-key hashes, the audit trail and every stored
+    // envelope, and must not be readable or writable by other local users.
+    crate::db::restrict_db_files(path)?;
     init(&conn)?;
+    crate::db::restrict_db_files(path)?;
     Ok(conn)
 }
 
@@ -152,7 +162,18 @@ fn migrate(conn: &Connection) -> Result<()> {
         }
         device_mail::backfill_expiry(conn)?;
     }
-    widen_api_key_scopes(conn)
+    widen_api_key_scopes(conn)?;
+    for table in ["api_key_events", "provider_auth_events"] {
+        if table_sql(conn, table)?.is_none() {
+            continue;
+        }
+        for column in ["prev_hash", "entry_hash"] {
+            if !table_has_column(conn, table, column)? {
+                conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"), [])?;
+            }
+        }
+    }
+    crate::db::with_immediate_transaction(conn, || audit::backfill(conn))
 }
 
 /// `CREATE TABLE IF NOT EXISTS` does not widen a CHECK already stored in

@@ -1,11 +1,12 @@
 use super::*;
 use crate::device::{self, Container};
 use crate::relay;
+use crate::test_secrets::shared_passphrase;
 
 fn signed_device() -> (Container, tempfile::TempDir, DeviceDescriptor) {
     let dir = tempfile::tempdir().unwrap();
     let mut container = device::init(dir.path()).unwrap();
-    device::provision(&mut container, "M", "slot-passphrase").unwrap();
+    device::provision(&mut container, "M", shared_passphrase()).unwrap();
     let slots = container
         .slots()
         .iter()

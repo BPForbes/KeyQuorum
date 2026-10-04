@@ -82,6 +82,127 @@ personal SQLite file. Later commands re-check the hash and inject the
 bearer. Never commit bearers, `.kqpb` files, `*.kqcert`, `*.kqrl`,
 `*.kqpolicy`, provider root keys, or the relay database.
 
+The relay host's own operating controls: the relay database is owner-only
+(0600, journal sidecars too, like the personal store). It serves plain HTTP,
+so `serve` refuses a non-loopback `--bind` unless `--behind-tls-proxy` says a
+TLS-terminating proxy forwards to it; every request is cut off at
+`relay::REQUEST_TIMEOUT` (30 s, answered 408) inside the body limit. Every
+API-key change (created, rotated, revoked, by `host` or by `admin:<id>` over
+HTTP) lands in `api_key_events`, which `host keys events` prints; every mint
+authorization (`keys.create`, `keys.rotate`), granted or refused, lands in
+`provider_auth_events`. Authentication and scope denials are logged at WARN by
+reason, and the host logs at INFO unless `RUST_LOG` says otherwise. None of
+those records or logs holds a bearer, a key hash or a challenge. Both tables
+are hash-chained (`prev_hash`, `entry_hash`) by `src/relay/audit.rs`, which
+owns the chain and `audit_anchors`: the relay signs each chain head with its
+relay key (`signing::relay_audit_anchor_preimage`) at startup, on every scan,
+after each host `keys` command and after an HTTP revocation, and
+`audit::verify` (`host keys events --verify`) trusts an anchor only when its
+certificate chains to the provider root, is not revoked, and was valid at
+`signed_at`; rows after the newest trusted anchor are pending. `signed_at` is
+the signer's word, so `host keys checkpoint` signs every table's count and head
+into an owner-only file the operator keeps off the relay, and `--checkpoint` on
+`--verify` requires the chain to match it and refuses an anchor over rows past
+it dated before it (`signing::relay_audit_checkpoint_preimage`).
+`GET /audit/api-keys` takes any live key and returns only the events that
+pertain to it (`api_key::events_visible_to`; an admin key sees all). Each
+client gets `--rate-limit-per-minute` requests (600 by default, 0 is off; 429
+with `Retry-After`), keyed by peer address (an IPv6 one by its /64), or by the last `X-Forwarded-For`
+entry behind `--behind-tls-proxy`, in a table capped at
+`MAX_RATE_LIMITED_CLIENTS`. `identity
+generate` and `root generate` write the private key only to
+`--private-key-out` (owner-only, never overwritten) and never print it.
+Prompted passphrases, passwords, PINs and pasted API keys are
+`Zeroizing<String>` (`cli::env::prompt_secret`, `transfer::Passphrases`), and
+so are the vault password and the stored relay bearer (whose `Debug` is
+redacted); decrypted plaintext (`crypto::decrypt`, `envelope::open`, the
+quorum and password-locked unlocks) is `Zeroizing<Vec<u8>>`.
+The relay client reads at most `relay::client::MAX_RESPONSE_BYTES` (256 MiB)
+of any response, the provider challenge included, and quotes a relay's error
+body only through `relay_error_text` (control characters dropped, 512 chars).
+
+`src/outbox.rs` owns each person's outbox ring buffer (`outbox_rings`,
+`outbox_slots` in the personal store) and `keyquorum outbox`
+(`src/cli/outbox_cmd.rs`, an everyday command) drives it. A ring has a
+capacity (32 by default, 1 to 1024, changed only while empty), a write
+pointer, a read pointer, a `size` of held slots and `sent_total`; its state is
+`Empty`, `Partial` or `Full`. `push` writes at the write pointer and a full
+ring refuses rather than overwrite an unsent letter. Only `send_next` moves
+the read pointer: it claims the head in one short immediate transaction that
+re-checks trust, hands the letter to the sender with no transaction open (an
+upload never holds the store's one write lock), and, if that succeeds, wipes
+the slot (zeroblob plus `secure_delete`) and advances in another, only while the
+head still carries its claim; a failed or refused send moves nothing and frees
+the claim. A claim younger than `outbox::CLAIM_LEASE_SECS` (120) keeps a second
+send and `drop_next` off the head; a crashed send's claim lapses, a release
+that fails (it runs in its own immediate transaction) is reported with the way
+out, and `send_next_taking_over` / `drop_next_taking_over` (`outbox send|drop
+--take-over`) take a stuck head at once. That is safe because delivery is
+idempotent: the relay keeps one row per recipient and content hash and answers
+a repeat with the same letter id, and `outbox_cmd::publish_letter` writes a
+private `.part` sibling and moves it into place with `Storage::rename_new`
+(a hard link natively, or a `create_new` copy where hard links are missing, so
+never replacing a file; only an identical one counts as written, any other
+file at the name is refused and never removed, and `.part` leftovers of this
+letter are removed), so a repeated or overlapping delivery is still one letter; only the
+send whose claim the head carries frees the slot, and a published letter is
+never taken back.
+`drop_next` discards the head unsent. A `KQPB` is the passport: the ring
+holds nothing else (raw `KQXB`, `KQBS`, `KQBN`, `KQHS`, `KQTF` are refused and
+travel inside a letter), and device kinds 9 to 12 are refused
+(`envelope::is_device_workflow_kind`). The letter must be sealed to an active
+encryption key the store holds for the recipient (`keys::is_active_key`, the
+same check `org_update` and `file_delivery::recipient_owns_key` use). Every
+letter turned away at departure, by `push` or at `send_next`'s gate, is recorded
+in `outbox_refusals` (`outbox::Refusal`: `no_passport`, `device_letter`,
+`unrecognised_destination`, `out_of_order`, `ring_full`, `oversized`,
+`tampered`; recipient, kind and missing step, never the letter or its hash; the
+newest `MAX_REFUSALS_KEPT` per owner), after the rolled-back transaction, in
+one transaction with its timeline event, and `outbox refusals` lists them; a
+refusal that cannot be recorded is still refused and its error says so. A
+delivery that fails in transit is not a refusal.
+The ring is the default way out: `send` (files, tracked files, `--quorum-file`)
+seals as `deliver send` / `file share` would and then, through
+`outbox_cmd::carry_via_outbox` (the `via_outbox` field only `send` sets), queues
+the letter and sends the ring oldest first through it; a failed upload leaves it
+queued for `outbox send`. Through `send` a tracked file needs its visa only once
+asked (`exchange::Visa::IfRequested`: the recipient's latest file request must be
+accepted); `outbox add --file` stays `Visa::Required`. The legacy commands carry
+directly as before. `src/ring.rs` is the one copy of the ring arithmetic (ensure,
+advance the write pointer, release a slot and move the read pointer past released
+ones, resize when empty), used by the outbox and by each store's inbox ring
+(`inbox_rings`, `inbox_slots`, `db::inbox`, one ring per relay,
+`db::inbox::RING_CAPACITY` 256): a pulled letter stays a file in the inbox
+directory and its slot keeps its hash, so a changed file is not opened; a
+delivered letter's slot is released and marked handled in one transaction,
+then its file deleted (`inbox open`, and `inbox drop <id>` unopened); a file a
+failed delete left behind is deleted by the next inbox command (`sweep`, keyed
+on the handled mark, never re-delivering); a full ring stops the pull with the
+cursor at the last letter held, so the rest stay on the relay, and the note
+names the oldest letter when it alone holds the ring's span. Each ring also
+keeps a timeline (`src/ring/history.rs`, tables `ring_histories` and
+`ring_events`): every queue, send, drop and refusal (outbox) and every receipt,
+open and drop (inbox) is a `file_history` event (`LETTER_QUEUED` 42 to
+`LETTER_OPENED` 47, appended) stamped by the store's clock, recorded in the
+same transaction as the slot change and hash-chained from the ring's own
+genesis, so the timeline is a `KQHS` snapshot (`HistoryEvent::chained`,
+`HistorySnapshot::from_events`). It holds slots, labels, letter ids, kinds and
+rule names only, never a letter or its hash; `outbox history` / `inbox history`
+print it, `--snapshot` writes it and `--check` confirms the timeline still
+passes through an earlier one.
+`src/file_delivery/exchange.rs` owns the order of a tracked file's letters:
+request (18), answer (19), file (15, only after an accepted file request from
+that person and a `file share` after it), receipt (16, only for a file
+received from them), snapshot (17, after a completed delivery). It stores
+nothing: `require_step` reads the sender's own copy (`outbox add --file`), whose
+history already records each step. It cannot open the sealed letter, so it
+confirms only that the named copy shows the step before with that peer, not
+that the letter is about that copy or request; the receiving commands bind
+those when they open it. `request_event` and `REQUEST_EVENTS` are
+the helpers `file_cmd` uses too. A `KQXB` is not a step (unsigned, every
+revision) and a `KQTX` never travels with a file. The `./outbox` directory
+`send --offline` writes is unrelated.
+
 A hardware key with no `device_placements` row is its own device: that is the
 original one-key one-device exchange, and distinct key files count as distinct
 devices. `src/device.rs` owns containers, placements, and custody policy.
@@ -140,7 +261,9 @@ the sender and answered with a signed accept/reject, both checked against
 the signing key the opening store has registered for the claimed label.
 The bridge inbox carries them like any other non-device letter. Tracked
 files travel as `KIND_FILE_HISTORY` / `KIND_FILE_HISTORY_ACK` (15, 16) in the
-same module: the sender signs the header and the container's hash, and the
+same module: the sender signs the header and a keyed commitment to the container (`crypto::commit`
+under a random key sealed in the letter; protected content is never hashed bare, and a
+commitment is only ever compared, `HistoryAck::confirms`), and the
 container carries only the delivered revision and its ancestors
 (`TrackedFile::extract_revision`, which also keeps events that name no
 revision, such as a rename), so an untrusted newer revision never
@@ -387,7 +510,8 @@ Rules:
 
 The everyday commands (`src/cli/{profile,send,inbox,setup,doctor}.rs`: `use`,
 `cache`, `send`, `inbox`, `setup`, `doctor`) add no rule of their own. `send`
-builds the command `deliver send` or `file share` would, and `inbox open` calls
+builds the command `deliver send` or `file share` would (marked `via_outbox`, so
+the letter goes through the sender's outbox ring), and `inbox open` calls
 those commands' own handlers (`deliver_cmd::run`, `file_cmd::run`,
 `org_update::import_any`) and judges nothing; `inbox open <id>` takes `--into`/`--out`
 (a tracked file), `--file` (the copy an acknowledgement, request answer, request or snapshot
@@ -455,9 +579,16 @@ Each seeded person has `use` and `device bind` run for their own slot (re-run fo
   `#[cfg(test)] #[path = "<module>/tests.rs"] mod tests;`. Nested files such as
   `src/relay/client.rs` load `src/relay/client/tests.rs` the same way. Shared
   test helpers belong in a `#[cfg(test)]` module, not in production code.
+- Tests never write a secret as a literal: passphrases, passwords, PINs and
+  nonces come from `crate::test_secrets` (`passphrase`, `other_passphrase`,
+  `pin`, `other_pin`, `bytes32`, `shared_passphrase`), drawn at run time. A
+  test's assertion message never formats a command's `Result`, error or
+  output: name the command line instead. Both keep CodeQL
+  (`rust/hard-coded-cryptographic-value`, `rust/cleartext-logging`) clean.
 
 - Legacy checks: tests of deprecated verbs (`deliver`, `file receive|ack`, `relay pull` spellings) sit behind the `legacy-tests` feature and the `legacy` workflow (`.github/workflows/legacy.yml`), whose single job is skipped by default and run on the `legacy` PR label or a manual dispatch. `--all-features` includes them; the everyday CI gate is `--features provider,lab,tui`. Both run the same parallel test groups (`.github/workflows/tests.yml`: lab, cli, file_history, relay+provider+db, and everything else), so a new module needs no workflow edit.
 - Security checks: `.github/workflows/security.yml` runs `cargo audit`, `cargo deny --locked check` (policy in `deny.toml`), `gitleaks` over the full history (allowlist in `.gitleaks.toml`, which passes only the published Lab demo passphrases and lockfile checksums), `npm audit` for `lab/` and CodeQL (security-and-quality suite from `.github/codeql/codeql-config.yml`, for Rust, the Lab's TypeScript and the workflows; `.github/scripts/codeql_report.py` prints each finding as source, source quote, quoted lines, SOC 2 criterion and fix, and the `codeql gate` check fails on a high or critical finding in shipped code), on every PR, on `main` and weekly; `.github/workflows/sbom.yml` keeps CycloneDX SBOMs as artifacts. A new dependency must satisfy `deny.toml` (add a licence only after checking it). Dependabot covers Actions, Cargo and npm, but only Actions updates auto-merge; cargo and npm updates (which include the cryptographic crates) wait for a person. Vulnerabilities are reported privately as `SECURITY.md` describes.
+- SOC 2: `docs/soc2-controls.md` maps each Trust Services Criterion to the control in this repository, its evidence (test or workflow) and what the operator must still provide (TLS termination, rate limiting, backups, log retention). Update it with any change to a control it names.
 
 ## Review guidelines (strict, SOC 2)
 

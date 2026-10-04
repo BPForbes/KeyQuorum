@@ -23,14 +23,19 @@ pub mod keys;
 pub mod lab;
 pub mod locked_files;
 pub mod org_update;
+pub mod outbox;
 pub mod pin;
 pub mod private_bridge;
 pub mod provider;
 pub mod pss;
 pub mod quorum;
 pub mod relay;
+pub(crate) mod ring;
 pub mod sharing;
 pub mod signing;
 pub mod storage;
 pub mod transfer;
 pub mod vault;
+
+#[cfg(test)]
+pub(crate) mod test_secrets;

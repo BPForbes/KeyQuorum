@@ -62,6 +62,19 @@ pub enum HistoryEventType {
     FileRequested = 39,
     ChangeRequested = 40,
     RequestAnswered = 41,
+    /// A ring's timeline (`ring::history`), not a file's: a letter took a
+    /// slot of an outbox ring.
+    LetterQueued = 42,
+    /// A letter left its outbox slot for the relay or an output directory.
+    LetterSent = 43,
+    /// A letter was discarded from its slot unsent (outbox) or unopened (inbox).
+    LetterDropped = 44,
+    /// The outbox turned a letter away at departure.
+    LetterRefused = 45,
+    /// A pulled letter took a slot of an inbox ring.
+    LetterReceived = 46,
+    /// A held letter was opened and its slot released.
+    LetterOpened = 47,
 }
 
 impl HistoryEventType {
@@ -101,7 +114,13 @@ impl HistoryEventType {
             | E::ShareLinkRedeemed
             | E::ShareLinkRevoked
             | E::FileRequested
-            | E::RequestAnswered => "sharing",
+            | E::RequestAnswered
+            | E::LetterQueued
+            | E::LetterSent
+            | E::LetterDropped
+            | E::LetterRefused
+            | E::LetterReceived
+            | E::LetterOpened => "sharing",
             E::AutoMergeBlocked
             | E::AutoMergeRequiresHuman
             | E::HistoryForkDetected
@@ -158,6 +177,12 @@ impl HistoryEventType {
             39 => Self::FileRequested,
             40 => Self::ChangeRequested,
             41 => Self::RequestAnswered,
+            42 => Self::LetterQueued,
+            43 => Self::LetterSent,
+            44 => Self::LetterDropped,
+            45 => Self::LetterRefused,
+            46 => Self::LetterReceived,
+            47 => Self::LetterOpened,
             _ => return Err(Error::InvalidTrackedFile),
         })
     }
@@ -205,6 +230,7 @@ pub const SAFE_DETAIL_KEYS: &[&str] = &[
     "by",
     "bundle_type",
     "candidate",
+    "container_commitment",
     "container_hash",
     "custody",
     "denied",
@@ -219,7 +245,9 @@ pub const SAFE_DETAIL_KEYS: &[&str] = &[
     "from_history_root",
     "gate",
     "gate_file",
+    "kind",
     "left",
+    "letter_id",
     "minimum_devices",
     "operation",
     "pending",
@@ -247,6 +275,7 @@ pub const SAFE_DETAIL_KEYS: &[&str] = &[
     "share",
     "shareable",
     "shares",
+    "slot",
     "state",
     "threshold",
     "to",
@@ -266,6 +295,14 @@ impl EventDetails {
 
     pub fn entries(&self) -> &[(String, String)] {
         &self.0
+    }
+
+    /// The value of the first entry named `key`.
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
     }
 
     /// The first key not in [`SAFE_DETAIL_KEYS`], if any.
@@ -364,6 +401,45 @@ impl HistoryEvent {
             push_len_prefixed(&mut out, value.as_bytes())?;
         }
         Ok(out)
+    }
+
+    /// The next event of a history kept outside a `.kqtf` (a ring's timeline,
+    /// `ring::history`), chained exactly as [`TrackedFile::append`] chains a
+    /// file's: a random event id, `sequence`, and a link to
+    /// `previous_event_hash`. The same detail keys are allowed, and it names no
+    /// revision, since such a history has none.
+    ///
+    /// [`TrackedFile::append`]: super::TrackedFile::append
+    pub fn chained(
+        history_id: [u8; 16],
+        sequence: u64,
+        previous_event_hash: [u8; 32],
+        new: NewEvent,
+    ) -> Result<Self> {
+        if new.details.unsafe_key().is_some() || new.revision_id.is_some() {
+            return Err(Error::InvalidTrackedFile);
+        }
+        let mut event_id = [0u8; 16];
+        crate::crypto::fill_random(&mut event_id);
+        Self::seal(event_id, sequence, history_id, previous_event_hash, new)
+    }
+
+    /// One event's encoding, as a snapshot carries it.
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        let mut out = Vec::new();
+        self.encode(&mut out)?;
+        Ok(out)
+    }
+
+    /// Decode one event written by [`Self::to_bytes`]; trailing bytes are
+    /// refused. Its hash is checked when its chain is.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut data = bytes;
+        let event = Self::decode(&mut data)?;
+        if !data.is_empty() {
+            return Err(Error::InvalidTrackedFile);
+        }
+        Ok(event)
     }
 
     pub fn compute_hash(&self) -> Result<[u8; 32]> {

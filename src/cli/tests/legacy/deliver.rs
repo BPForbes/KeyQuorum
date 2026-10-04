@@ -15,7 +15,7 @@ fn two_people() -> MemoryEnv {
         let (ok, out) = env.device(&format!(
             "keyquorum-device provision /usb/{who} --label {who}"
         ));
-        assert!(ok.is_ok(), "{ok:?}");
+        assert!(ok.is_ok(), "the command failed");
         assert!(out.starts_with(&format!("slot {who}")));
         let _ = peer;
     }
@@ -29,7 +29,7 @@ fn two_people() -> MemoryEnv {
             let (ok, _) = env.keyquorum(&format!(
                 "keyquorum --db /home/{store}/keyquorum.sqlite device register /usb/{owner} --slot {owner} --type {kind}"
             ));
-            assert!(ok.is_ok(), "{ok:?}");
+            assert!(ok.is_ok(), "the command failed");
         }
     }
     env.fs
@@ -51,7 +51,7 @@ fn send_open_and_acknowledge_a_letter() {
         "keyquorum --db /home/alice/keyquorum.sqlite deliver send --file /home/alice/note.txt \
          --to bob --as alice --slot /usb/alice=alice --output-dir /outbox",
     );
-    assert!(ok.is_ok(), "{ok:?}");
+    assert!(ok.is_ok(), "the command failed");
     assert!(out.starts_with("Sealed note.txt to bob (delivery "));
     let letter = only_file(&env, "/outbox");
 
@@ -59,7 +59,7 @@ fn send_open_and_acknowledge_a_letter() {
         "keyquorum --db /home/bob/keyquorum.sqlite deliver open --file {letter} \
          --slot /usb/bob=bob --save /home/bob/note.txt --ack-dir /acks"
     ));
-    assert!(ok.is_ok(), "{ok:?}");
+    assert!(ok.is_ok(), "the command failed");
     assert!(out.starts_with("Saved note.txt to /home/bob/note.txt"));
     assert_eq!(
         env.fs.read(Path::new("/home/bob/note.txt")).unwrap(),
@@ -71,7 +71,7 @@ fn send_open_and_acknowledge_a_letter() {
     let (ok, out) = env.keyquorum(&format!(
         "keyquorum --db /home/alice/keyquorum.sqlite deliver ack --file {ack} --slot /usb/alice=alice"
     ));
-    assert!(ok.is_ok(), "{ok:?}");
+    assert!(ok.is_ok(), "the command failed");
     assert!(out.contains(" accepted by bob"), "{out}");
 }
 
@@ -89,7 +89,7 @@ fn a_rejection_is_signed_and_reported() {
         "keyquorum --db /home/bob/keyquorum.sqlite deliver open --file {letter} \
          --slot /usb/bob=bob --reject --ack-dir /acks"
     ));
-    assert!(ok.is_ok(), "{ok:?}");
+    assert!(ok.is_ok(), "the command failed");
     assert!(!env.fs.exists(Path::new("/home/bob/note.txt")));
     let ack = only_file(&env, "/acks");
     let (_, out) = env.keyquorum(&format!(
@@ -147,7 +147,7 @@ const BOB_DB: &str = "keyquorum --db /home/bob/keyquorum.sqlite";
 fn use_defaults(env: &mut MemoryEnv) {
     for (db, who) in [(ALICE_DB, "alice"), (BOB_DB, "bob")] {
         let (ok, _) = env.keyquorum(&format!("{db} use --device /usb/{who} --slot {who}"));
-        assert!(ok.is_ok(), "{ok:?}");
+        assert!(ok.is_ok(), "the command failed");
     }
 }
 
@@ -158,17 +158,17 @@ fn stored_defaults_replace_as_and_slot() {
     let (ok, out) = env.keyquorum(&format!(
         "{ALICE_DB} deliver send --file /home/alice/note.txt --to bob --output-dir /outbox"
     ));
-    assert!(ok.is_ok(), "{ok:?}");
+    assert!(ok.is_ok(), "the command failed");
     assert!(out.starts_with("Sealed note.txt to bob (delivery "));
     let letter = only_file(&env, "/outbox");
     let (ok, out) = env.keyquorum(&format!(
         "{BOB_DB} deliver open --file {letter} --save /home/bob/note.txt --ack-dir /acks"
     ));
-    assert!(ok.is_ok(), "{ok:?}");
+    assert!(ok.is_ok(), "the command failed");
     assert!(out.starts_with("Saved note.txt"), "{out}");
     let ack = only_file(&env, "/acks");
     let (ok, out) = env.keyquorum(&format!("{ALICE_DB} deliver ack --file {ack}"));
-    assert!(ok.is_ok(), "{ok:?}");
+    assert!(ok.is_ok(), "the command failed");
     assert!(out.contains(" accepted by bob"), "{out}");
 }
 
@@ -210,11 +210,11 @@ fn a_recent_letter_is_reused_for_the_same_command_until_it_goes_stale() {
     let (ok, _) = env.keyquorum(&format!(
         "{BOB_DB} deliver open --file {letter} --reject --ack-dir /acks"
     ));
-    assert!(ok.is_ok(), "{ok:?}");
+    assert!(ok.is_ok(), "the command failed");
 
     env.now = Some("2026-09-27 00:10".into());
     let (ok, _) = env.keyquorum(&format!("{BOB_DB} deliver open --reject --ack-dir /acks2"));
-    assert!(ok.is_ok(), "{ok:?}");
+    assert!(ok.is_ok(), "the command failed");
     let stderr = String::from_utf8_lossy(&env.stderr).to_string();
     assert!(
         stderr.contains(&format!("using --file {letter} from 10m ago")),

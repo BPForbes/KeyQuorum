@@ -4,12 +4,14 @@
 use crate::crypto::{self, NONCE_LEN};
 use crate::error::{Error, Result};
 use rusqlite::{params, Connection};
+use zeroize::Zeroizing;
 
 pub struct Credential {
     pub id: i64,
     pub label: String,
     pub username: Option<String>,
-    pub password: String,
+    /// Zeroed when the credential is dropped.
+    pub password: Zeroizing<String>,
 }
 
 pub fn add_credential(
@@ -58,7 +60,11 @@ pub fn get_credential(conn: &Connection, id: i64, master_password: &str) -> Resu
     let nonce: [u8; NONCE_LEN] = nonce.try_into().map_err(|_| Error::IntegrityCheckFailed)?;
     let plaintext =
         crypto::decrypt(&key, &nonce, &ciphertext).map_err(|_| Error::InvalidPassword)?;
-    let password = String::from_utf8(plaintext).map_err(|_| Error::IntegrityCheckFailed)?;
+    let password = Zeroizing::new(
+        std::str::from_utf8(&plaintext)
+            .map_err(|_| Error::IntegrityCheckFailed)?
+            .to_owned(),
+    );
 
     Ok(Credential {
         id,

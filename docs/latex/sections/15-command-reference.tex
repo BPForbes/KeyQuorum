@@ -202,14 +202,29 @@ which flags conflict with or require others.
 \textbf{Command} & \textbf{Purpose} \\
 \midrule
 \code{send} & Seal a file (or a tracked file's newest trusted revision) to a
-  registered label and upload it, or write it to \file{./outbox}. \flag{--quorum-file} sends a quorum-protected file unlocked in memory. \\
+  registered label, queue it in your outbox ring and send it from there: upload
+  it, or write it to \file{./outbox}. \flag{--quorum-file} sends a quorum-protected file unlocked in memory. \\
 \code{inbox} & Pull what is waiting for you from the relay and list it
   (\code{inbox list} is the same, spelled out).
   \code{inbox open} opens each letter and posts the signed answer, including
   bridge and organization updates;
   with a letter id it also takes \flag{--into}/\flag{--out} (a tracked file),
   \flag{--file} (the copy an acknowledgement, request answer or snapshot
-  concerns) and \flag{--accept}/\flag{--decline} (a request). \\
+  concerns) and \flag{--accept}/\flag{--decline} (a request). A delivered
+  letter's slot is released and its file deleted; \code{inbox drop ID}
+  discards one unopened. \code{inbox history} shows the inbox ring's timeline
+  (\flag{--snapshot FILE}, \flag{--check FILE}). \\
+\code{outbox} & Your outbox ring buffer of sealed letters (\file{.kqpb}) for
+  trusted recipients: show it (index, size, state); \code{add LETTER... --to
+  LABEL} queues at the write pointer (\flag{--file} names your copy when a
+  tracked-file letter's order must be checked), \code{send} (\flag{--all},
+  \flag{--output-dir}, \flag{--take-over} for a letter a stopped send
+  still claims) sends from the read pointer, oldest first,
+  \code{drop} (\flag{--take-over}) discards the oldest, \code{capacity N} resizes an empty ring,
+  \code{refusals} (\flag{--limit}) lists the letters turned away at
+  departure and the rule each broke, \code{history} shows the ring's
+  timeline (\flag{--snapshot FILE}, \flag{--check FILE};
+  section~\ref{sec:ring-timeline}). \\
 \code{deliver send} & (Legacy; use \code{send}.) Seal a file to a registered
   label, signed with your signing key. \\
 \code{deliver open} & (Legacy; use \code{inbox open}.) Open a letter addressed to you: verify the sender,

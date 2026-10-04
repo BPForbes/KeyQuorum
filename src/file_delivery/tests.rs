@@ -67,10 +67,47 @@ fn letter_round_trips_through_the_relay_mailbox_and_back_as_an_ack() {
         DeliveryAck {
             delivery_id: sealed.delivery_id,
             recipient_label: "M.A".into(),
-            content_hash: sealed.content_hash,
+            content_commitment: sealed.content_commitment,
             accepted: true,
         }
     );
+    assert!(ack.confirms(&sealed.content_commitment));
+    assert!(!ack.confirms(&[0; 32]));
+}
+
+#[test]
+fn contents_are_committed_under_a_per_letter_key_never_hashed_bare() {
+    use sha2::{Digest, Sha256};
+    let conn = db::open_in_memory().unwrap();
+    let alice = register(&conn, "M.S.1");
+    let david = register(&conn, "M.A");
+    let contents = b"quarterly figures";
+    let seal = || {
+        seal_letter(&Outgoing {
+            sender_label: "M.S.1",
+            sender_signing_secret: &alice.signing_secret,
+            sender_encryption_public: &alice.encryption_public,
+            recipient_label: "M.A",
+            recipient_encryption_public: &david.encryption_public,
+            file_name: "figures.txt",
+            contents,
+        })
+        .unwrap()
+    };
+    let (first, second) = (seal(), seal());
+    let bare: [u8; 32] = Sha256::digest(contents).into();
+    // A bare digest would let anyone holding it confirm a guess at the file.
+    assert_ne!(first.content_commitment, bare);
+    // The same contents in two letters commit differently: the key is fresh.
+    assert_ne!(first.content_commitment, second.content_commitment);
+    // The recipient recomputes the sender's commitment from the sealed key,
+    // and an answer to one letter does not confirm the other.
+    let letter = open_letter(&conn, &david.encryption_secret, &first.bytes).unwrap();
+    assert_eq!(letter.content_commitment, first.content_commitment);
+    let ack_bytes = seal_ack(&letter, &david.signing_secret, true).unwrap();
+    let ack = open_ack(&conn, &alice.encryption_secret, &ack_bytes).unwrap();
+    assert!(ack.confirms(&first.content_commitment));
+    assert!(!ack.confirms(&second.content_commitment));
 }
 
 #[test]
@@ -198,7 +235,7 @@ fn a_tracked_letter_round_trips_through_the_inbox_and_back_as_an_ack() {
     assert_eq!(letter.decision, 2);
     assert_eq!(letter.content_proof, [6; 32]);
     assert_eq!(letter.container, CONTAINER);
-    assert_eq!(letter.container_hash, sealed.container_hash);
+    assert_eq!(letter.container_commitment, sealed.container_commitment);
 
     for accepted in [true, false] {
         let ack_bytes = seal_history_ack(&letter, &david.signing_secret, accepted).unwrap();
@@ -211,10 +248,12 @@ fn a_tracked_letter_round_trips_through_the_inbox_and_back_as_an_ack() {
                 recipient_label: "M.A".into(),
                 file_id: [3; 16],
                 revision_id: [4; 32],
-                container_hash: sealed.container_hash,
+                container_commitment: sealed.container_commitment,
                 accepted,
             }
         );
+        assert!(ack.confirms(&sealed.container_commitment));
+        assert!(!ack.confirms(&[0; 32]));
     }
 }
 
@@ -342,7 +381,7 @@ fn letter_for(revision: u8, root: u8) -> HistoryLetter {
         decision: 1,
         content_proof: [0; 32],
         container: Vec::new(),
-        container_hash: [0; 32],
+        container_commitment: [0; 32],
     }
 }
 

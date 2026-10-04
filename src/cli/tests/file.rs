@@ -23,11 +23,11 @@ pub(super) fn org() -> MemoryEnv {
         let (ok, _) = env.device(&format!(
             "keyquorum-device provision /usb/{dir} --label {label}"
         ));
-        assert!(ok.is_ok(), "{ok:?}");
+        assert!(ok.is_ok(), "the command failed");
         let (ok, _) = env.keyquorum(&format!(
             "keyquorum {DB} device register /usb/{dir} --slot {label} --type signing"
         ));
-        assert!(ok.is_ok(), "{ok:?}");
+        assert!(ok.is_ok(), "the command failed");
     }
     env.fs
         .write_new(Path::new("/work/report.txt"), b"totals: 100\n")
@@ -38,7 +38,7 @@ pub(super) fn org() -> MemoryEnv {
 /// A top-level `keyquorum` command against the org store that must succeed.
 fn ok_keyquorum(env: &mut MemoryEnv, args: &str) -> String {
     let (result, out) = env.keyquorum(&format!("keyquorum {DB} {args}"));
-    assert!(result.is_ok(), "{args}: {result:?}\n{out}");
+    assert!(result.is_ok(), "{args}: the command failed");
     out
 }
 
@@ -53,7 +53,7 @@ pub(super) fn run(env: &mut MemoryEnv, args: &str) -> (crate::error::Result<()>,
 
 pub(super) fn ok(env: &mut MemoryEnv, args: &str) -> String {
     let (result, out) = run(env, args);
-    assert!(result.is_ok(), "{args}: {result:?}\n{out}");
+    assert!(result.is_ok(), "{args}: the command failed");
     out
 }
 
@@ -686,11 +686,11 @@ fn only_a_bridges_signed_approval_of_the_revision_authorizes_a_cross_branch_edit
         assert!(result.is_ok(), "{out}");
     }
     // A tree whose sibling leaves M.S and M.A are bound (a live tree link).
-    let (result, out) = env.keyquorum(&format!(
+    let (result, _) = env.keyquorum(&format!(
         "keyquorum {DB} split --label M --leaf M.S=/keys/ms.pub --leaf M.A=/keys/ma.pub \
          --generate-keys --register"
     ));
-    assert!(result.is_ok(), "{result:?} {out}");
+    assert!(result.is_ok(), "the command failed");
     track(&mut env, "M.A", "M.A");
     edit(&mut env, "totals: 110\n");
     let out = ok(
@@ -786,11 +786,11 @@ fn cross_branch_policy_history_names_scope_owner_without_exposing_bridge_details
 #[test]
 fn a_restructure_keeps_recorded_generations_judged_and_unknown_ones_pending() {
     let mut env = org();
-    let (result, out) = env.keyquorum(&format!(
+    let (result, _) = env.keyquorum(&format!(
         "keyquorum {DB} split --label M --leaf M.S=/keys/ms.pub --leaf M.A=/keys/ma.pub \
          --generate-keys --register"
     ));
-    assert!(result.is_ok(), "{result:?} {out}");
+    assert!(result.is_ok(), "the command failed");
     track(&mut env, "M.A", "M.A");
     // The revision is stamped with the tree's generation, not 0.
     let generation: i64 = env
@@ -1416,10 +1416,24 @@ fn a_trusted_revision_is_delivered_accepted_and_acknowledged() {
         ),
     );
     assert!(out.contains("CurrentTrustedRevision"), "{out}");
+    // The attempt records a keyed commitment to the container it sealed,
+    // never a bare digest of the content it carries.
+    let sent =
+        crate::file_history::TrackedFile::decode(&env.fs.read(Path::new(KQTF)).unwrap()).unwrap();
+    let attempt = sent
+        .events()
+        .iter()
+        .find(|e| e.event_type == crate::file_history::HistoryEventType::ShareAttempted)
+        .expect("attempt recorded");
+    assert_eq!(
+        attempt.details.get("container_commitment").map(str::len),
+        Some(64)
+    );
+    assert_eq!(attempt.details.get("container_hash"), None);
 
     let letter = dir_file(&env, "/out");
-    let (result, out) = receive_as_mb(&mut env, "--out /work/received.kqtf");
-    assert!(result.is_ok(), "{result:?}\n{out}");
+    let (result, _) = receive_as_mb(&mut env, "--out /work/received.kqtf");
+    assert!(result.is_ok(), "the command failed");
     assert!(env.fs.exists(Path::new("/work/received.kqtf")));
     let verify = ok(&mut env, "verify /work/received.kqtf");
     assert!(verify.contains("TRUSTED"), "{verify}");
@@ -1471,7 +1485,7 @@ fn receiving_the_same_letter_again_does_not_record_the_delivery_twice() {
     // the copy it already holds.
     env.fs.delete(Path::new(&dir_file(&env, "/acks"))).unwrap();
     let (result, out) = receive_as_mb(&mut env, "--into /work/received.kqtf");
-    assert!(result.is_ok(), "{result:?}\n{out}");
+    assert!(result.is_ok(), "the command failed");
     assert!(out.contains("already recorded"), "{out}");
     let history = ok(&mut env, "history /work/received.kqtf");
     assert_eq!(history.matches("ShareDelivered").count(), 1, "{history}");
@@ -1494,7 +1508,7 @@ fn receiving_the_same_letter_to_the_same_out_file_resends_only_the_answer() {
     let before = env.fs.read(Path::new("/work/received.kqtf")).unwrap();
     env.fs.delete(Path::new(&dir_file(&env, "/acks"))).unwrap();
     let (result, out) = receive_as_mb(&mut env, "--out /work/received.kqtf");
-    assert!(result.is_ok(), "{result:?}\n{out}");
+    assert!(result.is_ok(), "the command failed");
     assert!(out.contains("already saved"), "{out}");
     assert_eq!(
         env.fs.read(Path::new("/work/received.kqtf")).unwrap(),
@@ -1634,7 +1648,7 @@ fn a_received_file_answers_its_provenance_without_the_senders_store() {
     let elsewhere = "--db /elsewhere/keyquorum.sqlite";
     let run_elsewhere = |env: &mut MemoryEnv, args: &str| {
         let (result, out) = env.keyquorum(&format!("keyquorum {elsewhere} file {args}"));
-        assert!(result.is_ok(), "{args}: {result:?}\n{out}");
+        assert!(result.is_ok(), "{args}: the command failed");
         out
     };
     // Who edited and signed it, under which rules, and whether the history
@@ -1894,7 +1908,7 @@ fn a_recipient_that_cannot_trust_the_revision_refuses_it_and_says_so() {
         "device register /usb/fake --slot M.A --type signing",
     ] {
         let (result, _) = env.keyquorum(&format!("keyquorum {b} {line}"));
-        assert!(result.is_ok(), "{line}: {result:?}");
+        assert!(result.is_ok(), "{line}: the command failed");
     }
     let (result, out) = run(
         &mut env,
@@ -2137,10 +2151,7 @@ fn a_scheduled_expiry_destroys_every_revision_on_first_touch_and_leaves_a_tombst
 
     env.now = Some("2026-09-29 00:00".into());
     let (result, _) = run(&mut env, &format!("checkout {KQTF} --out /work/after.txt"));
-    assert!(
-        matches!(result, Err(crate::error::Error::FileExpired)),
-        "{result:?}"
-    );
+    assert!(matches!(result, Err(crate::error::Error::FileExpired)));
     assert!(!env.fs.exists(Path::new("/work/after.txt")));
     let bytes = env.fs.read(Path::new(KQTF)).unwrap();
     for secret in [&b"totals: 100"[..], b"totals: SECOND"] {
@@ -2242,10 +2253,7 @@ fn a_tombstone_cannot_be_shared_imported_or_merged_into() {
             slot("M.A")
         ),
     );
-    assert!(
-        matches!(result, Err(crate::error::Error::FileExpired)),
-        "{result:?}"
-    );
+    assert!(matches!(result, Err(crate::error::Error::FileExpired)));
     assert!(env
         .fs
         .list(Path::new("/out"))
@@ -2333,7 +2341,7 @@ fn a_container_changed_since_it_was_read_is_not_overwritten() {
         assert!(stale.is_err(), "a stale save must be refused");
         Ok(())
     });
-    assert!(result.is_ok(), "{result:?}");
+    assert!(result.is_ok(), "the command failed");
     let name = ok(&mut env, &format!("status {KQTF}"));
     assert!(name.contains("changed.txt"), "{name}");
 }
@@ -2355,7 +2363,7 @@ fn a_new_container_never_replaces_one_that_appeared_meanwhile() {
         assert!(save(Path::new(KQTF), &file).is_err());
         Ok(())
     });
-    assert!(result.is_ok(), "{result:?}");
+    assert!(result.is_ok(), "the command failed");
 }
 
 // ---- activation, rename, derived heads -------------------------------------
@@ -2541,8 +2549,8 @@ fn a_rename_travels_with_the_delivered_history() {
             slot("M.A")
         ),
     );
-    let (result, out) = receive_as_mb(&mut env, "--out /work/received.kqtf");
-    assert!(result.is_ok(), "{result:?}\n{out}");
+    let (result, _) = receive_as_mb(&mut env, "--out /work/received.kqtf");
+    assert!(result.is_ok(), "the command failed");
     let history = ok(&mut env, "history /work/received.kqtf");
     assert!(history.contains("FileRenamed"), "{history}");
     assert!(ok(&mut env, "status /work/received.kqtf").starts_with("q3.txt ("));
@@ -2600,7 +2608,7 @@ fn deliver_open_also_requires_the_named_recipient_to_own_the_opening_key() {
         crate::cli::env::create_dir_all(Path::new("/out"))?;
         crate::cli::env::write(Path::new("/out/forged.kqpb"), &letter.bytes)
     });
-    assert!(result.is_ok(), "{result:?}");
+    assert!(result.is_ok(), "the command failed");
     let (result, _) = env.keyquorum(&format!(
         "keyquorum {DB} deliver open --file /out/forged.kqpb --slot {} --ack-dir /acks",
         slot("M.B")
@@ -2650,7 +2658,7 @@ fn a_letter_must_name_the_label_whose_key_opened_it() {
         crate::cli::env::create_dir_all(Path::new("/out"))?;
         crate::cli::env::write(Path::new("/out/forged.kqpb"), &letter.bytes)
     });
-    assert!(result.is_ok(), "{result:?}");
+    assert!(result.is_ok(), "the command failed");
     let (result, _) = receive_as_mb(&mut env, "--out /work/received.kqtf");
     let message = result.unwrap_err().to_string();
     assert!(
@@ -2702,7 +2710,7 @@ fn a_letter_whose_proof_descriptor_does_not_match_its_container_is_refused() {
         crate::cli::env::create_dir_all(Path::new("/out"))?;
         crate::cli::env::write(Path::new("/out/mismatch.kqpb"), &letter.bytes)
     });
-    assert!(result.is_ok(), "{result:?}");
+    assert!(result.is_ok(), "the command failed");
     let (result, _) = receive_as_mb(&mut env, "--out /work/received.kqtf");
     let message = result.unwrap_err().to_string();
     assert!(

@@ -11,7 +11,7 @@
 # .github/scripts/codeql_report.py prints each finding with its source, a quote
 # of that source, the offending lines and its SOC 2 criterion, and fails the
 # `codeql gate` check on a high or critical finding in shipped code. `cargo audit`,
-# `cargo deny` and clippy (in tests.yml) cover the Rust dependencies and style.
+# `cargo deny` cover the Rust dependencies; fmt and clippy run in lint.yml.
 
 name: Security
 
@@ -34,7 +34,7 @@ jobs:
     name: rust dependencies
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
@@ -49,7 +49,7 @@ jobs:
     name: secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -65,10 +65,10 @@ jobs:
     name: lab dependencies
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
@@ -90,15 +90,15 @@ jobs:
         # repository's own workflows (a changed workflow is a changed control).
         language: [rust, javascript-typescript, actions]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: github/codeql-action/init@v4
+      - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           languages: ${{ matrix.language }}
           build-mode: none
           config-file: ./.github/codeql/codeql-config.yml
-      - uses: github/codeql-action/analyze@v4
+      - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           category: "/language:${{ matrix.language }}"
           output: sarif-results
@@ -109,6 +109,16 @@ jobs:
         run: python3 -m unittest discover -s .github/scripts
       - name: Report findings with their SOC 2 criterion
         run: python3 .github/scripts/codeql_report.py sarif-results/*.sarif
+      # The full SARIF (every finding with its data-flow path) is kept as
+      # evidence, whether or not the report step passed.
+      - name: Keep the SARIF
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codeql-sarif-${{ matrix.language }}-${{ github.sha }}
+          path: sarif-results
+          if-no-files-found: warn
+          retention-days: 90
 
   # One stable check name for all CodeQL languages, for branch protection.
   codeql-gate:

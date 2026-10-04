@@ -62,7 +62,7 @@ fn authorized_signing_key_proves_possession() {
             revoked: false,
         }],
     );
-    let nonce = [7u8; 32];
+    let nonce = crate::test_secrets::bytes32();
     let ch = challenge("Acme Security Services", &relay_pk, &nonce);
     let signature = sign_provider_hardware(&hw_sk, &ch).expect("sign");
     let authorized = verify_provider_hardware(&policy, &ch, &hw_pk, &signature).expect("ok");
@@ -87,7 +87,7 @@ fn customer_signing_key_is_rejected() {
             revoked: false,
         }],
     );
-    let nonce = [3u8; 32];
+    let nonce = crate::test_secrets::bytes32();
     let ch = challenge("Acme Security Services", &relay_pk, &nonce);
     let signature = sign_provider_hardware(&customer_sk, &ch).expect("sign");
     assert!(matches!(
@@ -114,7 +114,7 @@ fn wrong_signature_is_rejected() {
             revoked: false,
         }],
     );
-    let nonce = [9u8; 32];
+    let nonce = crate::test_secrets::bytes32();
     let ch = challenge("Acme Security Services", &relay_pk, &nonce);
     let signature = sign_provider_hardware(&other_sk, &ch).expect("sign");
     assert!(matches!(
@@ -140,7 +140,7 @@ fn revoked_provider_hardware_is_rejected() {
             revoked: true,
         }],
     );
-    let nonce = [1u8; 32];
+    let nonce = crate::test_secrets::bytes32();
     let ch = challenge("Acme Security Services", &relay_pk, &nonce);
     let signature = sign_provider_hardware(&hw_sk, &ch).expect("sign");
     assert!(matches!(
@@ -165,7 +165,7 @@ fn relay_admin_role_cannot_mint_api_root() {
             revoked: false,
         }],
     );
-    let nonce = [4u8; 32];
+    let nonce = crate::test_secrets::bytes32();
     let ch = challenge("Acme Security Services", &relay_pk, &nonce);
     let signature = sign_provider_hardware(&hw_sk, &ch).expect("sign");
     assert!(matches!(

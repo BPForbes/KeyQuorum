@@ -20,6 +20,16 @@ pub trait Storage {
     fn write_new(&mut self, path: &Path, contents: &[u8]) -> Result<()>;
     /// Replace `to` with `from`, removing `from`.
     fn rename(&mut self, from: &Path, to: &Path) -> Result<()>;
+    /// Move `from` to `to` without ever replacing an existing `to`: an
+    /// `AlreadyExists` error instead. The default checks, then renames, which
+    /// is whole for a store only one command touches at a time (the in-memory
+    /// ones); [`NativeStorage`] makes it atomic.
+    fn rename_new(&mut self, from: &Path, to: &Path) -> Result<()> {
+        if self.exists(to) {
+            return Err(already_exists(to));
+        }
+        self.rename(from, to)
+    }
     fn delete(&mut self, path: &Path) -> Result<()>;
     fn create_dir_all(&mut self, path: &Path) -> Result<()>;
     /// Best effort: remove `path` if it is an empty directory.
@@ -59,6 +69,10 @@ impl Storage for NativeStorage {
 
     fn rename(&mut self, from: &Path, to: &Path) -> Result<()> {
         Ok(fs::rename(from, to)?)
+    }
+
+    fn rename_new(&mut self, from: &Path, to: &Path) -> Result<()> {
+        rename_new_with(from, to, |from, to| fs::hard_link(from, to))
     }
 
     fn delete(&mut self, path: &Path) -> Result<()> {
@@ -111,6 +125,34 @@ impl MemoryStorage {
             .cloned()
             .collect()
     }
+}
+
+/// [`Storage::rename_new`] on the real filesystem, with the hard link passed
+/// in so a test can make it fail. A hard link fails if `to` exists, so no
+/// other writer's file is ever replaced; the source name is then removed. A
+/// filesystem without hard links (FAT, say) creates `to` with `create_new`
+/// instead, which also never replaces a file, and copies the bytes in. A copy
+/// cut short by a crash can leave `to` short; no existing file is ever
+/// replaced or removed.
+pub(crate) fn rename_new_with(
+    from: &Path,
+    to: &Path,
+    link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> Result<()> {
+    match link(from, to) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => return Err(err.into()),
+        Err(_) => locked_files::write_owner_only(to, &fs::read(from)?)?,
+    }
+    let _ = fs::remove_file(from);
+    Ok(())
+}
+
+fn already_exists(path: &Path) -> Error {
+    Error::Io(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!("{} already exists", path.display()),
+    ))
 }
 
 fn not_found(path: &Path) -> Error {

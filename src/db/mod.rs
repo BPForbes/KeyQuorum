@@ -23,7 +23,9 @@ pub fn open(path: &str) -> crate::error::Result<Connection> {
     Ok(conn)
 }
 
-fn restrict_db_files(path: &str) -> crate::error::Result<()> {
+/// Owner-only (0600) on Unix for a SQLite file and any journal sidecars
+/// beside it. Shared with the relay database (`relay::open`).
+pub(crate) fn restrict_db_files(path: &str) -> crate::error::Result<()> {
     restrict_owner_only(path)?;
     for suffix in ["-journal", "-wal", "-shm"] {
         let sidecar = format!("{path}{suffix}");
@@ -161,6 +163,12 @@ fn migrate(conn: &Connection) -> Result<()> {
             }
             if !table_has_column(conn, "files", "expires_at")? {
                 conn.execute("ALTER TABLE files ADD COLUMN expires_at TEXT", [])?;
+            }
+            if !table_has_column(conn, "outbox_slots", "claim_token")? {
+                conn.execute_batch(
+                    "ALTER TABLE outbox_slots ADD COLUMN claim_token TEXT;
+                     ALTER TABLE outbox_slots ADD COLUMN claimed_at INTEGER;",
+                )?;
             }
             rebuild_key_nodes_if_share_required(conn)?;
             widen_relay_credential_scopes(conn)?;

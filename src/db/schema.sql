@@ -586,3 +586,108 @@ CREATE TABLE IF NOT EXISTS inbox_letters (
     status    TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'handled')),
     PRIMARY KEY (relay_url, letter_id)
 );
+
+-- Each store's inbox ring for one relay (`db::inbox`, `src/ring.rs`): the
+-- pulled letters held unopened, at most `db::inbox::RING_CAPACITY`. The sealed
+-- letter is a file in the inbox directory; its slot keeps the hash, so a file
+-- changed on disk is refused before it is opened. Opening a letter (or
+-- `inbox drop`) releases its slot and deletes the file. A full ring stops the
+-- pull; the rest stay on the relay for the next one.
+CREATE TABLE IF NOT EXISTS inbox_rings (
+    relay_url   TEXT PRIMARY KEY,
+    capacity    INTEGER NOT NULL CHECK (capacity BETWEEN 1 AND 1024),
+    read_index  INTEGER NOT NULL DEFAULT 0,
+    write_index INTEGER NOT NULL DEFAULT 0,
+    size        INTEGER NOT NULL DEFAULT 0,
+    CHECK (read_index >= 0 AND read_index < capacity),
+    CHECK (write_index >= 0 AND write_index < capacity),
+    CHECK (size >= 0 AND size <= capacity),
+    CHECK ((read_index + size) % capacity = write_index)
+);
+
+CREATE TABLE IF NOT EXISTS inbox_slots (
+    relay_url     TEXT NOT NULL REFERENCES inbox_rings (relay_url) ON DELETE CASCADE,
+    slot_index    INTEGER NOT NULL,
+    letter_id     INTEGER NOT NULL,
+    envelope_kind INTEGER NOT NULL CHECK (envelope_kind BETWEEN 0 AND 255),
+    content_hash  TEXT NOT NULL,
+    received_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (relay_url, slot_index),
+    UNIQUE (relay_url, letter_id)
+);
+
+-- Each ring's timeline (`src/ring/history.rs`): when every letter took a
+-- slot, left it or was turned away, as history events hash-chained from the
+-- ring's own genesis exactly as a tracked file's are, so the timeline is a
+-- KQHS snapshot. Each event carries its time; `head_hash` and `event_count`
+-- are the chain's current end. Ids, labels, slots, kinds and rule names only:
+-- never a letter, its hash or anything sealed in it.
+CREATE TABLE IF NOT EXISTS ring_histories (
+    history_id  BLOB PRIMARY KEY CHECK (length(history_id) = 16),
+    ring_kind   TEXT NOT NULL CHECK (ring_kind IN ('outbox', 'inbox')),
+    ring_key    TEXT NOT NULL,
+    event_count INTEGER NOT NULL DEFAULT 0 CHECK (event_count >= 0),
+    head_hash   BLOB NOT NULL CHECK (length(head_hash) = 32),
+    UNIQUE (ring_kind, ring_key)
+);
+
+CREATE TABLE IF NOT EXISTS ring_events (
+    history_id BLOB NOT NULL REFERENCES ring_histories (history_id) ON DELETE CASCADE,
+    sequence   INTEGER NOT NULL CHECK (sequence >= 0),
+    event      BLOB NOT NULL,
+    PRIMARY KEY (history_id, sequence)
+);
+
+-- Per-person outbox ring buffer (`src/outbox.rs`): a fixed number of slots
+-- holding the sealed letters (.kqpb) a person has queued for trusted
+-- recipients. The
+-- write pointer takes new items; only a send to the trusted recipient moves
+-- the read pointer, and a sent slot is wiped and freed. `size` is how many
+-- slots are held (queued, not yet sent); a full ring refuses new items and
+-- never overwrites one that has not been sent.
+CREATE TABLE IF NOT EXISTS outbox_rings (
+    owner_label TEXT PRIMARY KEY,
+    capacity    INTEGER NOT NULL CHECK (capacity BETWEEN 1 AND 1024),
+    read_index  INTEGER NOT NULL DEFAULT 0,
+    write_index INTEGER NOT NULL DEFAULT 0,
+    size        INTEGER NOT NULL DEFAULT 0,
+    sent_total  INTEGER NOT NULL DEFAULT 0,
+    CHECK (read_index >= 0 AND read_index < capacity),
+    CHECK (write_index >= 0 AND write_index < capacity),
+    CHECK (size >= 0 AND size <= capacity),
+    CHECK ((read_index + size) % capacity = write_index)
+);
+
+CREATE TABLE IF NOT EXISTS outbox_slots (
+    owner_label     TEXT NOT NULL REFERENCES outbox_rings (owner_label) ON DELETE CASCADE,
+    slot_index      INTEGER NOT NULL,
+    -- The letter's kind byte (`envelope::KIND_*`); only KQPB letters are held.
+    envelope_kind   INTEGER NOT NULL CHECK (envelope_kind BETWEEN 0 AND 255),
+    recipient_label TEXT NOT NULL,
+    content         BLOB NOT NULL,
+    content_hash    TEXT NOT NULL,
+    queued_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    -- A send's claim on the head while it delivers outside any transaction
+    -- (`outbox::send_next`): a random token and when it was taken (Unix
+    -- seconds). It lapses after `outbox::CLAIM_LEASE_SECS`.
+    claim_token     TEXT,
+    claimed_at      INTEGER,
+    PRIMARY KEY (owner_label, slot_index)
+);
+
+-- Letters the outbox turned away at departure (`src/outbox.rs`,
+-- `outbox::Refusal`): who it was for, its kind and exchange step when known,
+-- and the rule it broke. Never the letter, its hash or anything sealed in it.
+-- Only the newest `outbox::MAX_REFUSALS_KEPT` per owner are kept.
+CREATE TABLE IF NOT EXISTS outbox_refusals (
+    id              INTEGER PRIMARY KEY,
+    owner_label     TEXT NOT NULL,
+    recipient_label TEXT NOT NULL,
+    envelope_kind   INTEGER CHECK (envelope_kind BETWEEN 0 AND 255),
+    step            TEXT,
+    rule            TEXT NOT NULL CHECK (rule IN ('no_passport', 'device_letter',
+                        'unrecognised_destination', 'out_of_order', 'ring_full',
+                        'oversized', 'tampered')),
+    refused_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS outbox_refusals_owner ON outbox_refusals (owner_label, id);

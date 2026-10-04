@@ -10,7 +10,7 @@ use std::path::Path;
 
 fn ok(env: &mut MemoryEnv, args: &str) -> String {
     let (result, out) = env.keyquorum(&format!("keyquorum {DB} {args}"));
-    assert!(result.is_ok(), "{args}: {result:?}\n{out}");
+    assert!(result.is_ok(), "{args}: the command failed");
     out
 }
 

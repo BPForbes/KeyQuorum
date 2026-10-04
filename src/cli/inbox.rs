@@ -7,9 +7,16 @@
 //! with the import `relay pull --import` runs. It judges nothing itself.
 //!
 //! Pulled letters are kept in a relay-specific directory below `--dir`
-//! (`inbox/`) as `<relay hash>/<id>.kqpb`; the store
+//! (`inbox/`) as `<relay hash>/<id>.kqpb`, each held in a slot of the store's
+//! inbox ring (`db::inbox`) with its hash; the store
 //! remembers the cursor and which letters it has handled, so a later pull
-//! resumes after the newest and a letter is opened once. Receipt is already
+//! resumes after the newest and a letter is opened once. A letter whose file
+//! no longer matches its hash is refused. Once a letter is delivered (opened
+//! by its own command) its slot is released and its file deleted; `inbox
+//! drop` does the same for a letter you will not open. A full ring stops the
+//! pull, and the rest stay on the relay for the next one. `inbox history`
+//! shows when each letter was received, opened or dropped (the ring's `KQHS`
+//! timeline, `ring::history`). Receipt is already
 //! idempotent by delivery id, so losing that record only repeats an answer.
 //!
 //! A letter that asks for a decision (a file or change request), an answer to
@@ -113,9 +120,31 @@ pub enum InboxCommand {
     List(InboxOpts),
     /// Pull, then open what is waiting and answer it
     Open(OpenArgs),
+    /// Discard a letter without opening it: its slot is released and its
+    /// file deleted
+    Drop(DropArgs),
+    /// The inbox ring's timeline: when each letter was received, opened or
+    /// dropped, as a hash-chained KQHS history (does not pull)
+    History(HistoryArgs),
 }
 
-fn kind_name(kind: u8) -> &'static str {
+#[derive(Args)]
+pub struct HistoryArgs {
+    #[command(flatten)]
+    pub opts: InboxOpts,
+    #[command(flatten)]
+    pub timeline: super::outbox_cmd::TimelineArgs,
+}
+
+#[derive(Args)]
+pub struct DropArgs {
+    #[command(flatten)]
+    pub opts: InboxOpts,
+    /// The letter's id
+    pub id: i64,
+}
+
+pub(super) fn kind_name(kind: u8) -> &'static str {
     match kind {
         envelope::KIND_FILE_DELIVERY => "file delivery",
         envelope::KIND_FILE_DELIVERY_ACK => "answer to your delivery",
@@ -195,6 +224,7 @@ fn pull(conn: &Connection, opts: &InboxOpts) -> Result<String> {
         relay::ApiKeyScope::InboxPull,
     )?;
     env::create_dir_all(&relay_dir(&opts.dir, &url))?;
+    sweep(conn, &opts.dir, &url)?;
     let mut after = db::inbox::cursor(conn, &url)?;
     loop {
         let page = relay::pull_inbox(
@@ -225,15 +255,31 @@ fn pull(conn: &Connection, opts: &InboxOpts) -> Result<String> {
                 }
             };
             let path = letter_path(&opts.dir, &url, item.id);
-            if !env::exists(&path) {
-                env::write_new(&path, &bytes)?;
-            } else if env::read(&path)? != bytes {
+            if env::exists(&path) && env::read(&path)? != bytes {
                 return Err(Error::RelayRequest(format!(
                     "{} holds a different letter; use a separate --dir for this store",
                     path.display()
                 )));
             }
-            db::inbox::record(conn, &url, item.id, kind)?;
+            if db::inbox::is_known(conn, &url, item.id)? {
+                continue;
+            }
+            if !db::inbox::has_room(conn, &url)? {
+                // The cursor stays at the last letter held, so the rest are
+                // pulled once slots are free.
+                full_note(&db::inbox::usage(conn, &url)?);
+                return Ok(url);
+            }
+            if !env::exists(&path) {
+                env::write_new(&path, &bytes)?;
+            }
+            db::inbox::hold(
+                conn,
+                &url,
+                item.id,
+                kind,
+                &hex::encode(Sha256::digest(&bytes)),
+            )?;
         }
         match page.next_after {
             Some(next) if after.is_none_or(|previous| next > previous) => after = Some(next),
@@ -280,6 +326,7 @@ fn open_letter(
     kind: u8,
 ) -> Result<bool> {
     let path = stored_letter_path(&args.opts.dir, url, id)?;
+    require_unchanged(conn, url, id, &path)?;
     let push_answer = args.ack_dir.is_none();
     match kind {
         envelope::KIND_FILE_DELIVERY => deliver_cmd::run(
@@ -373,6 +420,113 @@ fn open_letter(
     Ok(true)
 }
 
+/// A held letter's file must still be the one pulled. A letter pulled before
+/// the inbox ring existed has no recorded hash and is opened as before.
+fn require_unchanged(conn: &Connection, url: &str, id: i64, path: &Path) -> Result<()> {
+    let Some(held) = db::inbox::held(conn, url, id)? else {
+        return Ok(());
+    };
+    if hex::encode(Sha256::digest(env::read(path)?)) == held.content_hash {
+        Ok(())
+    } else {
+        Err(usage(&format!(
+            "letter {id} changed on disk since it was pulled; it is not opened (discard it with `keyquorum inbox drop {id}`)"
+        )))
+    }
+}
+
+/// Why a pull stopped: which letters fill the ring, and which one to open or
+/// drop to make room.
+fn full_note(usage: &db::inbox::Usage) {
+    let db::inbox::Usage {
+        held,
+        span,
+        capacity,
+        head,
+    } = usage;
+    if held == span {
+        errln!("note: your inbox holds {held} unopened letters, its limit of {capacity}; open or drop some (`keyquorum inbox open`, `keyquorum inbox drop <id>`) and the rest come on the next pull");
+    } else if let Some(head) = head {
+        errln!("note: your inbox is full: {held} unopened letters span all {capacity} slots, and slots are reused from the oldest letter on; open or drop letter {head} (`keyquorum inbox open {head}`, `keyquorum inbox drop {head}`) and the rest come on the next pull");
+    }
+}
+
+/// The letter is delivered (or discarded): release its slot and mark it
+/// handled in one transaction, then delete its file, so nothing of it stays
+/// in the inbox. The delivery stands if the file cannot be deleted; the
+/// handled mark is the durable record, and [`sweep`] deletes it later.
+fn release(
+    conn: &Connection,
+    dir: &Path,
+    url: &str,
+    id: i64,
+    how: db::inbox::Release,
+) -> Result<()> {
+    db::inbox::deliver(conn, url, id, how)?;
+    remove_delivered(&letter_path(dir, url, id), id);
+    Ok(())
+}
+
+fn remove_delivered(path: &Path, id: i64) {
+    if env::exists(path) && env::remove_file(path).is_err() {
+        errln!(
+            "note: letter {id} is handled, but {} could not be deleted; the next inbox command tries again",
+            path.display()
+        );
+    }
+}
+
+/// Delete the file of every letter this store has handled whose file is
+/// still in the inbox directory (a delete that failed, or a run that ended
+/// between the commit and the delete). Never opens or re-delivers anything.
+fn sweep(conn: &Connection, dir: &Path, url: &str) -> Result<()> {
+    let relay_dir = relay_dir(dir, url);
+    if !env::exists(&relay_dir) {
+        return Ok(());
+    }
+    for path in env::read_dir(&relay_dir)? {
+        let Some(id) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(".kqpb"))
+            .and_then(|id| id.parse::<i64>().ok())
+        else {
+            continue;
+        };
+        if db::inbox::is_handled(conn, url, id)? {
+            remove_delivered(&path, id);
+        }
+    }
+    Ok(())
+}
+
+/// The relay this inbox pulls from, without contacting it.
+fn configured_inbox_url(conn: &Connection, opts: &InboxOpts) -> Result<String> {
+    super::configured_relay_url(conn, opts.url.clone(), relay::ApiKeyScope::InboxPull)?.ok_or_else(
+        || usage("which relay's inbox? pass --url, or set it with `keyquorum use --url`"),
+    )
+}
+
+fn drop_letter(conn: &Connection, args: DropArgs) -> Result<()> {
+    let url = configured_inbox_url(conn, &args.opts)?;
+    if !db::inbox::is_known(conn, &url, args.id)? {
+        return Err(usage(&format!("no letter {} in this inbox", args.id)));
+    }
+    // A letter pulled before inboxes were namespaced by relay is moved into
+    // place first, so its file is the one deleted.
+    stored_letter_path(&args.opts.dir, &url, args.id)?;
+    release(
+        conn,
+        &args.opts.dir,
+        &url,
+        args.id,
+        db::inbox::Release::Dropped,
+    )?;
+    sweep(conn, &args.opts.dir, &url)?;
+    outln!("Dropped letter {} unopened", args.id);
+    Ok(())
+}
+
 fn open(conn: &Connection, args: OpenArgs) -> Result<()> {
     if args.id.is_none() && args.names_a_target() {
         return Err(usage(
@@ -411,7 +565,13 @@ fn open(conn: &Connection, args: OpenArgs) -> Result<()> {
     let mut failed = 0usize;
     for letter in wanted {
         match open_letter(conn, &args, &url, &slot, letter.id, letter.kind) {
-            Ok(true) => db::inbox::mark_handled(conn, &url, letter.id)?,
+            Ok(true) => release(
+                conn,
+                &args.opts.dir,
+                &url,
+                letter.id,
+                db::inbox::Release::Opened,
+            )?,
             Ok(false) => {
                 if let Some(hint) = manual_hint(letter.kind, letter.id) {
                     outln!(
@@ -441,5 +601,15 @@ pub(crate) fn run(conn: &Connection, command: Option<InboxCommand>) -> Result<()
         None => list(conn, &InboxOpts::default()),
         Some(InboxCommand::List(opts)) => list(conn, &opts),
         Some(InboxCommand::Open(args)) => open(conn, args),
+        Some(InboxCommand::Drop(args)) => drop_letter(conn, args),
+        Some(InboxCommand::History(args)) => {
+            let url = configured_inbox_url(conn, &args.opts)?;
+            super::outbox_cmd::show_timeline(
+                conn,
+                crate::ring::history::Timeline::Inbox(&url),
+                &format!("Inbox for {url}"),
+                &args.timeline,
+            )
+        }
     }
 }

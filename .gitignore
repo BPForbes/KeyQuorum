@@ -48,6 +48,16 @@ build/
 *.kqrl
 *.kqpolicy
 *.kqst
+# Tracked-file containers carry file content; quorum ciphertext, export
+# bundles, history snapshots, signature artifacts and transfer packages
+# are working files that belong to one store, never to the repository.
+*.kqtf
+*.kqtf.lock
+*.kqenc
+*.kqxb
+*.kqhs
+*.kqbs
+*.kqtx
 device.kq
 device.skey
 secrets/
@@ -67,6 +77,12 @@ scratch/
 *.db-journal
 *.db-wal
 *.db-shm
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
 
 # Editor backups
 *~

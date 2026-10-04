@@ -2,10 +2,9 @@ use super::*;
 use crate::device::{self, Container};
 use crate::error::Error;
 use crate::key_tree::{self, NodeSpec};
+use crate::test_secrets::shared_passphrase;
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
-
-const PASS: &str = "slot-passphrase";
 
 struct End {
     conn: Connection,
@@ -26,15 +25,20 @@ fn end() -> End {
 
 fn enroll_all(end: &mut End, labels: &[&str]) {
     for label in labels {
-        enroll(&end.conn, &mut end.container, label, PASS).unwrap();
+        enroll(&end.conn, &mut end.container, label, shared_passphrase()).unwrap();
     }
 }
 
-fn passes_for(conn: &Connection, label: &str, mode: DescendantMode) -> HashMap<String, String> {
+fn passes_for(conn: &Connection, label: &str, mode: DescendantMode) -> Passphrases {
     let labels = export_secret_labels(conn, label, mode).unwrap();
     labels
         .into_iter()
-        .map(|label| (label, PASS.to_string()))
+        .map(|label| {
+            (
+                label,
+                zeroize::Zeroizing::new(shared_passphrase().to_string()),
+            )
+        })
         .collect()
 }
 
@@ -73,7 +77,7 @@ fn ident(end: &End, label: &str) -> IdentityInfo {
 }
 
 fn slot_secret(end: &End, label: &str) -> [u8; 32] {
-    let secrets = device::open_slot(&end.container, label, PASS).unwrap();
+    let secrets = device::open_slot(&end.container, label, shared_passphrase()).unwrap();
     *secrets.encryption_secret
 }
 
@@ -338,7 +342,7 @@ fn descendant_modes_cover_the_whole_subtree_and_partial_moves() {
         &parent_only.conn,
         &parent_only.container,
         "M.A.1",
-        PASS,
+        shared_passphrase(),
         b"ok"
     )
     .is_ok());
@@ -400,12 +404,32 @@ fn ghosts_cannot_act_and_an_active_child_still_can() {
     assert_eq!(state(&source, "M.S"), Some(Possession::Ghost));
     assert_eq!(state(&source, "M.S.1"), Some(Possession::Active));
     assert_eq!(state(&source, "M.S.2"), Some(Possession::Active));
-    assert!(sign_active(&source.conn, &source.container, "M.S", PASS, b"no").is_err());
+    assert!(sign_active(
+        &source.conn,
+        &source.container,
+        "M.S",
+        shared_passphrase(),
+        b"no"
+    )
+    .is_err());
     assert!(matches!(
-        sign_active(&source.conn, &source.container, "M.S", PASS, b"no"),
+        sign_active(
+            &source.conn,
+            &source.container,
+            "M.S",
+            shared_passphrase(),
+            b"no"
+        ),
         Err(Error::GhostDenied)
     ));
-    assert!(sign_active(&source.conn, &source.container, "M.S.1", PASS, b"yes").is_ok());
+    assert!(sign_active(
+        &source.conn,
+        &source.container,
+        "M.S.1",
+        shared_passphrase(),
+        b"yes"
+    )
+    .is_ok());
     let labels = list_identities(&source.conn, false).unwrap();
     assert!(labels.iter().all(|row| row.label != "M.S"));
     let all = list_identities(&source.conn, true).unwrap();
@@ -1134,8 +1158,22 @@ fn a_ghost_leaf_cannot_satisfy_quorum_and_other_leaves_still_can() {
         key_tree::reconstruct(&store.conn, key_id, &only_ghost),
         Err(Error::QuorumNotMet | Error::GhostDenied)
     ));
-    assert!(sign_active(&store.conn, &store.container, "M.S.1", PASS, b"no").is_err());
-    assert!(sign_active(&store.conn, &store.container, "M.S.2", PASS, b"yes").is_ok());
+    assert!(sign_active(
+        &store.conn,
+        &store.container,
+        "M.S.1",
+        shared_passphrase(),
+        b"no"
+    )
+    .is_err());
+    assert!(sign_active(
+        &store.conn,
+        &store.container,
+        "M.S.2",
+        shared_passphrase(),
+        b"yes"
+    )
+    .is_ok());
 }
 
 #[test]
@@ -1156,8 +1194,22 @@ fn copy_does_not_deactivate_the_source() {
     assert_eq!(state(&source, "M.S.2"), Some(Possession::Active));
     assert_eq!(state(&dest, "M.S.2"), Some(Possession::Active));
     assert_eq!(ident(&source, "M.S.2").generation, 1);
-    assert!(sign_active(&source.conn, &source.container, "M.S.2", PASS, b"src").is_ok());
-    assert!(sign_active(&dest.conn, &dest.container, "M.S.2", PASS, b"dst").is_ok());
+    assert!(sign_active(
+        &source.conn,
+        &source.container,
+        "M.S.2",
+        shared_passphrase(),
+        b"src"
+    )
+    .is_ok());
+    assert!(sign_active(
+        &dest.conn,
+        &dest.container,
+        "M.S.2",
+        shared_passphrase(),
+        b"dst"
+    )
+    .is_ok());
 }
 
 #[test]
@@ -1205,7 +1257,7 @@ fn ghost_is_recorded_only_after_the_source_slot_is_gone() {
     .unwrap();
     acknowledge(&dest.conn, &prepared.id).unwrap();
     assert_eq!(state(&source, "M.A"), Some(Possession::Active));
-    assert!(device::open_slot(&source.container, "M.A", PASS).is_ok());
+    assert!(device::open_slot(&source.container, "M.A", shared_passphrase()).is_ok());
 
     scrub_moved_slots(
         &mut NativeStorage,
@@ -1215,8 +1267,15 @@ fn ghost_is_recorded_only_after_the_source_slot_is_gone() {
     )
     .unwrap();
     assert_eq!(state(&source, "M.A"), Some(Possession::Active));
-    assert!(device::open_slot(&source.container, "M.A", PASS).is_err());
-    assert!(sign_active(&source.conn, &source.container, "M.A", PASS, b"gone").is_err());
+    assert!(device::open_slot(&source.container, "M.A", shared_passphrase()).is_err());
+    assert!(sign_active(
+        &source.conn,
+        &source.container,
+        "M.A",
+        shared_passphrase(),
+        b"gone"
+    )
+    .is_err());
 
     retire_source_material(
         &mut NativeStorage,
@@ -1232,13 +1291,26 @@ fn ghost_is_recorded_only_after_the_source_slot_is_gone() {
     );
     assert_eq!(state(&source, "M.A"), Some(Possession::Ghost));
     assert!(source.container.slot("M.A").is_none());
-    assert!(device::open_slot(&source.container, "M.A", PASS).is_err());
+    assert!(device::open_slot(&source.container, "M.A", shared_passphrase()).is_err());
     assert!(matches!(
-        sign_active(&source.conn, &source.container, "M.A", PASS, b"ghost"),
+        sign_active(
+            &source.conn,
+            &source.container,
+            "M.A",
+            shared_passphrase(),
+            b"ghost"
+        ),
         Err(Error::GhostDenied)
     ));
     assert_eq!(state(&dest, "M.A"), Some(Possession::Active));
-    assert!(sign_active(&dest.conn, &dest.container, "M.A", PASS, b"kept").is_ok());
+    assert!(sign_active(
+        &dest.conn,
+        &dest.container,
+        "M.A",
+        shared_passphrase(),
+        b"kept"
+    )
+    .is_ok());
 
     assert_eq!(
         recover_pair(
@@ -1252,8 +1324,15 @@ fn ghost_is_recorded_only_after_the_source_slot_is_gone() {
         Recovery::AlreadyComplete
     );
     assert_eq!(state(&source, "M.A"), Some(Possession::Ghost));
-    assert!(device::open_slot(&source.container, "M.A", PASS).is_err());
-    assert!(sign_active(&dest.conn, &dest.container, "M.A", PASS, b"kept").is_ok());
+    assert!(device::open_slot(&source.container, "M.A", shared_passphrase()).is_err());
+    assert!(sign_active(
+        &dest.conn,
+        &dest.container,
+        "M.A",
+        shared_passphrase(),
+        b"kept"
+    )
+    .is_ok());
 }
 
 #[test]

@@ -8,6 +8,7 @@
 //! mint keys: they receive a `kq_…` bearer. The `kql_…` issuer is an
 //! internal operator lock created only after that identity check.
 
+use keyquorum::cli;
 use keyquorum::cli::host_args::{
     HostCommand, IdentityCommand, KeysCommand, PolicyCommand, RootCommand,
 };
@@ -25,7 +26,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::signal;
+use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::EnvFilter;
+use zeroize::Zeroizing;
 
 pub fn run(mailbox_db: &Path, org_db: &Path, command: HostCommand) -> Result<()> {
     match command {
@@ -36,6 +39,8 @@ pub fn run(mailbox_db: &Path, org_db: &Path, command: HostCommand) -> Result<()>
             krl,
             scan_db,
             scan_interval_seconds,
+            behind_tls_proxy,
+            rate_limit_per_minute,
         } => {
             let scan_db = scan_db.or_else(|| org_db.is_file().then(|| org_db.to_path_buf()));
             tokio::runtime::Builder::new_multi_thread()
@@ -50,6 +55,8 @@ pub fn run(mailbox_db: &Path, org_db: &Path, command: HostCommand) -> Result<()>
                     krl,
                     scan_db,
                     scan_interval_seconds,
+                    behind_tls_proxy,
+                    rate_limit_per_minute,
                 ))
         }
         HostCommand::Identity { command } => run_identity(command),
@@ -92,18 +99,20 @@ pub fn run(mailbox_db: &Path, org_db: &Path, command: HostCommand) -> Result<()>
 
 fn print_new_licensee(issuer: &relay::CreatedLicensee) {
     eprintln!("Created internal operator key (shown once):");
-    eprintln!("  {}", issuer.token);
+    eprintln!("  {}", issuer.token.as_str());
     eprintln!("This mints customer API keys on this host. It is not a customer credential.");
     eprintln!("Store this; it cannot be recovered from the database.");
 }
 
-fn licensee_secret(explicit: Option<String>) -> Result<String> {
+fn licensee_secret(explicit: Option<String>) -> Result<Zeroizing<String>> {
     if let Some(key) = explicit.filter(|s| !s.is_empty()) {
-        return Ok(key);
+        return Ok(Zeroizing::new(key));
     }
     match std::env::var("KEYQUORUM_LICENSEE_KEY") {
-        Ok(key) if !key.is_empty() => Ok(key),
-        _ => rpassword::prompt_password("Licensee key: ").map_err(Error::from),
+        Ok(key) if !key.is_empty() => Ok(Zeroizing::new(key)),
+        _ => rpassword::prompt_password("Licensee key: ")
+            .map(Zeroizing::new)
+            .map_err(Error::from),
     }
 }
 
@@ -111,28 +120,57 @@ fn require_licensee(conn: &rusqlite::Connection, explicit: Option<String>) -> Re
     relay::authenticate_licensee(conn, &licensee_secret(explicit)?)
 }
 
+/// Every mint authorization, granted or refused, lands in
+/// `provider_auth_events` with the provider id when the certificate was
+/// checked far enough to name one. No key, bearer or challenge is recorded.
 fn authorize_mint(
     conn: &rusqlite::Connection,
+    operation: &str,
     cert: Option<PathBuf>,
     relay_key: Option<PathBuf>,
     krl: Option<PathBuf>,
     licensee_key: Option<String>,
-) -> Result<()> {
-    load_serve_identity(cert, relay_key, krl)?;
-    let supplied = licensee_key.filter(|s| !s.is_empty()).or_else(|| {
-        match std::env::var("KEYQUORUM_LICENSEE_KEY") {
+) -> Result<ProviderIdentity> {
+    let mut provider_id = None;
+    let result = check_mint(conn, &mut provider_id, cert, relay_key, krl, licensee_key);
+    relay::record_provider_auth_event(
+        conn,
+        operation,
+        provider_id.as_deref(),
+        None,
+        None,
+        result.is_ok(),
+    )?;
+    result
+}
+
+fn check_mint(
+    conn: &rusqlite::Connection,
+    provider_id: &mut Option<String>,
+    cert: Option<PathBuf>,
+    relay_key: Option<PathBuf>,
+    krl: Option<PathBuf>,
+    licensee_key: Option<String>,
+) -> Result<ProviderIdentity> {
+    let (identity, id) = load_serve_identity(cert, relay_key, krl)?;
+    *provider_id = Some(id);
+    let supplied = licensee_key
+        .filter(|s| !s.is_empty())
+        .or_else(|| match std::env::var("KEYQUORUM_LICENSEE_KEY") {
             Ok(key) if !key.is_empty() => Some(key),
             _ => None,
-        }
-    });
-    if let Some(issuer) = relay::authorize_licensee_or_bootstrap(conn, supplied.as_deref())? {
+        })
+        .map(Zeroizing::new);
+    if let Some(issuer) =
+        relay::authorize_licensee_or_bootstrap(conn, supplied.as_deref().map(String::as_str))?
+    {
         print_new_licensee(&issuer);
-        return Ok(());
+        return Ok(identity);
     }
     if supplied.is_none() {
         require_licensee(conn, None)?;
     }
-    Ok(())
+    Ok(identity)
 }
 
 fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
@@ -147,7 +185,7 @@ fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
             krl,
             licensee_key,
         } => {
-            authorize_mint(conn, cert, relay_key, krl, licensee_key)?;
+            let identity = authorize_mint(conn, "keys.create", cert, relay_key, krl, licensee_key)?;
             let created = relay::create_api_key(
                 conn,
                 &NewApiKey {
@@ -165,7 +203,8 @@ fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
             if let Some(expires) = &created.info.expires_at {
                 println!("expires: {expires}");
             }
-            println!("token (shown once): {}", created.token);
+            println!("token (shown once): {}", created.token.as_str());
+            anchor_audit(conn, &identity);
         }
         KeysCommand::List => {
             let keys = relay::list_api_keys(conn)?;
@@ -184,9 +223,69 @@ fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
                 }
             }
         }
-        KeysCommand::Revoke { id } => {
+        KeysCommand::Events {
+            key,
+            verify,
+            krl,
+            checkpoint,
+        } => {
+            let events = match key {
+                Some(id) => relay::api_key_events_for_key(conn, id)?,
+                None => relay::api_key_events(conn)?,
+            };
+            if events.is_empty() {
+                println!("(no API key events)");
+            }
+            for event in events {
+                let related = event
+                    .related_key_id
+                    .map_or_else(|| "-".to_string(), |id| id.to_string());
+                println!(
+                    "{}\t{}\t{}\t{}\treplaces={related}\t{}",
+                    event.occurred_at, event.key_id, event.event, event.actor, event.entry_hash
+                );
+            }
+            if verify {
+                return verify_audit(conn, krl, checkpoint);
+            }
+        }
+        KeysCommand::Checkpoint {
+            out,
+            cert,
+            relay_key,
+            krl,
+        } => {
+            let (identity, _) = load_serve_identity(cert, relay_key, krl)?;
+            let taken_at = provider::system_now_utc_millis()?;
+            let checkpoint = relay::audit::checkpoint(conn, &identity, &taken_at)?;
+            locked_files::write_owner_only(&out, &checkpoint.encode()?)?;
+            for head in &checkpoint.heads {
+                println!(
+                    "{}: {} rows, head {}",
+                    head.table, head.row_count, head.head_hash
+                );
+            }
+            println!(
+                "Wrote checkpoint {} (taken {taken_at}); keep it off this relay",
+                out.display()
+            );
+        }
+        KeysCommand::Revoke {
+            id,
+            cert,
+            relay_key,
+            krl,
+        } => {
             relay::revoke_api_key(conn, id)?;
             println!("Revoked API key {id}");
+            let configured = path_or_env(cert.clone(), "KEYQUORUM_PROVIDER_CERT").is_some()
+                && path_or_env(relay_key.clone(), "KEYQUORUM_RELAY_KEY").is_some();
+            if configured {
+                let (identity, _) = load_serve_identity(cert, relay_key, krl)?;
+                anchor_audit(conn, &identity);
+            } else {
+                eprintln!("note: no relay identity given; the running relay signs this revocation into the audit chain on its next scan");
+            }
         }
         KeysCommand::Rotate {
             id,
@@ -195,25 +294,91 @@ fn run_keys(conn: &rusqlite::Connection, command: KeysCommand) -> Result<()> {
             krl,
             licensee_key,
         } => {
-            authorize_mint(conn, cert, relay_key, krl, licensee_key)?;
+            let identity = authorize_mint(conn, "keys.rotate", cert, relay_key, krl, licensee_key)?;
             let created = relay::rotate_api_key(conn, id)?;
             println!("Rotated API key {id} -> {}", created.info.id);
-            println!("token (shown once): {}", created.token);
+            println!("token (shown once): {}", created.token.as_str());
+            anchor_audit(conn, &identity);
         }
     }
     Ok(())
 }
 
+/// Sign the audit chains' new heads. The key change itself is already
+/// committed, so a failure here is reported, not fatal: the running relay
+/// signs any unanchored rows on its next scan.
+fn anchor_audit(conn: &rusqlite::Connection, identity: &ProviderIdentity) {
+    if let Err(err) = relay::anchor_now(conn, identity) {
+        eprintln!("warning: could not sign the audit chain now ({err}); the relay signs it on its next scan");
+    }
+}
+
+/// `keys events --verify`: every chain re-walked and every anchor checked
+/// against the compiled-in provider root. Fails if any chain is broken or
+/// any anchor is refused.
+fn verify_audit(
+    conn: &rusqlite::Connection,
+    krl: Option<PathBuf>,
+    checkpoint: Option<PathBuf>,
+) -> Result<()> {
+    let krl = path_or_env(krl, "KEYQUORUM_PROVIDER_KRL");
+    let revoked =
+        provider::load_revocation_list(&KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY, krl.as_deref())?;
+    let checkpoint = checkpoint
+        .map(|path| relay::audit::Checkpoint::decode(&std::fs::read(path)?))
+        .transpose()?;
+    let reports = relay::audit::verify(
+        conn,
+        &KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY,
+        &revoked,
+        checkpoint.as_ref(),
+    )?;
+    let mut intact = true;
+    for report in &reports {
+        let chain = match report.broken_at {
+            None => "chain intact".to_string(),
+            Some(id) => format!("chain BROKEN at row {id}"),
+        };
+        let anchor = match &report.trusted {
+            Some(a) => format!(
+                "signed through row {} by {} (serial {}) at {}",
+                a.row_count, a.provider_id, a.serial, a.signed_at
+            ),
+            None => "no trusted anchor".to_string(),
+        };
+        let against = match &report.checkpoint {
+            None => String::new(),
+            Some(c) if c.matches => format!(
+                ", matches checkpoint through row {} ({})",
+                c.row_count, c.taken_at
+            ),
+            Some(c) => format!(
+                ", DOES NOT MATCH checkpoint at row {} ({})",
+                c.row_count, c.taken_at
+            ),
+        };
+        println!(
+            "{}: {} rows, {chain}, {anchor}{against}, {} pending, {} rejected anchor(s)",
+            report.table,
+            report.rows,
+            report.pending_rows(),
+            report.rejected_anchors
+        );
+        intact &= report.is_intact();
+    }
+    if intact {
+        Ok(())
+    } else {
+        Err(Error::IntegrityCheckFailed)
+    }
+}
+
 fn run_root(command: RootCommand) -> Result<()> {
     match command {
-        RootCommand::Generate { public_key_out } => {
-            let (secret, public) = provider::generate_relay_identity();
-            locked_files::write_owner_only(&public_key_out, hex::encode(public).as_bytes())?;
-            println!("{}", hex::encode(*secret));
-            eprintln!("Public key written to {}", public_key_out.display());
-            eprintln!("Root private key printed to stdout above — this tool keeps no copy of it.");
-            Ok(())
-        }
+        RootCommand::Generate {
+            public_key_out,
+            private_key_out,
+        } => write_keypair("Root", &public_key_out, &private_key_out),
     }
 }
 
@@ -316,15 +481,37 @@ fn collect_hardware(
 
 fn run_identity(command: IdentityCommand) -> Result<()> {
     match command {
-        IdentityCommand::Generate { public_key_out } => {
-            let (secret, public) = provider::generate_relay_identity();
-            locked_files::write_owner_only(&public_key_out, hex::encode(public).as_bytes())?;
-            println!("{}", hex::encode(*secret));
-            eprintln!("Public key written to {}", public_key_out.display());
-            eprintln!("Private key printed to stdout above — this tool keeps no copy of it.");
-            Ok(())
-        }
+        IdentityCommand::Generate {
+            public_key_out,
+            private_key_out,
+        } => write_keypair("Relay", &public_key_out, &private_key_out),
     }
+}
+
+/// Writes a fresh keypair through the CLI's owner-only hex writer: the
+/// private key never goes to stdout or a log, so it cannot land in terminal
+/// scrollback, CI logs or shell history. Neither file may already exist,
+/// and the private key is written first, so a failure leaves no public key
+/// without its pair.
+fn write_keypair(what: &str, public_key_out: &Path, private_key_out: &Path) -> Result<()> {
+    if public_key_out.exists() {
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("{} already exists", public_key_out.display()),
+        )));
+    }
+    let (secret, public) = provider::generate_relay_identity();
+    cli::write_hex_file(private_key_out, &secret[..])?;
+    if let Err(err) = cli::write_hex_file(public_key_out, &public) {
+        let _ = std::fs::remove_file(private_key_out);
+        return Err(err);
+    }
+    eprintln!(
+        "{what} private key written owner-only to {}",
+        private_key_out.display()
+    );
+    eprintln!("Public key written to {}", public_key_out.display());
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -388,41 +575,33 @@ fn path_or_env(flag: Option<PathBuf>, env_name: &str) -> Option<PathBuf> {
         })
 }
 
-fn read_key_bytes(path: &Path) -> Result<Vec<u8>> {
-    let contents = std::fs::read_to_string(path)?;
-    keys::parse_key_text(&contents)
+fn read_key_array_32(path: &Path) -> Result<Zeroizing<[u8; 32]>> {
+    cli::read_key_array_32(path).map(Zeroizing::new)
 }
 
-fn read_key_array_32(path: &Path) -> Result<[u8; 32]> {
-    read_key_bytes(path)?
-        .try_into()
-        .map_err(|_| Error::InvalidPublicKey)
-}
-
-fn read_root_key(path: Option<PathBuf>) -> Result<[u8; 32]> {
+fn read_root_key(path: Option<PathBuf>) -> Result<Zeroizing<[u8; 32]>> {
     if let Some(path) = path {
         return read_key_array_32(&path);
     }
-    match std::env::var("KEYQUORUM_PROVIDER_ROOT_KEY") {
-        Ok(value) if !value.is_empty() => keys::parse_key_text(&value)?
-            .try_into()
-            .map_err(|_| Error::InvalidPublicKey),
+    match std::env::var("KEYQUORUM_PROVIDER_ROOT_KEY").map(Zeroizing::new) {
+        Ok(value) if !value.is_empty() => keys::parse_key_32(&value),
         _ => Err(Error::InvalidProviderCertificate),
     }
 }
 
+/// The checked identity and the provider id its certificate names.
 fn load_serve_identity(
     cert: Option<PathBuf>,
     relay_key: Option<PathBuf>,
     krl: Option<PathBuf>,
-) -> Result<ProviderIdentity> {
+) -> Result<(ProviderIdentity, String)> {
     let cert_path =
         path_or_env(cert, "KEYQUORUM_PROVIDER_CERT").ok_or(Error::ProviderIdentityMissing)?;
     let key_path =
         path_or_env(relay_key, "KEYQUORUM_RELAY_KEY").ok_or(Error::ProviderIdentityMissing)?;
     let krl_path = path_or_env(krl, "KEYQUORUM_PROVIDER_KRL");
     let certificate = std::fs::read(&cert_path)?;
-    let relay_private_key = zeroize::Zeroizing::new(read_key_array_32(&key_path)?);
+    let relay_private_key = read_key_array_32(&key_path)?;
     let now = provider::system_now_utc()?;
     let revoked =
         provider::load_revocation_list(&KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY, krl_path.as_deref())?;
@@ -437,12 +616,16 @@ fn load_serve_identity(
         "provider identity {} serial {} expires {}",
         cert.provider_id, cert.serial, cert.expires_at
     );
-    Ok(ProviderIdentity {
-        certificate,
-        relay_private_key,
-    })
+    Ok((
+        ProviderIdentity {
+            certificate,
+            relay_private_key,
+        },
+        cert.provider_id,
+    ))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve(
     mailbox_db: &Path,
     bind: &str,
@@ -451,37 +634,67 @@ async fn serve(
     krl: Option<PathBuf>,
     scan_db: Option<PathBuf>,
     scan_interval_seconds: u64,
+    behind_tls_proxy: bool,
+    rate_limit_per_minute: u32,
 ) -> Result<()> {
+    // INFO by default (RUST_LOG still overrides), so authentication and
+    // scope denials and TTL purges reach the operator's logs without opt-in.
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
         .init();
-
-    let identity = load_serve_identity(cert, relay_key, krl)?;
-    let db_path = mailbox_db.to_str().ok_or(Error::InvalidPath)?;
-    let conn = relay::open(db_path)?;
 
     let addr: SocketAddr = bind
         .parse()
         .map_err(|e| Error::RelayRequest(format!("invalid bind address: {e}")))?;
+    relay::check_bind(&addr, behind_tls_proxy)?;
+    let (identity, _) = load_serve_identity(cert, relay_key, krl)?;
+    let db_path = mailbox_db.to_str().ok_or(Error::InvalidPath)?;
+    let conn = relay::open(db_path)?;
+
     let listener = TcpListener::bind(addr).await?;
     let local = listener.local_addr()?;
     eprintln!("mailbox listening on http://{local}");
+    if !local.ip().is_loopback() {
+        tracing::warn!("serving plain HTTP on {local}; TLS must terminate in front of this relay");
+    }
     eprintln!("Swagger UI: http://{local}/swagger-ui");
     if let Some(path) = &scan_db {
         eprintln!("TTL file scan: {}", path.display());
     }
 
-    let state = AppState::with_identity(conn, identity);
-    spawn_ttl_scan(state.db.clone(), scan_db, scan_interval_seconds);
+    // Anything recorded while the relay was down (host `keys` commands run
+    // without an identity) is signed now.
+    if let Err(err) = relay::anchor_now(&conn, &identity) {
+        tracing::warn!("audit anchor at startup failed: {err}");
+    }
+    let state = AppState::with_identity(conn, identity)
+        .with_rate_limit(rate_limit_per_minute, behind_tls_proxy);
+    if rate_limit_per_minute == 0 {
+        tracing::warn!("rate limiting is off; limit requests in front of this relay");
+    }
+    spawn_ttl_scan(
+        state.db.clone(),
+        state.identity(),
+        scan_db,
+        scan_interval_seconds,
+    );
 
-    axum::serve(listener, relay::router(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        relay::router(state).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
     Ok(())
 }
 
 fn spawn_ttl_scan(
     mailbox: Arc<Mutex<rusqlite::Connection>>,
+    identity: Option<Arc<ProviderIdentity>>,
     scan_db: Option<PathBuf>,
     interval_seconds: u64,
 ) {
@@ -510,6 +723,19 @@ fn spawn_ttl_scan(
                 Ok(n) if n > 0 => tracing::info!("purged {n} expired device letter(s)"),
                 Ok(_) => {}
                 Err(err) => tracing::warn!("device mailbox TTL scan failed: {err}"),
+            }
+            if let Some(identity) = identity.as_deref() {
+                let anchored = {
+                    let conn = mailbox
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    relay::anchor_now(&conn, identity)
+                };
+                match anchored {
+                    Ok(n) if n > 0 => tracing::info!("signed {n} audit chain head(s)"),
+                    Ok(_) => {}
+                    Err(err) => tracing::warn!("audit anchor failed: {err}"),
+                }
             }
             if let Some(path) = scan_db.as_ref().filter(|path| path.is_file()) {
                 let Some(path) = path.to_str() else {

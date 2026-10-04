@@ -85,3 +85,36 @@ additionally \emph{signed} by whoever is authorizing that decision, checked
 against a key the opening store already has on file. A mailbox that carries
 these letters can route them by their outer fingerprint without ever being
 able to read or forge what is inside.
+
+A delivered file's contents, or a tracked file's container, are never hashed
+bare where a signature, an answer or a history event names them: a plain
+SHA-256 of protected content is a fingerprint anyone holding it could confirm
+a guess against. Each letter instead carries, sealed, a fresh random
+commitment key, and what is signed, echoed in the answer and recorded in the
+history is a keyed commitment (HMAC-SHA256) under that key. Only the sender
+and the recipient hold the key, and a commitment is only ever compared with
+another one, in constant time, for a yes or a no. Letters and answers from
+before this change (signed under the \code{-v1} domains) no longer open.
+
+\subsection{Secrets in memory and the relay's audit trail}
+
+Passphrases, passwords, PINs and API keys typed at a prompt, the stored relay
+bearer, and the buffers the decryption and unsealing functions return (the
+plaintext from \code{crypto::decrypt}, the payload from \code{envelope::open},
+and the quorum and password-locked unlocks) are overwritten when they are
+dropped. That covers those buffers only: a temporary copy a command makes of
+them, such as a parsed field or a transfer package's body, is ordinary memory
+and is not guaranteed to be overwritten, and a dropped buffer's memory may be
+reused before it is. What a command writes out on purpose (to stdout, or a
+file you name) is yours to protect.
+
+The relay records each API key's creation, rotation and revocation, and every
+attempt to mint one, in a hash chain whose head the relay signs with its
+KeyQuorum-certified key. That signature is trusted only for the period the
+relay's certificate was valid, and not at all once the certificate is revoked.
+Because the date on that signature is the relay's own, the relay's operator
+also keeps signed checkpoints of the chain away from the relay; checked
+against the newest one, rows it covered cannot be rewritten, and later rows
+cannot be vouched for by a signature dated before it.
+A key holder can read the events about their own key, and nobody else's.
+

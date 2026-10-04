@@ -3,11 +3,10 @@ use crate::db;
 use crate::error::Error;
 use crate::key_tree::{self, NodeSpec};
 use crate::keys::{self, KeyType};
+use crate::test_secrets::{other_passphrase, shared_passphrase};
 use rusqlite::params;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-
-const PASS: &str = "slot-passphrase";
 
 fn leaf(label: &str, hardware_key_id: i64) -> NodeSpec {
     NodeSpec::Leaf {
@@ -48,14 +47,14 @@ fn share_for(
 fn a_slot_roundtrip_rejects_a_bad_label_and_a_wrong_passphrase() {
     let dir = tempfile::tempdir().unwrap();
     let mut container = init(dir.path()).unwrap();
-    assert!(provision(&mut container, "../M.S", PASS).is_err());
-    let slot = provision(&mut container, "M.S.1", PASS).unwrap();
+    assert!(provision(&mut container, "../M.S", shared_passphrase()).is_err());
+    let slot = provision(&mut container, "M.S.1", shared_passphrase()).unwrap();
     let opened = open(dir.path()).unwrap();
     assert_eq!(opened.device_id(), container.device_id());
     assert_eq!(opened.slots().len(), 1);
-    let secrets = open_slot(&opened, "M.S.1", PASS).unwrap();
+    let secrets = open_slot(&opened, "M.S.1", shared_passphrase()).unwrap();
     assert_eq!(secrets.encryption_public, slot.encryption_public);
-    assert!(open_slot(&opened, "M.S.1", "nope").is_err());
+    assert!(open_slot(&opened, "M.S.1", &other_passphrase(shared_passphrase())).is_err());
     let mut tampered = fs::read(dir.path().join("device.kq")).unwrap();
     tampered[0] ^= 0xff;
     fs::write(dir.path().join("device.kq"), tampered).unwrap();
@@ -115,11 +114,11 @@ fn slots_on_one_container_count_as_one_device() {
     let labels = ["M.S", "M.S.1", "M.S.2"];
     let mut minted = Vec::new();
     for label in labels {
-        let slot = provision(&mut container, label, PASS).unwrap();
+        let slot = provision(&mut container, label, shared_passphrase()).unwrap();
         let id =
             keys::register_key(&conn, label, KeyType::Encryption, &slot.encryption_public).unwrap();
         keys::register_key(&conn, label, KeyType::Signing, &slot.signing_public).unwrap();
-        bind_slot(&conn, &container, label, PASS).unwrap();
+        bind_slot(&conn, &container, label, shared_passphrase()).unwrap();
         minted.push((label, id, *slot.encryption_secret));
     }
     let stored: Vec<u8> = conn
@@ -188,14 +187,14 @@ fn moving_a_slot_changes_only_the_device_binding() {
     let right = tempfile::tempdir().unwrap();
     let mut from = init(left.path()).unwrap();
     let mut to = init(right.path()).unwrap();
-    let slot = provision(&mut from, "M.S.1", PASS).unwrap();
+    let slot = provision(&mut from, "M.S.1", shared_passphrase()).unwrap();
     let conn = db::open_in_memory().unwrap();
     let id =
         keys::register_key(&conn, "M.S.1", KeyType::Encryption, &slot.encryption_public).unwrap();
-    bind_slot(&conn, &from, "M.S.1", PASS).unwrap();
-    relocate_slot(&mut from, &mut to, "M.S.1", PASS).unwrap();
+    bind_slot(&conn, &from, "M.S.1", shared_passphrase()).unwrap();
+    relocate_slot(&mut from, &mut to, "M.S.1", shared_passphrase()).unwrap();
     let dest = open(right.path()).unwrap();
-    bind_slot(&conn, &dest, "M.S.1", PASS).unwrap();
+    bind_slot(&conn, &dest, "M.S.1", shared_passphrase()).unwrap();
     let (device_id, slot_label): (Vec<u8>, String) = conn
         .query_row(
             "SELECT device_id, slot_label FROM device_placements WHERE hardware_key_id = ?1",
@@ -218,10 +217,10 @@ fn separate_containers_count_as_separate_devices() {
     for label in ["M.S", "M.S.1", "M.S.2"] {
         let dir = tempfile::tempdir().unwrap();
         let mut container = init(dir.path()).unwrap();
-        let slot = provision(&mut container, label, PASS).unwrap();
+        let slot = provision(&mut container, label, shared_passphrase()).unwrap();
         let id =
             keys::register_key(&conn, label, KeyType::Encryption, &slot.encryption_public).unwrap();
-        bind_slot(&conn, &container, label, PASS).unwrap();
+        bind_slot(&conn, &container, label, shared_passphrase()).unwrap();
         minted.push((
             label,
             id,
@@ -262,10 +261,10 @@ fn a_later_share_can_meet_the_device_minimum() {
     let mut container = init(dir.path()).unwrap();
     let mut minted = Vec::new();
     for label in ["M.S.1", "M.S.2"] {
-        let slot = provision(&mut container, label, PASS).unwrap();
+        let slot = provision(&mut container, label, shared_passphrase()).unwrap();
         let id =
             keys::register_key(&conn, label, KeyType::Encryption, &slot.encryption_public).unwrap();
-        bind_slot(&conn, &container, label, PASS).unwrap();
+        bind_slot(&conn, &container, label, shared_passphrase()).unwrap();
         minted.push((label, id, *slot.encryption_secret));
     }
     let (secret, public) = keys::generate_encryption_keypair();
@@ -300,10 +299,10 @@ fn a_rewritten_descriptor_cannot_split_one_container_into_two_devices() {
     let mut conn = db::open_in_memory().unwrap();
     let mut minted = Vec::new();
     for label in ["M.S", "M.S.1"] {
-        let slot = provision(&mut container, label, PASS).unwrap();
+        let slot = provision(&mut container, label, shared_passphrase()).unwrap();
         let id =
             keys::register_key(&conn, label, KeyType::Encryption, &slot.encryption_public).unwrap();
-        bind_slot(&conn, &container, label, PASS).unwrap();
+        bind_slot(&conn, &container, label, shared_passphrase()).unwrap();
         minted.push((label, id, *slot.encryption_secret));
     }
     let original = *container.device_id();
@@ -324,7 +323,7 @@ fn a_rewritten_descriptor_cannot_split_one_container_into_two_devices() {
     fs::write(&path, forged).unwrap();
     let reopened = open(dir.path()).unwrap();
     assert_ne!(reopened.device_id(), &original);
-    assert!(bind_slot(&conn, &reopened, "M.S.1", PASS).is_err());
+    assert!(bind_slot(&conn, &reopened, "M.S.1", shared_passphrase()).is_err());
 
     let stored: Vec<u8> = conn
         .query_row(
@@ -364,8 +363,8 @@ fn slot_matches_reconciles_same_keys_and_refuses_different_ones() {
     let to_dir = tempfile::tempdir().unwrap();
     let mut from = init(from_dir.path()).unwrap();
     let mut to = init(to_dir.path()).unwrap();
-    provision(&mut from, "M.S.1", PASS).unwrap();
-    let secrets = open_slot(&from, "M.S.1", PASS).unwrap();
+    provision(&mut from, "M.S.1", shared_passphrase()).unwrap();
+    let secrets = open_slot(&from, "M.S.1", shared_passphrase()).unwrap();
     assert!(!slot_matches(
         &to,
         "M.S.1",
@@ -376,7 +375,7 @@ fn slot_matches_reconciles_same_keys_and_refuses_different_ones() {
     install_slot(
         &mut to,
         "M.S.1",
-        PASS,
+        shared_passphrase(),
         &secrets.encryption_secret,
         &secrets.signing_secret,
     )
@@ -388,7 +387,7 @@ fn slot_matches_reconciles_same_keys_and_refuses_different_ones() {
         &secrets.signing_secret
     )
     .unwrap());
-    let other = provision(&mut from, "M.S.2", PASS).unwrap();
+    let other = provision(&mut from, "M.S.2", shared_passphrase()).unwrap();
     assert!(matches!(
         slot_matches(
             &to,
