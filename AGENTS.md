@@ -259,7 +259,7 @@ on acknowledgement. `src/relay/device_mail.rs` owns the device mailbox;
 sealed (issue #86): a `KeyIssue` (relay URL, key id, scope, bearer, issued
 and optional expiry times, optional device id, the relay's `KQPC`
 certificate, an optional licence statement), signed by the relay key over
-`signing::relay_api_key_issue_preimage` (which also binds the recipient's
+`signing::relay_key_issue_preimage` (which also binds the recipient's
 X25519 public key) and sealed either as `PACKAGE` kind `KIND_API_KEY_ISSUE`
 (20) for a rotated key the mailbox carries, or as `EXPORT_BUNDLE` type
 `export::BUNDLE_TYPE_API_KEY` (4), written as `<customer>.kqkey`, for a

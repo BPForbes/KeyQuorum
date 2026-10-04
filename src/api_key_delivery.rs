@@ -7,7 +7,7 @@
 //! key is bound to, the relay's `KQPC` certificate, and an optional licence
 //! statement for the customer to read. The relay signs every field together
 //! with the recipient's X25519 public key
-//! ([`signing::relay_api_key_issue_preimage`]) and the signed payload is
+//! ([`signing::relay_key_issue_preimage`]) and the signed payload is
 //! sealed to that key in one of two carriers, both framed by
 //! [`crate::envelope`]:
 //!
@@ -184,7 +184,7 @@ pub fn seal_bundle(
     issue: &KeyIssue,
 ) -> Result<Vec<u8>> {
     let payload = sign(identity, recipient_public_key, issue)?;
-    export::export_api_key_issue(&payload, recipient_public_key)
+    export::export_key_issue(&payload, recipient_public_key)
 }
 
 /// Which carrier `bytes` is, by its magic and kind byte alone. `None` when
@@ -250,7 +250,7 @@ pub fn open(
 }
 
 fn preimage(recipient_public_key: &[u8; 32], issue: &KeyIssue) -> Result<[u8; 32]> {
-    signing::relay_api_key_issue_preimage(
+    signing::relay_key_issue_preimage(
         recipient_public_key,
         &issue.relay_url,
         issue.key_id,

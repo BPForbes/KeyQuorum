@@ -399,18 +399,10 @@ pub enum Command {
         /// the relay the bundle names; left out, the bundle's own is used.
         #[arg(long)]
         url: Option<String>,
-        /// A sealed `.kqkey` bundle from your provider: opened with the slot
-        /// (or key file) it was sealed to, verified against the KeyQuorum
-        /// root, checked with the relay, then stored like a typed key
-        #[arg(long, conflicts_with = "api_key")]
-        bundle: Option<PathBuf>,
-        /// The slot the bundle was sealed to (container=label; default: the
-        /// one from `keyquorum use`)
-        #[arg(long, requires = "bundle", conflicts_with = "share_file")]
-        slot: Option<String>,
-        /// The X25519 private key file the bundle was sealed to
-        #[arg(long, requires = "bundle")]
-        share_file: Option<String>,
+        /// Boxed, like the everyday commands' options, so this variant does
+        /// not grow `Command` on the small debug-build test stacks.
+        #[command(flatten)]
+        sealed: Box<LoadkeyBundleArgs>,
     },
     /// Copy or move an active key identity between two open devices.
     /// A ghost keeps the hierarchy and cannot be exported.
@@ -969,10 +961,8 @@ pub fn run(db_path: &Path, command: Command) -> Result<()> {
         Command::Loadkey {
             api_key,
             url,
-            bundle,
-            slot,
-            share_file,
-        } => return run_loadkey(db_path, api_key, url, bundle, slot, share_file),
+            sealed,
+        } => return run_loadkey(db_path, api_key, url, *sealed),
         Command::Transfer { command } => return transfer_cmd::run(command),
         // Dispatched here rather than in `run_in_store`, whose frame is the
         // largest in the crate, so they run with that much more stack to spare.
@@ -2848,14 +2838,37 @@ pub(crate) fn resolve_relay_auth(
     }
 }
 
+/// `loadkey --bundle` and its key: a sealed `.kqkey` from the provider.
+#[derive(Args, Debug, Default)]
+pub struct LoadkeyBundleArgs {
+    /// A sealed `.kqkey` bundle from your provider: opened with the slot
+    /// (or key file) it was sealed to, verified against the KeyQuorum
+    /// root, checked with the relay, then stored like a typed key
+    #[arg(long, conflicts_with = "api_key")]
+    pub bundle: Option<PathBuf>,
+    /// The slot the bundle was sealed to (container=label; default: the
+    /// one from `keyquorum use`)
+    #[arg(long, requires = "bundle", conflicts_with = "share_file")]
+    pub slot: Option<String>,
+    /// The X25519 private key file the bundle was sealed to
+    #[arg(long, requires = "bundle")]
+    pub share_file: Option<String>,
+}
+
+// Never inlined into `run`: every command passes through that frame, and
+// the sealed-key path holds a verified issue and certificate on its stack.
+#[inline(never)]
 fn run_loadkey(
     db_path: &Path,
     api_key: Option<String>,
     url: Option<String>,
-    bundle: Option<PathBuf>,
-    slot: Option<String>,
-    share_file: Option<String>,
+    sealed: LoadkeyBundleArgs,
 ) -> Result<()> {
+    let LoadkeyBundleArgs {
+        bundle,
+        slot,
+        share_file,
+    } = sealed;
     env::with_db(db_path, |conn| match bundle {
         Some(path) => loadkey_bundle(conn, &path, url, slot.as_deref(), share_file.as_deref()),
         None => loadkey_in_store(conn, api_key, url),
@@ -2865,6 +2878,7 @@ fn run_loadkey(
 /// `loadkey --bundle`: a first relay key, handed over as a sealed `.kqkey`
 /// (`api_key_delivery`). Opened with the recipient's own key, verified,
 /// then stored exactly as a typed key is, after the same relay challenge.
+#[inline(never)]
 fn loadkey_bundle(
     conn: &Connection,
     path: &Path,
@@ -2899,7 +2913,9 @@ fn loadkey_bundle(
 }
 
 /// `inbox open` on a relay key letter: a rotated key, sealed to the slot
-/// that pulls this inbox and addressed to the relay it came from.
+/// that pulls this inbox and addressed to the relay it came from. Never
+/// inlined into `inbox::open_letter`, which every letter passes through.
+#[inline(never)]
 pub(crate) fn install_key_letter(
     conn: &Connection,
     path: &Path,
@@ -2933,6 +2949,7 @@ fn open_key_issue(bytes: &[u8], secret: &[u8; 32]) -> Result<crate::api_key_deli
 /// bound to a device loads only from that device. Then the full relay
 /// challenge and `POST /keycheck` run as for a typed key: the issue is
 /// believed about nothing the relay does not confirm.
+#[inline(never)]
 fn install_key_issue(
     conn: &Connection,
     opened: &crate::api_key_delivery::Opened,

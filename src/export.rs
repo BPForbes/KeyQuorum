@@ -118,10 +118,7 @@ pub fn export_tracked_file(container: &[u8], recipient_public_key: &[u8; 32]) ->
 /// Seal an already signed API key issue (`api_key_delivery::sign`) as a
 /// portable `KQXB` file for `recipient_public_key`. The payload is signed
 /// before it is sealed, so this adds no trust: it only chooses the carrier.
-pub fn export_api_key_issue(
-    signed_payload: &[u8],
-    recipient_public_key: &[u8; 32],
-) -> Result<Vec<u8>> {
+pub fn export_key_issue(signed_payload: &[u8], recipient_public_key: &[u8; 32]) -> Result<Vec<u8>> {
     encode_bundle(BUNDLE_TYPE_API_KEY, recipient_public_key, signed_payload)
 }
 

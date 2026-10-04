@@ -233,7 +233,7 @@ pub fn relay_audit_anchor_preimage(
 /// fails. Absent optional fields hash as a zero presence byte, so no value
 /// of one can pass for the absence of another.
 #[allow(clippy::too_many_arguments)]
-pub fn relay_api_key_issue_preimage(
+pub fn relay_key_issue_preimage(
     recipient_public_key: &[u8; 32],
     relay_url: &str,
     key_id: i64,
