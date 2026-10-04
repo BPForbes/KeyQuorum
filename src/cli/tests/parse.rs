@@ -475,6 +475,76 @@ fn provider_host_keys_list_parses() {
     assert!(Cli::try_parse_from([
         "keyquorum",
         "host",
+        "serve",
+        "--bind",
+        "0.0.0.0:8787",
+        "--behind-tls-proxy",
+        "--rate-limit-per-minute",
+        "0",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "keys",
+        "events",
+        "--key",
+        "3",
+        "--verify",
+    ])
+    .is_ok());
+    assert!(
+        Cli::try_parse_from(["keyquorum", "host", "keys", "events", "--krl", "x.kqrl"]).is_err()
+    );
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "keys",
+        "events",
+        "--verify",
+        "--checkpoint",
+        "audit.checkpoint",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "keys",
+        "events",
+        "--checkpoint",
+        "audit.checkpoint",
+    ])
+    .is_err());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "keys",
+        "checkpoint",
+        "--out",
+        "audit.checkpoint",
+        "--cert",
+        "provider.kqcert",
+        "--relay-key",
+        "relay.key",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from(["keyquorum", "host", "keys", "checkpoint"]).is_err());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "keys",
+        "revoke",
+        "3",
+        "--cert",
+        "provider.kqcert",
+        "--relay-key",
+        "relay.key",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from(["keyquorum", "host", "keys", "events"]).is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
         "keys",
         "create",
         "--scope",
@@ -497,8 +567,29 @@ fn provider_host_identity_and_certify_parse() {
         "generate",
         "--public-key-out",
         "relay.pub",
+        "--private-key-out",
+        "relay.key",
     ])
     .is_ok());
+    // The private key has nowhere to go but an owner-only file.
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "identity",
+        "generate",
+        "--public-key-out",
+        "relay.pub",
+    ])
+    .is_err());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "root",
+        "generate",
+        "--public-key-out",
+        "root.pub",
+    ])
+    .is_err());
     assert!(Cli::try_parse_from([
         "keyquorum",
         "host",
@@ -544,6 +635,8 @@ fn provider_host_identity_and_certify_parse() {
         "generate",
         "--public-key-out",
         "provider-root.pub",
+        "--private-key-out",
+        "provider-root.key",
     ])
     .is_ok());
     assert!(Cli::try_parse_from([
@@ -553,6 +646,8 @@ fn provider_host_identity_and_certify_parse() {
         "generate",
         "--public-key-out",
         "provider-root.pub",
+        "--private-key-out",
+        "provider-root.key",
         "--network",
         "10.8.0.0/24",
     ])
@@ -564,6 +659,8 @@ fn provider_host_identity_and_certify_parse() {
         "generate",
         "--public-key-out",
         "provider-root.pub",
+        "--private-key-out",
+        "provider-root.key",
         "--ssid",
         "Office",
     ])

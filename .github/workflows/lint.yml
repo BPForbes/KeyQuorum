@@ -1,0 +1,43 @@
+# Formatting and clippy, the two checks AGENTS.md asks of every Rust change
+# (`cargo fmt` and `cargo clippy --locked --all-targets --all-features -- -D
+# warnings`). Until this workflow, nothing in CI ran either, so a change could
+# merge with warnings or unformatted code that only a local run would catch.
+
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: lint
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      # --all-features is provider, lab, tui and legacy-tests together.
+      - name: clippy (all features, all targets, warnings are errors)
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      # The browser Lab builds the library for wasm32 with `lab` (never
+      # `provider`); lints that only fire there are checked too.
+      - name: clippy (Lab, wasm32)
+        run: cargo clippy --locked --lib --target wasm32-unknown-unknown --features lab -- -D warnings

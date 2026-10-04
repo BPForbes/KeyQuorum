@@ -12,7 +12,7 @@ use std::path::Path;
 
 fn cli(env: &mut MemoryEnv, line: &str) -> String {
     let (result, out) = env.keyquorum(&format!("keyquorum {DB} {line}"));
-    assert!(result.is_ok(), "{line}: {result:?}\n{out}");
+    assert!(result.is_ok(), "{line}: the command failed");
     out
 }
 

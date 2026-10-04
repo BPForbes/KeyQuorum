@@ -7,7 +7,9 @@ use crate::device::{self, Container};
 use crate::device_relay;
 use crate::error::{Error, Result};
 use crate::relay::{self, ApiKeyScope};
-use crate::transfer::{self, DescendantMode, TransferAuth, TransferOp, TransferRequest};
+use crate::transfer::{
+    self, DescendantMode, Passphrases, TransferAuth, TransferOp, TransferRequest,
+};
 use clap::{ArgGroup, Args, Subcommand, ValueEnum};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -334,7 +336,7 @@ fn run_transfer(args: TransferArgs, operation: TransferOp) -> Result<()> {
     Ok(())
 }
 
-fn prompt_passphrases(source: &Container, labels: &[String]) -> Result<HashMap<String, String>> {
+fn prompt_passphrases(source: &Container, labels: &[String]) -> Result<Passphrases> {
     let mut passphrases = HashMap::new();
     for label in labels {
         if source.slot(label).is_none() {
@@ -349,7 +351,7 @@ fn prompt_passphrases(source: &Container, labels: &[String]) -> Result<HashMap<S
     Ok(passphrases)
 }
 
-fn prompt_new_passphrases(labels: &[String]) -> Result<HashMap<String, String>> {
+fn prompt_new_passphrases(labels: &[String]) -> Result<Passphrases> {
     let mut passphrases = HashMap::new();
     for label in labels {
         let passphrase = env::confirm_passphrase(

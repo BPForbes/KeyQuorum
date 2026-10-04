@@ -1,5 +1,6 @@
 use super::*;
 use crate::device;
+use crate::test_secrets::shared_passphrase;
 use crate::transfer::{self, DescendantMode, TransferAuth, TransferOp};
 
 fn pair() -> (
@@ -12,8 +13,8 @@ fn pair() -> (
     let right_dir = tempfile::tempdir().unwrap();
     let mut left = device::init(left_dir.path()).unwrap();
     let mut right = device::init(right_dir.path()).unwrap();
-    device::provision(&mut left, "M", "slot-passphrase").unwrap();
-    device::provision(&mut right, "recv", "slot-passphrase").unwrap();
+    device::provision(&mut left, "M", shared_passphrase()).unwrap();
+    device::provision(&mut right, "recv", shared_passphrase()).unwrap();
     (left, left_dir, right, right_dir)
 }
 
@@ -21,9 +22,11 @@ fn pair() -> (
 fn transfer_letter_round_trips_and_hides_the_package() {
     let (mut source, _source_dir, dest, _dest_dir) = pair();
     let source_conn = crate::db::open_in_memory().unwrap();
-    transfer::enroll(&source_conn, &mut source, "M", "slot-passphrase").unwrap();
-    let passes =
-        std::collections::HashMap::from([("M".to_string(), "slot-passphrase".to_string())]);
+    transfer::enroll(&source_conn, &mut source, "M", shared_passphrase()).unwrap();
+    let passes: transfer::Passphrases = std::collections::HashMap::from([(
+        "M".to_string(),
+        zeroize::Zeroizing::new(shared_passphrase().to_string()),
+    )]);
     let prepared = transfer::prepare(
         &source_conn,
         &source,
@@ -43,14 +46,14 @@ fn transfer_letter_round_trips_and_hides_the_package() {
         .windows(prepared.package().len())
         .any(|window| window == prepared.package()));
     assert!(!sealed.starts_with(b"KQTX"));
-    let opener = device::open_slot(&dest, "recv", "slot-passphrase").unwrap();
+    let opener = device::open_slot(&dest, "recv", shared_passphrase()).unwrap();
     let opened = open_transfer(&opener.encryption_secret, &sealed).unwrap();
     assert_eq!(opened.return_public, return_public);
     assert_eq!(opened.package.as_slice(), prepared.package());
     let header = transfer::authenticated_package(opened.package.as_slice()).unwrap();
     let hash = transfer::package_hash(opened.package.as_slice());
     let ack = seal_transfer_ack(&dest, &opened.return_public, &header, &hash).unwrap();
-    let source_slot = device::open_slot(&source, "M", "slot-passphrase").unwrap();
+    let source_slot = device::open_slot(&source, "M", shared_passphrase()).unwrap();
     let parsed =
         open_transfer_ack(&source_slot.encryption_secret, &ack, dest.verify_key()).unwrap();
     assert_eq!(parsed.tx_id, prepared.id);
@@ -67,15 +70,15 @@ fn relocate_letter_round_trips_without_a_plaintext_secret() {
         &source,
         "M",
         dest.device_id(),
-        "slot-passphrase",
+        shared_passphrase(),
     )
     .unwrap();
-    let plain_secret = device::open_slot(&source, "M", "slot-passphrase").unwrap();
+    let plain_secret = device::open_slot(&source, "M", shared_passphrase()).unwrap();
     assert!(!sealed
         .bytes
         .windows(32)
         .any(|window| window == plain_secret.encryption_secret.as_slice()));
-    let opener = device::open_slot(&dest, "recv", "slot-passphrase").unwrap();
+    let opener = device::open_slot(&dest, "recv", shared_passphrase()).unwrap();
     let letter = open_relocate(&opener.encryption_secret, &sealed.bytes).unwrap();
     assert_eq!(letter.relocate_id, sealed.relocate_id);
     assert_eq!(letter.label, "M");
@@ -96,15 +99,15 @@ fn relocate_letter_round_trips_without_a_plaintext_secret() {
 fn a_relocate_ack_names_the_relocation_it_answers() {
     let (source, _source_dir, dest, _dest_dir) = pair();
     let recipient = dest.slot("recv").unwrap().encryption_public;
-    let opener = device::open_slot(&dest, "recv", "slot-passphrase").unwrap();
-    let source_slot = device::open_slot(&source, "M", "slot-passphrase").unwrap();
+    let opener = device::open_slot(&dest, "recv", shared_passphrase()).unwrap();
+    let source_slot = device::open_slot(&source, "M", shared_passphrase()).unwrap();
     let relocate = || {
         seal_relocate(
             &recipient,
             &source,
             "M",
             dest.device_id(),
-            "slot-passphrase",
+            shared_passphrase(),
         )
         .unwrap()
     };
@@ -127,14 +130,14 @@ fn a_relocate_ack_names_the_relocation_it_answers() {
 fn a_relocate_ack_with_a_rewritten_id_fails_verification() {
     let (source, _source_dir, dest, _dest_dir) = pair();
     let recipient = dest.slot("recv").unwrap().encryption_public;
-    let opener = device::open_slot(&dest, "recv", "slot-passphrase").unwrap();
-    let source_slot = device::open_slot(&source, "M", "slot-passphrase").unwrap();
+    let opener = device::open_slot(&dest, "recv", shared_passphrase()).unwrap();
+    let source_slot = device::open_slot(&source, "M", shared_passphrase()).unwrap();
     let sealed = seal_relocate(
         &recipient,
         &source,
         "M",
         dest.device_id(),
-        "slot-passphrase",
+        shared_passphrase(),
     )
     .unwrap();
     let letter = open_relocate(&opener.encryption_secret, &sealed.bytes).unwrap();

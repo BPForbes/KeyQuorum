@@ -180,8 +180,8 @@ fn relay_request_url(base: &str, path: &str) -> Result<Url> {
 pub struct RelayHttpRequest {
     pub method: &'static str,
     pub url: Url,
-    /// Sent as `Authorization: Bearer …`.
-    pub bearer: Option<String>,
+    /// Sent as `Authorization: Bearer …`; zeroed when the request is dropped.
+    pub bearer: Option<zeroize::Zeroizing<String>>,
     pub content_type: Option<&'static str>,
     pub body: Vec<u8>,
 }
@@ -214,7 +214,7 @@ impl RelayTransport for UreqTransport {
             .method(request.method)
             .uri(request.url.as_str());
         if let Some(bearer) = &request.bearer {
-            req = req.header("Authorization", format!("Bearer {bearer}"));
+            req = req.header("Authorization", format!("Bearer {}", bearer.as_str()));
         }
         if let Some(content_type) = request.content_type {
             req = req.header("Content-Type", content_type);
@@ -238,11 +238,54 @@ impl RelayTransport for UreqTransport {
         };
         let resp = result?;
         let status = resp.status().as_u16();
-        let mut body = Vec::new();
-        std::io::Read::read_to_end(&mut resp.into_body().into_reader(), &mut body)
-            .map_err(|e| Error::RelayRequest(e.to_string()))?;
+        let body = read_bounded(resp.into_body().into_reader(), MAX_RESPONSE_BYTES)?;
         Ok(RelayHttpResponse { status, body })
     }
+}
+
+/// Largest relay response the client reads: a full inbox page of envelopes
+/// fits, and an untrusted or compromised relay cannot exhaust memory by
+/// streaming more (the provider check itself runs over this transport).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub const MAX_RESPONSE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Reads at most `limit` bytes and refuses a longer body instead of
+/// truncating it silently.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn read_bounded(reader: impl std::io::Read, limit: u64) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    std::io::Read::read_to_end(&mut reader.take(limit.saturating_add(1)), &mut body)
+        .map_err(|e| Error::RelayRequest(e.to_string()))?;
+    if body.len() as u64 > limit {
+        return Err(Error::RelayRequest(format!(
+            "relay response exceeds {limit} bytes"
+        )));
+    }
+    Ok(body)
+}
+
+/// Longest piece of a relay's error body quoted in an error message.
+const MAX_ERROR_TEXT_CHARS: usize = 512;
+
+/// A relay's error body as safe terminal text: control characters (escape
+/// sequences included) dropped and the length capped, since the relay is
+/// on the other side of a network boundary.
+pub(crate) fn relay_error_text(body: &[u8]) -> String {
+    let text = String::from_utf8_lossy(body);
+    let mut out: String = text
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_ERROR_TEXT_CHARS)
+        .collect();
+    if text
+        .chars()
+        .filter(|c| !c.is_control())
+        .nth(MAX_ERROR_TEXT_CHARS)
+        .is_some()
+    {
+        out.push('…');
+    }
+    out
 }
 
 /// Status codes come back as responses, not errors, so the caller sees the
@@ -278,7 +321,7 @@ fn request(
     RelayHttpRequest {
         method,
         url,
-        bearer: bearer.map(str::to_owned),
+        bearer: bearer.map(|b| zeroize::Zeroizing::new(b.to_owned())),
         content_type,
         body,
     }
@@ -290,7 +333,7 @@ fn json_body<T: Serialize>(value: &T) -> Result<Vec<u8>> {
 
 fn read_json<T: serde::de::DeserializeOwned>(response: RelayHttpResponse) -> Result<T> {
     if !(200..300).contains(&response.status) {
-        let body = String::from_utf8_lossy(&response.body);
+        let body = relay_error_text(&response.body);
         return Err(Error::RelayRequest(format!(
             "HTTP {}: {body}",
             response.status
@@ -452,7 +495,7 @@ pub fn authenticate_provider(
         503 => return Err(Error::UntrustedRelay),
         400 => return Err(Error::InvalidProviderChallenge),
         code => {
-            let body = String::from_utf8_lossy(&response.body);
+            let body = relay_error_text(&response.body);
             return Err(Error::RelayRequest(format!("HTTP {code}: {body}")));
         }
     };

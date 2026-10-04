@@ -53,10 +53,14 @@ rand = "0.10"
 # ed25519-dalek, crypto_box and the Shamir dealer take a rand_core 0.6 RNG.
 rand_core = { version = "0.6", features = ["getrandom"] }
 sha2 = "0.10"
+# Keyed commitments to sensitive content (RustCrypto, same `digest` 0.10 as sha2).
+hmac = "0.12"
 hex = "0.4"
 libc = "0.2"
 base64 = "0.22"
 zeroize = "1"
+# Constant-time comparison of derived secrets (already in the graph via aes-gcm).
+subtle = "2"
 clap = { version = "4", features = ["derive"] }
 blahaj = "0.6"
 crypto_box = { version = "0.9", features = ["seal"] }
@@ -66,7 +70,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 axum = { version = "0.8", optional = true }
 tokio = { version = "1", optional = true, features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
-tower-http = { version = "0.7", optional = true, features = ["trace"] }
+tower-http = { version = "0.7", optional = true, features = ["trace", "timeout"] }
 utoipa = "6"
 utoipa-swagger-ui = { version = "10", optional = true, features = ["axum"] }
 url = "2"

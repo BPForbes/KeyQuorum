@@ -61,13 +61,21 @@ impl HttpError {
 impl From<Error> for HttpError {
     fn from(err: Error) -> Self {
         match err {
+            // Denials are logged for monitoring by reason only: never the
+            // bearer, its hash or the request body.
             Error::InvalidApiKey | Error::ApiKeyExpired | Error::ApiKeyRevoked => {
+                #[cfg(feature = "provider")]
+                tracing::warn!(reason = %err, "relay authentication denied");
                 Self::unauthorized()
             }
-            Error::ApiKeyScopeDenied => Self {
-                status: 403,
-                message: "forbidden".to_string(),
-            },
+            Error::ApiKeyScopeDenied => {
+                #[cfg(feature = "provider")]
+                tracing::warn!(reason = %err, "relay scope denied");
+                Self {
+                    status: 403,
+                    message: "forbidden".to_string(),
+                }
+            }
             Error::InvalidApiKeyRequest
             | Error::InvalidInboxPage
             | Error::InvalidBridgePackage
@@ -134,6 +142,14 @@ impl From<ApiKeyInfo> for ApiKeyView {
             last_used_at: info.last_used_at,
         }
     }
+}
+
+/// `GET /audit/api-keys` (any live key): the lifecycle events that pertain
+/// to the caller. An admin key sees every event; any other key only those
+/// about itself, so no key holder learns about another's.
+pub fn audit_events(conn: &Connection, token: &str) -> Result<Vec<api_key::ApiKeyEvent>> {
+    let auth = api_key::authenticate_any(conn, token)?;
+    api_key::events_visible_to(conn, &auth)
 }
 
 /// `POST /provider-identity`: the certificate plus a signature over the
@@ -268,9 +284,10 @@ pub fn list_keys(conn: &Connection, token: &str) -> Result<Vec<ApiKeyView>> {
 }
 
 /// `POST /api-keys/{id}/revoke` (admin).
+/// Recorded in `api_key_events` with the admin key that revoked it.
 pub fn revoke_key(conn: &Connection, token: &str, id: i64) -> Result<()> {
-    api_key::authenticate(conn, token, ApiKeyScope::Admin)?;
-    api_key::revoke(conn, id)
+    let admin = api_key::authenticate(conn, token, ApiKeyScope::Admin)?;
+    api_key::revoke_by(conn, id, &api_key::admin_actor(admin.id))
 }
 
 /// `PUT /trees` (admin): replace a canonical public tree.
@@ -425,6 +442,7 @@ fn route(
             &inbox_pull(conn, &token()?, query("after")?, query("limit")?)?,
         )),
         ("GET", ["api-keys"]) => Ok(json_response(200, &list_keys(conn, &token()?)?)),
+        ("GET", ["audit", "api-keys"]) => Ok(json_response(200, &audit_events(conn, &token()?)?)),
         ("POST", ["api-keys", id, "revoke"]) => {
             let id = id.parse().map_err(|_| Error::ApiKeyNotFound)?;
             revoke_key(conn, &token()?, id)?;

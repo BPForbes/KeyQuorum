@@ -29,6 +29,9 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use zeroize::Zeroizing;
 
+/// Slot passphrases by label, zeroed when the map is dropped.
+pub type Passphrases = HashMap<String, Zeroizing<String>>;
+
 const MAGIC: &[u8; 4] = b"KQTX";
 const VERSION: u8 = 1;
 const DOMAIN: &[u8] = b"KQ-TRANSFER-v1";
@@ -403,7 +406,7 @@ pub struct TransferRequest<'a> {
     pub label: &'a str,
     pub operation: TransferOp,
     pub descendants: DescendantMode,
-    pub passphrases: &'a HashMap<String, String>,
+    pub passphrases: &'a Passphrases,
     pub auth: &'a TransferAuth,
 }
 
@@ -478,7 +481,7 @@ pub fn prepare(
     label: &str,
     operation: TransferOp,
     descendants: DescendantMode,
-    passphrases: &HashMap<String, String>,
+    passphrases: &Passphrases,
     auth: &TransferAuth,
 ) -> Result<PreparedTransfer> {
     prepare_in(
@@ -506,7 +509,7 @@ pub fn prepare_in(
     label: &str,
     operation: TransferOp,
     descendants: DescendantMode,
-    passphrases: &HashMap<String, String>,
+    passphrases: &Passphrases,
     auth: &TransferAuth,
 ) -> Result<PreparedTransfer> {
     let tx_id = random_id();
@@ -722,7 +725,7 @@ pub fn write_destination_slots(
     dest: &mut Container,
     source: &Container,
     package: &[u8],
-    passphrases: &HashMap<String, String>,
+    passphrases: &Passphrases,
     limit: Option<usize>,
 ) -> Result<()> {
     write_destination_slots_in(
@@ -743,7 +746,7 @@ pub fn write_destination_slots_in(
     dest: &mut Container,
     source: &Container,
     package: &[u8],
-    passphrases: &HashMap<String, String>,
+    passphrases: &Passphrases,
     limit: Option<usize>,
 ) -> Result<()> {
     let bundle = open_bundle(package, source, dest)?;
@@ -857,7 +860,7 @@ pub fn accept_package(
     source_device_id: &[u8; 16],
     source_verify_key: &[u8; 32],
     package: &[u8],
-    passphrases: &HashMap<String, String>,
+    passphrases: &Passphrases,
     allow_ancestor_import: bool,
 ) -> Result<[u8; 16]> {
     accept_package_in(
@@ -882,7 +885,7 @@ pub fn accept_package_in(
     source_device_id: &[u8; 16],
     source_verify_key: &[u8; 32],
     package: &[u8],
-    passphrases: &HashMap<String, String>,
+    passphrases: &Passphrases,
     allow_ancestor_import: bool,
 ) -> Result<[u8; 16]> {
     let header = authenticated_package(package)?;
@@ -930,7 +933,7 @@ fn resume_accept(
     source_device_id: &[u8; 16],
     source_verify_key: &[u8; 32],
     package: &[u8],
-    passphrases: &HashMap<String, String>,
+    passphrases: &Passphrases,
     allow_ancestor_import: bool,
     tx_id: &[u8; 16],
     state: &str,

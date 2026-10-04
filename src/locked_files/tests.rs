@@ -1,45 +1,50 @@
 use super::*;
 use crate::db;
+use crate::test_secrets::{other_passphrase, passphrase};
 
 #[test]
 fn lock_and_unlock_roundtrip() {
+    let password = passphrase();
     let conn = db::open_in_memory().expect("schema should apply");
     let dir = tempfile::tempdir().expect("tempdir should be created");
     let source_path = dir.path().join("secret.txt");
     let encrypted_path = dir.path().join("secret.txt.kqenc");
     fs::write(&source_path, b"the quorum has been reached").unwrap();
 
-    let id = lock_file(&conn, &source_path, &encrypted_path, "hunter2")
+    let id = lock_file(&conn, &source_path, &encrypted_path, password.as_str())
         .expect("lock_file should succeed");
-    let plaintext = unlock_file(&conn, id, "hunter2").expect("unlock_file should succeed");
+    let plaintext = unlock_file(&conn, id, password.as_str()).expect("unlock_file should succeed");
 
-    assert_eq!(plaintext, b"the quorum has been reached");
+    assert_eq!(plaintext.as_slice(), b"the quorum has been reached");
 }
 
 #[test]
 fn unlock_fails_with_wrong_password() {
+    let password = passphrase();
+    let wrong = other_passphrase(&password);
     let conn = db::open_in_memory().expect("schema should apply");
     let dir = tempfile::tempdir().expect("tempdir should be created");
     let source_path = dir.path().join("secret.txt");
     let encrypted_path = dir.path().join("secret.txt.kqenc");
     fs::write(&source_path, b"the quorum has been reached").unwrap();
 
-    let id = lock_file(&conn, &source_path, &encrypted_path, "hunter2")
+    let id = lock_file(&conn, &source_path, &encrypted_path, password.as_str())
         .expect("lock_file should succeed");
-    let result = unlock_file(&conn, id, "not-hunter2");
+    let result = unlock_file(&conn, id, wrong.as_str());
 
     assert!(matches!(result, Err(Error::InvalidPassword)));
 }
 
 #[test]
 fn reusing_an_encrypted_path_fails_without_touching_the_original() {
+    let password = passphrase();
     let conn = db::open_in_memory().expect("schema should apply");
     let dir = tempfile::tempdir().expect("tempdir should be created");
     let source_path = dir.path().join("secret.txt");
     let encrypted_path = dir.path().join("secret.txt.kqenc");
     fs::write(&source_path, b"the quorum has been reached").unwrap();
 
-    lock_file(&conn, &source_path, &encrypted_path, "hunter2")
+    lock_file(&conn, &source_path, &encrypted_path, password.as_str())
         .expect("first lock_file should succeed");
 
     let other_source_path = dir.path().join("other.txt");
@@ -54,13 +59,14 @@ fn reusing_an_encrypted_path_fails_without_touching_the_original() {
             |row| row.get(0),
         )
         .expect("original row should still exist");
-    let plaintext = unlock_file(&conn, id, "hunter2")
+    let plaintext = unlock_file(&conn, id, password.as_str())
         .expect("original file should remain decryptable with its original password");
-    assert_eq!(plaintext, b"the quorum has been reached");
+    assert_eq!(plaintext.as_slice(), b"the quorum has been reached");
 }
 
 #[test]
 fn locking_refuses_to_overwrite_an_untracked_existing_file() {
+    let password = passphrase();
     let conn = db::open_in_memory().expect("schema should apply");
     let dir = tempfile::tempdir().expect("tempdir should be created");
     let source_path = dir.path().join("secret.txt");
@@ -70,7 +76,7 @@ fn locking_refuses_to_overwrite_an_untracked_existing_file() {
     // A file already sits at encrypted_path but isn't tracked by any row.
     fs::write(&encrypted_path, b"unrelated pre-existing data").unwrap();
 
-    let result = lock_file(&conn, &source_path, &encrypted_path, "hunter2");
+    let result = lock_file(&conn, &source_path, &encrypted_path, password.as_str());
     assert!(result.is_err());
 
     let contents = fs::read(&encrypted_path).unwrap();
@@ -91,13 +97,15 @@ fn locking_refuses_to_overwrite_an_untracked_existing_file() {
 fn locked_file_is_owner_only() {
     use std::os::unix::fs::PermissionsExt;
 
+    let password = passphrase();
     let conn = db::open_in_memory().expect("schema should apply");
     let dir = tempfile::tempdir().expect("tempdir should be created");
     let source_path = dir.path().join("secret.txt");
     let encrypted_path = dir.path().join("secret.txt.kqenc");
     fs::write(&source_path, b"the quorum has been reached").unwrap();
 
-    lock_file(&conn, &source_path, &encrypted_path, "hunter2").expect("lock_file should succeed");
+    lock_file(&conn, &source_path, &encrypted_path, password.as_str())
+        .expect("lock_file should succeed");
 
     let mode = fs::metadata(&encrypted_path).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600);
@@ -109,6 +117,7 @@ fn locking_rejects_a_non_utf8_encrypted_path() {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
 
+    let password = passphrase();
     let conn = db::open_in_memory().expect("schema should apply");
     let dir = tempfile::tempdir().expect("tempdir should be created");
     let source_path = dir.path().join("secret.txt");
@@ -119,7 +128,7 @@ fn locking_rejects_a_non_utf8_encrypted_path() {
     let bad_name = OsStr::from_bytes(b"secret-\xFF.kqenc");
     let encrypted_path = dir.path().join(bad_name);
 
-    let result = lock_file(&conn, &source_path, &encrypted_path, "hunter2");
+    let result = lock_file(&conn, &source_path, &encrypted_path, password.as_str());
     assert!(matches!(result, Err(Error::InvalidPath)));
     assert!(!encrypted_path.exists());
 }
@@ -162,13 +171,14 @@ fn parse_expires_utc_rejects_malformed_and_impossible_dates() {
 
 #[test]
 fn unlock_after_expiry_deletes_ciphertext_and_row() {
+    let password = passphrase();
     let conn = db::open_in_memory().expect("schema should apply");
     let dir = tempfile::tempdir().expect("tempdir should be created");
     let source_path = dir.path().join("secret.txt");
     let encrypted_path = dir.path().join("secret.txt.kqenc");
     fs::write(&source_path, b"the quorum has been reached").unwrap();
 
-    let id = lock_file(&conn, &source_path, &encrypted_path, "hunter2")
+    let id = lock_file(&conn, &source_path, &encrypted_path, password.as_str())
         .expect("lock_file should succeed");
     conn.execute(
         "UPDATE password_locked_files SET expires_at = datetime('now', '-1 minutes') WHERE id = ?1",
@@ -176,7 +186,7 @@ fn unlock_after_expiry_deletes_ciphertext_and_row() {
     )
     .expect("stamp a past expiry");
 
-    let result = unlock_file(&conn, id, "hunter2");
+    let result = unlock_file(&conn, id, password.as_str());
     assert!(matches!(result, Err(Error::FileExpired)));
     assert!(!encrypted_path.exists());
 
@@ -204,6 +214,7 @@ fn require_future_expires_utc_rejects_the_past() {
 
 #[test]
 fn unlock_before_expiry_leaves_ciphertext() {
+    let password = passphrase();
     let conn = db::open_in_memory().expect("schema should apply");
     let dir = tempfile::tempdir().expect("tempdir should be created");
     let source_path = dir.path().join("secret.txt");
@@ -215,18 +226,19 @@ fn unlock_before_expiry_leaves_ciphertext() {
         &conn,
         &source_path,
         &encrypted_path,
-        "hunter2",
+        password.as_str(),
         Some(&expires_at),
     )
     .expect("lock_file_until should succeed");
 
-    let plaintext = unlock_file(&conn, id, "hunter2").expect("unlock before expiry");
-    assert_eq!(plaintext, b"the quorum has been reached");
+    let plaintext = unlock_file(&conn, id, password.as_str()).expect("unlock before expiry");
+    assert_eq!(plaintext.as_slice(), b"the quorum has been reached");
     assert!(encrypted_path.exists());
 }
 
 #[test]
 fn scan_purges_only_expired_ttl_files() {
+    let password = passphrase();
     let conn = db::open_in_memory().expect("schema should apply");
     let dir = tempfile::tempdir().expect("tempdir should be created");
     let live_source = dir.path().join("live.txt");
@@ -240,11 +252,11 @@ fn scan_purges_only_expired_ttl_files() {
         &conn,
         &live_source,
         &live_enc,
-        "hunter2",
+        password.as_str(),
         Some("2099-12-31 23:59:00"),
     )
     .expect("lock live");
-    let dead = lock_file(&conn, &dead_source, &dead_enc, "hunter2").expect("lock dead");
+    let dead = lock_file(&conn, &dead_source, &dead_enc, password.as_str()).expect("lock dead");
     conn.execute(
         "UPDATE password_locked_files SET expires_at = datetime('now', '-1 minutes') WHERE id = ?1",
         params![dead],
@@ -255,5 +267,5 @@ fn scan_purges_only_expired_ttl_files() {
     assert_eq!(purged, 1);
     assert!(live_enc.exists());
     assert!(!dead_enc.exists());
-    unlock_file(&conn, live, "hunter2").expect("live file remains");
+    unlock_file(&conn, live, password.as_str()).expect("live file remains");
 }

@@ -1,6 +1,7 @@
 use super::*;
 use crate::db;
 use crate::error::Error;
+use crate::test_secrets::passphrase;
 use crate::vault;
 use std::fs;
 
@@ -12,13 +13,20 @@ fn recipient_keypair() -> (crypto_box::SecretKey, [u8; 32]) {
 
 #[test]
 fn export_credential_bundle_header_round_trips() {
+    let secret = passphrase();
+    let master = passphrase();
     let conn = db::open_in_memory().expect("schema should apply");
-    let credential_id =
-        vault::add_credential(&conn, "Email", Some("bailey"), "s3cr3t", "master-pw")
-            .expect("add_credential should succeed");
+    let credential_id = vault::add_credential(
+        &conn,
+        "Email",
+        Some("bailey"),
+        secret.as_str(),
+        master.as_str(),
+    )
+    .expect("add_credential should succeed");
     let (_secret_key, public_key) = recipient_keypair();
 
-    let bundle = export_credential(&conn, credential_id, "master-pw", &public_key)
+    let bundle = export_credential(&conn, credential_id, master.as_str(), &public_key)
         .expect("export_credential should succeed");
 
     let decoded = decode_bundle(&bundle);
@@ -28,13 +36,16 @@ fn export_credential_bundle_header_round_trips() {
 
 #[test]
 fn export_credential_bundle_only_opens_with_the_matching_secret_key() {
+    let secret = passphrase();
+    let master = passphrase();
     let conn = db::open_in_memory().expect("schema should apply");
-    let credential_id = vault::add_credential(&conn, "Email", None, "s3cr3t", "master-pw")
-        .expect("add_credential should succeed");
+    let credential_id =
+        vault::add_credential(&conn, "Email", None, secret.as_str(), master.as_str())
+            .expect("add_credential should succeed");
     let (secret_key_a, public_key_a) = recipient_keypair();
     let (secret_key_b, _public_key_b) = recipient_keypair();
 
-    let bundle = export_credential(&conn, credential_id, "master-pw", &public_key_a)
+    let bundle = export_credential(&conn, credential_id, master.as_str(), &public_key_a)
         .expect("export_credential should succeed");
     let decoded = decode_bundle(&bundle);
 
@@ -44,13 +55,20 @@ fn export_credential_bundle_only_opens_with_the_matching_secret_key() {
 
 #[test]
 fn export_credential_inner_payload_round_trips() {
+    let secret = passphrase();
+    let master = passphrase();
     let conn = db::open_in_memory().expect("schema should apply");
-    let credential_id =
-        vault::add_credential(&conn, "Email", Some("bailey"), "s3cr3t", "master-pw")
-            .expect("add_credential should succeed");
+    let credential_id = vault::add_credential(
+        &conn,
+        "Email",
+        Some("bailey"),
+        secret.as_str(),
+        master.as_str(),
+    )
+    .expect("add_credential should succeed");
     let (secret_key, public_key) = recipient_keypair();
 
-    let bundle = export_credential(&conn, credential_id, "master-pw", &public_key)
+    let bundle = export_credential(&conn, credential_id, master.as_str(), &public_key)
         .expect("export_credential should succeed");
     let decoded = decode_bundle(&bundle);
     let plaintext = secret_key
@@ -63,23 +81,24 @@ fn export_credential_inner_payload_round_trips() {
     let password = decode_len_prefixed(&plaintext, &mut offset);
     assert_eq!(String::from_utf8(label).unwrap(), "Email");
     assert_eq!(String::from_utf8(username).unwrap(), "bailey");
-    assert_eq!(String::from_utf8(password).unwrap(), "s3cr3t");
+    assert_eq!(String::from_utf8(password).unwrap(), secret.as_str());
 }
 
 #[test]
 fn export_file_bundle_round_trips() {
+    let password = passphrase();
     let conn = db::open_in_memory().expect("schema should apply");
     let dir = tempfile::tempdir().expect("tempdir should be created");
     let source_path = dir.path().join("secret.txt");
     let encrypted_path = dir.path().join("secret.txt.kqenc");
     fs::write(&source_path, b"the quorum has been reached").unwrap();
 
-    let file_id = locked_files::lock_file(&conn, &source_path, &encrypted_path, "hunter2")
+    let file_id = locked_files::lock_file(&conn, &source_path, &encrypted_path, password.as_str())
         .expect("lock_file should succeed");
     let (secret_key, public_key) = recipient_keypair();
 
-    let bundle =
-        export_file(&conn, file_id, "hunter2", &public_key).expect("export_file should succeed");
+    let bundle = export_file(&conn, file_id, password.as_str(), &public_key)
+        .expect("export_file should succeed");
     let decoded = decode_bundle(&bundle);
     assert_eq!(decoded.bundle_type, BUNDLE_TYPE_FILE);
 
@@ -115,23 +134,29 @@ fn tracked_file_export_preserves_binary_container_bytes() {
 
 #[test]
 fn export_credential_rejects_an_oversized_label() {
+    let secret = passphrase();
+    let master = passphrase();
     let conn = db::open_in_memory().expect("schema should apply");
     let long_label = "x".repeat(u16::MAX as usize + 1);
-    let credential_id = vault::add_credential(&conn, &long_label, None, "s3cr3t", "master-pw")
-        .expect("add_credential should succeed");
+    let credential_id =
+        vault::add_credential(&conn, &long_label, None, secret.as_str(), master.as_str())
+            .expect("add_credential should succeed");
     let (_secret_key, public_key) = recipient_keypair();
 
-    let result = export_credential(&conn, credential_id, "master-pw", &public_key);
+    let result = export_credential(&conn, credential_id, master.as_str(), &public_key);
     assert!(matches!(result, Err(Error::BundleFieldTooLarge)));
 }
 
 #[test]
 fn export_rejects_an_all_zero_recipient_public_key() {
+    let secret = passphrase();
+    let master = passphrase();
     let conn = db::open_in_memory().expect("schema should apply");
-    let credential_id = vault::add_credential(&conn, "Email", None, "s3cr3t", "master-pw")
-        .expect("add_credential should succeed");
+    let credential_id =
+        vault::add_credential(&conn, "Email", None, secret.as_str(), master.as_str())
+            .expect("add_credential should succeed");
 
-    let result = export_credential(&conn, credential_id, "master-pw", &[0u8; 32]);
+    let result = export_credential(&conn, credential_id, master.as_str(), &[0u8; 32]);
     assert!(matches!(result, Err(Error::InvalidPublicKey)));
 }
 

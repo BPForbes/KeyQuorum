@@ -171,6 +171,24 @@ def findings(path):
             yield rules.get(rule_id, {"id": rule_id}), res
 
 
+def flow(res):
+    """For a path query, where the flagged data comes from and every step it
+    takes to the sink, as "uri:line (what)" strings. Empty for other queries."""
+    steps = []
+    for code_flow in res.get("codeFlows") or []:
+        for thread in code_flow.get("threadFlows") or []:
+            for step in thread.get("locations") or []:
+                loc = step.get("location", {})
+                phys = loc.get("physicalLocation", {})
+                uri = phys.get("artifactLocation", {}).get("uri", "?")
+                line = phys.get("region", {}).get("startLine", "?")
+                what = loc.get("message", {}).get("text", "")
+                steps.append(f"{uri}:{line}" + (f" ({what})" if what else ""))
+            if steps:
+                return steps
+    return steps
+
+
 def render(root, rule, res):
     rule_id = rule.get("id", "?")
     props = rule.get("properties", {})
@@ -198,6 +216,7 @@ def render(root, rule, res):
         "```",
         code,
         "```",
+    ] + ([f"Flow: " + " -> ".join(flow(res))] if flow(res) else []) + [
         soc2,
         f"Fix: {recommendation(rule)}",
         "",

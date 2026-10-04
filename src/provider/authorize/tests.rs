@@ -82,7 +82,7 @@ fn provider_hw(fp: &str) -> HardwareAuthorityEntry {
 }
 
 fn sign_for(fix: &Fixture) -> ([u8; 64], [u8; 32]) {
-    let nonce = [11u8; 32];
+    let nonce = crate::test_secrets::bytes32();
     let challenge = ProviderChallenge {
         provider_id: "Acme Security Services",
         relay_id: &fix.relay_public,
@@ -154,7 +154,7 @@ fn valid_certificate_with_wrong_relay_key_is_rejected() {
 fn customer_signing_key_is_rejected() {
     let fix = authorized_fixture();
     let (customer_sk, customer_pk) = keys::generate_signing_keypair();
-    let nonce = [11u8; 32];
+    let nonce = crate::test_secrets::bytes32();
     let challenge = ProviderChallenge {
         provider_id: "Acme Security Services",
         relay_id: &fix.relay_public,
@@ -174,7 +174,7 @@ fn customer_signing_key_is_rejected() {
 fn wrong_hardware_signature_is_rejected() {
     let fix = authorized_fixture();
     let (other_sk, _) = keys::generate_signing_keypair();
-    let nonce = [11u8; 32];
+    let nonce = crate::test_secrets::bytes32();
     let challenge = ProviderChallenge {
         provider_id: "Acme Security Services",
         relay_id: &fix.relay_public,
@@ -231,7 +231,7 @@ fn sqlite_insert_cannot_bypass_signed_policy() {
     )
     .expect("insert");
     let (customer_sk, customer_pk) = keys::generate_signing_keypair();
-    let nonce = [11u8; 32];
+    let nonce = crate::test_secrets::bytes32();
     let challenge = ProviderChallenge {
         provider_id: "Acme Security Services",
         relay_id: &fix.relay_public,

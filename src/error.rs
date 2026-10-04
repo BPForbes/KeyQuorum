@@ -115,6 +115,19 @@ pub enum Error {
     TransferReplay,
     /// A transfer stopped before both devices agreed, and needs recovery.
     TransferIncomplete,
+    /// The person's outbox ring buffer is full; send or drop an item first.
+    OutboxFull,
+    /// The recipient is not trusted for this letter: it is not sealed to an
+    /// active encryption key this store holds for them.
+    UntrustedRecipient,
+    /// Not a person-to-person sealed letter (`KQPB`): the outbox carries
+    /// nothing else.
+    OutboxItemRefused,
+    /// Only an empty outbox can be resized.
+    OutboxNotEmpty,
+    /// A tracked-file letter came before the step it depends on (see
+    /// `file_delivery::exchange`); the text names the missing step.
+    ExchangeOutOfOrder(String),
 }
 
 impl fmt::Display for Error {
@@ -357,6 +370,28 @@ impl fmt::Display for Error {
             Error::TransferIncomplete => {
                 write!(f, "transfer stopped before both devices committed")
             }
+            Error::OutboxFull => write!(
+                f,
+                "outbox is full: send or drop the oldest item before adding another"
+            ),
+            Error::UntrustedRecipient => write!(
+                f,
+                "recipient is not trusted for this item: register their encryption key, \
+                 and queue only what is addressed to them"
+            ),
+            Error::ExchangeOutOfOrder(missing) => {
+                write!(f, "out of order: first {missing}")
+            }
+            Error::OutboxNotEmpty => write!(
+                f,
+                "only an empty outbox can be resized: send or drop what it holds first"
+            ),
+            Error::OutboxItemRefused => write!(
+                f,
+                "the outbox carries only sealed letters (.kqpb) between people: \
+                 send any other .kq file inside one with `keyquorum send`, and \
+                 device letters through the device mailbox"
+            ),
         }
     }
 }

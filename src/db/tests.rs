@@ -11,7 +11,7 @@ fn schema_applies_cleanly() {
             |row| row.get(0),
         )
         .expect("query should succeed");
-    assert_eq!(table_count, 38);
+    assert_eq!(table_count, 45);
 }
 
 #[test]
@@ -400,7 +400,7 @@ fn relay_credential_roundtrip_seals_the_bearer() {
         relay_url: "http://127.0.0.1:8787/".into(),
         scope: "inbox.pull".into(),
         key_hash: "a".repeat(64),
-        token: "kq_test-bearer".into(),
+        token: zeroize::Zeroizing::new("kq_test-bearer".to_string()),
         remote_id: Some(7),
         label: Some("alice".into()),
     };
@@ -408,7 +408,10 @@ fn relay_credential_roundtrip_seals_the_bearer() {
     let loaded = relay_credential::get(&conn, "http://127.0.0.1:8787", "inbox.pull")
         .expect("get")
         .expect("row");
-    assert_eq!(loaded.token, "kq_test-bearer");
+    assert_eq!(loaded.token.as_str(), "kq_test-bearer");
+    // Debug output (logs, panics) never shows the bearer.
+    let shown = format!("{loaded:?}");
+    assert!(!shown.contains("kq_test-bearer") && shown.contains("<redacted>"));
     assert_eq!(loaded.key_hash, stored.key_hash);
     assert_eq!(loaded.relay_url, "http://127.0.0.1:8787");
     assert_eq!(loaded.remote_id, Some(7));

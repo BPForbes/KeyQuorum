@@ -17,6 +17,7 @@ use super::gate_link::{self, Gate};
 use super::review_view::ReviewView;
 use super::{open_slot_secrets, read_key_array_32, usage};
 use crate::error::{Error, Result};
+use crate::file_delivery::exchange::{request_event, REQUEST_EVENTS};
 use crate::file_history::{
     current_revision, diff_text, evaluate_revision_trust, event_attested, index, is_finalized,
     latest_finalized_ancestor, latest_trusted_revision, proof_descriptor,
@@ -535,6 +536,10 @@ pub enum FileCommand {
         url: Option<String>,
         #[arg(long, requires = "push")]
         api_key: Option<String>,
+        /// Set by `keyquorum send`: queue the letter in the sender's outbox
+        /// ring and send it from there. Never a flag of `file share`.
+        #[arg(skip)]
+        via_outbox: bool,
     },
     /// Send another label this file's event history (a `KQHS` snapshot,
     /// no content), its root signed by you, so they can compare it with
@@ -886,6 +891,7 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             push,
             url,
             api_key,
+            via_outbox,
         } => {
             let (as_label, slot) =
                 super::profile::resolve_signer(conn, as_label, slot, signing_key_file.as_deref())?;
@@ -896,7 +902,7 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
                 &as_label,
                 (slot, signing_key_file),
                 revision,
-                (output_dir, push, url, api_key),
+                ((output_dir, push, url, api_key), via_outbox),
             )
         }
         FileCommand::SendHistory {
@@ -2205,7 +2211,8 @@ fn share(
     as_label: &str,
     keys: (Option<String>, Option<PathBuf>),
     revision: Option<String>,
-    (output_dir, push, url, api_key): Transport,
+    // `via_outbox` sends through the sender's outbox ring (`send`).
+    ((output_dir, push, url, api_key), via_outbox): (Transport, bool),
 ) -> Result<()> {
     require_active(conn, as_label)?;
     let mut file = load_live(conn, kqtf, Some(as_label), "share")?;
@@ -2276,7 +2283,10 @@ fn share(
         .with("to", to)
         .with("delivery_id", &delivery)
         .with("decision", &format!("{:?}", decision.decision))
-        .with("container_hash", &hex::encode(sealed.container_hash));
+        .with(
+            "container_commitment",
+            &hex::encode(sealed.container_commitment),
+        );
     if delivered != candidate {
         // A fallback: name what was asked for and why it stayed behind,
         // as the candidate's trust state (never its content).
@@ -2309,6 +2319,19 @@ fn share(
             short(&candidate)
         );
     }
+    if via_outbox {
+        // The ring checks the visa against this copy, which now records the
+        // attempt: a file the recipient asked for goes only once accepted.
+        let transport = (output_dir.as_deref(), url, api_key);
+        return super::outbox_cmd::carry_via_outbox(
+            conn,
+            as_label,
+            to,
+            &sealed.bytes,
+            Some(&file),
+            transport,
+        );
+    }
     let letter = Letter {
         name: delivery,
         bytes: sealed.bytes,
@@ -2328,35 +2351,6 @@ struct RequestArgs {
 }
 
 /// An event of one of `kinds` that carries `request_id`, in this copy.
-fn recorded_request<'a>(
-    file: &'a TrackedFile,
-    kinds: &[HistoryEventType],
-    request_id: &str,
-) -> Option<&'a crate::file_history::HistoryEvent> {
-    file.events().iter().find(|event| {
-        kinds.contains(&event.event_type)
-            && event
-                .details
-                .entries()
-                .iter()
-                .any(|(key, value)| key == "request_id" && value == request_id)
-    })
-}
-
-fn event_detail<'a>(event: &'a crate::file_history::HistoryEvent, key: &str) -> Option<&'a str> {
-    event
-        .details
-        .entries()
-        .iter()
-        .find(|(k, _)| k == key)
-        .map(|(_, v)| v.as_str())
-}
-
-const REQUEST_EVENTS: [HistoryEventType; 2] = [
-    HistoryEventType::FileRequested,
-    HistoryEventType::ChangeRequested,
-];
-
 fn request_event_type(kind: file_delivery::RequestKind) -> HistoryEventType {
     match kind {
         file_delivery::RequestKind::File => HistoryEventType::FileRequested,
@@ -2510,7 +2504,7 @@ fn open_request(
     if let Some(path) = file {
         let mut copy = load_live(conn, &path, Some(&request.holder_label), "open-request")?;
         check_same_file(&copy, request.file_id)?;
-        if recorded_request(&copy, &REQUEST_EVENTS, &id).is_some() {
+        if request_event(&copy, &REQUEST_EVENTS, &id).is_some() {
             outln!("Already recorded in {}", path.display());
             return Ok(());
         }
@@ -2563,11 +2557,11 @@ fn answer_request(
     if let Some(path) = file {
         let mut copy = load_live(conn, &path, Some(&request.holder_label), "answer-request")?;
         check_same_file(&copy, request.file_id)?;
-        match recorded_request(&copy, &[HistoryEventType::RequestAnswered], &id) {
-            Some(prior) if event_detail(prior, "decision") != Some(decision) => {
+        match request_event(&copy, &[HistoryEventType::RequestAnswered], &id) {
+            Some(prior) if prior.details.get("decision") != Some(decision) => {
                 return Err(usage(&format!(
                     "request {id} was already answered as {}",
-                    event_detail(prior, "decision").unwrap_or("something else")
+                    prior.details.get("decision").unwrap_or("something else")
                 )));
             }
             Some(_) => outln!("Already recorded in {}", path.display()),
@@ -2640,17 +2634,17 @@ fn open_answer(
     };
     let mut copy = load_live(conn, &path, None, "open-answer")?;
     check_same_file(&copy, answer.file_id)?;
-    let sent = recorded_request(&copy, &REQUEST_EVENTS, &id)
+    let sent = request_event(&copy, &REQUEST_EVENTS, &id)
         .ok_or_else(|| usage("this copy shows no request with that id"))?;
-    if event_detail(sent, "request_kind") != Some(answer.kind.name())
-        || event_detail(sent, "to") != Some(answer.holder_label.as_str())
+    if sent.details.get("request_kind") != Some(answer.kind.name())
+        || sent.details.get("to") != Some(answer.holder_label.as_str())
     {
         return Err(usage("the answer does not match the request recorded here"));
     }
-    match recorded_request(&copy, &[HistoryEventType::RequestAnswered], &id) {
-        Some(prior) if event_detail(prior, "decision") != Some(decision) => Err(usage(&format!(
+    match request_event(&copy, &[HistoryEventType::RequestAnswered], &id) {
+        Some(prior) if prior.details.get("decision") != Some(decision) => Err(usage(&format!(
             "request {id} was already recorded as {}",
-            event_detail(prior, "decision").unwrap_or("something else")
+            prior.details.get("decision").unwrap_or("something else")
         ))),
         Some(_) => {
             outln!("Already recorded in {}", path.display());
@@ -2851,7 +2845,10 @@ fn receive(
                     .with("from", &letter.sender_label)
                     .with("freshness", freshness.name())
                     .with("delivery_id", &hex::encode(letter.delivery_id))
-                    .with("container_hash", &hex::encode(letter.container_hash)),
+                    .with(
+                        "container_commitment",
+                        &hex::encode(letter.container_commitment),
+                    ),
             )
         };
         match (into, out) {
@@ -2960,7 +2957,12 @@ fn record_ack(
             let entries = e.details.entries();
             file.file_id == ack.file_id
                 && e.revision_id == Some(ack.revision_id)
-                && entries.contains(&("container_hash".into(), hex::encode(ack.container_hash)))
+                // Only ever compared: a yes or a no. A v1 history's bare
+                // `container_hash` is not a commitment and answers nothing.
+                && e.details
+                    .get("container_commitment")
+                    .and_then(|v| <[u8; 32]>::try_from(hex::decode(v).ok()?).ok())
+                    .is_some_and(|sealed| ack.confirms(&sealed))
                 && entries.contains(&("to".into(), ack.recipient_label.clone()))
         })
         .ok_or_else(|| usage("that acknowledgement does not answer any delivery from this file"))?;

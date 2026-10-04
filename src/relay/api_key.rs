@@ -14,10 +14,23 @@ const TOKEN_LEN: usize = 32;
 const TOKEN_PREFIX: &str = "kq_";
 const LICENSEE_PREFIX: &str = "kql_";
 
-#[derive(Clone, Debug)]
+/// The internal operator issuer, as minted: its bearer is shown once, zeroed
+/// on drop, and never printed by `Debug`.
+#[derive(Clone)]
 pub struct CreatedLicensee {
-    pub token: String,
+    pub token: Zeroizing<String>,
 }
+
+impl std::fmt::Debug for CreatedLicensee {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreatedLicensee")
+            .field("token", &REDACTED)
+            .finish()
+    }
+}
+
+/// What `Debug` shows in place of a bearer.
+const REDACTED: &str = "<redacted>";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApiKeyScope {
@@ -69,10 +82,21 @@ pub struct ApiKeyInfo {
     pub last_used_at: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+/// A newly minted key: its bearer is shown once, zeroed on drop, and never
+/// printed by `Debug` (only the non-secret `info` is).
+#[derive(Clone)]
 pub struct CreatedApiKey {
     pub info: ApiKeyInfo,
-    pub token: String,
+    pub token: Zeroizing<String>,
+}
+
+impl std::fmt::Debug for CreatedApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreatedApiKey")
+            .field("info", &self.info)
+            .field("token", &REDACTED)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -90,27 +114,30 @@ pub struct AuthedKey {
     pub recipient_fingerprint: Option<String>,
 }
 
-fn generate_prefixed_bearer(prefix: &str) -> (String, String) {
+fn generate_prefixed_bearer(prefix: &str) -> (Zeroizing<String>, String) {
     let mut raw = Zeroizing::new([0u8; TOKEN_LEN]);
     crate::crypto::fill_random(&mut *raw);
-    let token = format!("{prefix}{}", URL_SAFE_NO_PAD.encode(*raw));
+    let encoded = Zeroizing::new(URL_SAFE_NO_PAD.encode(*raw));
+    let token = Zeroizing::new(format!("{prefix}{}", encoded.as_str()));
     let token_hash = hex::encode(Sha256::digest(*raw));
     (token, token_hash)
 }
 
-fn generate_bearer() -> (String, String) {
+fn generate_bearer() -> (Zeroizing<String>, String) {
     generate_prefixed_bearer(TOKEN_PREFIX)
 }
 
 fn hash_prefixed(token: &str, prefix: &str) -> Result<String> {
     let rest = token.strip_prefix(prefix).ok_or(Error::InvalidApiKey)?;
-    let raw = URL_SAFE_NO_PAD
-        .decode(rest)
-        .map_err(|_| Error::InvalidApiKey)?;
+    let raw = Zeroizing::new(
+        URL_SAFE_NO_PAD
+            .decode(rest)
+            .map_err(|_| Error::InvalidApiKey)?,
+    );
     if raw.len() != TOKEN_LEN {
         return Err(Error::InvalidApiKey);
     }
-    Ok(hex::encode(Sha256::digest(raw)))
+    Ok(hex::encode(Sha256::digest(&*raw)))
 }
 
 /// SHA-256 of the 32 raw bearer bytes, as lowercase hex. The relay and
@@ -166,8 +193,107 @@ fn row_to_info(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApiKeyInfo> {
     })
 }
 
-/// Hands out a new bearer once and stores only its hash.
+/// Who changed an API key, as `api_key_events.actor` records it.
+pub const HOST_ACTOR: &str = "host";
+
+/// `actor` for a change made over HTTP by the admin key `id`.
+pub fn admin_actor(id: i64) -> String {
+    format!("admin:{id}")
+}
+
+/// One row of the API-key lifecycle audit trail (`api_key_events`), as the
+/// host prints it and `GET /audit/api-keys` returns it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct ApiKeyEvent {
+    pub id: i64,
+    /// The row id (`api_keys.id`) of the key the event is about. Never the
+    /// bearer or its hash.
+    pub key_id: i64,
+    pub event: String,
+    pub actor: String,
+    pub related_key_id: Option<i64>,
+    pub occurred_at: String,
+    /// This row's link in the audit chain (`relay::audit`), so a key holder
+    /// can keep evidence of what the relay recorded about it.
+    pub entry_hash: String,
+}
+
+fn record_event(
+    conn: &Connection,
+    key_id: i64,
+    event: &str,
+    actor: &str,
+    related_key_id: Option<i64>,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO api_key_events (api_key_id, event, actor, related_key_id)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![key_id, event, actor, related_key_id],
+    )?;
+    super::audit::seal_row(
+        conn,
+        super::audit::AuditTable::ApiKeyEvents,
+        conn.last_insert_rowid(),
+    )
+}
+
+/// The lifecycle audit trail, oldest first. Holds no bearer or hash of one.
+pub fn events(conn: &Connection) -> Result<Vec<ApiKeyEvent>> {
+    query_events(conn, None)
+}
+
+/// Only the events that pertain to key `id`: those about it, those it
+/// caused as an admin, and the rotation that replaced it.
+pub fn events_for_key(conn: &Connection, id: i64) -> Result<Vec<ApiKeyEvent>> {
+    query_events(conn, Some(id))
+}
+
+/// What the holder of `auth` may read: an admin key sees the whole trail,
+/// any other key only the events that pertain to itself.
+pub fn events_visible_to(conn: &Connection, auth: &AuthedKey) -> Result<Vec<ApiKeyEvent>> {
+    if auth.scope == ApiKeyScope::Admin {
+        events(conn)
+    } else {
+        events_for_key(conn, auth.id)
+    }
+}
+
+fn query_events(conn: &Connection, key: Option<i64>) -> Result<Vec<ApiKeyEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, api_key_id, event, actor, related_key_id, occurred_at,
+                COALESCE(entry_hash, '')
+         FROM api_key_events
+         WHERE ?1 IS NULL
+            OR api_key_id = ?1
+            OR related_key_id = ?1
+            OR actor = 'admin:' || ?1
+         ORDER BY id",
+    )?;
+    let rows = stmt.query_map(params![key], |row| {
+        Ok(ApiKeyEvent {
+            id: row.get(0)?,
+            key_id: row.get(1)?,
+            event: row.get(2)?,
+            actor: row.get(3)?,
+            related_key_id: row.get(4)?,
+            occurred_at: row.get(5)?,
+            entry_hash: row.get(6)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<_>>().map_err(Error::from)
+}
+
+/// Hands out a new bearer once and stores only its hash. Recorded in
+/// `api_key_events` as created by the host.
 pub fn create(conn: &Connection, new: &NewApiKey) -> Result<CreatedApiKey> {
+    crate::db::with_immediate_transaction(conn, || {
+        let created = insert(conn, new)?;
+        record_event(conn, created.info.id, "created", HOST_ACTOR, None)?;
+        Ok(created)
+    })
+}
+
+fn insert(conn: &Connection, new: &NewApiKey) -> Result<CreatedApiKey> {
     let fingerprint = match (
         new.scope.binds_recipient(),
         new.recipient_fingerprint.as_deref(),
@@ -212,7 +338,18 @@ pub fn list(conn: &Connection) -> Result<Vec<ApiKeyInfo>> {
     rows.collect::<rusqlite::Result<_>>().map_err(Error::from)
 }
 
+/// Revokes key `id` on the host. See [`revoke_by`].
 pub fn revoke(conn: &Connection, id: i64) -> Result<()> {
+    revoke_by(conn, id, HOST_ACTOR)
+}
+
+/// Revokes key `id` and records who did it. Revoking an already revoked key
+/// succeeds and records nothing, since nothing changed.
+pub fn revoke_by(conn: &Connection, id: i64, actor: &str) -> Result<()> {
+    crate::db::with_immediate_transaction(conn, || revoke_inner(conn, id, actor))
+}
+
+fn revoke_inner(conn: &Connection, id: i64, actor: &str) -> Result<()> {
     let n = conn.execute(
         "UPDATE api_keys
          SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -220,7 +357,7 @@ pub fn revoke(conn: &Connection, id: i64) -> Result<()> {
         params![id],
     )?;
     if n == 1 {
-        return Ok(());
+        return record_event(conn, id, "revoked", actor, None);
     }
     let exists: Option<i64> = conn
         .query_row(
@@ -244,7 +381,7 @@ pub fn rotate(conn: &Connection, id: i64) -> Result<CreatedApiKey> {
             return Err(Error::ApiKeyRevoked);
         }
         let scope = ApiKeyScope::parse(&info.scope)?;
-        let created = create(
+        let created = insert(
             conn,
             &NewApiKey {
                 scope,
@@ -259,7 +396,8 @@ pub fn rotate(conn: &Connection, id: i64) -> Result<CreatedApiKey> {
                 params![expires_at, created.info.id],
             )?;
         }
-        revoke(conn, id)?;
+        revoke_inner(conn, id, HOST_ACTOR)?;
+        record_event(conn, created.info.id, "rotated", HOST_ACTOR, Some(id))?;
         Ok(CreatedApiKey {
             info: load_info(conn, created.info.id)?,
             token: created.token,
@@ -316,6 +454,23 @@ pub fn authenticate(conn: &Connection, token: &str, required: ApiKeyScope) -> Re
     } else {
         Err(Error::InvalidApiKey)
     }
+}
+
+/// Authenticates a live, unexpired key of any scope and stamps its use.
+/// For routes whose answer is scoped to the caller rather than gated on a
+/// scope (the caller's own audit events).
+pub fn authenticate_any(conn: &Connection, token: &str) -> Result<AuthedKey> {
+    let token_hash = hash_bearer(token)?;
+    let scope: Option<String> = conn
+        .query_row(
+            "SELECT scope FROM api_keys WHERE key_hash = ?1",
+            params![token_hash],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let scope = scope.ok_or(Error::InvalidApiKey)?;
+    // The scoped check does the rest: revoked, expired and last-used.
+    authenticate(conn, token, ApiKeyScope::parse(&scope)?)
 }
 
 /// Result of `POST /keycheck`: whether a token or stored hash is live.
@@ -445,17 +600,23 @@ pub fn record_provider_auth_event(
     hardware_fingerprints: Option<&str>,
     success: bool,
 ) -> Result<()> {
-    conn.execute(
-        "INSERT INTO provider_auth_events
-         (operation, provider_id, network_id, hardware_fingerprints, success)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            operation,
-            provider_id,
-            network_id,
-            hardware_fingerprints,
-            i64::from(success)
-        ],
-    )?;
-    Ok(())
+    crate::db::with_immediate_transaction(conn, || {
+        conn.execute(
+            "INSERT INTO provider_auth_events
+             (operation, provider_id, network_id, hardware_fingerprints, success)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                operation,
+                provider_id,
+                network_id,
+                hardware_fingerprints,
+                i64::from(success)
+            ],
+        )?;
+        super::audit::seal_row(
+            conn,
+            super::audit::AuditTable::ProviderAuthEvents,
+            conn.last_insert_rowid(),
+        )
+    })
 }

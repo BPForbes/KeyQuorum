@@ -4,12 +4,12 @@ use crate::relay::ApiKeyScope;
 use crate::storage::Storage;
 use std::path::Path;
 
-const ALICE: &str = "keyquorum --db /home/alice/keyquorum.sqlite";
-const BOB: &str = "keyquorum --db /home/bob/keyquorum.sqlite";
+pub(super) const ALICE: &str = "keyquorum --db /home/alice/keyquorum.sqlite";
+pub(super) const BOB: &str = "keyquorum --db /home/bob/keyquorum.sqlite";
 
 fn run(env: &mut MemoryEnv, line: &str) -> String {
     let (ok, out) = env.keyquorum(line);
-    assert!(ok.is_ok(), "{line}: {ok:?}");
+    assert!(ok.is_ok(), "{line}: the command failed");
     out
 }
 
@@ -22,7 +22,7 @@ fn fingerprint_of(env: &MemoryEnv, db: &str, label: &str) -> String {
 
 /// Alice and Bob: containers, each other's keys registered, defaults set,
 /// and relay keys loaded (push for both; pull bound to each one's own key).
-fn two_people_on_a_relay() -> MemoryEnv {
+pub(super) fn two_people_on_a_relay() -> MemoryEnv {
     let mut env = MemoryEnv::with_relay();
     env.now = Some("2026-10-02 12:00".into());
     for who in ["alice", "bob"] {
@@ -330,7 +330,9 @@ fn an_unhandled_legacy_letter_remains_openable_after_namespacing() {
         env.fs.read(Path::new("received/note.txt")).unwrap(),
         b"lunch at noon"
     );
-    assert!(env.fs.exists(&namespaced), "legacy letter was migrated");
+    // Delivered, so nothing of it stays: not the legacy file, not the
+    // namespaced one it was moved to.
+    assert!(!env.fs.exists(&namespaced));
     assert!(!env.fs.exists(Path::new("inbox/1.kqpb")));
 }
 
@@ -447,4 +449,190 @@ fn a_letter_that_asks_for_a_decision_is_listed_and_left_for_a_person() {
     // Left for a person, so it is still waiting afterwards.
     let again = run(&mut env, &format!("{BOB} inbox"));
     assert!(again.contains("file or change request"), "{again}");
+}
+
+const BOB_STORE: &str = "/home/bob/keyquorum.sqlite";
+
+fn inbox_slots(env: &MemoryEnv) -> i64 {
+    env.store(BOB_STORE)
+        .query_row("SELECT count(*) FROM inbox_slots", [], |row| row.get(0))
+        .unwrap()
+}
+
+#[test]
+fn a_delivered_letter_leaves_nothing_in_the_inbox() {
+    let mut env = two_people_on_a_relay();
+    run(
+        &mut env,
+        &format!("{ALICE} send /home/alice/note.txt --to bob"),
+    );
+    run(&mut env, &format!("{BOB} inbox"));
+    let path = super::super::inbox::letter_path(Path::new("inbox"), RELAY_URL, 1);
+    assert!(env.fs.exists(&path));
+    assert_eq!(inbox_slots(&env), 1, "held in Bob's inbox ring");
+
+    let opened = run(&mut env, &format!("{BOB} inbox open"));
+    assert!(opened.contains("Saved note.txt to received/note.txt"));
+    assert!(
+        !env.fs.exists(&path),
+        "the delivered letter's file is deleted"
+    );
+    assert_eq!(inbox_slots(&env), 0, "and its slot released");
+    assert!(run(&mut env, &format!("{BOB} inbox")).contains("(nothing waiting)"));
+}
+
+#[test]
+fn a_letter_changed_on_disk_is_not_opened_and_can_be_dropped() {
+    let mut env = two_people_on_a_relay();
+    run(
+        &mut env,
+        &format!("{ALICE} send /home/alice/note.txt --to bob"),
+    );
+    run(&mut env, &format!("{BOB} inbox"));
+    let path = super::super::inbox::letter_path(Path::new("inbox"), RELAY_URL, 1);
+    let mut bytes = env.fs.read(&path).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    env.fs.write(&path, &bytes).unwrap();
+
+    let (result, _) = env.keyquorum(&format!("{BOB} inbox open 1"));
+    // Refused (the reason, "changed on disk since it was pulled", goes to
+    // stderr with the letter's id), and left in the inbox.
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("could not be opened"));
+    assert_eq!(inbox_slots(&env), 1);
+    assert!(!env.fs.exists(Path::new("received/note.txt")));
+
+    let dropped = run(&mut env, &format!("{BOB} inbox drop 1"));
+    assert!(dropped.contains("Dropped letter 1 unopened"));
+    assert!(!env.fs.exists(&path));
+    assert_eq!(inbox_slots(&env), 0);
+    assert!(run(&mut env, &format!("{BOB} inbox")).contains("(nothing waiting)"));
+    let (result, _) = env.keyquorum(&format!("{BOB} inbox drop 7"));
+    assert!(result.is_err(), "no such letter");
+}
+
+#[test]
+fn a_full_inbox_leaves_the_rest_on_the_relay_for_the_next_pull() {
+    let mut env = two_people_on_a_relay();
+    // Bob's inbox ring holds one letter at a time.
+    env.store(BOB_STORE)
+        .execute(
+            "INSERT INTO inbox_rings (relay_url, capacity) VALUES (?1, 1)",
+            [RELAY_URL],
+        )
+        .unwrap();
+    for _ in 0..2 {
+        run(
+            &mut env,
+            &format!("{ALICE} send /home/alice/note.txt --to bob"),
+        );
+    }
+    let listed = run(&mut env, &format!("{BOB} inbox"));
+    assert!(listed.contains("1  file delivery"));
+    assert!(
+        !listed.contains("2  file delivery"),
+        "letter 2 stays on the relay"
+    );
+
+    run(&mut env, &format!("{BOB} inbox open 1"));
+    let listed = run(&mut env, &format!("{BOB} inbox"));
+    assert!(
+        listed.contains("2  file delivery"),
+        "pulled once a slot is free"
+    );
+}
+
+#[test]
+fn a_handled_letter_left_on_disk_is_deleted_by_the_next_inbox_command() {
+    let mut env = two_people_on_a_relay();
+    run(
+        &mut env,
+        &format!("{ALICE} send /home/alice/note.txt --to bob"),
+    );
+    run(&mut env, &format!("{BOB} inbox"));
+    let path = super::super::inbox::letter_path(Path::new("inbox"), RELAY_URL, 1);
+    let bytes = env.fs.read(&path).unwrap();
+    run(&mut env, &format!("{BOB} inbox open"));
+
+    // The run ended between the commit and the delete.
+    env.fs.write_new(&path, &bytes).unwrap();
+    let listed = run(&mut env, &format!("{BOB} inbox"));
+    assert!(listed.contains("(nothing waiting)"), "not delivered again");
+    assert!(!env.fs.exists(&path), "deleted by the sweep");
+    assert!(!env.fs.exists(Path::new("received/note.txt.1")));
+}
+
+#[test]
+fn dropping_a_legacy_letter_deletes_its_file() {
+    let mut env = two_people_on_a_relay();
+    run(
+        &mut env,
+        &format!("{ALICE} send /home/alice/note.txt --to bob"),
+    );
+    run(&mut env, &format!("{BOB} inbox"));
+    let namespaced = super::super::inbox::letter_path(Path::new("inbox"), RELAY_URL, 1);
+    env.fs
+        .rename(&namespaced, Path::new("inbox/1.kqpb"))
+        .unwrap();
+
+    run(&mut env, &format!("{BOB} inbox drop 1"));
+    assert!(!env.fs.exists(Path::new("inbox/1.kqpb")));
+    assert!(!env.fs.exists(&namespaced));
+}
+
+#[test]
+fn a_full_inbox_names_the_oldest_letter_when_it_holds_up_the_rest() {
+    let mut env = two_people_on_a_relay();
+    env.store(BOB_STORE)
+        .execute(
+            "INSERT INTO inbox_rings (relay_url, capacity) VALUES (?1, 2)",
+            [RELAY_URL],
+        )
+        .unwrap();
+    for _ in 0..3 {
+        run(
+            &mut env,
+            &format!("{ALICE} send /home/alice/note.txt --to bob"),
+        );
+    }
+    run(&mut env, &format!("{BOB} inbox"));
+    run(&mut env, &format!("{BOB} inbox open 2"));
+
+    // One letter is unopened, but it holds the oldest slot, so the ring
+    // still spans both and letter 3 waits on the relay.
+    env.stderr.clear();
+    let listed = run(&mut env, &format!("{BOB} inbox"));
+    assert!(listed.contains("1  file delivery"));
+    assert!(!listed.contains("3  file delivery"));
+    let note = stderr(&env);
+    assert!(note.contains("1 unopened letters span all 2 slots"));
+    assert!(note.contains("open or drop letter 1"));
+
+    run(&mut env, &format!("{BOB} inbox drop 1"));
+    assert!(run(&mut env, &format!("{BOB} inbox")).contains("3  file delivery"));
+}
+
+#[test]
+fn the_inbox_timeline_records_when_letters_arrive_and_leave() {
+    let mut env = two_people_on_a_relay();
+    for _ in 0..2 {
+        run(
+            &mut env,
+            &format!("{ALICE} send /home/alice/note.txt --to bob"),
+        );
+    }
+    run(&mut env, &format!("{BOB} inbox"));
+    run(&mut env, &format!("{BOB} inbox open 1"));
+    run(&mut env, &format!("{BOB} inbox drop 2"));
+
+    let shown = run(&mut env, &format!("{BOB} inbox history"));
+    assert!(shown.contains(&format!("Inbox for {RELAY_URL}: 4 events")));
+    let steps: Vec<&str> = shown.lines().skip(1).collect();
+    assert!(steps[0].contains("#0  received  slot=0 letter_id=1 kind=file delivery"));
+    assert!(steps[1].contains("#1  received  slot=1 letter_id=2"));
+    assert!(steps[2].contains("#2  opened  slot=0 letter_id=1"));
+    assert!(steps[3].contains("#3  dropped  slot=1 letter_id=2"));
 }

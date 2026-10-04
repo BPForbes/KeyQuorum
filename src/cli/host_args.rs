@@ -27,8 +27,17 @@ pub enum HostCommand {
         /// How often to delete expired mailbox envelopes and TTL files.
         #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..))]
         scan_interval_seconds: u64,
+        /// Allow a non-loopback `--bind`: a TLS-terminating proxy forwards to
+        /// this address. The relay itself serves plain HTTP.
+        #[arg(long)]
+        behind_tls_proxy: bool,
+        /// Requests each client may make per minute before a 429 (0 turns
+        /// the limit off). Behind --behind-tls-proxy the client is the last
+        /// X-Forwarded-For address, which the proxy must set.
+        #[arg(long, default_value_t = 600)]
+        rate_limit_per_minute: u32,
     },
-    /// Generate a relay identity keypair (private key printed once).
+    /// Generate a relay identity keypair (private key written owner-only).
     Identity {
         #[command(subcommand)]
         command: IdentityCommand,
@@ -85,10 +94,14 @@ pub enum HostCommand {
 
 #[derive(Subcommand)]
 pub enum RootCommand {
-    /// Print the root private key once.
+    /// Generate the root keypair. The private key goes only to
+    /// `--private-key-out` (created owner-only, never overwritten) and is
+    /// never printed.
     Generate {
         #[arg(long)]
         public_key_out: PathBuf,
+        #[arg(long)]
+        private_key_out: PathBuf,
     },
 }
 
@@ -126,9 +139,14 @@ pub enum PolicyCommand {
 
 #[derive(Subcommand)]
 pub enum IdentityCommand {
+    /// Generate the relay keypair. The private key goes only to
+    /// `--private-key-out` (created owner-only, never overwritten) and is
+    /// never printed.
     Generate {
         #[arg(long)]
         public_key_out: PathBuf,
+        #[arg(long)]
+        private_key_out: PathBuf,
     },
 }
 
@@ -158,8 +176,49 @@ pub enum KeysCommand {
         licensee_key: Option<String>,
     },
     List,
+    /// Print the API-key lifecycle audit trail (created, rotated, revoked).
+    Events {
+        /// Only the events that pertain to this key id
+        #[arg(long)]
+        key: Option<i64>,
+        /// Re-walk both audit chains and check every relay-signed anchor
+        /// against the provider root and certificate validity
+        #[arg(long)]
+        verify: bool,
+        /// With --verify: signed revocation list (or KEYQUORUM_PROVIDER_KRL)
+        #[arg(long, requires = "verify")]
+        krl: Option<PathBuf>,
+        /// With --verify: the newest checkpoint from `keys checkpoint`, kept
+        /// off the relay. The chain must still match it, and no anchor dated
+        /// before it may vouch for rows after it
+        #[arg(long, requires = "verify")]
+        checkpoint: Option<PathBuf>,
+    },
+    /// Sign every audit table's row count and chain head now into a new
+    /// owner-only file, to keep off the relay (write-once storage you
+    /// control). `keys events --verify --checkpoint` checks against it.
+    Checkpoint {
+        /// Where to write the checkpoint (never overwritten)
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        cert: Option<PathBuf>,
+        #[arg(long)]
+        relay_key: Option<PathBuf>,
+        #[arg(long)]
+        krl: Option<PathBuf>,
+    },
+    /// Revoke a key now. With the relay identity (flags or environment) the
+    /// revocation is also signed into the audit chain at once; without it,
+    /// the running relay signs it on its next scan.
     Revoke {
         id: i64,
+        #[arg(long)]
+        cert: Option<PathBuf>,
+        #[arg(long)]
+        relay_key: Option<PathBuf>,
+        #[arg(long)]
+        krl: Option<PathBuf>,
     },
     Rotate {
         id: i64,

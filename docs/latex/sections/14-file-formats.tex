@@ -27,7 +27,8 @@ a file extension.
   expiry, 6 adds finalization proofs, 7 optional event signatures, each
   written only when present; versions 4 to 6 still open). Not a sealed envelope. \\
 \code{KQHS} & \file{.kqhs} & History snapshot: a tracked file's event
-  history alone, verifiable on its own and against its file. \\
+  history alone, or an outbox or inbox ring's timeline (\code{outbox history
+  --snapshot}), verifiable on its own and against its file or ring. \\
 --- & \file{.kqbn} & Eviction notice --- a public routing slip, not a sealed
   envelope. \\
 \bottomrule

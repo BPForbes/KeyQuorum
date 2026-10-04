@@ -10,15 +10,30 @@
 use crate::crypto::{self, KEY_LEN, NONCE_LEN};
 use crate::error::{Error, Result};
 use rusqlite::{params, Connection, OptionalExtension};
+use zeroize::Zeroizing;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct StoredRelayKey {
     pub relay_url: String,
     pub scope: String,
     pub key_hash: String,
-    pub token: String,
+    /// The bearer, zeroed on drop and never shown by `Debug`.
+    pub token: Zeroizing<String>,
     pub remote_id: Option<i64>,
     pub label: Option<String>,
+}
+
+impl std::fmt::Debug for StoredRelayKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredRelayKey")
+            .field("relay_url", &self.relay_url)
+            .field("scope", &self.scope)
+            .field("key_hash", &self.key_hash)
+            .field("token", &"<redacted>")
+            .field("remote_id", &self.remote_id)
+            .field("label", &self.label)
+            .finish()
+    }
 }
 
 pub fn normalize_url(url: &str) -> String {
@@ -93,7 +108,11 @@ fn unwrap_row(row: SealedRelayRow) -> Result<StoredRelayKey> {
         .map_err(|_| Error::IntegrityCheckFailed)?;
     let token = crypto::decrypt(&wrap_key, &wrap_nonce, &row.wrapped_token)
         .map_err(|_| Error::IntegrityCheckFailed)?;
-    let token = String::from_utf8(token).map_err(|_| Error::IntegrityCheckFailed)?;
+    let token = Zeroizing::new(
+        std::str::from_utf8(&token)
+            .map_err(|_| Error::IntegrityCheckFailed)?
+            .to_owned(),
+    );
     Ok(StoredRelayKey {
         relay_url: row.relay_url,
         scope: row.scope,

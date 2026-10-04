@@ -75,6 +75,32 @@ inserted --- on switching user, on inserting the drive, and after
 receiving --- and \textbf{Check mail} looks again on demand. If the sender's
 USB is out, the answer waits, sealed to their key.
 
+\paragraph{Underneath: two ring buffers.} A file sent from the lab passes
+through the same two rings as on a real machine (the CLI manual's ``How a file
+travels''), because the buttons run the same commands:
+\begin{itemize}
+  \item \textbf{Send\ldots} runs \code{keyquorum send} in your own store. The
+  letter is queued in your \emph{outbox ring} (32 slots), where it must pass
+  four checks. It must be a whole sealed letter, the passport. It must be
+  sealed to a key your store holds for the recipient, the destination. It must
+  fit, and a tracked file must come in its exchange's order. The ring then
+  sends the oldest letter first: it claims the letter, uploads it to the
+  in-page relay, and only then wipes its slot. Uploading the same letter again
+  returns the same letter, so a retried send never delivers twice. A quorum file is unlocked where
+  its shares are, so it leaves through the organization store's outbox under
+  your label.
+  \item \textbf{Receive} runs \code{keyquorum inbox}, which pulls the letter
+  into the recipient's \emph{inbox ring} (256 slots per relay) with its hash.
+  Then \code{inbox open} opens it, releases its slot and deletes the pulled
+  file. \textbf{Reject} does the same and answers with a refusal.
+  \item Every step is stamped with its time on that ring's timeline, a
+  hash-chained history snapshot (\code{KQHS}). In the \textbf{Terminal},
+  \code{keyquorum --db /home/alice/keyquorum.sqlite outbox history} shows
+  Alice's outbox (queued, sent, refused), and
+  \code{keyquorum --db /home/bob/keyquorum.sqlite inbox history} shows Bob's
+  inbox (received, opened, dropped).
+\end{itemize}
+
 \Screenshot{docs/latex/images/lab/mailbox.png}{Inbox and sent, in the empty
 seeded state, with the \textbf{Check mail} button.}
 

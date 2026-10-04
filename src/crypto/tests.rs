@@ -1,10 +1,12 @@
 use super::*;
+use crate::test_secrets::{other_passphrase, passphrase};
 
 #[test]
 fn derive_key_is_deterministic_for_same_password_and_salt() {
     let salt = random_salt();
-    let a = derive_key("correct horse battery staple", &salt).unwrap();
-    let b = derive_key("correct horse battery staple", &salt).unwrap();
+    let password = passphrase();
+    let a = derive_key(&password, &salt).unwrap();
+    let b = derive_key(&password, &salt).unwrap();
     assert_eq!(a, b);
 }
 
@@ -30,29 +32,31 @@ fn fill_random_fills_the_whole_buffer_differently_each_call() {
 #[test]
 fn derive_key_differs_for_different_passwords() {
     let salt = random_salt();
-    let a = derive_key("password-one", &salt).unwrap();
-    let b = derive_key("password-two", &salt).unwrap();
+    let one = passphrase();
+    let a = derive_key(&one, &salt).unwrap();
+    let b = derive_key(&other_passphrase(&one), &salt).unwrap();
     assert_ne!(a, b);
 }
 
 #[test]
 fn encrypt_decrypt_roundtrip() {
-    let key = derive_key("hunter2", &random_salt()).unwrap();
+    let key = derive_key(&passphrase(), &random_salt()).unwrap();
     let nonce = random_nonce();
     let plaintext = b"the quorum has been reached";
 
     let ciphertext = encrypt(&key, &nonce, plaintext);
     let decrypted = decrypt(&key, &nonce, &ciphertext).unwrap();
 
-    assert_eq!(decrypted, plaintext);
+    assert_eq!(decrypted.as_slice(), plaintext);
 }
 
 #[test]
 fn decrypt_fails_with_wrong_key() {
     let salt = random_salt();
     let nonce = random_nonce();
-    let key = derive_key("hunter2", &salt).unwrap();
-    let wrong_key = derive_key("not-hunter2", &salt).unwrap();
+    let password = passphrase();
+    let key = derive_key(&password, &salt).unwrap();
+    let wrong_key = derive_key(&other_passphrase(&password), &salt).unwrap();
 
     let ciphertext = encrypt(&key, &nonce, b"top secret");
 
@@ -70,4 +74,44 @@ fn salts_and_nonces_are_fresh_random_and_the_right_length() {
     assert_eq!(a.len(), NONCE_LEN);
     assert_ne!(a, b, "two nonces must differ");
     assert_ne!(a, [0u8; NONCE_LEN], "a nonce must not be all zero");
+}
+
+#[test]
+fn decrypted_plaintext_is_zeroed_on_drop() {
+    // Pinned by type: the plaintext comes back in a buffer that wipes itself.
+    let key = random_key();
+    let nonce = random_nonce();
+    let ciphertext = encrypt(&key, &nonce, b"secret");
+    let plaintext: zeroize::Zeroizing<Vec<u8>> = decrypt(&key, &nonce, &ciphertext).unwrap();
+    assert_eq!(plaintext.as_slice(), b"secret");
+}
+
+#[test]
+fn a_commitment_depends_on_its_key_domain_and_content() {
+    let key = random_key();
+    let other = random_key();
+    let base = commit(&key, b"KQ-TEST", b"secret report");
+    assert_eq!(base, commit(&key, b"KQ-TEST", b"secret report"));
+    assert!(commitments_match(
+        &base,
+        &commit(&key, b"KQ-TEST", b"secret report")
+    ));
+    // Without the key, the commitment confirms no guess at the content.
+    assert!(!commitments_match(
+        &base,
+        &commit(&other, b"KQ-TEST", b"secret report")
+    ));
+    assert!(!commitments_match(
+        &base,
+        &commit(&key, b"KQ-OTHER", b"secret report")
+    ));
+    assert!(!commitments_match(
+        &base,
+        &commit(&key, b"KQ-TEST", b"secret repor")
+    ));
+    // The domain is length-prefixed, so its boundary with the data is fixed.
+    assert!(!commitments_match(
+        &commit(&key, b"KQ-TESTs", b"ecret report"),
+        &base
+    ));
 }

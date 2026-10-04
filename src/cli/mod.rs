@@ -36,6 +36,7 @@ pub(crate) mod file_cmd;
 mod gate_link;
 mod inbox;
 mod legacy;
+mod outbox_cmd;
 mod profile;
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
 mod review_tui;
@@ -419,6 +420,9 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<inbox::InboxCommand>,
     },
+    /// Your outbox ring buffer of .kq* files for trusted recipients: queue
+    /// with `add`, send oldest first with `send`. With no subcommand, show it
+    Outbox(Box<outbox_cmd::OutboxOpts>),
     /// Set, change or show the defaults commands use when a flag is left out:
     /// who you are, which device holds your slot, which relay. Pointers only;
     /// no passphrase, key or bearer is stored.
@@ -958,7 +962,8 @@ pub fn run(db_path: &Path, command: Command) -> Result<()> {
         | Command::Send { .. }
         | Command::Setup { .. }
         | Command::Doctor { .. }
-        | Command::Inbox { .. }) => {
+        | Command::Inbox { .. }
+        | Command::Outbox { .. }) => {
             return env::with_db(db_path, |conn| run_everyday(conn, command));
         }
         #[cfg(feature = "provider")]
@@ -980,7 +985,8 @@ fn run_in_store(conn: &mut Connection, command: Command) -> Result<()> {
         | Command::Send { .. }
         | Command::Setup { .. }
         | Command::Doctor { .. }
-        | Command::Inbox { .. } => {
+        | Command::Inbox { .. }
+        | Command::Outbox { .. } => {
             unreachable!("the everyday commands are dispatched in run()")
         }
         Command::Generate { .. }
@@ -1080,6 +1086,7 @@ fn run_everyday(conn: &Connection, command: Command) -> Result<()> {
         Command::Inbox { command } => inbox::run(conn, command)?,
         Command::Setup(opts) => setup::run(conn, *opts)?,
         Command::Doctor(opts) => doctor::run(conn, *opts)?,
+        Command::Outbox(opts) => outbox_cmd::run(conn, *opts)?,
         _ => unreachable!("run_in_store sends only the everyday commands here"),
     }
     Ok(())
@@ -1370,7 +1377,7 @@ fn run_vault(conn: &Connection, command: VaultCommand) -> Result<()> {
                 "Username: {}",
                 credential.username.as_deref().unwrap_or("-")
             );
-            outln!("Password: {}", credential.password);
+            outln!("Password: {}", credential.password.as_str());
         }
     }
     Ok(())
@@ -1663,6 +1670,7 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
         | Command::Use { .. }
         | Command::Send { .. }
         | Command::Inbox { .. }
+        | Command::Outbox { .. }
         | Command::Setup { .. }
         | Command::Doctor { .. }
         | Command::Cache { .. }
@@ -2201,7 +2209,7 @@ fn deliver_then_commit(
     Ok(pending.keep())
 }
 
-fn sanitize_label(label: &str) -> Result<String> {
+pub(super) fn sanitize_label(label: &str) -> Result<String> {
     let mut out = String::with_capacity(label.len());
     for ch in label.chars() {
         if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
@@ -2285,7 +2293,7 @@ fn run_access_password(conn: &Connection, args: AccessPasswordArgs) -> Result<()
             let id = require(args.id, "id")?;
             gate_link::note_if_gone(Gate::Password, conn, id);
             let mut pin_step = gate_link::PinStep::NotRequired;
-            let attempt = (|| -> Result<Vec<u8>> {
+            let attempt = (|| -> Result<zeroize::Zeroizing<Vec<u8>>> {
                 locked_files::purge_if_expired_in(&mut env::EnvStorage, conn, id)?;
                 check_pin(conn, ResourceType::LockedFile, id, &mut pin_step)?;
                 let password = prompt_secret("Unlock password: ")?;
@@ -2322,7 +2330,7 @@ fn unlock_quorum_file(
     slots: &[String],
     approves: &[String],
     verbose: bool,
-) -> Result<Vec<u8>> {
+) -> Result<zeroize::Zeroizing<Vec<u8>>> {
     // Before anything else: an expired file is destroyed on the
     // first unlock attempt, whether or not the presented shares
     // would have reconstructed it (see quorum::unlock_file_with_approval).
@@ -2611,7 +2619,7 @@ fn persist_checked_key(
             relay_url: url.to_string(),
             scope: scope.to_string(),
             key_hash,
-            token: token.to_string(),
+            token: zeroize::Zeroizing::new(token.to_string()),
             remote_id: check.id,
             label: check.label.clone(),
         },
@@ -2769,7 +2777,7 @@ pub(crate) fn resolve_relay_auth(
     explicit_url: Option<String>,
     explicit_key: Option<String>,
     required: relay::ApiKeyScope,
-) -> Result<(String, String)> {
+) -> Result<(String, zeroize::Zeroizing<String>)> {
     let url = resolve_relay_url(conn, explicit_url, required)?;
     let provided = explicit_key.filter(|s| !s.is_empty()).or_else(|| {
         match env::var("KEYQUORUM_RELAY_API_KEY") {
@@ -2791,7 +2799,7 @@ pub(crate) fn resolve_relay_auth(
             return Err(Error::ApiKeyScopeDenied);
         }
         persist_checked_key(conn, &url, &token, &check)?;
-        return Ok((url, token));
+        return Ok((url, zeroize::Zeroizing::new(token)));
     }
 
     match db::relay_credential::get(conn, &url, required.as_str())? {
@@ -2846,7 +2854,7 @@ fn loadkey_in_store(conn: &Connection, api_key: Option<String>, url: Option<Stri
     db::cache::forget_relay_trust(conn, &url)?;
     authenticate_official_relay(&url)?;
     let token = match api_key.filter(|s| !s.is_empty()) {
-        Some(token) => token,
+        Some(token) => zeroize::Zeroizing::new(token),
         None => prompt_secret("Relay API key: ")?,
     };
     let check = relay::check_key(&env::EnvRelay, &url, &token)?;
@@ -4081,14 +4089,16 @@ fn write_reassembled_secret(secret: &[u8], output: Option<&Path>) -> Result<()> 
 }
 
 fn read_key_bytes(path: &Path) -> Result<Vec<u8>> {
-    let contents = env::read_to_string(path)?;
+    let contents = zeroize::Zeroizing::new(env::read_to_string(path)?);
     keys::parse_key_text(&contents)
 }
 
-pub(crate) fn read_key_array_32(path: &Path) -> Result<[u8; 32]> {
-    read_key_bytes(path)?
-        .try_into()
-        .map_err(|_| Error::InvalidPublicKey)
+/// A 32-byte key file (hex, PEM or OpenSSH `.pub`). The file's text and the
+/// decoded buffer are zeroed; private keys are read this way too, so wrap
+/// the result in `Zeroizing` when it is one. Shared with the provider host.
+pub fn read_key_array_32(path: &Path) -> Result<[u8; 32]> {
+    let contents = zeroize::Zeroizing::new(env::read_to_string(path)?);
+    Ok(*keys::parse_key_32(&contents)?)
 }
 
 fn read_hex_bytes(path: &Path) -> Result<Vec<u8>> {
@@ -4102,8 +4112,11 @@ fn read_hex_array_64(path: &Path) -> Result<[u8; 64]> {
         .map_err(|_| Error::InvalidPublicKey)
 }
 
-fn write_hex_file(path: &Path, bytes: &[u8]) -> Result<()> {
-    env::write_new(path, hex::encode(bytes).as_bytes())
+/// Write `bytes` as hex to a new owner-only file (never overwritten).
+/// Shared with the provider host's key generation.
+pub fn write_hex_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    let text = zeroize::Zeroizing::new(hex::encode(bytes));
+    env::write_new(path, text.as_bytes())
 }
 
 /// A CLI-argument-shape problem — a missing conditionally-required flag, a
@@ -4118,7 +4131,7 @@ fn require<T>(value: Option<T>, flag: &str) -> Result<T> {
     value.ok_or_else(|| usage(&format!("--{flag} is required for this --state value")))
 }
 
-fn prompt_secret(prompt: &str) -> Result<String> {
+fn prompt_secret(prompt: &str) -> Result<zeroize::Zeroizing<String>> {
     env::prompt_secret(prompt)
 }
 

@@ -14,7 +14,7 @@ fn alice() -> MemoryEnv {
 /// Run a command that must succeed.
 fn run(env: &mut MemoryEnv, line: &str) -> String {
     let (ok, out) = env.keyquorum(line);
-    assert!(ok.is_ok(), "{line}: {ok:?}");
+    assert!(ok.is_ok(), "{line}: the command failed");
     out
 }
 
@@ -26,7 +26,7 @@ fn use_stores_pointers_and_shows_them() {
     let (ok, out) = env.keyquorum(&format!(
         "keyquorum --db {DB} use --device /usb/alice --slot alice"
     ));
-    assert!(ok.is_ok(), "{ok:?}");
+    assert!(ok.is_ok(), "the command failed");
     assert!(out.contains("default_container = /usb/alice"), "{out}");
     assert!(out.contains("default_slot_label = alice"), "{out}");
     assert!(out.contains("default_label = alice"), "{out}");
@@ -200,7 +200,7 @@ mod relay_trust {
         let line =
             format!("{ALICE} {extra} deliver send --file /home/alice/note.txt --to bob --push");
         let (ok, _) = env.keyquorum(&line);
-        assert!(ok.is_ok(), "{line}: {ok:?}");
+        assert!(ok.is_ok(), "{line}: the command failed");
     }
 
     fn challenges(env: &MemoryEnv) -> usize {

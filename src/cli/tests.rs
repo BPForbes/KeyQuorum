@@ -8,6 +8,7 @@ mod gate_link;
 mod inbox;
 mod inbox_files;
 mod memory_env;
+mod outbox;
 mod parse;
 mod pin;
 mod produce;

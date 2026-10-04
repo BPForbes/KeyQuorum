@@ -1,5 +1,6 @@
 //! Axum router for the mailbox relay. Handlers never unseal envelopes.
 
+use super::api_key::ApiKeyEvent;
 use super::client::{
     DevicePackageList, DevicePackagePush, ErrorBody, InboxAccepted, InboxEnvelope, InboxList,
     InboxPush, KeyCheckRequest, KeyCheckResponse, ProviderIdentityRequest,
@@ -10,25 +11,32 @@ use super::service::{self, ApiKeyView, HttpError, ProviderIdentity, MAX_ENVELOPE
 use crate::error::Error;
 use crate::key_tree::{PublicEdge, PublicNode, PublicTree};
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, FromRequestParts, Path, Query, State};
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, FromRequestParts, Path, Query, Request, State};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER};
 use axum::http::request::Parts;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
+use zeroize::Zeroizing;
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
     identity: Option<Arc<ProviderIdentity>>,
+    rate_limit: Option<Arc<RateLimiter>>,
 }
 
 impl AppState {
@@ -36,6 +44,7 @@ impl AppState {
         Self {
             db: Arc::new(Mutex::new(conn)),
             identity: None,
+            rate_limit: None,
         }
     }
 
@@ -43,7 +52,17 @@ impl AppState {
         Self {
             db: Arc::new(Mutex::new(conn)),
             identity: Some(Arc::new(identity)),
+            rate_limit: None,
         }
+    }
+
+    /// Limit each client to `per_minute` requests (0 turns the limit off).
+    /// With `trust_forwarded`, the client is the address the TLS proxy put
+    /// last in `X-Forwarded-For`; otherwise the connection's peer address.
+    pub fn with_rate_limit(mut self, per_minute: u32, trust_forwarded: bool) -> Self {
+        self.rate_limit =
+            (per_minute > 0).then(|| Arc::new(RateLimiter::new(per_minute, trust_forwarded)));
+        self
     }
 
     pub fn identity(&self) -> Option<Arc<ProviderIdentity>> {
@@ -51,7 +70,8 @@ impl AppState {
     }
 }
 
-struct ApiToken(String);
+/// The caller's bearer, zeroed when the request is done with it.
+struct ApiToken(Zeroizing<String>);
 
 impl<S> FromRequestParts<S> for ApiToken
 where
@@ -64,19 +84,19 @@ where
     }
 }
 
-fn token_from_headers(headers: &HeaderMap) -> Result<String, ApiError> {
+fn token_from_headers(headers: &HeaderMap) -> Result<Zeroizing<String>, ApiError> {
     if let Some(value) = headers.get(AUTHORIZATION) {
         let s = value.to_str().map_err(|_| ApiError::unauthorized())?;
         if let Some(token) = s.strip_prefix("Bearer ") {
             if !token.is_empty() {
-                return Ok(token.to_string());
+                return Ok(Zeroizing::new(token.to_string()));
             }
         }
     }
     if let Some(value) = headers.get("x-api-key") {
         let s = value.to_str().map_err(|_| ApiError::unauthorized())?;
         if !s.is_empty() {
-            return Ok(s.to_string());
+            return Ok(Zeroizing::new(s.to_string()));
         }
     }
     Err(ApiError::unauthorized())
@@ -178,6 +198,7 @@ impl Modify for SecurityAddon {
         get_inbox,
         list_keys,
         revoke_key,
+        get_audit_events,
         put_tree,
         get_tree_context,
         post_provider_identity,
@@ -201,6 +222,7 @@ impl Modify for SecurityAddon {
             DeviceSlotDescriptor,
             ErrorBody,
             ApiKeyView,
+            ApiKeyEvent,
             PublicTree,
             PublicNode,
             PublicEdge,
@@ -212,6 +234,7 @@ impl Modify for SecurityAddon {
     tags(
         (name = "inbox", description = "Opaque .kqpb envelope mailbox"),
         (name = "api-keys", description = "List and revoke API keys"),
+        (name = "audit", description = "API-key lifecycle events, scoped to the caller"),
         (name = "trees", description = "Canonical public split-tree topology"),
         (name = "provider", description = "KeyQuorum-signed relay identity"),
         (name = "devices", description = "Sealed device copy, move, and relocate letters")
@@ -383,8 +406,44 @@ async fn revoke_key(
     ApiToken(token): ApiToken,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
-    with_conn(&state, move |conn| service::revoke_key(conn, &token, id)).await?;
+    let identity = state.identity();
+    with_conn(&state, move |conn| {
+        service::revoke_key(conn, &token, id)?;
+        // Sign the new chain head at once, so the revocation is vouched
+        // for before the next scan.
+        if let Some(identity) = identity {
+            if let Err(err) = anchor_now(conn, &identity) {
+                tracing::warn!("audit anchor after revocation failed: {err}");
+            }
+        }
+        Ok(())
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Anchor the audit chains with this relay's key at the current time.
+pub fn anchor_now(conn: &Connection, identity: &ProviderIdentity) -> crate::error::Result<usize> {
+    let now = crate::provider::system_now_utc_millis()?;
+    super::audit::anchor(conn, identity, &now)
+}
+
+#[utoipa::path(
+    get,
+    path = "/audit/api-keys",
+    tag = "audit",
+    responses(
+        (status = 200, description = "Events about the caller's own key (every event for an admin key)", body = [ApiKeyEvent]),
+        (status = 401, description = "Unauthorized", body = ErrorBody)
+    ),
+    security(("api_key" = []))
+)]
+async fn get_audit_events(
+    State(state): State<AppState>,
+    ApiToken(token): ApiToken,
+) -> Result<Json<Vec<ApiKeyEvent>>, ApiError> {
+    let events = with_conn(&state, move |conn| service::audit_events(conn, &token)).await?;
+    Ok(Json(events))
 }
 
 #[utoipa::path(
@@ -539,8 +598,168 @@ async fn get_device(
     Ok(Json(descriptor))
 }
 
+/// Most clients the rate limiter tracks at once. Past this, expired windows
+/// are dropped, and if every tracked client is still active, new clients
+/// share one overflow bucket, so memory stays bounded under a flood of
+/// distinct addresses.
+pub const MAX_RATE_LIMITED_CLIENTS: usize = 65_536;
+
+const RATE_WINDOW: Duration = Duration::from_secs(60);
+
+/// Who a request is counted against. An IPv6 client is its /64 network, the
+/// smallest block one subscriber is normally given, so one host cycling
+/// through its own addresses is still one client. Requests with no peer
+/// address and new clients past [`MAX_RATE_LIMITED_CLIENTS`] each have
+/// their own bucket, so neither crowds out the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ClientKey {
+    V4(Ipv4Addr),
+    V6Network(u64),
+    UnknownPeer,
+    Overflow,
+}
+
+impl ClientKey {
+    fn of(ip: IpAddr) -> Self {
+        match ip.to_canonical() {
+            IpAddr::V4(v4) => Self::V4(v4),
+            IpAddr::V6(v6) => Self::V6Network((v6.to_bits() >> 64) as u64),
+        }
+    }
+}
+
+impl std::fmt::Display for ClientKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::V4(ip) => write!(f, "{ip}"),
+            Self::V6Network(network) => {
+                write!(f, "{}/64", Ipv6Addr::from_bits(u128::from(*network) << 64))
+            }
+            Self::UnknownPeer => f.write_str("unknown peer"),
+            Self::Overflow => f.write_str("overflow"),
+        }
+    }
+}
+
+/// A fixed one-minute window per client (see [`ClientKey`]).
+pub struct RateLimiter {
+    per_minute: u32,
+    trust_forwarded: bool,
+    clients: Mutex<HashMap<ClientKey, (Instant, u32)>>,
+}
+
+impl RateLimiter {
+    pub fn new(per_minute: u32, trust_forwarded: bool) -> Self {
+        Self {
+            per_minute,
+            trust_forwarded,
+            clients: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// `Ok` to serve a request from `client`, or how long until it may retry.
+    pub fn check(&self, client: IpAddr, now: Instant) -> std::result::Result<(), Duration> {
+        self.check_key(ClientKey::of(client), now)
+    }
+
+    fn check_key(&self, client: ClientKey, now: Instant) -> std::result::Result<(), Duration> {
+        let mut clients = self
+            .clients
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !clients.contains_key(&client) && clients.len() >= MAX_RATE_LIMITED_CLIENTS {
+            clients.retain(|_, (start, _)| now.duration_since(*start) < RATE_WINDOW);
+        }
+        // The unknown-peer bucket is one fixed entry, never displaced by
+        // the overflow it is kept apart from.
+        let key = if client == ClientKey::UnknownPeer
+            || clients.contains_key(&client)
+            || clients.len() < MAX_RATE_LIMITED_CLIENTS
+        {
+            client
+        } else {
+            ClientKey::Overflow
+        };
+        let entry = clients.entry(key).or_insert((now, 0));
+        if now.duration_since(entry.0) >= RATE_WINDOW {
+            *entry = (now, 0);
+        }
+        if entry.1 >= self.per_minute {
+            return Err(RATE_WINDOW.saturating_sub(now.duration_since(entry.0)));
+        }
+        entry.1 += 1;
+        Ok(())
+    }
+
+    fn client(&self, request: &Request) -> ClientKey {
+        if self.trust_forwarded {
+            // The proxy appends the address it saw, so only the last entry
+            // is the proxy's word; earlier ones are whatever the client sent.
+            let forwarded = request
+                .headers()
+                .get_all("x-forwarded-for")
+                .iter()
+                .filter_map(|value| value.to_str().ok())
+                .flat_map(|value| value.split(','))
+                .next_back()
+                .and_then(|last| last.trim().parse::<IpAddr>().ok());
+            if let Some(ip) = forwarded {
+                return ClientKey::of(ip);
+            }
+        }
+        request
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map_or(ClientKey::UnknownPeer, |info| ClientKey::of(info.0.ip()))
+    }
+}
+
+async fn rate_limit(
+    State(limiter): State<Arc<RateLimiter>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let client = limiter.client(&request);
+    match limiter.check_key(client, Instant::now()) {
+        Ok(()) => next.run(request).await,
+        Err(retry_after) => {
+            tracing::warn!(%client, "relay rate limit exceeded");
+            let mut response = ApiError {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                message: "rate limit exceeded".to_string(),
+            }
+            .into_response();
+            let seconds = retry_after.as_secs().max(1).to_string();
+            if let Ok(value) = HeaderValue::from_str(&seconds) {
+                response.headers_mut().insert(RETRY_AFTER, value);
+            }
+            response
+        }
+    }
+}
+
+/// Longest a request may take, body included, before the relay answers
+/// `408 Request Timeout`, so a slow or stalled client cannot hold a
+/// connection and the database lock indefinitely.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The relay serves plain HTTP. That is only acceptable on loopback, or
+/// when the operator states that a TLS-terminating proxy sits in front of
+/// it (`--behind-tls-proxy`); official clients refuse plain HTTP to any
+/// other host, and a bearer must never cross a network in the clear.
+pub fn check_bind(addr: &SocketAddr, behind_tls_proxy: bool) -> crate::error::Result<()> {
+    if addr.ip().is_loopback() || behind_tls_proxy {
+        return Ok(());
+    }
+    Err(Error::RelayRequest(format!(
+        "refusing to serve plain HTTP on non-loopback address {addr}: bind to loopback, \
+         or pass --behind-tls-proxy when a TLS-terminating proxy forwards to this address"
+    )))
+}
+
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let limiter = state.rate_limit.clone();
+    let app = Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .route("/health", get(health))
         .route("/keycheck", post(post_keycheck))
@@ -548,6 +767,7 @@ pub fn router(state: AppState) -> Router {
         .route("/inbox", post(post_inbox).get(get_inbox))
         .route("/api-keys", get(list_keys))
         .route("/api-keys/{id}/revoke", post(revoke_key))
+        .route("/audit/api-keys", get(get_audit_events))
         .route("/trees", put(put_tree))
         .route("/trees/{label}/context", get(get_tree_context))
         .route(
@@ -557,8 +777,18 @@ pub fn router(state: AppState) -> Router {
         .route("/devices", put(put_device))
         .route("/devices/{device_id}", get(get_device))
         .layer(DefaultBodyLimit::max(MAX_ENVELOPE_BYTES.saturating_mul(2)))
-        .layer(TraceLayer::new_for_http())
-        .with_state(state)
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            REQUEST_TIMEOUT,
+        ))
+        .with_state(state);
+    // Outermost after tracing, so a refused request costs no database work
+    // and still shows up in the trace.
+    let app = match limiter {
+        Some(limiter) => app.layer(middleware::from_fn_with_state(limiter, rate_limit)),
+        None => app,
+    };
+    app.layer(TraceLayer::new_for_http())
 }
 
 #[cfg(test)]

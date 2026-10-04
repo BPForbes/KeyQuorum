@@ -707,10 +707,23 @@ A quorum-protected file goes with `send --quorum-file ID` (plus `--unlock-slot`,
 takes): it is unlocked in memory, never written to disk, and a refused unlock
 sends nothing.
 
-With a relay set up the letter is uploaded; otherwise it is written to
-`./outbox` (`--offline` or `--output-dir DIR` force that). `inbox` keeps the
-letters it pulled in `./inbox/<relay hash>/` (`--dir`), remembers where it stopped, and opens
-each letter once. `inbox open` handles file deliveries, answers to your
+Every letter `send` makes goes through your outbox ring (below): it is queued,
+checked, and sent oldest first. With a relay set up the letter is uploaded;
+otherwise it is written to `./outbox` (`--offline` or `--output-dir DIR` force
+that). If the upload fails the letter stays queued, and `outbox send` sends it
+later. A tracked file someone asked you for goes only once you have accepted
+their latest request (a file nobody asked for still goes).
+
+`inbox` keeps the letters it pulled in `./inbox/<relay hash>/` (`--dir`), each
+held in a slot of your inbox ring with its hash, remembers where it stopped, and
+opens each letter once. A letter whose file changed on disk since it was pulled
+is not opened. Once a letter is delivered (opened by its command) its slot is
+released and its file deleted, so nothing of it stays in the inbox; `inbox drop
+ID` does the same for a letter you will not open. A file that could not be
+deleted is deleted by the next `inbox` command. The inbox ring holds 256
+unopened letters; when it is full the pull stops and the rest stay on the relay
+until there is room. Slots are reused from the oldest letter on, so if that
+letter is still unopened the note names it: open or drop it to make room. `inbox open` handles file deliveries, answers to your
 deliveries, tracked files (`--reject` refuses a file and says so in the answer;
 delivered files are kept in `./received`, `--save-dir`), history snapshots
 (`--file COPY` also compares one with a copy you name), and bridge and
@@ -726,6 +739,98 @@ replaces it: `deliver send`, `deliver open`, `deliver ack`, `file share`,
 `file history --export` (use `file history verify` and `file history export`).
 A letter that reaches you as a file, with no relay, is still opened with the
 `file` and `deliver` commands. `relay push` is not legacy.
+
+### Outbox ring buffer
+
+`keyquorum outbox` keeps your own queue of sealed letters for other people in
+your store, and every letter `send` makes goes through it: a ring of fixed size (32 slots unless you change it) with a write
+pointer, a read pointer, and a count of slots held. `add` writes at the write
+pointer; `send` sends from the read pointer, oldest first, and only a send that
+succeeds moves it on and wipes the slot. A full ring refuses new letters rather
+than overwrite one that has not been sent, and an empty one has nothing to send.
+
+A `.kqpb` letter is the passport: it is the only thing that crosses from your
+ring to someone else's. Everything else travels inside one, signed: a tracked
+file (`.kqtf`) as `file share` seals it, a history snapshot (`.kqhs`) as
+`file send-history` seals it, and an export bundle or signature artifact as an
+ordinary `send`. Device letters (key copies and moves) go between your own
+devices, never to another person. A letter goes only to a trusted recipient:
+it must be sealed to the encryption key your store has registered for them,
+checked when you queue it and again when you send it, so revoking their key
+stops a queued send.
+
+A tracked file's letters also go in order, and `--file` names your copy, whose
+own history shows where the exchange stands:
+
+1. **request** (`file request`): asks the holder for the file; needs nothing first.
+2. **answer** (`file answer-request`): the holder's signed accept or decline of that request.
+3. **file** (`file share`): the trusted revision, only after the holder accepted a file request from that person.
+4. **receipt** (`file receive` writes it): the receiver's signed accept or reject of a file received from them.
+5. **snapshot** (`file send-history`): either side's history, once a delivery between them completed.
+
+The outbox cannot open a sealed letter, so this check confirms only that the
+copy you name shows the step before this one with that person; it does not
+prove the letter is about that copy or that request. The receiving commands
+bind each letter to its own file and request when they open it (`file receive`,
+`file open-answer`, `file ack`), and `file share` itself works outside the ring.
+
+```sh
+keyquorum file request --file-id ID --name report.txt --to M.A --as M.B --output-dir req
+keyquorum outbox add req/*.kqpb --to M.A --as M.B               # step 1, no copy needed
+keyquorum outbox send --as M.B                                   # to the relay, oldest first
+keyquorum outbox add ans/*.kqpb --to M.B --as M.A --file report.kqtf   # step 2, checked
+keyquorum outbox                                                 # index, size, state
+```
+
+In border terms: the `.kqpb` is the passport, the recipient key it is sealed
+to is the destination printed on it, an accepted request answer is the visa a
+tracked file needs, and device letters are residence papers that never cross.
+A letter turned away at departure is recorded in your store with the rule it
+broke (`no_passport`, `device_letter`, `unrecognised_destination`,
+`out_of_order`, `ring_full`, `oversized`, `tampered`), never the letter
+itself; `outbox refusals` lists them, newest first, and `outbox` shows the
+last one. A delivery that fails in transit is not a refusal: the letter stays
+queued for the retry.
+
+`outbox drop` discards the oldest letter without sending it, and
+`outbox capacity N` (1 to 1024) resizes an empty ring. `--as LABEL` picks whose
+outbox; the default is your label from `keyquorum use`. Letters go to the relay
+with your stored push key, or to `--output-dir`. (The `./outbox` directory
+`send --offline` writes to is a plain folder, not this ring.)
+
+A send claims the oldest letter in a short transaction, uploads it with no
+transaction open (so the rest of your store stays writable), and only then
+wipes its slot. While a claim is under two minutes old, a second send or
+`outbox drop` cannot take that letter. If a send crashed, or its claim could
+not be released (the error says so), `outbox send --take-over` (or
+`outbox drop --take-over`) takes the letter at once instead of waiting out the
+two minutes.
+
+Sending a letter twice still makes one letter, so a take-over, or a stalled
+send that finishes late, never duplicates anything. The relay keeps one copy
+per recipient and content and answers a repeat with the same letter id, and the
+recipient's inbox opens each letter id once. In an output directory a letter is
+written to a private `.part` file and moved into place whole, never over a
+different file (by a hard link, or where a drive has none, a copy into a newly
+created file). Only an identical file already there counts as written; any
+other file at that name is refused and left alone, and a leftover `.part` is
+removed. Only the send that still holds the claim frees the
+slot, so the letter is counted as sent once.
+
+#### The rings' timeline
+
+Each ring keeps a timeline: when every letter was queued, sent, dropped or
+refused (outbox), or received, opened or dropped (inbox), with its slot, the
+recipient label or letter id and its kind, never the letter itself. It is kept
+as a `KQHS` history snapshot, the same hash-chained format a tracked file's
+history uses, so a time changed later breaks the chain.
+
+```sh
+keyquorum outbox history                              # queued, sent, dropped, refused
+keyquorum outbox history --snapshot outbox.kqhs       # write it out (never overwritten)
+keyquorum outbox history --check outbox.kqhs          # still passes through it, unchanged
+keyquorum inbox history                               # received, opened, dropped
+```
 
 ### Mailbox
 

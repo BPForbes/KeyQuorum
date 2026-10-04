@@ -1,12 +1,15 @@
 use super::*;
 use crate::db;
 use crate::locked_files;
+use crate::test_secrets::passphrase;
 use crate::vault;
 use rusqlite::params;
 use std::fs;
 
 fn seed_credential(conn: &Connection) -> i64 {
-    vault::add_credential(conn, "Email", None, "s3cr3t", "master-pw")
+    let secret = passphrase();
+    let master = passphrase();
+    vault::add_credential(conn, "Email", None, secret.as_str(), master.as_str())
         .expect("add_credential should succeed")
 }
 
@@ -135,11 +138,12 @@ fn concurrent_redemption_allows_exactly_one_success() {
 }
 
 fn seed_locked_file(conn: &Connection) -> (i64, tempfile::TempDir, std::path::PathBuf) {
+    let password = passphrase();
     let dir = tempfile::tempdir().expect("tempdir should be created");
     let source_path = dir.path().join("secret.txt");
     let encrypted_path = dir.path().join("secret.txt.kqenc");
     fs::write(&source_path, b"ttl file").unwrap();
-    let file_id = locked_files::lock_file(conn, &source_path, &encrypted_path, "hunter2")
+    let file_id = locked_files::lock_file(conn, &source_path, &encrypted_path, password.as_str())
         .expect("lock_file should succeed");
     (file_id, dir, encrypted_path)
 }

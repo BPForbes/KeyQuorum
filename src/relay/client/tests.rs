@@ -320,7 +320,7 @@ async fn check_key_client_and_stored_hash_can_push() {
             relay_url: base.clone(),
             scope: check.scope.clone().expect("scope"),
             key_hash: hash.clone(),
-            token: token.clone(),
+            token: zeroize::Zeroizing::new(token.clone()),
             remote_id: check.id,
             label: check.label.clone(),
         },
@@ -481,4 +481,30 @@ async fn authenticate_provider_rejects_missing_expired_and_revoked() {
     .expect("join")
     .unwrap_err();
     assert!(matches!(err, Error::ProviderCertificateRevoked));
+}
+
+#[test]
+fn response_reads_are_bounded() {
+    let body = read_bounded(std::io::Cursor::new(vec![7u8; 16]), 16).expect("at the limit");
+    assert_eq!(body.len(), 16);
+    assert!(matches!(
+        read_bounded(std::io::Cursor::new(vec![7u8; 17]), 16),
+        Err(Error::RelayRequest(_))
+    ));
+    // A default-sized inbox page of the largest envelopes, base64-encoded,
+    // still fits under the cap.
+    let page = crate::relay::DEFAULT_INBOX_PAGE as u64 * crate::relay::MAX_ENVELOPE_BYTES as u64;
+    assert!(MAX_RESPONSE_BYTES >= page * 4 / 3);
+}
+
+#[test]
+fn relay_error_text_drops_control_characters_and_caps_length() {
+    assert_eq!(
+        relay_error_text(b"{\"error\":\"bad\x1b[2J\x07\nrequest\"}"),
+        "{\"error\":\"bad[2Jrequest\"}"
+    );
+    let long = relay_error_text(&vec![b'a'; 4096]);
+    assert_eq!(long.chars().count(), 513);
+    assert!(long.ends_with('…'));
+    assert_eq!(relay_error_text(&vec![b'a'; 512]).chars().count(), 512);
 }

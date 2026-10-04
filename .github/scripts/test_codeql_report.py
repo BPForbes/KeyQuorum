@@ -82,6 +82,19 @@ class Report(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("SOC 2: CC8.1 Change management", r.stdout)
 
+    def test_a_path_finding_shows_its_source_to_sink_flow(self):
+        rule = dict(RULE_HIGH, id="rust/cleartext-logging")
+        res = result(rule["id"], "src/bin/keyquorum/host.rs", line=437)
+        step = lambda line, text: {"location": {
+            "physicalLocation": {"artifactLocation": {"uri": "src/bin/keyquorum/host.rs"}, "region": {"startLine": line}},
+            "message": {"text": text}}}
+        res["codeFlows"] = [{"threadFlows": [{"locations": [step(430, "cert"), step(437, "cert.serial")]}]}]
+        r = run_report([rule], [res])
+        self.assertIn(
+            "Flow: src/bin/keyquorum/host.rs:430 (cert) -> src/bin/keyquorum/host.rs:437 (cert.serial)",
+            r.stdout,
+        )
+
     def test_no_results_passes(self):
         self.assertEqual(run_report([RULE_HIGH], []).returncode, 0)
 

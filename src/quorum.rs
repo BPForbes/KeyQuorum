@@ -285,7 +285,7 @@ pub fn unlock_file(
     conn: &Connection,
     file_id: i64,
     raw_shares: &HashMap<i64, Vec<u8>>,
-) -> Result<Vec<u8>> {
+) -> Result<Zeroizing<Vec<u8>>> {
     unlock_file_with_approval(conn, file_id, raw_shares, &[])
 }
 
@@ -296,7 +296,7 @@ pub fn unlock_file_with_approval(
     file_id: i64,
     raw_shares: &HashMap<i64, Vec<u8>>,
     grants: &[UnlockGrant],
-) -> Result<Vec<u8>> {
+) -> Result<Zeroizing<Vec<u8>>> {
     // Same as `locked_files::unlock_file`: the TTL is checked before any
     // share is even looked at, so an expired file is destroyed on the
     // first unlock *attempt* — including one whose shares never reconstruct
@@ -337,7 +337,7 @@ pub fn complete_unlock(
     file_id: i64,
     presented: key_tree::PresentedReconstruction,
     grants: &[UnlockGrant],
-) -> Result<Vec<u8>> {
+) -> Result<Zeroizing<Vec<u8>>> {
     complete_unlock_in(&mut NativeStorage, conn, file_id, presented, grants)
 }
 
@@ -350,7 +350,7 @@ pub fn complete_unlock_in(
     file_id: i64,
     presented: key_tree::PresentedReconstruction,
     grants: &[UnlockGrant],
-) -> Result<Vec<u8>> {
+) -> Result<Zeroizing<Vec<u8>>> {
     let audit_devices = device::format_presentation(&presented.devices);
     let secret = Zeroizing::new(presented.secret);
     let result = decrypt_presented(
@@ -381,7 +381,7 @@ fn decrypt_presented(
     leaves: &[device::UsedLeaf],
     devices: &[device::PresentedDevice],
     grants: &[UnlockGrant],
-) -> Result<Vec<u8>> {
+) -> Result<Zeroizing<Vec<u8>>> {
     purge_if_expired_in(storage, conn, file_id)?;
     let (encrypted_path, key_id, nonce): (String, i64, Vec<u8>) = conn.query_row(
         "SELECT encrypted_path, key_id, nonce FROM files WHERE id = ?1",

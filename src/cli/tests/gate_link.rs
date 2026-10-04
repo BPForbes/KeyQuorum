@@ -21,7 +21,7 @@ fn gated_with(policy: &str) -> MemoryEnv {
         let (result, _) = env.device(&format!(
             "keyquorum-device provision /usb/{dir} --label {label}"
         ));
-        assert!(result.is_ok(), "{result:?}");
+        assert!(result.is_ok(), "the command failed");
         let (result, out) = env.device(&format!(
             "keyquorum-device public /usb/{dir} --label {label}"
         ));
@@ -152,10 +152,7 @@ fn expiry_leaves_a_tombstone_and_later_attempts_are_recorded() {
         .unwrap();
 
     let (result, _) = unlock(&mut env, BOTH);
-    assert!(
-        matches!(result, Err(crate::error::Error::FileExpired)),
-        "{result:?}"
-    );
+    assert!(matches!(result, Err(crate::error::Error::FileExpired)));
     assert!(!env.fs.exists(Path::new("/work/secret.kqenc")));
     let text = history(&mut env);
     for kind in ["FileExpired", "ContentDestroyed", "ExpiredAccessAttempt"] {
@@ -269,10 +266,7 @@ fn a_password_files_expiry_leaves_a_tombstone() {
         )
         .unwrap();
     let (result, _) = unlock_password(&mut env);
-    assert!(
-        matches!(result, Err(crate::error::Error::FileExpired)),
-        "{result:?}"
-    );
+    assert!(matches!(result, Err(crate::error::Error::FileExpired)));
     let text = history(&mut env);
     for kind in ["FileExpired", "ContentDestroyed", "ExpiredAccessAttempt"] {
         assert_eq!(text.matches(kind).count(), 1, "{kind}\n{text}");
@@ -579,10 +573,7 @@ fn redeeming_a_share_of_an_expired_file_leaves_the_tombstone() {
         .unwrap();
     env.prompts.push_back(token);
     let (result, _) = share_line(&mut env, "redeem-file");
-    assert!(
-        matches!(result, Err(crate::error::Error::FileExpired)),
-        "{result:?}"
-    );
+    assert!(matches!(result, Err(crate::error::Error::FileExpired)));
     let text = history(&mut env);
     for kind in ["FileExpired", "ContentDestroyed", "ExpiredAccessAttempt"] {
         assert_eq!(text.matches(kind).count(), 1, "{kind}\n{text}");
@@ -594,7 +585,7 @@ fn a_parent_approved_unlock_is_recorded_with_the_approval_policy_and_count() {
     let mut env = gated_with("--unlock-approval parent");
     env.device("keyquorum-device init /usb/q").0.unwrap();
     let (result, _) = env.device("keyquorum-device provision /usb/q --label Q");
-    assert!(result.is_ok(), "{result:?}");
+    assert!(result.is_ok(), "the command failed");
     let (result, out) = env.keyquorum(&format!(
         "keyquorum {DB} device register /usb/q --slot Q --type signing"
     ));
