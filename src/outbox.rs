@@ -324,15 +324,27 @@ impl Denied {
         }
     }
 
-    /// Record the refusal and give the error it stands for. Recording is
-    /// best effort: a refusal is never turned into a different failure.
+    /// Record the refusal and give the error it stands for. The letter is
+    /// refused either way; if the record could not be written, the error says
+    /// so as well, so no refusal goes unrecorded without anyone being told.
     fn record(self, conn: &Connection, owner: &str, recipient: &str) -> Error {
-        let _ = record_refusal(conn, owner, recipient, &self);
-        self.refusal.error(self.step.as_deref())
+        let error = self.refusal.error(self.step.as_deref());
+        match record_refusal(conn, owner, recipient, &self) {
+            Ok(()) => error,
+            Err(failed) => Error::Usage(format!(
+                "{error}; the refusal ({}) could not be recorded: {failed}",
+                self.refusal.as_str()
+            )),
+        }
     }
 }
 
+/// The refusal row and its timeline event, together or not at all.
 fn record_refusal(conn: &Connection, owner: &str, recipient: &str, denied: &Denied) -> Result<()> {
+    crate::db::with_immediate_transaction(conn, || write_refusal(conn, owner, recipient, denied))
+}
+
+fn write_refusal(conn: &Connection, owner: &str, recipient: &str, denied: &Denied) -> Result<()> {
     let mut details = EventDetails::new().with("to", recipient);
     if let Some(kind) = denied.kind {
         details = details.with("kind", &kind.to_string());

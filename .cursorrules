@@ -141,8 +141,9 @@ out, and `send_next_taking_over` / `drop_next_taking_over` (`outbox send|drop
 idempotent: the relay keeps one row per recipient and content hash and answers
 a repeat with the same letter id, and `outbox_cmd::publish_letter` writes a
 private `.part` sibling and moves it into place with `Storage::rename_new`
-(never replacing a file; an identical one counts as written, leftovers are
-removed), so a repeated or overlapping delivery is still one letter; only the
+(a hard link natively, or a `create_new` copy where hard links are missing, so
+never replacing a file; an identical one counts as written, a copy cut short
+holds a prefix of the letter and is published again, leftovers are removed), so a repeated or overlapping delivery is still one letter; only the
 send whose claim the head carries frees the slot, and a published letter is
 never taken back.
 `drop_next` discards the head unsent. A `KQPB` is the passport: the ring
@@ -155,8 +156,10 @@ letter turned away at departure, by `push` or at `send_next`'s gate, is recorded
 in `outbox_refusals` (`outbox::Refusal`: `no_passport`, `device_letter`,
 `unrecognised_destination`, `out_of_order`, `ring_full`, `oversized`,
 `tampered`; recipient, kind and missing step, never the letter or its hash; the
-newest `MAX_REFUSALS_KEPT` per owner), after the rolled-back transaction, and
-`outbox refusals` lists them; a delivery that fails in transit is not a refusal.
+newest `MAX_REFUSALS_KEPT` per owner), after the rolled-back transaction, in
+one transaction with its timeline event, and `outbox refusals` lists them; a
+refusal that cannot be recorded is still refused and its error says so. A
+delivery that fails in transit is not a refusal.
 The ring is the default way out: `send` (files, tracked files, `--quorum-file`)
 seals as `deliver send` / `file share` would and then, through
 `outbox_cmd::carry_via_outbox` (the `via_outbox` field only `send` sets), queues

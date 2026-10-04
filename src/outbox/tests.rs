@@ -575,3 +575,26 @@ fn a_drop_can_take_over_a_stuck_claim() {
     assert!(drop_next_taking_over(&p.conn, "alice").unwrap().is_some());
     assert_eq!(ring(&p.conn, "alice").unwrap().state(), RingState::Empty);
 }
+
+#[test]
+fn a_refusal_that_cannot_be_recorded_says_so_and_leaves_no_half_record() {
+    let p = people();
+    p.conn
+        .execute_batch(
+            "CREATE TEMP TRIGGER full BEFORE INSERT ON outbox_refusals
+             BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+        )
+        .unwrap();
+    let refused = push(&p.conn, "alice", "bob", b"not a letter", None);
+    let Err(Error::Usage(message)) = refused else {
+        panic!("an unrecorded refusal is reported");
+    };
+    assert!(message.contains("no_passport"));
+    assert!(message.contains("could not be recorded"));
+    // The refusal row and its timeline event go together or not at all.
+    let timeline =
+        crate::ring::history::snapshot(&p.conn, crate::ring::history::Timeline::Outbox("alice"))
+            .unwrap();
+    assert!(timeline.events.is_empty());
+    assert_eq!(ring(&p.conn, "alice").unwrap().state(), RingState::Empty);
+}

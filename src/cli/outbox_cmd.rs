@@ -343,7 +343,15 @@ fn publish_letter(path: &Path, bytes: &[u8]) -> Result<bool> {
         }
     };
     if env::exists(path) {
-        return same_letter(path);
+        let held = env::read(path)?;
+        // A copy of this letter cut short (where hard links are missing, the
+        // letter is copied into place) holds a prefix of these exact bytes:
+        // this letter's own, not a different file, so it is published again.
+        if held.len() < bytes.len() && bytes.starts_with(&held) {
+            env::remove_file(path)?;
+        } else {
+            return same_letter(path);
+        }
     }
     let partial = path.with_file_name(format!(
         ".{name}.{}.part",

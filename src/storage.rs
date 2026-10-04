@@ -71,19 +71,8 @@ impl Storage for NativeStorage {
         Ok(fs::rename(from, to)?)
     }
 
-    /// A hard link fails if `to` exists, so no other writer's file is ever
-    /// replaced; the source name is then removed. A filesystem without hard
-    /// links (FAT, say) falls back to check-then-rename.
     fn rename_new(&mut self, from: &Path, to: &Path) -> Result<()> {
-        match fs::hard_link(from, to) {
-            Ok(()) => {
-                let _ = fs::remove_file(from);
-                Ok(())
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Err(err.into()),
-            Err(_) if to.exists() => Err(already_exists(to)),
-            Err(_) => Ok(fs::rename(from, to)?),
-        }
+        rename_new_with(from, to, |from, to| fs::hard_link(from, to))
     }
 
     fn delete(&mut self, path: &Path) -> Result<()> {
@@ -136,6 +125,27 @@ impl MemoryStorage {
             .cloned()
             .collect()
     }
+}
+
+/// [`Storage::rename_new`] on the real filesystem, with the hard link passed
+/// in so a test can make it fail. A hard link fails if `to` exists, so no
+/// other writer's file is ever replaced; the source name is then removed. A
+/// filesystem without hard links (FAT, say) creates `to` with `create_new`
+/// instead, which also never replaces a file, and copies the bytes in. A copy
+/// cut short leaves `to` holding a prefix of `from`, which the caller can
+/// recognise as its own; it is never a different file replaced.
+pub(crate) fn rename_new_with(
+    from: &Path,
+    to: &Path,
+    link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> Result<()> {
+    match link(from, to) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => return Err(err.into()),
+        Err(_) => locked_files::write_owner_only(to, &fs::read(from)?)?,
+    }
+    let _ = fs::remove_file(from);
+    Ok(())
 }
 
 fn already_exists(path: &Path) -> Error {
