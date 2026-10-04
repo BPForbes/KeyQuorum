@@ -322,36 +322,36 @@ pub(super) fn show_timeline(
     Ok(())
 }
 
-/// Put `bytes` at `path` whole or not at all, and never over a different
-/// file. The letter is written to a private sibling first and then moved into
-/// place without replacing anything (`Storage::rename_new`), so a crash or a
-/// second send of the same letter can leave no partial file at `path`.
-/// `Ok(false)` when `path` already holds these exact bytes.
+/// Put `bytes` at `path`, never over or in place of a different file. The
+/// letter is written to a private sibling first and then moved into place
+/// without replacing anything (`Storage::rename_new`), so a second send of the
+/// same letter finds it whole. Where a drive has no hard links the move is a
+/// copy into a newly created file, which a crash can leave short; that file is
+/// then refused like any other, never deleted. `Ok(false)` when `path` already
+/// holds these exact bytes.
 fn publish_letter(path: &Path, bytes: &[u8]) -> Result<bool> {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or(Error::InvalidPath)?;
+    // Only these exact bytes count as this letter. Any other file at the name
+    // is refused and left alone, never deleted: nothing here can prove it is
+    // a copy of this letter cut short rather than someone else's file.
     let same_letter = |path: &Path| -> Result<bool> {
         if env::read(path)? == bytes {
             Ok(false)
         } else {
             Err(usage(&format!(
-                "{} holds a different file; it is never overwritten",
+                "{} holds a different file, which is never overwritten or removed; \
+                 if it is a copy of this letter that a stopped send left short (on a \
+                 drive without hard links, letters are copied into place), check it, \
+                 remove it yourself, and send again",
                 path.display()
             )))
         }
     };
     if env::exists(path) {
-        let held = env::read(path)?;
-        // A copy of this letter cut short (where hard links are missing, the
-        // letter is copied into place) holds a prefix of these exact bytes:
-        // this letter's own, not a different file, so it is published again.
-        if held.len() < bytes.len() && bytes.starts_with(&held) {
-            env::remove_file(path)?;
-        } else {
-            return same_letter(path);
-        }
+        return same_letter(path);
     }
     let partial = path.with_file_name(format!(
         ".{name}.{}.part",

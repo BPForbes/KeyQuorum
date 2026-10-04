@@ -812,8 +812,9 @@ per recipient and content and answers a repeat with the same letter id, and the
 recipient's inbox opens each letter id once. In an output directory a letter is
 written to a private `.part` file and moved into place whole, never over a
 different file (by a hard link, or where a drive has none, a copy into a newly
-created file); an identical file already there counts as written, a copy cut
-short is published again, and a leftover `.part` is removed. Only the send that still holds the claim frees the
+created file). Only an identical file already there counts as written; any
+other file at that name is refused and left alone, and a leftover `.part` is
+removed. Only the send that still holds the claim frees the
 slot, so the letter is counted as sent once.
 
 #### The rings' timeline

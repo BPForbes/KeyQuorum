@@ -577,7 +577,7 @@ fn the_outbox_timeline_records_each_step_with_its_time_and_checks_as_kqhs() {
 }
 
 #[test]
-fn a_copy_of_the_letter_cut_short_at_its_name_is_published_again() {
+fn any_other_file_at_the_letters_name_is_refused_and_never_removed() {
     use sha2::{Digest, Sha256};
     let mut env = two_people_on_a_relay();
     let letter = queue_for(&mut env, "carol");
@@ -585,11 +585,18 @@ fn a_copy_of_the_letter_cut_short_at_its_name_is_published_again() {
         "/out/carol-{}.kqpb",
         &hex::encode(Sha256::digest(&letter))[..16]
     );
-    // Where hard links are missing the letter is copied into place, and a
-    // copy cut short holds a prefix of this letter's own bytes.
-    env.fs
-        .write(Path::new(&name), &letter[..letter.len() / 3])
-        .unwrap();
+    // An empty file, and one holding the start of this very letter: neither
+    // proves it is this send's own, so neither is touched.
+    for held in [Vec::new(), letter[..letter.len() / 3].to_vec()] {
+        env.fs.write(Path::new(&name), &held).unwrap();
+        let message = fails(&mut env, &format!("{ALICE} outbox send --output-dir /out"));
+        assert!(message.contains("never overwritten or removed"));
+        assert_eq!(env.fs.read(Path::new(&name)).unwrap(), held);
+        let status = run(&mut env, &format!("{ALICE} outbox"));
+        assert!(status.contains("1 of 32 slots held"));
+    }
+    // Once the person removes it, the letter goes.
+    env.fs.delete(Path::new(&name)).unwrap();
     let sent = run(&mut env, &format!("{ALICE} outbox send --output-dir /out"));
     assert!(sent.contains(&format!("Wrote {name}")));
     assert_eq!(env.fs.read(Path::new(&name)).unwrap(), letter);

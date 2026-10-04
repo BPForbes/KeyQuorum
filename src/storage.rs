@@ -132,8 +132,8 @@ impl MemoryStorage {
 /// other writer's file is ever replaced; the source name is then removed. A
 /// filesystem without hard links (FAT, say) creates `to` with `create_new`
 /// instead, which also never replaces a file, and copies the bytes in. A copy
-/// cut short leaves `to` holding a prefix of `from`, which the caller can
-/// recognise as its own; it is never a different file replaced.
+/// cut short by a crash can leave `to` short; no existing file is ever
+/// replaced or removed.
 pub(crate) fn rename_new_with(
     from: &Path,
     to: &Path,

@@ -142,8 +142,9 @@ idempotent: the relay keeps one row per recipient and content hash and answers
 a repeat with the same letter id, and `outbox_cmd::publish_letter` writes a
 private `.part` sibling and moves it into place with `Storage::rename_new`
 (a hard link natively, or a `create_new` copy where hard links are missing, so
-never replacing a file; an identical one counts as written, a copy cut short
-holds a prefix of the letter and is published again, leftovers are removed), so a repeated or overlapping delivery is still one letter; only the
+never replacing a file; only an identical one counts as written, any other
+file at the name is refused and never removed, and `.part` leftovers of this
+letter are removed), so a repeated or overlapping delivery is still one letter; only the
 send whose claim the head carries frees the slot, and a published letter is
 never taken back.
 `drop_next` discards the head unsent. A `KQPB` is the passport: the ring
