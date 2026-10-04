@@ -72,6 +72,18 @@ impl Step {
     }
 }
 
+/// How strictly a tracked file needs its visa: an accepted file request from
+/// the person it goes to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Visa {
+    /// Always (`outbox add --file`): the file goes only in answer to an
+    /// accepted request.
+    Required,
+    /// Only when asked (`send`): a file may go unasked, but once that person
+    /// has asked for it, their latest request must have been accepted.
+    IfRequested,
+}
+
 /// The history events a request is recorded as.
 pub const REQUEST_EVENTS: [HistoryEventType; 2] = [
     HistoryEventType::FileRequested,
@@ -138,13 +150,48 @@ fn accepted_by(event: &HistoryEvent, peer: &str) -> bool {
         && event.details.get("result") == Some("accepted")
 }
 
+/// The latest file request `peer` made of `owner` in this copy, and its
+/// decision if `owner` has answered it.
+fn latest_file_request<'a>(
+    file: &'a TrackedFile,
+    owner: &str,
+    peer: &str,
+) -> Option<(&'a HistoryEvent, Option<&'a str>)> {
+    let request = file.events().iter().rev().find(|event| {
+        event.event_type == HistoryEventType::FileRequested
+            && by(event, peer)
+            && event.details.get("to") == Some(owner)
+    })?;
+    let id = request.details.get("request_id");
+    let decision = file.events().iter().find_map(|event| {
+        (event.event_type == HistoryEventType::RequestAnswered
+            && by(event, owner)
+            && id.is_some()
+            && event.details.get("request_id") == id)
+            .then(|| event.details.get("decision"))
+            .flatten()
+    });
+    Some((request, decision))
+}
+
 /// Whether `owner` may send `peer` the letter for `step` now, judged from
 /// `owner`'s own copy of the file. Refused with the step that is missing.
-pub fn require_step(file: &TrackedFile, owner: &str, peer: &str, step: Step) -> Result<()> {
+/// `visa` says how strictly the file step needs an accepted request.
+pub fn require_step(
+    file: &TrackedFile,
+    owner: &str,
+    peer: &str,
+    step: Step,
+    visa: Visa,
+) -> Result<()> {
     let events = file.events();
     let ok = match step {
         Step::Request => true,
         Step::Answer => answered_requests(file, owner, peer).next().is_some(),
+        Step::File if visa == Visa::IfRequested => match latest_file_request(file, owner, peer) {
+            None => true,
+            Some((_, decision)) => decision == Some("accepted"),
+        },
         Step::File => answered_requests(file, owner, peer).any(|(request, at, decision)| {
             request.event_type == HistoryEventType::FileRequested
                 && decision == "accepted"
@@ -161,6 +208,9 @@ pub fn require_step(file: &TrackedFile, owner: &str, peer: &str, step: Step) -> 
     let missing = match step {
         Step::Request => unreachable!("a request needs nothing before it"),
         Step::Answer => format!("a request from {peer} that you have answered"),
+        Step::File if visa == Visa::IfRequested => {
+            format!("{peer} asked for this file: accept their latest request before sending it")
+        }
         Step::File => format!(
             "a file request from {peer} that you accepted, followed by `file share` to {peer}"
         ),

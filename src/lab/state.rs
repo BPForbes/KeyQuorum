@@ -117,6 +117,9 @@ struct Mailbox {
     opened: BTreeMap<i64, Opened>,
     acks_checked: HashSet<i64>,
     sent: Vec<SentItem>,
+    /// Each pulled letter's size, noted while its file is there: a delivered
+    /// letter's file is deleted, and the inbox still shows its size.
+    sizes: BTreeMap<i64, usize>,
 }
 
 /// A password-locked file a lab user created from the GUI (`access
@@ -3049,7 +3052,7 @@ impl LabState {
     fn check_mail(&mut self) -> (Vec<TraceStep>, usize) {
         let user = self.actor();
         let (me, store, mail_dir) = (user.id.clone(), user.store(), user.mail_dir());
-        let before = self.mail_ids(&mail_dir);
+        let before = self.mail_letters(&store).len();
         // The store remembers where the last pull stopped, so no cursor is
         // passed.
         let line = format!(
@@ -3058,18 +3061,20 @@ impl LabState {
         );
         let pull = self.run(&line);
         let mut trace = transcript(&pull, true);
-        let arrived = self.mail_ids(&mail_dir).len() - before.len();
+        let arrived = self.mail_letters(&store).len() - before;
+        self.note_mail_sizes(&me, &store, &mail_dir);
 
         let acks: Vec<i64> = self
-            .mail_ids(&mail_dir)
+            .mail_letters(&store)
             .into_iter()
-            .filter(|id| {
+            .filter(|(id, kind)| {
                 !self
                     .mail
                     .get(&me)
                     .is_some_and(|mailbox| mailbox.acks_checked.contains(id))
-                    && self.letter_kind(&mail_dir, *id) == Some(envelope::KIND_FILE_DELIVERY_ACK)
+                    && *kind == envelope::KIND_FILE_DELIVERY_ACK
             })
+            .map(|(id, _)| id)
             .collect();
         if acks.is_empty() {
             return (trace, arrived);
@@ -3155,20 +3160,47 @@ impl LabState {
         found
     }
 
-    fn mail_ids(&self, dir: &Path) -> Vec<i64> {
-        self.mail_files(dir).into_iter().map(|(id, _)| id).collect()
-    }
-
     fn mail_path(&self, dir: &Path, id: i64) -> Option<PathBuf> {
         self.mail_files(dir)
             .into_iter()
             .find_map(|(found, path)| (found == id).then_some(path))
     }
 
-    /// The public kind byte in an envelope's header (not its contents).
-    fn letter_kind(&self, dir: &Path, id: i64) -> Option<u8> {
-        let bytes = self.vm().read(&self.mail_path(dir, id)?).ok()?;
-        envelope::kind(&bytes).ok()
+    /// Every letter a store has pulled, oldest first, with its public kind
+    /// byte, from the store's own record (`db::inbox`): a delivered letter's
+    /// file is deleted, so the files are not the record.
+    fn mail_letters(&self, store: &str) -> Vec<(i64, u8)> {
+        self.vm()
+            .store(store)
+            .and_then(|conn| crate::db::inbox::list(conn, super::vm::RELAY_URL).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|letter| (letter.id, letter.kind))
+            .collect()
+    }
+
+    fn mail_kind(&self, store: &str, id: i64) -> Option<u8> {
+        self.mail_letters(store)
+            .into_iter()
+            .find_map(|(found, kind)| (found == id).then_some(kind))
+    }
+
+    /// Note the size of every letter file still in `dir`, before opening
+    /// deletes it.
+    fn note_mail_sizes(&mut self, me: &str, store: &str, dir: &Path) {
+        let sizes: Vec<(i64, usize)> = self
+            .mail_letters(store)
+            .into_iter()
+            .filter_map(|(id, _)| {
+                let bytes = self.vm().read(&self.mail_path(dir, id)?).ok()?;
+                Some((id, bytes.len()))
+            })
+            .collect();
+        self.mail
+            .entry(me.to_string())
+            .or_default()
+            .sizes
+            .extend(sizes);
     }
 
     /// Check the relay for new letters and acknowledgements.
@@ -3205,7 +3237,8 @@ impl LabState {
             mail_dir.display()
         ));
         let mut pulled = transcript(&pull, true);
-        if self.letter_kind(&mail_dir, relay_id) != Some(envelope::KIND_FILE_DELIVERY) {
+        self.note_mail_sizes(&me, &store, &mail_dir);
+        if self.mail_kind(&store, relay_id) != Some(envelope::KIND_FILE_DELIVERY) {
             return Ok(Outcome::done(
                 false,
                 format!("Letter #{relay_id} is not in your mailbox"),
@@ -3546,8 +3579,8 @@ impl LabState {
         let mail_dir = actor.mail_dir();
         let mut inbox = Vec::new();
         let mut pending_acks = 0;
-        for id in self.mail_ids(&mail_dir) {
-            match self.letter_kind(&mail_dir, id) {
+        for (id, kind) in self.mail_letters(&actor.store()) {
+            match Some(kind) {
                 Some(envelope::KIND_FILE_DELIVERY) => {
                     let opened = mailbox.and_then(|mailbox| mailbox.opened.get(&id));
                     inbox.push(InboxItemView {
@@ -3562,6 +3595,8 @@ impl LabState {
                             .vm()
                             .read(&self.mail_path(&mail_dir, id).unwrap_or_default())
                             .map(|bytes| bytes.len())
+                            .ok()
+                            .or_else(|| mailbox.and_then(|m| m.sizes.get(&id).copied()))
                             .unwrap_or(0),
                         from: opened.map(|opened| self.describe_label(&opened.from)),
                         file_name: opened.map(|opened| opened.file_name.clone()),

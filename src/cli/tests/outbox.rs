@@ -42,23 +42,25 @@ fn a_queued_letter_is_sent_from_the_read_pointer_and_opened_by_its_recipient() {
 
     let empty = run(&mut env, &format!("{ALICE} outbox"));
     assert!(
-        empty.contains("Outbox for alice: 0 of 32 slots held, 32 free (empty)"),
+        empty.contains(
+            "Outbox for alice: 0 of 32 slots held, 32 free (empty); read index 1, write index 1; 1 sent"
+        ),
         "{empty}"
     );
 
     let queued = run(&mut env, &format!("{ALICE} outbox add {letter} --to bob"));
-    assert!(queued.contains("slot 0: file delivery to bob"), "{queued}");
+    assert!(queued.contains("slot 1: file delivery to bob"), "{queued}");
     assert!(
         queued.contains("1 of 32 slots held, 31 free (partial)"),
         "{queued}"
     );
-    assert!(queued.contains("read index 0, write index 1"), "{queued}");
+    assert!(queued.contains("read index 1, write index 2"), "{queued}");
 
     let sent = run(&mut env, &format!("{ALICE} outbox send"));
     assert!(sent.contains("Relay stored letter"), "{sent}");
-    assert!(sent.contains("Sent slot 0: file delivery to bob"), "{sent}");
+    assert!(sent.contains("Sent slot 1: file delivery to bob"), "{sent}");
     assert!(
-        sent.contains("(empty); read index 1, write index 1; 1 sent"),
+        sent.contains("(empty); read index 2, write index 2; 2 sent"),
         "{sent}"
     );
 
@@ -128,12 +130,12 @@ fn drop_discards_the_oldest_item_without_sending_it() {
     run(&mut env, &format!("{ALICE} outbox add {letter} --to bob"));
     let dropped = run(&mut env, &format!("{ALICE} outbox drop"));
     assert!(
-        dropped.contains("Dropped slot 0: file delivery to bob"),
+        dropped.contains("Dropped slot 1: file delivery to bob"),
         "{dropped}"
     );
     let status = run(&mut env, &format!("{ALICE} outbox"));
     assert!(
-        status.contains("(empty)") && status.contains("0 sent"),
+        status.contains("(empty)") && status.contains("1 sent"),
         "{status}"
     );
     let listed = run(&mut env, &format!("{BOB} inbox"));
@@ -411,4 +413,48 @@ fn outbox_refusals_lists_what_was_turned_away_and_why() {
     assert!(status.contains("Last refused at departure: to bob") && status.contains("no_passport"));
     let one = run(&mut env, &format!("{ALICE} outbox refusals --limit 1"));
     assert_eq!(one.lines().count(), 1);
+}
+
+#[test]
+fn send_goes_through_the_outbox_and_a_failed_upload_stays_queued() {
+    let mut env = two_people_on_a_relay();
+    let sent = run(
+        &mut env,
+        &format!("{ALICE} send /home/alice/note.txt --to bob"),
+    );
+    assert!(sent.contains("Queued slot 0: file delivery to bob"));
+    assert!(sent.contains("Relay stored letter "));
+    assert!(sent.contains("Sent slot 0: file delivery to bob"));
+
+    // The relay drops the upload: the letter stays queued, nothing is lost.
+    env.relay.as_mut().unwrap().fail_uploads = true;
+    let message = fails(
+        &mut env,
+        &format!("{ALICE} send /home/alice/note.txt --to bob"),
+    );
+    assert!(message.contains("connection reset"));
+    let status = run(&mut env, &format!("{ALICE} outbox"));
+    assert!(status.contains("1 of 32 slots held"));
+
+    // While one is queued, a full ring refuses the next send, and says so.
+    run(&mut env, &format!("{ALICE} outbox drop"));
+    run(&mut env, &format!("{ALICE} outbox capacity 1"));
+    fails(
+        &mut env,
+        &format!("{ALICE} send /home/alice/note.txt --to bob"),
+    );
+    let message = fails(
+        &mut env,
+        &format!("{ALICE} send /home/alice/note.txt --to bob"),
+    );
+    assert!(message.contains("outbox is full"));
+    let refused = run(&mut env, &format!("{ALICE} outbox refusals"));
+    assert!(refused.contains("ring_full"));
+
+    // Back online, `outbox send` delivers the queued letter first.
+    env.relay.as_mut().unwrap().fail_uploads = false;
+    let retried = run(&mut env, &format!("{ALICE} outbox send"));
+    assert!(retried.contains("Sent slot 0: file delivery to bob"));
+    let listed = run(&mut env, &format!("{BOB} inbox"));
+    assert_eq!(listed.matches("file delivery").count(), 2);
 }

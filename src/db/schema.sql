@@ -587,6 +587,35 @@ CREATE TABLE IF NOT EXISTS inbox_letters (
     PRIMARY KEY (relay_url, letter_id)
 );
 
+-- Each store's inbox ring for one relay (`db::inbox`, `src/ring.rs`): the
+-- pulled letters held unopened, at most `db::inbox::RING_CAPACITY`. The sealed
+-- letter is a file in the inbox directory; its slot keeps the hash, so a file
+-- changed on disk is refused before it is opened. Opening a letter (or
+-- `inbox drop`) releases its slot and deletes the file. A full ring stops the
+-- pull; the rest stay on the relay for the next one.
+CREATE TABLE IF NOT EXISTS inbox_rings (
+    relay_url   TEXT PRIMARY KEY,
+    capacity    INTEGER NOT NULL CHECK (capacity BETWEEN 1 AND 1024),
+    read_index  INTEGER NOT NULL DEFAULT 0,
+    write_index INTEGER NOT NULL DEFAULT 0,
+    size        INTEGER NOT NULL DEFAULT 0,
+    CHECK (read_index >= 0 AND read_index < capacity),
+    CHECK (write_index >= 0 AND write_index < capacity),
+    CHECK (size >= 0 AND size <= capacity),
+    CHECK ((read_index + size) % capacity = write_index)
+);
+
+CREATE TABLE IF NOT EXISTS inbox_slots (
+    relay_url     TEXT NOT NULL REFERENCES inbox_rings (relay_url) ON DELETE CASCADE,
+    slot_index    INTEGER NOT NULL,
+    letter_id     INTEGER NOT NULL,
+    envelope_kind INTEGER NOT NULL CHECK (envelope_kind BETWEEN 0 AND 255),
+    content_hash  TEXT NOT NULL,
+    received_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (relay_url, slot_index),
+    UNIQUE (relay_url, letter_id)
+);
+
 -- Per-person outbox ring buffer (`src/outbox.rs`): a fixed number of slots
 -- holding the sealed letters (.kqpb) a person has queued for trusted
 -- recipients. The

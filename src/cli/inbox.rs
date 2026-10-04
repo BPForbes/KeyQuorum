@@ -7,9 +7,14 @@
 //! with the import `relay pull --import` runs. It judges nothing itself.
 //!
 //! Pulled letters are kept in a relay-specific directory below `--dir`
-//! (`inbox/`) as `<relay hash>/<id>.kqpb`; the store
+//! (`inbox/`) as `<relay hash>/<id>.kqpb`, each held in a slot of the store's
+//! inbox ring (`db::inbox`) with its hash; the store
 //! remembers the cursor and which letters it has handled, so a later pull
-//! resumes after the newest and a letter is opened once. Receipt is already
+//! resumes after the newest and a letter is opened once. A letter whose file
+//! no longer matches its hash is refused. Once a letter is delivered (opened
+//! by its own command) its slot is released and its file deleted; `inbox
+//! drop` does the same for a letter you will not open. A full ring stops the
+//! pull, and the rest stay on the relay for the next one. Receipt is already
 //! idempotent by delivery id, so losing that record only repeats an answer.
 //!
 //! A letter that asks for a decision (a file or change request), an answer to
@@ -113,6 +118,17 @@ pub enum InboxCommand {
     List(InboxOpts),
     /// Pull, then open what is waiting and answer it
     Open(OpenArgs),
+    /// Discard a letter without opening it: its slot is released and its
+    /// file deleted
+    Drop(DropArgs),
+}
+
+#[derive(Args)]
+pub struct DropArgs {
+    #[command(flatten)]
+    pub opts: InboxOpts,
+    /// The letter's id
+    pub id: i64,
 }
 
 pub(super) fn kind_name(kind: u8) -> &'static str {
@@ -225,15 +241,32 @@ fn pull(conn: &Connection, opts: &InboxOpts) -> Result<String> {
                 }
             };
             let path = letter_path(&opts.dir, &url, item.id);
-            if !env::exists(&path) {
-                env::write_new(&path, &bytes)?;
-            } else if env::read(&path)? != bytes {
+            if env::exists(&path) && env::read(&path)? != bytes {
                 return Err(Error::RelayRequest(format!(
                     "{} holds a different letter; use a separate --dir for this store",
                     path.display()
                 )));
             }
-            db::inbox::record(conn, &url, item.id, kind)?;
+            if db::inbox::is_known(conn, &url, item.id)? {
+                continue;
+            }
+            if !db::inbox::has_room(conn, &url)? {
+                // The cursor stays at the last letter held, so the rest are
+                // pulled once slots are free.
+                let (_, capacity) = db::inbox::usage(conn, &url)?;
+                errln!("note: your inbox holds {capacity} unopened letters, its limit; open or drop some (`keyquorum inbox open`, `keyquorum inbox drop <id>`) and the rest come on the next pull");
+                return Ok(url);
+            }
+            if !env::exists(&path) {
+                env::write_new(&path, &bytes)?;
+            }
+            db::inbox::hold(
+                conn,
+                &url,
+                item.id,
+                kind,
+                &hex::encode(Sha256::digest(&bytes)),
+            )?;
         }
         match page.next_after {
             Some(next) if after.is_none_or(|previous| next > previous) => after = Some(next),
@@ -280,6 +313,7 @@ fn open_letter(
     kind: u8,
 ) -> Result<bool> {
     let path = stored_letter_path(&args.opts.dir, url, id)?;
+    require_unchanged(conn, url, id, &path)?;
     let push_answer = args.ack_dir.is_none();
     match kind {
         envelope::KIND_FILE_DELIVERY => deliver_cmd::run(
@@ -373,6 +407,49 @@ fn open_letter(
     Ok(true)
 }
 
+/// A held letter's file must still be the one pulled. A letter pulled before
+/// the inbox ring existed has no recorded hash and is opened as before.
+fn require_unchanged(conn: &Connection, url: &str, id: i64, path: &Path) -> Result<()> {
+    let Some(held) = db::inbox::held(conn, url, id)? else {
+        return Ok(());
+    };
+    if hex::encode(Sha256::digest(env::read(path)?)) == held.content_hash {
+        Ok(())
+    } else {
+        Err(usage(&format!(
+            "letter {id} changed on disk since it was pulled; it is not opened (discard it with `keyquorum inbox drop {id}`)"
+        )))
+    }
+}
+
+/// The letter is delivered (or discarded): release its slot, mark it
+/// handled and delete its file, so nothing of it stays in the inbox.
+fn release(conn: &Connection, dir: &Path, url: &str, id: i64) -> Result<()> {
+    db::inbox::deliver(conn, url, id)?;
+    let path = letter_path(dir, url, id);
+    if env::exists(&path) {
+        env::remove_file(&path)?;
+    }
+    Ok(())
+}
+
+/// The relay this inbox pulls from, without contacting it.
+fn configured_inbox_url(conn: &Connection, opts: &InboxOpts) -> Result<String> {
+    super::configured_relay_url(conn, opts.url.clone(), relay::ApiKeyScope::InboxPull)?.ok_or_else(
+        || usage("which relay's inbox? pass --url, or set it with `keyquorum use --url`"),
+    )
+}
+
+fn drop_letter(conn: &Connection, args: DropArgs) -> Result<()> {
+    let url = configured_inbox_url(conn, &args.opts)?;
+    if !db::inbox::is_known(conn, &url, args.id)? {
+        return Err(usage(&format!("no letter {} in this inbox", args.id)));
+    }
+    release(conn, &args.opts.dir, &url, args.id)?;
+    outln!("Dropped letter {} unopened", args.id);
+    Ok(())
+}
+
 fn open(conn: &Connection, args: OpenArgs) -> Result<()> {
     if args.id.is_none() && args.names_a_target() {
         return Err(usage(
@@ -411,7 +488,7 @@ fn open(conn: &Connection, args: OpenArgs) -> Result<()> {
     let mut failed = 0usize;
     for letter in wanted {
         match open_letter(conn, &args, &url, &slot, letter.id, letter.kind) {
-            Ok(true) => db::inbox::mark_handled(conn, &url, letter.id)?,
+            Ok(true) => release(conn, &args.opts.dir, &url, letter.id)?,
             Ok(false) => {
                 if let Some(hint) = manual_hint(letter.kind, letter.id) {
                     outln!(
@@ -441,5 +518,6 @@ pub(crate) fn run(conn: &Connection, command: Option<InboxCommand>) -> Result<()
         None => list(conn, &InboxOpts::default()),
         Some(InboxCommand::List(opts)) => list(conn, &opts),
         Some(InboxCommand::Open(args)) => open(conn, args),
+        Some(InboxCommand::Drop(args)) => drop_letter(conn, args),
     }
 }

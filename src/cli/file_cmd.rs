@@ -536,6 +536,10 @@ pub enum FileCommand {
         url: Option<String>,
         #[arg(long, requires = "push")]
         api_key: Option<String>,
+        /// Set by `keyquorum send`: queue the letter in the sender's outbox
+        /// ring and send it from there. Never a flag of `file share`.
+        #[arg(skip)]
+        via_outbox: bool,
     },
     /// Send another label this file's event history (a `KQHS` snapshot,
     /// no content), its root signed by you, so they can compare it with
@@ -887,6 +891,7 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
             push,
             url,
             api_key,
+            via_outbox,
         } => {
             let (as_label, slot) =
                 super::profile::resolve_signer(conn, as_label, slot, signing_key_file.as_deref())?;
@@ -897,7 +902,7 @@ pub fn run(conn: &Connection, command: FileCommand) -> Result<()> {
                 &as_label,
                 (slot, signing_key_file),
                 revision,
-                (output_dir, push, url, api_key),
+                ((output_dir, push, url, api_key), via_outbox),
             )
         }
         FileCommand::SendHistory {
@@ -2206,7 +2211,8 @@ fn share(
     as_label: &str,
     keys: (Option<String>, Option<PathBuf>),
     revision: Option<String>,
-    (output_dir, push, url, api_key): Transport,
+    // `via_outbox` sends through the sender's outbox ring (`send`).
+    ((output_dir, push, url, api_key), via_outbox): (Transport, bool),
 ) -> Result<()> {
     require_active(conn, as_label)?;
     let mut file = load_live(conn, kqtf, Some(as_label), "share")?;
@@ -2311,6 +2317,19 @@ fn share(
         outln!(
             "Revision {} is not trusted, so it was left out.",
             short(&candidate)
+        );
+    }
+    if via_outbox {
+        // The ring checks the visa against this copy, which now records the
+        // attempt: a file the recipient asked for goes only once accepted.
+        let transport = (output_dir.as_deref(), url, api_key);
+        return super::outbox_cmd::carry_via_outbox(
+            conn,
+            as_label,
+            to,
+            &sealed.bytes,
+            Some(&file),
+            transport,
         );
     }
     let letter = Letter {

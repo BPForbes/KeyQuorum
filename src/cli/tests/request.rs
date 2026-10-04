@@ -350,3 +350,68 @@ fn a_holder_with_an_older_copy_still_records_a_change_request() {
     );
     ok(&mut env, &format!("verify {KQTF}"));
 }
+
+/// `keyquorum --db DB send ...`: the everyday command, through the outbox.
+fn send(env: &mut MemoryEnv, args: &str) -> crate::error::Result<String> {
+    let (result, out) = env.keyquorum(&format!("keyquorum {} send {args}", super::file::DB));
+    result.map(|()| out)
+}
+
+#[test]
+fn send_needs_the_visa_only_once_the_recipient_has_asked() {
+    let mut env = holder_and_requester();
+    let id = file_id_hex(&env);
+    let as_holder = format!("--to M.B --as M.A --slot {}", slot("M.A"));
+
+    // Unasked, the file goes as before.
+    let out = send(&mut env, &format!("{KQTF} {as_holder} --output-dir /first")).unwrap();
+    assert!(out.contains("Sent slot 0: tracked file to M.B"));
+
+    // M.B asks for it, and the holder records the request.
+    ok(
+        &mut env,
+        &format!(
+            "request --file-id {id} --name report.txt --to M.A --as M.B --slot {} --output-dir /req",
+            slot("M.B")
+        ),
+    );
+    let letter = only(&env, "/req");
+    ok(
+        &mut env,
+        &format!(
+            "open-request --letter {letter} --slot {} --file {KQTF}",
+            slot("M.A")
+        ),
+    );
+
+    // Asked and not yet accepted: refused at departure, and recorded.
+    let refused = send(
+        &mut env,
+        &format!("{KQTF} {as_holder} --output-dir /second"),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(refused.contains("M.B asked for this file"));
+    assert!(!env.fs.exists(Path::new("/second")) || only_none(&env, "/second"));
+    let (_, refusals) = env.keyquorum(&format!(
+        "keyquorum {} outbox refusals --as M.A",
+        super::file::DB
+    ));
+    assert!(refusals.contains("to M.B  tracked file  out_of_order"));
+
+    // Once accepted, it goes.
+    ok(
+        &mut env,
+        &format!(
+            "answer-request --letter {letter} --decision accept --slot {} --file {KQTF} --ack-dir /ans",
+            slot("M.A")
+        ),
+    );
+    let out = send(&mut env, &format!("{KQTF} {as_holder} --output-dir /third")).unwrap();
+    assert!(out.contains("Sent slot 1: tracked file to M.B"));
+}
+
+/// Nothing was written to `dir`.
+fn only_none(env: &MemoryEnv, dir: &str) -> bool {
+    env.fs.list(Path::new(dir)).unwrap_or_default().is_empty()
+}

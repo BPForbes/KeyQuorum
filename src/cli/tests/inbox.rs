@@ -330,7 +330,9 @@ fn an_unhandled_legacy_letter_remains_openable_after_namespacing() {
         env.fs.read(Path::new("received/note.txt")).unwrap(),
         b"lunch at noon"
     );
-    assert!(env.fs.exists(&namespaced), "legacy letter was migrated");
+    // Delivered, so nothing of it stays: not the legacy file, not the
+    // namespaced one it was moved to.
+    assert!(!env.fs.exists(&namespaced));
     assert!(!env.fs.exists(Path::new("inbox/1.kqpb")));
 }
 
@@ -447,4 +449,98 @@ fn a_letter_that_asks_for_a_decision_is_listed_and_left_for_a_person() {
     // Left for a person, so it is still waiting afterwards.
     let again = run(&mut env, &format!("{BOB} inbox"));
     assert!(again.contains("file or change request"), "{again}");
+}
+
+const BOB_STORE: &str = "/home/bob/keyquorum.sqlite";
+
+fn inbox_slots(env: &MemoryEnv) -> i64 {
+    env.store(BOB_STORE)
+        .query_row("SELECT count(*) FROM inbox_slots", [], |row| row.get(0))
+        .unwrap()
+}
+
+#[test]
+fn a_delivered_letter_leaves_nothing_in_the_inbox() {
+    let mut env = two_people_on_a_relay();
+    run(
+        &mut env,
+        &format!("{ALICE} send /home/alice/note.txt --to bob"),
+    );
+    run(&mut env, &format!("{BOB} inbox"));
+    let path = super::super::inbox::letter_path(Path::new("inbox"), RELAY_URL, 1);
+    assert!(env.fs.exists(&path));
+    assert_eq!(inbox_slots(&env), 1, "held in Bob's inbox ring");
+
+    let opened = run(&mut env, &format!("{BOB} inbox open"));
+    assert!(opened.contains("Saved note.txt to received/note.txt"));
+    assert!(
+        !env.fs.exists(&path),
+        "the delivered letter's file is deleted"
+    );
+    assert_eq!(inbox_slots(&env), 0, "and its slot released");
+    assert!(run(&mut env, &format!("{BOB} inbox")).contains("(nothing waiting)"));
+}
+
+#[test]
+fn a_letter_changed_on_disk_is_not_opened_and_can_be_dropped() {
+    let mut env = two_people_on_a_relay();
+    run(
+        &mut env,
+        &format!("{ALICE} send /home/alice/note.txt --to bob"),
+    );
+    run(&mut env, &format!("{BOB} inbox"));
+    let path = super::super::inbox::letter_path(Path::new("inbox"), RELAY_URL, 1);
+    let mut bytes = env.fs.read(&path).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    env.fs.write(&path, &bytes).unwrap();
+
+    let (result, _) = env.keyquorum(&format!("{BOB} inbox open 1"));
+    // Refused (the reason, "changed on disk since it was pulled", goes to
+    // stderr with the letter's id), and left in the inbox.
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("could not be opened"));
+    assert_eq!(inbox_slots(&env), 1);
+    assert!(!env.fs.exists(Path::new("received/note.txt")));
+
+    let dropped = run(&mut env, &format!("{BOB} inbox drop 1"));
+    assert!(dropped.contains("Dropped letter 1 unopened"));
+    assert!(!env.fs.exists(&path));
+    assert_eq!(inbox_slots(&env), 0);
+    assert!(run(&mut env, &format!("{BOB} inbox")).contains("(nothing waiting)"));
+    let (result, _) = env.keyquorum(&format!("{BOB} inbox drop 7"));
+    assert!(result.is_err(), "no such letter");
+}
+
+#[test]
+fn a_full_inbox_leaves_the_rest_on_the_relay_for_the_next_pull() {
+    let mut env = two_people_on_a_relay();
+    // Bob's inbox ring holds one letter at a time.
+    env.store(BOB_STORE)
+        .execute(
+            "INSERT INTO inbox_rings (relay_url, capacity) VALUES (?1, 1)",
+            [RELAY_URL],
+        )
+        .unwrap();
+    for _ in 0..2 {
+        run(
+            &mut env,
+            &format!("{ALICE} send /home/alice/note.txt --to bob"),
+        );
+    }
+    let listed = run(&mut env, &format!("{BOB} inbox"));
+    assert!(listed.contains("1  file delivery"));
+    assert!(
+        !listed.contains("2  file delivery"),
+        "letter 2 stays on the relay"
+    );
+
+    run(&mut env, &format!("{BOB} inbox open 1"));
+    let listed = run(&mut env, &format!("{BOB} inbox"));
+    assert!(
+        listed.contains("2  file delivery"),
+        "pulled once a slot is free"
+    );
 }

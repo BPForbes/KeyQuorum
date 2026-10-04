@@ -3,7 +3,9 @@
 //! It picks the right sender from the file itself. A tracked file (`.kqtf`)
 //! goes as `file share` would send it, the newest trusted revision only; any
 //! other file goes as `deliver send` would. It adds no rule of its own: it
-//! builds the same command the user would have typed and runs it.
+//! builds the same command the user would have typed and runs it, marked to
+//! leave through the sender's outbox ring, so the ring's checks apply and a
+//! failed upload stays queued.
 
 use super::deliver_cmd::DeliverCommand;
 use super::env::{self, errln};
@@ -140,6 +142,7 @@ pub(crate) fn run(conn: &Connection, args: SendOpts) -> Result<()> {
                 push,
                 url: url.filter(|_| push),
                 api_key: api_key.filter(|_| push),
+                via_outbox: true,
             },
         )
     } else {
@@ -156,6 +159,7 @@ pub(crate) fn run(conn: &Connection, args: SendOpts) -> Result<()> {
                 push,
                 url: url.filter(|_| push),
                 api_key: api_key.filter(|_| push),
+                via_outbox: true,
             },
         )
     }
@@ -199,6 +203,7 @@ fn send_quorum_file(conn: &Connection, id: i64, args: SendOpts) -> Result<()> {
             push,
             url: args.url.filter(|_| push),
             api_key: args.api_key.filter(|_| push),
+            via_outbox: true,
         },
     )
 }

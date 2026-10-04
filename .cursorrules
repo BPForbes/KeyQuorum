@@ -143,6 +143,22 @@ in `outbox_refusals` (`outbox::Refusal`: `no_passport`, `device_letter`,
 `tampered`; recipient, kind and missing step, never the letter or its hash; the
 newest `MAX_REFUSALS_KEPT` per owner), after the rolled-back transaction, and
 `outbox refusals` lists them; a delivery that fails in transit is not a refusal.
+The ring is the default way out: `send` (files, tracked files, `--quorum-file`)
+seals as `deliver send` / `file share` would and then, through
+`outbox_cmd::carry_via_outbox` (the `via_outbox` field only `send` sets), queues
+the letter and sends the ring oldest first through it; a failed upload leaves it
+queued for `outbox send`. Through `send` a tracked file needs its visa only once
+asked (`exchange::Visa::IfRequested`: the recipient's latest file request must be
+accepted); `outbox add --file` stays `Visa::Required`. The legacy commands carry
+directly as before. `src/ring.rs` is the one copy of the ring arithmetic (ensure,
+advance the write pointer, release a slot and move the read pointer past released
+ones, resize when empty), used by the outbox and by each store's inbox ring
+(`inbox_rings`, `inbox_slots`, `db::inbox`, one ring per relay,
+`db::inbox::RING_CAPACITY` 256): a pulled letter stays a file in the inbox
+directory and its slot keeps its hash, so a changed file is not opened; a
+delivered letter's slot is released and its file deleted (`inbox open`, and
+`inbox drop <id>` unopened); a full ring stops the pull with the cursor at the
+last letter held, so the rest stay on the relay.
 `src/file_delivery/exchange.rs` owns the order of a tracked file's letters:
 request (18), answer (19), file (15, only after an accepted file request from
 that person and a `file share` after it), receipt (16, only for a file
@@ -463,7 +479,8 @@ Rules:
 
 The everyday commands (`src/cli/{profile,send,inbox,setup,doctor}.rs`: `use`,
 `cache`, `send`, `inbox`, `setup`, `doctor`) add no rule of their own. `send`
-builds the command `deliver send` or `file share` would, and `inbox open` calls
+builds the command `deliver send` or `file share` would (marked `via_outbox`, so
+the letter goes through the sender's outbox ring), and `inbox open` calls
 those commands' own handlers (`deliver_cmd::run`, `file_cmd::run`,
 `org_update::import_any`) and judges nothing; `inbox open <id>` takes `--into`/`--out`
 (a tracked file), `--file` (the copy an acknowledgement, request answer, request or snapshot

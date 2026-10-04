@@ -12,16 +12,18 @@
 //! `outbox`'s and `file_delivery::exchange`'s; this command adds none of its
 //! own.
 
-use super::env::{self, outln};
+use super::env::{self, errln, outln};
 use super::inbox::kind_name;
 use super::{file_cmd, resolve_relay_auth, sanitize_label, usage};
 use crate::db::profile;
 use crate::error::Result;
+use crate::file_delivery::exchange::Visa;
+use crate::file_history::TrackedFile;
 use crate::outbox::{self, QueuedItem, Refusal, Ring};
 use crate::relay::{self, ApiKeyScope};
 use clap::{Args, Subcommand};
 use rusqlite::Connection;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Args)]
 pub struct OutboxOpts {
@@ -171,7 +173,13 @@ pub(crate) fn run(conn: &Connection, opts: OutboxOpts) -> Result<()> {
             let copy = file.as_deref().map(file_cmd::load).transpose()?;
             for path in files {
                 let bytes = env::read(&path)?;
-                let item = outbox::push(conn, &owner, &to, &bytes, copy.as_ref())?;
+                let item = outbox::push(
+                    conn,
+                    &owner,
+                    &to,
+                    &bytes,
+                    copy.as_ref().map(|c| (c, Visa::Required)),
+                )?;
                 print_item(&format!("Queued {}:", path.display()), &item);
             }
             print_ring(&outbox::ring(conn, &owner)?);
@@ -199,6 +207,16 @@ pub(crate) fn run(conn: &Connection, opts: OutboxOpts) -> Result<()> {
     Ok(())
 }
 
+/// How far a send from the read pointer goes.
+enum Until {
+    /// The oldest letter only.
+    One,
+    /// Every letter, until the ring is empty.
+    Empty,
+    /// Through the letter just queued in this slot (`send`'s own).
+    Through { index: u32, content_hash: String },
+}
+
 fn send(
     conn: &Connection,
     owner: &str,
@@ -207,7 +225,57 @@ fn send(
     url: Option<String>,
     api_key: Option<String>,
 ) -> Result<()> {
-    if let Some(dir) = &output_dir {
+    let until = if all { Until::Empty } else { Until::One };
+    let sent = drain(conn, owner, until, output_dir.as_deref(), url, api_key)?;
+    if sent == 0 {
+        outln!("Outbox for {owner} is empty: nothing to send");
+    }
+    print_ring(&outbox::ring(conn, owner)?);
+    Ok(())
+}
+
+/// `send`'s way out: queue the sealed letter in the sender's outbox, then send
+/// the ring in order, oldest first, through that letter. The ring's checks
+/// (passport, destination, size, and for a tracked file its visa when the
+/// recipient asked for it) apply to every letter `send` makes, and a refusal
+/// is recorded. A letter that cannot be sent now stays queued for `outbox
+/// send`; nothing is lost and nothing jumps the queue.
+pub(super) fn carry_via_outbox(
+    conn: &Connection,
+    owner: &str,
+    recipient: &str,
+    bytes: &[u8],
+    copy: Option<&TrackedFile>,
+    (output_dir, url, api_key): (Option<&Path>, Option<String>, Option<String>),
+) -> Result<()> {
+    let item = outbox::push(
+        conn,
+        owner,
+        recipient,
+        bytes,
+        copy.map(|c| (c, Visa::IfRequested)),
+    )?;
+    print_item("Queued", &item);
+    let until = Until::Through {
+        index: item.index,
+        content_hash: item.content_hash.clone(),
+    };
+    drain(conn, owner, until, output_dir, url, api_key).map(|_| ()).inspect_err(|_| {
+        errln!("note: the letter stays in your outbox; `keyquorum outbox` shows it, `keyquorum outbox send` retries and `keyquorum outbox drop` discards the oldest");
+    })
+}
+
+/// Send from the read pointer, oldest first, until `until` is met. Returns
+/// how many were sent.
+fn drain(
+    conn: &Connection,
+    owner: &str,
+    until: Until,
+    output_dir: Option<&Path>,
+    url: Option<String>,
+    api_key: Option<String>,
+) -> Result<usize> {
+    if let Some(dir) = output_dir {
         env::create_dir_all(dir)?;
     }
     // The relay is resolved (and proven) once, before the first send, and
@@ -232,7 +300,7 @@ fn send(
         // dequeue fails; one already there with the same bytes (a crash
         // between the write and the commit) counts as written.
         let mut written = None;
-        let sent_item = outbox::send_next(conn, owner, |item, bytes| match &output_dir {
+        let sent_item = outbox::send_next(conn, owner, |item, bytes| match output_dir {
             Some(dir) => {
                 // Labels are not restricted to filename-safe characters; a
                 // recipient like `../x` must not escape the directory.
@@ -252,7 +320,11 @@ fn send(
             None => {
                 let (url, key) = relay_auth.as_ref().expect("resolved above");
                 let accepted = relay::push_inbox(&env::EnvRelay, url, key, bytes)?;
-                outln!("Relay stored letter {}", accepted.id);
+                outln!(
+                    "Relay stored letter {} for {}",
+                    accepted.id,
+                    accepted.recipient_fingerprint
+                );
                 Ok(())
             }
         });
@@ -272,20 +344,20 @@ fn send(
                 return Err(err);
             }
         };
-        match item {
-            Some(item) => {
-                print_item("Sent", &item);
-                sent += 1;
-            }
-            None => break,
-        }
-        if !all {
+        let Some(item) = item else { break };
+        print_item("Sent", &item);
+        sent += 1;
+        let done = match &until {
+            Until::One => true,
+            Until::Empty => false,
+            Until::Through {
+                index,
+                content_hash,
+            } => item.index == *index && &item.content_hash == content_hash,
+        };
+        if done {
             break;
         }
     }
-    if sent == 0 {
-        outln!("Outbox for {owner} is empty: nothing to send");
-    }
-    print_ring(&outbox::ring(conn, owner)?);
-    Ok(())
+    Ok(sent)
 }

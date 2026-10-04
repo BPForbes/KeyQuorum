@@ -707,10 +707,21 @@ A quorum-protected file goes with `send --quorum-file ID` (plus `--unlock-slot`,
 takes): it is unlocked in memory, never written to disk, and a refused unlock
 sends nothing.
 
-With a relay set up the letter is uploaded; otherwise it is written to
-`./outbox` (`--offline` or `--output-dir DIR` force that). `inbox` keeps the
-letters it pulled in `./inbox/<relay hash>/` (`--dir`), remembers where it stopped, and opens
-each letter once. `inbox open` handles file deliveries, answers to your
+Every letter `send` makes goes through your outbox ring (below): it is queued,
+checked, and sent oldest first. With a relay set up the letter is uploaded;
+otherwise it is written to `./outbox` (`--offline` or `--output-dir DIR` force
+that). If the upload fails the letter stays queued, and `outbox send` sends it
+later. A tracked file someone asked you for goes only once you have accepted
+their latest request (a file nobody asked for still goes).
+
+`inbox` keeps the letters it pulled in `./inbox/<relay hash>/` (`--dir`), each
+held in a slot of your inbox ring with its hash, remembers where it stopped, and
+opens each letter once. A letter whose file changed on disk since it was pulled
+is not opened. Once a letter is delivered (opened by its command) its slot is
+released and its file deleted, so nothing of it stays in the inbox; `inbox drop
+ID` does the same for a letter you will not open. The inbox ring holds 256
+unopened letters; when it is full the pull stops and the rest stay on the relay
+until there is room. `inbox open` handles file deliveries, answers to your
 deliveries, tracked files (`--reject` refuses a file and says so in the answer;
 delivered files are kept in `./received`, `--save-dir`), history snapshots
 (`--file COPY` also compares one with a copy you name), and bridge and
@@ -730,7 +741,7 @@ A letter that reaches you as a file, with no relay, is still opened with the
 ### Outbox ring buffer
 
 `keyquorum outbox` keeps your own queue of sealed letters for other people in
-your store: a ring of fixed size (32 slots unless you change it) with a write
+your store, and every letter `send` makes goes through it: a ring of fixed size (32 slots unless you change it) with a write
 pointer, a read pointer, and a count of slots held. `add` writes at the write
 pointer; `send` sends from the read pointer, oldest first, and only a send that
 succeeds moves it on and wipes the slot. A full ring refuses new letters rather

@@ -13,16 +13,23 @@ keyquorum inbox
 keyquorum inbox open
 \end{lstlisting}
 
-The first line is yours: the letter is uploaded when a relay is set up, and
-otherwise written to \file{./outbox} (\flag{--offline} or \flag{--output-dir}
-force that). The next two are the recipient's: \code{inbox} lists what is
+The first line is yours: the letter is queued in your outbox ring and sent from
+it, uploaded when a relay is set up and otherwise written to \file{./outbox}
+(\flag{--offline} or \flag{--output-dir} force that). A failed upload leaves it
+queued for \code{outbox send}, and a tracked file someone asked you for goes
+only once you have accepted their latest request. The next two are the recipient's: \code{inbox} lists what is
 waiting, and \code{inbox open} opens each letter, keeps the file in
 \file{./received}, and uploads the signed answer. Run \code{inbox open} again as
 the sender to read the answer. \flag{--reject} refuses a file and says so in the
 answer; \flag{--ack-dir} writes answers to a directory instead of uploading them.
 
-\code{inbox} keeps the letters it pulled in \file{./inbox/<relay hash>/} (\flag{--dir}), remembers
-where it stopped, and opens each letter once. It opens file deliveries, answers
+\code{inbox} keeps the letters it pulled in \file{./inbox/<relay hash>/} (\flag{--dir}),
+each held in a slot of your inbox ring with its hash, remembers where it
+stopped, and opens each letter once. A letter whose file changed on disk is not
+opened. Once a letter is delivered its slot is released and its file deleted;
+\code{inbox drop ID} does the same for a letter you will not open. The ring
+holds 256 unopened letters; a full one stops the pull and the rest stay on the
+relay until there is room. It opens file deliveries, answers
 to your deliveries, tracked files, history snapshots, and bridge and
 organization updates. A letter that asks for a decision (a file or change
 request), an answer to a request, an acknowledgement of a tracked file and a

@@ -1,5 +1,8 @@
 //! Each person's outbox: a fixed-capacity ring buffer of the sealed letters
-//! (`KQPB`) they have queued for other people, kept in their own store.
+//! (`KQPB`) they have queued for other people, kept in their own store. It is
+//! the default way out: `keyquorum send` queues every letter it makes here and
+//! sends from the ring (`outbox add` queues one made elsewhere). The pointer
+//! arithmetic is `ring`'s, shared with the inbox ring.
 //!
 //! The ring has a write pointer (`write_index`), a read pointer
 //! (`read_index`) and a `size`, the number of slots held: queued and not
@@ -43,9 +46,10 @@
 
 use crate::envelope;
 use crate::error::{Error, Result};
-use crate::file_delivery::exchange::{self, Step};
+use crate::file_delivery::exchange::{self, Step, Visa};
 use crate::file_history::TrackedFile;
 use crate::keys::{self, KeyType};
+use crate::ring;
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
@@ -232,11 +236,16 @@ fn load_ring(conn: &Connection, owner: &str) -> Result<Option<Ring>> {
     .map_err(Error::from)
 }
 
+/// The outbox ring's storage, for the shared ring arithmetic in `ring`.
+const TABLE: ring::Table = ring::Table {
+    rings: "outbox_rings",
+    slots: "outbox_slots",
+    key: "owner_label",
+    content: Some("content"),
+};
+
 fn ensure_ring(conn: &Connection, owner: &str) -> Result<Ring> {
-    conn.execute(
-        "INSERT OR IGNORE INTO outbox_rings (owner_label, capacity) VALUES (?1, ?2)",
-        params![owner, DEFAULT_CAPACITY],
-    )?;
+    ring::ensure(conn, &TABLE, owner, DEFAULT_CAPACITY)?;
     load_ring(conn, owner)?.ok_or(Error::IntegrityCheckFailed)
 }
 
@@ -348,15 +357,9 @@ pub fn set_capacity(conn: &Connection, owner: &str, capacity: u32) -> Result<Rin
     }
     require_owner(conn, owner)?;
     crate::db::with_immediate_transaction(conn, || {
-        let ring = ensure_ring(conn, owner)?;
-        if ring.state() != RingState::Empty {
+        if !ring::resize(conn, &TABLE, owner, capacity)? {
             return Err(Error::OutboxNotEmpty);
         }
-        conn.execute(
-            "UPDATE outbox_rings SET capacity = ?1, read_index = 0, write_index = 0
-             WHERE owner_label = ?2",
-            params![capacity, owner],
-        )?;
         load_ring(conn, owner)?.ok_or(Error::IntegrityCheckFailed)
     })
 }
@@ -370,7 +373,7 @@ pub fn push(
     owner: &str,
     recipient: &str,
     bytes: &[u8],
-    copy: Option<&TrackedFile>,
+    copy: Option<(&TrackedFile, Visa)>,
 ) -> Result<QueuedItem> {
     // An owner this store does not know has no ring, and nothing to record.
     require_owner(conn, owner)?;
@@ -393,7 +396,7 @@ fn departure_check(
     owner: &str,
     recipient: &str,
     bytes: &[u8],
-    copy: Option<&TrackedFile>,
+    copy: Option<(&TrackedFile, Visa)>,
 ) -> Result<std::result::Result<u8, Denied>> {
     if bytes.len() > MAX_ITEM_BYTES {
         return Ok(Err(Denied::new(Refusal::Oversized, None)));
@@ -413,11 +416,13 @@ fn departure_check(
     }
     let missing = match (Step::for_kind(kind), copy) {
         (None | Some(Step::Request), _) => None,
-        (Some(step), Some(copy)) => match exchange::require_step(copy, owner, recipient, step) {
-            Ok(()) => None,
-            Err(Error::ExchangeOutOfOrder(missing)) => Some(missing),
-            Err(other) => return Err(other),
-        },
+        (Some(step), Some((copy, visa))) => {
+            match exchange::require_step(copy, owner, recipient, step, visa) {
+                Ok(()) => None,
+                Err(Error::ExchangeOutOfOrder(missing)) => Some(missing),
+                Err(other) => return Err(other),
+            }
+        }
         (Some(step), None) => Some(format!(
             "a {} needs your copy of the file it concerns, so its order can be checked",
             step.name()
@@ -454,12 +459,7 @@ fn queue(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![owner, index, kind, recipient, bytes, content_hash],
         )?;
-        conn.execute(
-            "UPDATE outbox_rings
-             SET write_index = (write_index + 1) % capacity, size = size + 1
-             WHERE owner_label = ?1",
-            params![owner],
-        )?;
+        ring::advance_write(conn, &TABLE, owner)?;
         item_at(conn, owner, index)?.ok_or(Error::IntegrityCheckFailed)
     })
 }
@@ -508,26 +508,14 @@ pub fn list(conn: &Connection, owner: &str) -> Result<Vec<QueuedItem>> {
 }
 
 /// Wipe and free the slot at the read pointer, then move the pointer on.
-fn release_head(conn: &Connection, owner: &str, ring: &Ring, sent: bool) -> Result<()> {
-    // Overwrite before deleting, with secure_delete on, so the sealed
-    // bytes do not linger in the freed page.
-    conn.pragma_update(None, "secure_delete", true)?;
-    conn.execute(
-        "UPDATE outbox_slots SET content = zeroblob(length(content))
-         WHERE owner_label = ?1 AND slot_index = ?2",
-        params![owner, ring.read_index],
-    )?;
-    conn.execute(
-        "DELETE FROM outbox_slots WHERE owner_label = ?1 AND slot_index = ?2",
-        params![owner, ring.read_index],
-    )?;
-    conn.execute(
-        "UPDATE outbox_rings
-         SET read_index = (read_index + 1) % capacity, size = size - 1,
-             sent_total = sent_total + ?2
-         WHERE owner_label = ?1",
-        params![owner, i64::from(sent)],
-    )?;
+fn release_head(conn: &Connection, owner: &str, head: &Ring, sent: bool) -> Result<()> {
+    ring::release(conn, &TABLE, owner, head.read_index)?;
+    if sent {
+        conn.execute(
+            "UPDATE outbox_rings SET sent_total = sent_total + 1 WHERE owner_label = ?1",
+            params![owner],
+        )?;
+    }
     Ok(())
 }
 

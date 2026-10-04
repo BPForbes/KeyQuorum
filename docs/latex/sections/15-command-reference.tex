@@ -202,14 +202,17 @@ which flags conflict with or require others.
 \textbf{Command} & \textbf{Purpose} \\
 \midrule
 \code{send} & Seal a file (or a tracked file's newest trusted revision) to a
-  registered label and upload it, or write it to \file{./outbox}. \flag{--quorum-file} sends a quorum-protected file unlocked in memory. \\
+  registered label, queue it in your outbox ring and send it from there: upload
+  it, or write it to \file{./outbox}. \flag{--quorum-file} sends a quorum-protected file unlocked in memory. \\
 \code{inbox} & Pull what is waiting for you from the relay and list it
   (\code{inbox list} is the same, spelled out).
   \code{inbox open} opens each letter and posts the signed answer, including
   bridge and organization updates;
   with a letter id it also takes \flag{--into}/\flag{--out} (a tracked file),
   \flag{--file} (the copy an acknowledgement, request answer or snapshot
-  concerns) and \flag{--accept}/\flag{--decline} (a request). \\
+  concerns) and \flag{--accept}/\flag{--decline} (a request). A delivered
+  letter's slot is released and its file deleted; \code{inbox drop ID}
+  discards one unopened. \\
 \code{outbox} & Your outbox ring buffer of sealed letters (\file{.kqpb}) for
   trusted recipients: show it (index, size, state); \code{add LETTER... --to
   LABEL} queues at the write pointer (\flag{--file} names your copy when a

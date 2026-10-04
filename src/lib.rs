@@ -30,6 +30,7 @@ pub mod provider;
 pub mod pss;
 pub mod quorum;
 pub mod relay;
+pub(crate) mod ring;
 pub mod sharing;
 pub mod signing;
 pub mod storage;
