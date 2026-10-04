@@ -14,7 +14,9 @@
 //! no longer matches its hash is refused. Once a letter is delivered (opened
 //! by its own command) its slot is released and its file deleted; `inbox
 //! drop` does the same for a letter you will not open. A full ring stops the
-//! pull, and the rest stay on the relay for the next one. Receipt is already
+//! pull, and the rest stay on the relay for the next one. `inbox history`
+//! shows when each letter was received, opened or dropped (the ring's `KQHS`
+//! timeline, `ring::history`). Receipt is already
 //! idempotent by delivery id, so losing that record only repeats an answer.
 //!
 //! A letter that asks for a decision (a file or change request), an answer to
@@ -121,6 +123,17 @@ pub enum InboxCommand {
     /// Discard a letter without opening it: its slot is released and its
     /// file deleted
     Drop(DropArgs),
+    /// The inbox ring's timeline: when each letter was received, opened or
+    /// dropped, as a hash-chained KQHS history (does not pull)
+    History(HistoryArgs),
+}
+
+#[derive(Args)]
+pub struct HistoryArgs {
+    #[command(flatten)]
+    pub opts: InboxOpts,
+    #[command(flatten)]
+    pub timeline: super::outbox_cmd::TimelineArgs,
 }
 
 #[derive(Args)]
@@ -442,8 +455,14 @@ fn full_note(usage: &db::inbox::Usage) {
 /// handled in one transaction, then delete its file, so nothing of it stays
 /// in the inbox. The delivery stands if the file cannot be deleted; the
 /// handled mark is the durable record, and [`sweep`] deletes it later.
-fn release(conn: &Connection, dir: &Path, url: &str, id: i64) -> Result<()> {
-    db::inbox::deliver(conn, url, id)?;
+fn release(
+    conn: &Connection,
+    dir: &Path,
+    url: &str,
+    id: i64,
+    how: db::inbox::Release,
+) -> Result<()> {
+    db::inbox::deliver(conn, url, id, how)?;
     remove_delivered(&letter_path(dir, url, id), id);
     Ok(())
 }
@@ -496,7 +515,13 @@ fn drop_letter(conn: &Connection, args: DropArgs) -> Result<()> {
     // A letter pulled before inboxes were namespaced by relay is moved into
     // place first, so its file is the one deleted.
     stored_letter_path(&args.opts.dir, &url, args.id)?;
-    release(conn, &args.opts.dir, &url, args.id)?;
+    release(
+        conn,
+        &args.opts.dir,
+        &url,
+        args.id,
+        db::inbox::Release::Dropped,
+    )?;
     sweep(conn, &args.opts.dir, &url)?;
     outln!("Dropped letter {} unopened", args.id);
     Ok(())
@@ -540,7 +565,13 @@ fn open(conn: &Connection, args: OpenArgs) -> Result<()> {
     let mut failed = 0usize;
     for letter in wanted {
         match open_letter(conn, &args, &url, &slot, letter.id, letter.kind) {
-            Ok(true) => release(conn, &args.opts.dir, &url, letter.id)?,
+            Ok(true) => release(
+                conn,
+                &args.opts.dir,
+                &url,
+                letter.id,
+                db::inbox::Release::Opened,
+            )?,
             Ok(false) => {
                 if let Some(hint) = manual_hint(letter.kind, letter.id) {
                     outln!(
@@ -571,5 +602,14 @@ pub(crate) fn run(conn: &Connection, command: Option<InboxCommand>) -> Result<()
         Some(InboxCommand::List(opts)) => list(conn, &opts),
         Some(InboxCommand::Open(args)) => open(conn, args),
         Some(InboxCommand::Drop(args)) => drop_letter(conn, args),
+        Some(InboxCommand::History(args)) => {
+            let url = configured_inbox_url(conn, &args.opts)?;
+            super::outbox_cmd::show_timeline(
+                conn,
+                crate::ring::history::Timeline::Inbox(&url),
+                &format!("Inbox for {url}"),
+                &args.timeline,
+            )
+        }
     }
 }

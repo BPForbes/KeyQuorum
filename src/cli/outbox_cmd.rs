@@ -8,7 +8,9 @@
 //! push key or to `--output-dir`. Only a send that succeeds moves the read
 //! pointer. `outbox` alone shows the ring: index, size, free slots and its
 //! state (empty, partial, full). `outbox refusals` lists the letters the ring
-//! turned away at departure and the rule each broke. The rules are
+//! turned away at departure and the rule each broke. `outbox history` shows
+//! the ring's timeline (`ring::history`), when each letter was queued, sent,
+//! dropped or refused, and writes or checks it as a `KQHS` snapshot. The rules are
 //! `outbox`'s and `file_delivery::exchange`'s; this command adds none of its
 //! own.
 
@@ -18,9 +20,10 @@ use super::{file_cmd, resolve_relay_auth, sanitize_label, usage};
 use crate::db::profile;
 use crate::error::Result;
 use crate::file_delivery::exchange::Visa;
-use crate::file_history::TrackedFile;
+use crate::file_history::{HistoryEventType, HistorySnapshot, TrackedFile};
 use crate::outbox::{self, QueuedItem, Refusal, Ring};
 use crate::relay::{self, ApiKeyScope};
+use crate::ring::history::{self, Timeline};
 use clap::{Args, Subcommand};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
@@ -78,6 +81,21 @@ pub enum OutboxCommand {
         #[arg(long, default_value_t = 20)]
         limit: u32,
     },
+    /// The ring's timeline: when each letter was queued, sent, dropped or
+    /// refused, as a hash-chained KQHS history
+    History(TimelineArgs),
+}
+
+#[derive(Args)]
+pub struct TimelineArgs {
+    /// Also write the timeline as a KQHS history snapshot to this file (never
+    /// overwritten), to check it against the store later
+    #[arg(long)]
+    pub snapshot: Option<PathBuf>,
+    /// Check a KQHS snapshot written earlier: the timeline must still pass
+    /// through it, every event and time unchanged
+    #[arg(long)]
+    pub check: Option<PathBuf>,
 }
 
 fn owner(conn: &Connection, as_label: Option<String>) -> Result<String> {
@@ -169,6 +187,12 @@ pub(crate) fn run(conn: &Connection, opts: OutboxOpts) -> Result<()> {
                 );
             }
         }
+        OutboxCommand::History(args) => show_timeline(
+            conn,
+            Timeline::Outbox(&owner),
+            &format!("Outbox for {owner}"),
+            &args,
+        )?,
         OutboxCommand::Add { files, to, file } => {
             let copy = file.as_deref().map(file_cmd::load).transpose()?;
             for path in files {
@@ -203,6 +227,83 @@ pub(crate) fn run(conn: &Connection, opts: OutboxOpts) -> Result<()> {
             }
             print_ring(&outbox::set_capacity(conn, &owner, slots)?);
         }
+    }
+    Ok(())
+}
+
+fn event_name(event: HistoryEventType) -> &'static str {
+    match event {
+        HistoryEventType::LetterQueued => "queued",
+        HistoryEventType::LetterSent => "sent",
+        HistoryEventType::LetterDropped => "dropped",
+        HistoryEventType::LetterRefused => "refused",
+        HistoryEventType::LetterReceived => "received",
+        HistoryEventType::LetterOpened => "opened",
+        _ => "other",
+    }
+}
+
+/// Print a ring's timeline, oldest first, and write or check a `KQHS`
+/// snapshot of it. Shared by `outbox history` and `inbox history`.
+pub(super) fn show_timeline(
+    conn: &Connection,
+    timeline: Timeline,
+    title: &str,
+    args: &TimelineArgs,
+) -> Result<()> {
+    let now = history::snapshot(conn, timeline)?;
+    outln!(
+        "{title}: {} events, timeline root {}",
+        now.events.len(),
+        hex::encode(now.history_root)
+    );
+    for event in &now.events {
+        let details: Vec<String> = event
+            .details
+            .entries()
+            .iter()
+            .map(|(key, value)| match (key.as_str(), value.parse::<u8>()) {
+                ("kind", Ok(kind)) => format!("kind={}", kind_name(kind)),
+                _ => format!("{key}={value}"),
+            })
+            .collect();
+        outln!(
+            "  {}  #{}  {}  {}",
+            event.occurred_at,
+            event.sequence,
+            event_name(event.event_type),
+            details.join(" ")
+        );
+    }
+    if let Some(path) = &args.check {
+        let earlier = HistorySnapshot::decode(&env::read(path)?)
+            .map_err(|_| usage(&format!("{} is not a KQHS snapshot", path.display())))?;
+        if earlier.file_id != now.file_id {
+            return Err(usage(&format!(
+                "{} is a snapshot of another ring or file",
+                path.display()
+            )));
+        }
+        if !earlier.is_prefix_of_snapshot(&now) {
+            return Err(usage(&format!(
+                "the timeline no longer passes through {}: an event or its time changed",
+                path.display()
+            )));
+        }
+        outln!(
+            "{} matches: the timeline passes through it ({} of {} events unchanged)",
+            path.display(),
+            earlier.events.len(),
+            now.events.len()
+        );
+    }
+    if let Some(path) = &args.snapshot {
+        env::write_new(path, &now.encode()?)?;
+        outln!(
+            "Wrote a KQHS snapshot of {} events to {}",
+            now.events.len(),
+            path.display()
+        );
     }
     Ok(())
 }

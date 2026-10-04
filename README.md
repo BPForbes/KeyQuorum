@@ -798,6 +798,28 @@ outbox; the default is your label from `keyquorum use`. Letters go to the relay
 with your stored push key, or to `--output-dir`. (The `./outbox` directory
 `send --offline` writes to is a plain folder, not this ring.)
 
+A send claims the oldest letter in a short transaction, uploads it with no
+transaction open (so the rest of your store stays writable), and only then
+wipes its slot. While a claim is under two minutes old, a second send or
+`outbox drop` cannot take that letter; if a send crashes, its claim lapses and
+the letter goes again, which the relay and an output directory treat as the
+same letter.
+
+#### The rings' timeline
+
+Each ring keeps a timeline: when every letter was queued, sent, dropped or
+refused (outbox), or received, opened or dropped (inbox), with its slot, the
+recipient label or letter id and its kind, never the letter itself. It is kept
+as a `KQHS` history snapshot, the same hash-chained format a tracked file's
+history uses, so a time changed later breaks the chain.
+
+```sh
+keyquorum outbox history                              # queued, sent, dropped, refused
+keyquorum outbox history --snapshot outbox.kqhs       # write it out (never overwritten)
+keyquorum outbox history --check outbox.kqhs          # still passes through it, unchanged
+keyquorum inbox history                               # received, opened, dropped
+```
+
 ### Mailbox
 
 The hosted mailbox carries sealed `.kqpb` envelopes and public-tree slices.

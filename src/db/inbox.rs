@@ -2,10 +2,13 @@
 //! whether this store has handled them, and the inbox ring that holds the
 //! unopened ones. The sealed bytes live in the inbox directory; the ring keeps
 //! each held letter's hash, and a delivered letter's slot is released and its
-//! file deleted (`inbox open`, `inbox drop`).
+//! file deleted (`inbox open`, `inbox drop`). Each letter's arrival and
+//! departure is an event on the inbox's ring timeline (`ring::history`), a
+//! `KQHS` chain stamped with when it happened.
 
 use crate::error::{Error, Result};
-use crate::ring;
+use crate::file_history::{EventDetails, HistoryEventType, HistoryOutcome};
+use crate::ring::{self, history::Timeline};
 use rusqlite::{params, Connection, OptionalExtension};
 
 /// Unopened letters an inbox holds per relay before a pull stops.
@@ -60,8 +63,28 @@ pub fn hold(
             params![relay_url, ring.write_index, letter_id, kind, content_hash],
         )?;
         ring::advance_write(conn, &TABLE, relay_url)?;
-        record(conn, relay_url, letter_id, kind)
+        record(conn, relay_url, letter_id, kind)?;
+        ring::history::record(
+            conn,
+            Timeline::Inbox(relay_url),
+            HistoryEventType::LetterReceived,
+            HistoryOutcome::Success,
+            None,
+            EventDetails::new()
+                .with("slot", &ring.write_index.to_string())
+                .with("letter_id", &letter_id.to_string())
+                .with("kind", &kind.to_string()),
+        )
     })
+}
+
+/// How a held letter left the inbox.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Release {
+    /// Opened by its command and delivered.
+    Opened,
+    /// Discarded unopened (`inbox drop`).
+    Dropped,
 }
 
 /// The held letter's slot, if the ring holds it. A letter pulled before the
@@ -80,8 +103,9 @@ pub fn held(conn: &Connection, relay_url: &str, letter_id: i64) -> Result<Option
         .optional()?)
 }
 
-/// Mark the letter handled and release its slot, together.
-pub fn deliver(conn: &Connection, relay_url: &str, letter_id: i64) -> Result<()> {
+/// Mark the letter handled and release its slot, together, and put when on
+/// the inbox's timeline.
+pub fn deliver(conn: &Connection, relay_url: &str, letter_id: i64, how: Release) -> Result<()> {
     crate::db::with_immediate_transaction(conn, || {
         mark_handled(conn, relay_url, letter_id)?;
         let index: Option<u32> = conn
@@ -94,7 +118,33 @@ pub fn deliver(conn: &Connection, relay_url: &str, letter_id: i64) -> Result<()>
         if let Some(index) = index {
             ring::release(conn, &TABLE, relay_url, index)?;
         }
-        Ok(())
+        let kind: Option<u8> = conn
+            .query_row(
+                "SELECT kind FROM inbox_letters WHERE relay_url = ?1 AND letter_id = ?2",
+                params![relay_url, letter_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let mut details = EventDetails::new();
+        if let Some(index) = index {
+            details = details.with("slot", &index.to_string());
+        }
+        details = details.with("letter_id", &letter_id.to_string());
+        if let Some(kind) = kind {
+            details = details.with("kind", &kind.to_string());
+        }
+        let (event, outcome) = match how {
+            Release::Opened => (HistoryEventType::LetterOpened, HistoryOutcome::Success),
+            Release::Dropped => (HistoryEventType::LetterDropped, HistoryOutcome::Info),
+        };
+        ring::history::record(
+            conn,
+            Timeline::Inbox(relay_url),
+            event,
+            outcome,
+            None,
+            details,
+        )
     })
 }
 

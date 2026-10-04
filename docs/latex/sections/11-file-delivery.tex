@@ -13,6 +13,57 @@ keyquorum inbox
 keyquorum inbox open
 \end{lstlisting}
 
+\subsection{How a file travels: two ring buffers}
+\label{sec:rings}
+
+Every letter \code{send} makes passes through two bounded ring buffers, one at
+each end. Neither is on the relay: each lives in its owner's own store, and the
+relay only carries the sealed letter between them.
+
+\begin{enumerate}
+  \item \textbf{Seal.} \code{send} signs the file with your signing key and
+  seals it to the encryption key your store has registered for the recipient.
+  The result is a \file{.kqpb} letter, the only thing that crosses from one
+  person to another.
+  \item \textbf{Queue in your outbox ring.} The letter takes the slot at the
+  write pointer of your outbox ring (32 slots unless you change it). First it
+  must pass four checks. It must be no larger than 16 MiB. It must be a whole
+  \code{KQPB} letter (the passport) and not a device letter. It must be sealed
+  to an active key your store holds for the recipient (the destination). A
+  tracked file must also come in its exchange's order (the visa). A full ring
+  turns a letter away rather than overwrite one that has not been sent. A
+  letter turned away is recorded with the rule it broke.
+  \item \textbf{Leave from the read pointer.} The ring sends oldest first.
+  First, a short transaction claims the oldest letter and checks again that it
+  is unchanged and still sealed to a recognised key. The letter is then
+  uploaded (or written to \file{./outbox}) with no transaction open, so the
+  rest of your store stays writable during the upload. Only then is its slot
+  wiped and the read pointer moved on. A failed upload moves nothing and the
+  letter waits for \code{outbox send}. While a claim is under two minutes old,
+  a second send or \code{outbox drop} cannot take that letter. A send that
+  crashed loses its claim after that, and the letter goes again; the relay and
+  an output directory both treat it as the same letter.
+  \item \textbf{Carried sealed.} The relay stores the letter for the
+  recipient's key and never opens it.
+  \item \textbf{Arrive in the recipient's inbox ring.} \code{inbox} pulls the
+  letter into the recipient's inbox ring for that relay (256 slots). Each slot
+  keeps the letter's hash. A full ring stops the pull, and the rest stay on the
+  relay until there is room.
+  \item \textbf{Open and release.} \code{inbox open} refuses a letter whose
+  file no longer matches its hash, and otherwise opens it with its own command.
+  The letter's slot is then released and its file deleted. \code{inbox drop}
+  does the same without opening it. If a file cannot be deleted, the next
+  \code{inbox} command deletes it, without delivering the letter again.
+  \item \textbf{The answer.} The recipient's signed accept or reject is sealed
+  back to you and arrives in your own inbox ring, where \code{inbox open} reads
+  it the same way.
+\end{enumerate}
+
+\noindent Each of these steps is stamped with its time on the ring's timeline
+(section~\ref{sec:ring-timeline}). A quorum-protected file
+(\code{send --quorum-file}) is unlocked and sealed in the store that holds its
+shares, so it queues in that store's outbox under your label.
+
 The first line is yours: the letter is queued in your outbox ring and sent from
 it, uploaded when a relay is set up and otherwise written to \file{./outbox}
 (\flag{--offline} or \flag{--output-dir} force that). A failed upload leaves it
@@ -75,7 +126,8 @@ snapshot (\file{.kqhs}) as \code{file send-history} seals it, an export bundle
 or signature artifact as an ordinary \code{send}. Device letters go between a
 person's own devices, never to another person. A letter must be sealed to the
 encryption key the store has registered for its recipient, checked when it is
-queued and again when it is sent.
+queued and again when it is sent. The send claims the oldest letter, delivers it with no
+transaction open and only then frees its slot (section~\ref{sec:rings}).
 
 A tracked file's letters also go in order. \flag{--file} names your copy of
 the file, and its own history shows where the exchange stands: a
@@ -108,6 +160,31 @@ keyquorum outbox add req/*.kqpb --to M.A --as M.B
 keyquorum outbox send --as M.B
 keyquorum outbox add ans/*.kqpb --to M.B --as M.A --file report.kqtf
 \end{verbatim}
+
+\subsection{The rings' timeline}
+\label{sec:ring-timeline}
+
+Each ring keeps a timeline of what happened to every letter in it. An outbox
+records when a letter was queued, sent, dropped or refused. An inbox records
+when a letter was received, opened or dropped. Each entry carries its time (the
+store's clock, to the second, UTC), the slot, the recipient label or letter
+id, and the letter's kind. It never holds the letter, its hash or anything
+sealed in it.
+
+The timeline is kept as a history snapshot (\code{KQHS}), the same
+hash-chained event format a tracked file's history uses. Each entry's hash
+covers everything before it, so a time or step changed later breaks the chain,
+and \code{history} refuses to show a broken one. \flag{--snapshot FILE} writes
+the timeline out as a \file{.kqhs} file, which is never overwritten.
+\flag{--check FILE} later confirms the timeline still passes through that
+snapshot, with every earlier event and time unchanged. A snapshot of one ring
+does not check against another ring.
+
+\begin{lstlisting}
+keyquorum outbox history --snapshot outbox-2026-10.kqhs
+keyquorum outbox history --check outbox-2026-10.kqhs
+keyquorum inbox history
+\end{lstlisting}
 
 \subsection{Legacy procedure (still possible, not recommended)}
 

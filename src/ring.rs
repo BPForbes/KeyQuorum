@@ -15,6 +15,8 @@
 use crate::error::{Error, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
+pub(crate) mod history;
+
 /// Where one kind of ring lives.
 pub(crate) struct Table {
     pub rings: &'static str,

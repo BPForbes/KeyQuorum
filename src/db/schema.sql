@@ -616,6 +616,28 @@ CREATE TABLE IF NOT EXISTS inbox_slots (
     UNIQUE (relay_url, letter_id)
 );
 
+-- Each ring's timeline (`src/ring/history.rs`): when every letter took a
+-- slot, left it or was turned away, as history events hash-chained from the
+-- ring's own genesis exactly as a tracked file's are, so the timeline is a
+-- KQHS snapshot. Each event carries its time; `head_hash` and `event_count`
+-- are the chain's current end. Ids, labels, slots, kinds and rule names only:
+-- never a letter, its hash or anything sealed in it.
+CREATE TABLE IF NOT EXISTS ring_histories (
+    history_id  BLOB PRIMARY KEY CHECK (length(history_id) = 16),
+    ring_kind   TEXT NOT NULL CHECK (ring_kind IN ('outbox', 'inbox')),
+    ring_key    TEXT NOT NULL,
+    event_count INTEGER NOT NULL DEFAULT 0 CHECK (event_count >= 0),
+    head_hash   BLOB NOT NULL CHECK (length(head_hash) = 32),
+    UNIQUE (ring_kind, ring_key)
+);
+
+CREATE TABLE IF NOT EXISTS ring_events (
+    history_id BLOB NOT NULL REFERENCES ring_histories (history_id) ON DELETE CASCADE,
+    sequence   INTEGER NOT NULL CHECK (sequence >= 0),
+    event      BLOB NOT NULL,
+    PRIMARY KEY (history_id, sequence)
+);
+
 -- Per-person outbox ring buffer (`src/outbox.rs`): a fixed number of slots
 -- holding the sealed letters (.kqpb) a person has queued for trusted
 -- recipients. The

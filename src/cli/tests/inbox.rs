@@ -614,3 +614,25 @@ fn a_full_inbox_names_the_oldest_letter_when_it_holds_up_the_rest() {
     run(&mut env, &format!("{BOB} inbox drop 1"));
     assert!(run(&mut env, &format!("{BOB} inbox")).contains("3  file delivery"));
 }
+
+#[test]
+fn the_inbox_timeline_records_when_letters_arrive_and_leave() {
+    let mut env = two_people_on_a_relay();
+    for _ in 0..2 {
+        run(
+            &mut env,
+            &format!("{ALICE} send /home/alice/note.txt --to bob"),
+        );
+    }
+    run(&mut env, &format!("{BOB} inbox"));
+    run(&mut env, &format!("{BOB} inbox open 1"));
+    run(&mut env, &format!("{BOB} inbox drop 2"));
+
+    let shown = run(&mut env, &format!("{BOB} inbox history"));
+    assert!(shown.contains(&format!("Inbox for {RELAY_URL}: 4 events")));
+    let steps: Vec<&str> = shown.lines().skip(1).collect();
+    assert!(steps[0].contains("#0  received  slot=0 letter_id=1 kind=file delivery"));
+    assert!(steps[1].contains("#1  received  slot=1 letter_id=2"));
+    assert!(steps[2].contains("#2  opened  slot=0 letter_id=1"));
+    assert!(steps[3].contains("#3  dropped  slot=1 letter_id=2"));
+}

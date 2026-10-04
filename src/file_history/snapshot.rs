@@ -82,9 +82,30 @@ impl HistorySnapshot {
     /// True when `file` holds exactly these events as the start of its own
     /// history: the snapshot is a point the file's history passed through.
     pub fn is_prefix_of(&self, file: &TrackedFile) -> bool {
-        self.file_id == file.file_id
-            && file.events.len() >= self.events.len()
-            && file.events[..self.events.len()] == self.events[..]
+        self.is_prefix_of_events(&file.file_id, &file.events)
+    }
+
+    /// A snapshot of a history kept outside a `.kqtf` (a ring's timeline):
+    /// the chain must be unbroken for `history_id`.
+    pub fn from_events(history_id: [u8; 16], events: Vec<HistoryEvent>) -> Result<Self> {
+        let history_root = verify_chain(&history_id, &events)?;
+        Ok(Self {
+            file_id: history_id,
+            history_root,
+            events,
+        })
+    }
+
+    /// True when `later` holds exactly these events as the start of its
+    /// history: this snapshot is a point `later` passed through.
+    pub fn is_prefix_of_snapshot(&self, later: &HistorySnapshot) -> bool {
+        self.is_prefix_of_events(&later.file_id, &later.events)
+    }
+
+    fn is_prefix_of_events(&self, id: &[u8; 16], events: &[HistoryEvent]) -> bool {
+        self.file_id == *id
+            && events.len() >= self.events.len()
+            && events[..self.events.len()] == self.events[..]
             && (self.events.is_empty() && self.history_root == genesis_hash(&self.file_id)
                 || self.events.last().map(|e| e.event_hash) == Some(self.history_root))
     }

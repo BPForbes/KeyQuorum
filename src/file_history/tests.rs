@@ -215,8 +215,8 @@ fn a_stale_stored_root_is_rejected() {
 
 #[test]
 fn every_event_code_decodes_to_itself_and_the_next_one_is_unknown() {
-    // Codes are wire format: 1..=41 are assigned, nothing renumbered.
-    for code in 1u8..=41 {
+    // Codes are wire format: 1..=47 are assigned, nothing renumbered.
+    for code in 1u8..=47 {
         let kind = event::HistoryEventType::from_u8(code).unwrap();
         assert_eq!(kind as u8, code);
     }
@@ -228,7 +228,14 @@ fn every_event_code_decodes_to_itself_and_the_next_one_is_unknown() {
     assert_eq!(HistoryEventType::FileRequested as u8, 39);
     assert_eq!(HistoryEventType::ChangeRequested as u8, 40);
     assert_eq!(HistoryEventType::RequestAnswered as u8, 41);
-    assert!(event::HistoryEventType::from_u8(42).is_err());
+    // A ring's timeline (`ring::history`).
+    assert_eq!(HistoryEventType::LetterQueued as u8, 42);
+    assert_eq!(HistoryEventType::LetterSent as u8, 43);
+    assert_eq!(HistoryEventType::LetterDropped as u8, 44);
+    assert_eq!(HistoryEventType::LetterRefused as u8, 45);
+    assert_eq!(HistoryEventType::LetterReceived as u8, 46);
+    assert_eq!(HistoryEventType::LetterOpened as u8, 47);
+    assert!(event::HistoryEventType::from_u8(48).is_err());
     assert!(event::HistoryEventType::from_u8(0).is_err());
     // The new conflict events round-trip through a container.
     let mut file = tracked_file();

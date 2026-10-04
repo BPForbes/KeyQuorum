@@ -172,7 +172,17 @@ then its file deleted (`inbox open`, and `inbox drop <id>` unopened); a file a
 failed delete left behind is deleted by the next inbox command (`sweep`, keyed
 on the handled mark, never re-delivering); a full ring stops the pull with the
 cursor at the last letter held, so the rest stay on the relay, and the note
-names the oldest letter when it alone holds the ring's span.
+names the oldest letter when it alone holds the ring's span. Each ring also
+keeps a timeline (`src/ring/history.rs`, tables `ring_histories` and
+`ring_events`): every queue, send, drop and refusal (outbox) and every receipt,
+open and drop (inbox) is a `file_history` event (`LETTER_QUEUED` 42 to
+`LETTER_OPENED` 47, appended) stamped by the store's clock, recorded in the
+same transaction as the slot change and hash-chained from the ring's own
+genesis, so the timeline is a `KQHS` snapshot (`HistoryEvent::chained`,
+`HistorySnapshot::from_events`). It holds slots, labels, letter ids, kinds and
+rule names only, never a letter or its hash; `outbox history` / `inbox history`
+print it, `--snapshot` writes it and `--check` confirms the timeline still
+passes through an earlier one.
 `src/file_delivery/exchange.rs` owns the order of a tracked file's letters:
 request (18), answer (19), file (15, only after an accepted file request from
 that person and a `file share` after it), receipt (16, only for a file

@@ -40,6 +40,11 @@
 //! never the letter. A delivery that fails in transit (the relay is down) is
 //! not a refusal and leaves the letter queued.
 //!
+//! Time: every queue, send, drop and refusal is also an event on the owner's
+//! ring timeline (`ring::history`), a `KQHS` chain stamped with when it
+//! happened, so the order and times of a letter's passage can be shown and
+//! checked later (`outbox history`).
+//!
 //! This module owns `outbox_rings`, `outbox_slots` and `outbox_refusals` and
 //! decides no other rule: keys are `keys`, framing is `envelope`, the
 //! exchange order is `file_delivery::exchange`.
@@ -47,9 +52,9 @@
 use crate::envelope;
 use crate::error::{Error, Result};
 use crate::file_delivery::exchange::{self, Step, Visa};
-use crate::file_history::TrackedFile;
+use crate::file_history::{EventDetails, HistoryEventType, HistoryOutcome, TrackedFile};
 use crate::keys::{self, KeyType};
-use crate::ring;
+use crate::ring::{self, history::Timeline};
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
@@ -277,6 +282,32 @@ fn is_trusted(conn: &Connection, recipient: &str, sealed_to: &[u8; 32]) -> Resul
     keys::is_active_key(conn, recipient, KeyType::Encryption, sealed_to)
 }
 
+/// Put one step of a letter's passage on the owner's ring timeline
+/// (`ring::history`): when it happened, which slot, for whom, what kind.
+fn timeline(
+    conn: &Connection,
+    owner: &str,
+    event: HistoryEventType,
+    outcome: HistoryOutcome,
+    details: EventDetails,
+) -> Result<()> {
+    ring::history::record(
+        conn,
+        Timeline::Outbox(owner),
+        event,
+        outcome,
+        Some(owner),
+        details,
+    )
+}
+
+fn slot_details(item: &QueuedItem) -> EventDetails {
+    EventDetails::new()
+        .with("slot", &item.index.to_string())
+        .with("to", &item.recipient)
+        .with("kind", &item.kind.to_string())
+}
+
 /// A refusal: recorded for `owner`, then returned as the caller's error.
 struct Denied {
     refusal: Refusal,
@@ -302,6 +333,17 @@ impl Denied {
 }
 
 fn record_refusal(conn: &Connection, owner: &str, recipient: &str, denied: &Denied) -> Result<()> {
+    let mut details = EventDetails::new().with("to", recipient);
+    if let Some(kind) = denied.kind {
+        details = details.with("kind", &kind.to_string());
+    }
+    timeline(
+        conn,
+        owner,
+        HistoryEventType::LetterRefused,
+        HistoryOutcome::Denied,
+        details.with("reason", denied.refusal.as_str()),
+    )?;
     conn.execute(
         "INSERT INTO outbox_refusals (owner_label, recipient_label, envelope_kind, step, rule)
          VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -460,7 +502,15 @@ fn queue(
             params![owner, index, kind, recipient, bytes, content_hash],
         )?;
         ring::advance_write(conn, &TABLE, owner)?;
-        item_at(conn, owner, index)?.ok_or(Error::IntegrityCheckFailed)
+        let item = item_at(conn, owner, index)?.ok_or(Error::IntegrityCheckFailed)?;
+        timeline(
+            conn,
+            owner,
+            HistoryEventType::LetterQueued,
+            HistoryOutcome::Success,
+            slot_details(&item),
+        )?;
+        Ok(item)
     })
 }
 
@@ -645,6 +695,13 @@ pub fn send_next(
         // took (and freed) the item: it has gone, and that send counted it.
         if still_ours {
             release_head(conn, owner, &ring, true)?;
+            timeline(
+                conn,
+                owner,
+                HistoryEventType::LetterSent,
+                HistoryOutcome::Success,
+                slot_details(&item),
+            )?;
         }
         Ok(())
     })
@@ -666,6 +723,13 @@ pub fn drop_next(conn: &Connection, owner: &str) -> Result<Option<QueuedItem>> {
         }
         let item = item_at(conn, owner, ring.read_index)?.ok_or(Error::IntegrityCheckFailed)?;
         release_head(conn, owner, &ring, false)?;
+        timeline(
+            conn,
+            owner,
+            HistoryEventType::LetterDropped,
+            HistoryOutcome::Info,
+            slot_details(&item),
+        )?;
         Ok(Some(item))
     })
 }

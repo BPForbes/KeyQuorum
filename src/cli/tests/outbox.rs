@@ -458,3 +458,68 @@ fn send_goes_through_the_outbox_and_a_failed_upload_stays_queued() {
     let listed = run(&mut env, &format!("{BOB} inbox"));
     assert_eq!(listed.matches("file delivery").count(), 2);
 }
+
+#[test]
+fn the_outbox_timeline_records_each_step_with_its_time_and_checks_as_kqhs() {
+    let mut env = two_people_on_a_relay();
+    // Queued and sent by `send`, then one letter turned away at departure.
+    let letter = alice_letter_for_bob(&mut env);
+    fails(&mut env, &format!("{ALICE} outbox add {letter} --to alice"));
+
+    let shown = run(
+        &mut env,
+        &format!("{ALICE} outbox history --snapshot /home/alice/outbox.kqhs"),
+    );
+    assert!(shown.contains("Outbox for alice: 3 events"));
+    let steps: Vec<&str> = shown.lines().skip(1).take(3).collect();
+    assert!(steps[0].contains("#0  queued  slot=0 to=bob kind=file delivery"));
+    assert!(steps[1].contains("#1  sent  slot=0 to=bob"));
+    assert!(steps[2]
+        .contains("#2  refused  to=alice kind=file delivery reason=unrecognised_destination"));
+    assert!(steps.iter().all(|line| line.trim_start().starts_with("20")));
+    assert!(shown.contains("Wrote a KQHS snapshot of 3 events"));
+    assert_eq!(
+        &env.fs.read(Path::new("/home/alice/outbox.kqhs")).unwrap()[..4],
+        b"KQHS"
+    );
+
+    // Later steps keep the earlier snapshot a point the timeline passed through.
+    run(&mut env, &format!("{ALICE} outbox add {letter} --to bob"));
+    let checked = run(
+        &mut env,
+        &format!("{ALICE} outbox history --check /home/alice/outbox.kqhs"),
+    );
+    assert!(checked.contains("matches: the timeline passes through it (3 of 4 events unchanged)"));
+
+    // Bob's inbox timeline is another ring: its snapshot does not check here.
+    run(&mut env, &format!("{BOB} inbox"));
+    run(
+        &mut env,
+        &format!("{BOB} inbox history --snapshot /home/bob/inbox.kqhs"),
+    );
+    let message = fails(
+        &mut env,
+        &format!("{ALICE} outbox history --check /home/bob/inbox.kqhs"),
+    );
+    assert!(message.contains("another ring or file"));
+
+    // Rewriting when a step happened breaks the chain.
+    let store = env.store(ALICE_STORE);
+    let first: Vec<u8> = store
+        .query_row(
+            "SELECT event FROM ring_events WHERE sequence = 0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut event = crate::file_history::HistoryEvent::from_bytes(&first).unwrap();
+    event.occurred_at = "2000-01-01T00:00:00Z".into();
+    store
+        .execute(
+            "UPDATE ring_events SET event = ?1 WHERE sequence = 0",
+            [event.to_bytes().unwrap()],
+        )
+        .unwrap();
+    let (result, _) = env.keyquorum(&format!("{ALICE} outbox history"));
+    assert!(result.is_err(), "outbox history refuses a broken timeline");
+}

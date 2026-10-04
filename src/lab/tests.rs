@@ -657,6 +657,46 @@ fn terminal_and_gui_share_one_state() {
 }
 
 #[test]
+fn a_gui_send_passes_through_both_rings_and_their_timelines_show_it() {
+    let mut state = lab();
+    let timeline = |state: &mut LabState, line: &str| {
+        let (outcome, output) = terminal::run(state, line).unwrap();
+        assert!(outcome.ok, "{line}");
+        output.join("\n")
+    };
+    // A plain file leaves through the sender's own outbox ring.
+    assert!(state.send("project-roadmap.md", "bob").unwrap().ok);
+    let relay_id = snap(&state).sent[0].relay_id;
+    let shown = timeline(
+        &mut state,
+        "keyquorum --db /home/alice/keyquorum.sqlite outbox history",
+    );
+    assert!(shown.contains("queued  slot=0 to=M.S.2"));
+    assert!(shown.contains("sent  slot=0 to=M.S.2"));
+
+    // It arrives in the recipient's inbox ring and leaves it when opened.
+    state.set_drive("bob", true).unwrap();
+    state.switch_user("bob").unwrap();
+    assert!(state.receive(relay_id, true).unwrap().ok);
+    let shown = timeline(
+        &mut state,
+        "keyquorum --db /home/bob/keyquorum.sqlite inbox history",
+    );
+    assert!(shown.contains(&format!("received  slot=0 letter_id={relay_id}")));
+    assert!(shown.contains(&format!("opened  slot=0 letter_id={relay_id}")));
+
+    // A quorum file is unlocked and sealed where its shares are, so it
+    // leaves through the organization store's outbox for the sender's label.
+    state.switch_user("alice").unwrap();
+    assert!(state.send("architecture.md", "david").unwrap().ok);
+    let shown = timeline(
+        &mut state,
+        "keyquorum --db /srv/keyquorum/org.sqlite outbox --as M.S.1 history",
+    );
+    assert!(shown.contains("sent  slot=0 to=M.A"));
+}
+
+#[test]
 fn reset_restores_the_seeded_state() {
     let mut state = lab();
     state.set_drive("david", true).unwrap();
