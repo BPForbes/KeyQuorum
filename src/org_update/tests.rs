@@ -810,11 +810,14 @@ fn import_any_routes_bridge_and_update_envelopes_from_one_inbox() {
     commit_planned_tree_restructure(&org.conn, &planned).expect("commit");
     let update = package_for(&planned.packages, "M.S.1");
 
-    match import_any(&conn, &update.bytes, &org.secrets["M.S.1"].to_bytes()).expect("import") {
+    let Ok(imported) = import_any(&conn, &update.bytes, &org.secrets["M.S.1"].to_bytes()) else {
+        panic!("import_any should apply the restructure addressed to M.S.1")
+    };
+    match imported {
         ImportedEnvelope::Update(AppliedUpdate::TreeRestructure { generation, .. }) => {
             assert_eq!(generation, 2)
         }
-        other => panic!("expected a tree restructure, got {other:?}"),
+        _ => panic!("expected import_any to report a tree restructure"),
     }
 
     // A private-bridge invite addressed to the same store still lands as a
@@ -854,9 +857,12 @@ fn import_any_routes_bridge_and_update_envelopes_from_one_inbox() {
         .find(|p| p.label == "M.S.1")
         .expect("invite");
 
-    match import_any(&conn, &invite.bytes, &org.secrets["M.S.1"].to_bytes()).expect("import") {
+    let Ok(imported) = import_any(&conn, &invite.bytes, &org.secrets["M.S.1"].to_bytes()) else {
+        panic!("import_any should import the bridge invite addressed to M.S.1")
+    };
+    match imported {
         ImportedEnvelope::Bridge(summary) => assert_eq!(summary.uid, created.uid),
-        other => panic!("expected a bridge import, got {other:?}"),
+        _ => panic!("expected import_any to report a bridge import"),
     }
 }
 

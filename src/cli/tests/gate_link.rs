@@ -25,7 +25,10 @@ fn gated_with(policy: &str) -> MemoryEnv {
         let (result, out) = env.device(&format!(
             "keyquorum-device public /usb/{dir} --label {label}"
         ));
-        assert!(result.is_ok(), "{out}");
+        assert!(
+            result.is_ok(),
+            "keyquorum-device public /usb/{dir} --label {label} should print the slot's keys"
+        );
         let key = out
             .lines()
             .find_map(|line| line.trim().strip_prefix("encryption "))
@@ -33,18 +36,24 @@ fn gated_with(policy: &str) -> MemoryEnv {
         env.fs
             .write(Path::new(&format!("/keys/{dir}.pub")), key.as_bytes())
             .unwrap();
-        let (result, out) = env.keyquorum(&format!(
+        let (result, _) = env.keyquorum(&format!(
             "keyquorum {DB} device register /usb/{dir} --slot {label} --type encryption"
         ));
-        assert!(result.is_ok(), "{out}");
+        assert!(
+            result.is_ok(),
+            "keyquorum device register /usb/{dir} --slot {label} --type encryption should succeed"
+        );
     }
     env.fs.write(Path::new("/work/secret.txt"), SECRET).unwrap();
-    let (result, out) = env.keyquorum(&format!(
+    let (result, _) = env.keyquorum(&format!(
         "keyquorum {DB} access quorum --state 0 --source /work/secret.txt \
          --encrypted-path /work/secret.kqenc --name secret.txt --root Q --threshold 2 \
          --leaf Q.A=/keys/qa.pub --leaf Q.B=/keys/qb.pub {policy}"
     ));
-    assert!(result.is_ok(), "{out}");
+    assert!(
+        result.is_ok(),
+        "keyquorum access quorum --state 0 should lock secret.txt"
+    );
     track(&mut env, "M.A", "M.A");
     env
 }
@@ -67,7 +76,10 @@ fn linking_records_the_link_and_refuses_unknown_gates_and_repeat_unlinks() {
     let (result, _) = run(&mut env, &format!("link {KQTF} --quorum-file 99"));
     assert!(result.is_err());
     let out = ok(&mut env, &format!("link {KQTF} --quorum-file 1"));
-    assert!(out.contains("Linked quorum file 1"), "{out}");
+    assert!(
+        out.contains("Linked quorum file 1"),
+        "keyquorum file link --quorum-file 1 should report the link"
+    );
     assert!(ok(&mut env, &format!("link {KQTF} --quorum-file 1")).contains("Already linked"));
     assert_eq!(history(&mut env).matches("GateLinked").count(), 1);
     ok(&mut env, &format!("unlink {KQTF} --quorum-file 1"));
@@ -85,8 +97,11 @@ fn quorum_unlocks_are_recorded_with_the_gates_own_answer_and_no_secrets() {
     let (result, _) = unlock(&mut env, "--slot /usb/qa=Q.A");
     assert!(result.is_err());
     assert!(!env.fs.exists(Path::new("/work/out.txt")));
-    let (result, out) = unlock(&mut env, BOTH);
-    assert!(result.is_ok(), "{out}");
+    let (result, _) = unlock(&mut env, BOTH);
+    assert!(
+        result.is_ok(),
+        "keyquorum access quorum --state 1 --id 1 should unlock"
+    );
     assert_eq!(env.fs.read(Path::new("/work/out.txt")).unwrap(), SECRET);
 
     let history = history(&mut env);
@@ -135,8 +150,11 @@ fn an_unlinked_file_is_untouched_and_a_missing_container_never_blocks_the_gate()
     ok(&mut env, &format!("link {KQTF} --quorum-file 1"));
     env.fs.delete(Path::new(KQTF)).ok();
     env.fs.delete(Path::new("/work/out.txt")).ok();
-    let (result, out) = unlock(&mut env, BOTH);
-    assert!(result.is_ok(), "{out}");
+    let (result, _) = unlock(&mut env, BOTH);
+    assert!(
+        result.is_ok(),
+        "keyquorum access quorum --state 1 --id 1 should unlock"
+    );
     assert_eq!(env.fs.read(Path::new("/work/out.txt")).unwrap(), SECRET);
 }
 
@@ -205,11 +223,14 @@ fn a_refusal_by_the_gate_is_recorded_as_a_failure_and_the_gate_still_refuses() {
 fn password_gated() -> MemoryEnv {
     let mut env = org();
     env.fs.write(Path::new("/work/secret.txt"), SECRET).unwrap();
-    let (result, out) = env.keyquorum(&format!(
+    let (result, _) = env.keyquorum(&format!(
         "keyquorum {DB} access password --state 0 --source /work/secret.txt \
          --encrypted-path /work/secret.kqenc"
     ));
-    assert!(result.is_ok(), "{out}");
+    assert!(
+        result.is_ok(),
+        "keyquorum access password --state 0 should lock secret.txt"
+    );
     track(&mut env, "M.A", "M.A");
     env
 }
@@ -224,12 +245,18 @@ fn unlock_password(env: &mut MemoryEnv) -> (crate::error::Result<()>, String) {
 fn password_unlocks_are_recorded_and_the_password_never_is() {
     let mut env = password_gated();
     let out = ok(&mut env, &format!("link {KQTF} --locked-file 1"));
-    assert!(out.contains("Linked password file 1"), "{out}");
+    assert!(
+        out.contains("Linked password file 1"),
+        "keyquorum file link --locked-file 1 should report the link"
+    );
     let (result, _) = run(&mut env, &format!("link {KQTF} --locked-file 9"));
     assert!(result.is_err());
 
-    let (result, out) = unlock_password(&mut env);
-    assert!(result.is_ok(), "{out}");
+    let (result, _) = unlock_password(&mut env);
+    assert!(
+        result.is_ok(),
+        "keyquorum access password --state 1 --id 1 should unlock"
+    );
     assert_eq!(env.fs.read(Path::new("/work/out.txt")).unwrap(), SECRET);
     let text = history(&mut env);
     let line = text
@@ -295,19 +322,25 @@ fn a_reused_gate_id_is_not_mistaken_for_the_file_that_was_linked() {
     env.fs
         .write(Path::new("/work/second.txt"), b"unrelated")
         .unwrap();
-    let (result, out) = env.keyquorum(&format!(
+    let (result, _) = env.keyquorum(&format!(
         "keyquorum {DB} access quorum --state 0 --source /work/second.txt \
          --encrypted-path /work/second.kqenc --name second.txt --root Q --threshold 2 \
          --leaf Q.A=/keys/qa.pub --leaf Q.B=/keys/qb.pub"
     ));
-    assert!(result.is_ok(), "{out}");
+    assert!(
+        result.is_ok(),
+        "keyquorum access quorum --state 0 should lock second.txt"
+    );
     let id: i64 = env
         .store("/home/org/keyquorum.sqlite")
         .query_row("SELECT id FROM files", [], |r| r.get(0))
         .unwrap();
     assert_eq!(id, 1, "the id was reused");
-    let (result, out) = unlock(&mut env, BOTH);
-    assert!(result.is_ok(), "{out}");
+    let (result, _) = unlock(&mut env, BOTH);
+    assert!(
+        result.is_ok(),
+        "keyquorum access quorum --state 1 --id 1 should unlock"
+    );
     assert_eq!(
         history(&mut env),
         before,
@@ -332,8 +365,11 @@ fn a_different_tracked_file_at_the_linked_path_is_never_written_to() {
     );
     let other = env.fs.read(Path::new("/work/other.kqtf")).unwrap();
     env.fs.write(Path::new(KQTF), &other).unwrap();
-    let (result, out) = unlock(&mut env, BOTH);
-    assert!(result.is_ok(), "{out}");
+    let (result, _) = unlock(&mut env, BOTH);
+    assert!(
+        result.is_ok(),
+        "keyquorum access quorum --state 1 --id 1 should unlock"
+    );
     assert!(!history(&mut env).contains("QuorumUnlockAttempted"));
 }
 
@@ -344,7 +380,10 @@ fn linking_a_copy_moves_the_recording_to_it() {
     let bytes = env.fs.read(Path::new(KQTF)).unwrap();
     env.fs.write(Path::new("/work/copy.kqtf"), &bytes).unwrap();
     let out = ok(&mut env, "link /work/copy.kqtf --quorum-file 1");
-    assert!(out.contains("now recording to /work/copy.kqtf"), "{out}");
+    assert!(
+        out.contains("now recording to /work/copy.kqtf"),
+        "keyquorum file link should report the copy it now records to"
+    );
     let (result, _) = unlock(&mut env, BOTH);
     assert!(result.is_ok());
     assert!(ok(&mut env, "history /work/copy.kqtf").contains("QuorumUnlockAttempted"));
@@ -368,18 +407,24 @@ fn a_reused_password_file_id_is_not_mistaken_for_the_file_that_was_linked() {
     env.fs
         .write(Path::new("/work/second.txt"), b"unrelated")
         .unwrap();
-    let (result, out) = env.keyquorum(&format!(
+    let (result, _) = env.keyquorum(&format!(
         "keyquorum {DB} access password --state 0 --source /work/second.txt \
          --encrypted-path /work/second.kqenc"
     ));
-    assert!(result.is_ok(), "{out}");
+    assert!(
+        result.is_ok(),
+        "keyquorum access password --state 0 should lock second.txt"
+    );
     let id: i64 = env
         .store("/home/org/keyquorum.sqlite")
         .query_row("SELECT id FROM password_locked_files", [], |r| r.get(0))
         .unwrap();
     assert_eq!(id, 1, "the id was reused");
-    let (result, out) = unlock_password(&mut env);
-    assert!(result.is_ok(), "{out}");
+    let (result, _) = unlock_password(&mut env);
+    assert!(
+        result.is_ok(),
+        "keyquorum access password --state 1 --id 1 should unlock"
+    );
     assert_eq!(
         history(&mut env),
         before,
@@ -387,7 +432,10 @@ fn a_reused_password_file_id_is_not_mistaken_for_the_file_that_was_linked() {
     );
     // Linking the tracked file to the new file is a fresh link, not "Already linked".
     let out = ok(&mut env, &format!("link {KQTF} --locked-file 1"));
-    assert!(out.contains("Linked password file 1"), "{out}");
+    assert!(
+        out.contains("Linked password file 1"),
+        "keyquorum file link --locked-file 1 should report the link"
+    );
 }
 
 // ---- shares ----------------------------------------------------------------
@@ -409,13 +457,16 @@ fn share_create_redeem_and_revoke_are_recorded_without_the_token() {
     ok(&mut env, &format!("link {KQTF} --locked-file 1"));
 
     let (result, out) = share_line(&mut env, "create-file 1 --max-uses 1");
-    assert!(result.is_ok(), "{out}");
+    assert!(
+        result.is_ok(),
+        "keyquorum share create-file 1 --max-uses 1 should succeed"
+    );
     let token = token_of(&out);
-    env.prompts.push_back(token.clone());
-    let (result, out) = share_line(&mut env, "redeem-file");
-    assert!(result.is_ok(), "{out}");
+    env.answer_prompt(token.clone());
+    let (result, _) = share_line(&mut env, "redeem-file");
+    assert!(result.is_ok(), "keyquorum share redeem-file should succeed");
     // The single use is spent, so a second redemption is refused and noted.
-    env.prompts.push_back(token.clone());
+    env.answer_prompt(token.clone());
     let (result, _) = share_line(&mut env, "redeem-file");
     assert!(result.is_err());
     let (result, _) = share_line(&mut env, "revoke-file 1");
@@ -449,24 +500,29 @@ fn a_pin_check_at_the_password_gate_records_only_its_outcome() {
     let mut env = org();
     env.fs.write(Path::new("/work/secret.txt"), SECRET).unwrap();
     // The lock password is asked first, then the PIN to set.
-    env.prompts
-        .push_back(super::memory_env::PASSPHRASE.to_string());
-    env.prompts.push_back("4321".to_string());
-    let (result, out) = env.keyquorum(&format!(
+    env.answer_prompt(super::memory_env::PASSPHRASE);
+    env.answer_prompt("4321");
+    let (result, _) = env.keyquorum(&format!(
         "keyquorum {DB} access password --state 0 --source /work/secret.txt \
          --encrypted-path /work/secret.kqenc --pin"
     ));
-    assert!(result.is_ok(), "{out}");
+    assert!(
+        result.is_ok(),
+        "keyquorum access password --state 0 --pin should lock secret.txt"
+    );
     track(&mut env, "M.A", "M.A");
     ok(&mut env, &format!("link {KQTF} --locked-file 1"));
 
     // A wrong PIN, then the right one.
-    env.prompts.push_back("0000".to_string());
+    env.answer_prompt("0000");
     let (result, _) = unlock_password(&mut env);
     assert!(result.is_err());
-    env.prompts.push_back("4321".to_string());
-    let (result, out) = unlock_password(&mut env);
-    assert!(result.is_ok(), "{out}");
+    env.answer_prompt("4321");
+    let (result, _) = unlock_password(&mut env);
+    assert!(
+        result.is_ok(),
+        "keyquorum access password --state 1 --id 1 should unlock"
+    );
 
     let text = history(&mut env);
     let attempts: Vec<&str> = text
@@ -483,25 +539,27 @@ fn a_pin_check_at_the_password_gate_records_only_its_outcome() {
 fn a_locked_pin_is_recorded_as_locked_and_never_as_the_pin() {
     let mut env = org();
     env.fs.write(Path::new("/work/secret.txt"), SECRET).unwrap();
-    env.prompts
-        .push_back(super::memory_env::PASSPHRASE.to_string());
-    env.prompts.push_back("4321".to_string());
-    let (result, out) = env.keyquorum(&format!(
+    env.answer_prompt(super::memory_env::PASSPHRASE);
+    env.answer_prompt("4321");
+    let (result, _) = env.keyquorum(&format!(
         "keyquorum {DB} access password --state 0 --source /work/secret.txt \
          --encrypted-path /work/secret.kqenc --pin"
     ));
-    assert!(result.is_ok(), "{out}");
+    assert!(
+        result.is_ok(),
+        "keyquorum access password --state 0 --pin should lock secret.txt"
+    );
     track(&mut env, "M.A", "M.A");
     ok(&mut env, &format!("link {KQTF} --locked-file 1"));
 
     // Eight wrong PINs lock it (the verifier's own limit); the right PIN
     // afterwards is refused as locked, and history says only that.
     for _ in 0..8 {
-        env.prompts.push_back("9087".to_string());
+        env.answer_prompt("9087");
         let (result, _) = unlock_password(&mut env);
         assert!(result.is_err());
     }
-    env.prompts.push_back("4321".to_string());
+    env.answer_prompt("4321");
     let (result, _) = unlock_password(&mut env);
     assert!(result.is_err());
 
@@ -538,8 +596,11 @@ fn a_locked_pin_is_recorded_as_locked_and_never_as_the_pin() {
 fn an_unlock_with_no_pin_records_no_pin_detail() {
     let mut env = password_gated();
     ok(&mut env, &format!("link {KQTF} --locked-file 1"));
-    let (result, out) = unlock_password(&mut env);
-    assert!(result.is_ok(), "{out}");
+    let (result, _) = unlock_password(&mut env);
+    assert!(
+        result.is_ok(),
+        "keyquorum access password --state 1 --id 1 should unlock"
+    );
     let text = history(&mut env);
     assert!(!text.contains("pin="), "{text}");
 }
@@ -547,12 +608,15 @@ fn an_unlock_with_no_pin_records_no_pin_detail() {
 #[test]
 fn an_unknown_share_token_and_an_unlinked_file_record_nothing() {
     let mut env = password_gated();
-    let (result, out) = share_line(&mut env, "create-file 1");
-    assert!(result.is_ok(), "{out}");
+    let (result, _) = share_line(&mut env, "create-file 1");
+    assert!(
+        result.is_ok(),
+        "keyquorum share create-file 1 should succeed"
+    );
     assert!(!history(&mut env).contains("ShareLink"));
 
     ok(&mut env, &format!("link {KQTF} --locked-file 1"));
-    env.prompts.push_back("00".repeat(32));
+    env.answer_prompt("00".repeat(32));
     let (result, _) = share_line(&mut env, "redeem-file");
     assert!(result.is_err());
     assert!(!history(&mut env).contains("ShareLink"));
@@ -563,7 +627,10 @@ fn redeeming_a_share_of_an_expired_file_leaves_the_tombstone() {
     let mut env = password_gated();
     ok(&mut env, &format!("link {KQTF} --locked-file 1"));
     let (result, out) = share_line(&mut env, "create-file 1 --max-uses 3");
-    assert!(result.is_ok(), "{out}");
+    assert!(
+        result.is_ok(),
+        "keyquorum share create-file 1 --max-uses 3 should succeed"
+    );
     let token = token_of(&out);
     env.store("/home/org/keyquorum.sqlite")
         .execute(
@@ -571,7 +638,7 @@ fn redeeming_a_share_of_an_expired_file_leaves_the_tombstone() {
             [],
         )
         .unwrap();
-    env.prompts.push_back(token);
+    env.answer_prompt(token);
     let (result, _) = share_line(&mut env, "redeem-file");
     assert!(matches!(result, Err(crate::error::Error::FileExpired)));
     let text = history(&mut env);
@@ -586,10 +653,13 @@ fn a_parent_approved_unlock_is_recorded_with_the_approval_policy_and_count() {
     env.device("keyquorum-device init /usb/q").0.unwrap();
     let (result, _) = env.device("keyquorum-device provision /usb/q --label Q");
     assert!(result.is_ok(), "the command failed");
-    let (result, out) = env.keyquorum(&format!(
+    let (result, _) = env.keyquorum(&format!(
         "keyquorum {DB} device register /usb/q --slot Q --type signing"
     ));
-    assert!(result.is_ok(), "{out}");
+    assert!(
+        result.is_ok(),
+        "keyquorum device register /usb/q --slot Q --type signing should succeed"
+    );
     ok(&mut env, &format!("link {KQTF} --quorum-file 1"));
 
     // Without the parent's signature the gate refuses, and history says why.
@@ -598,8 +668,11 @@ fn a_parent_approved_unlock_is_recorded_with_the_approval_policy_and_count() {
     assert!(!env.fs.exists(Path::new("/work/out.txt")));
 
     let approved = format!("{BOTH} --approve Q.A=/usb/q>Q --approve Q.B=/usb/q>Q");
-    let (result, out) = unlock(&mut env, &approved);
-    assert!(result.is_ok(), "{out}");
+    let (result, _) = unlock(&mut env, &approved);
+    assert!(
+        result.is_ok(),
+        "keyquorum access quorum --state 1 --id 1 should unlock"
+    );
     assert_eq!(env.fs.read(Path::new("/work/out.txt")).unwrap(), SECRET);
 
     let history = history(&mut env);

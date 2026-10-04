@@ -49,7 +49,13 @@ fn reusing_an_encrypted_path_fails_without_touching_the_original() {
 
     let other_source_path = dir.path().join("other.txt");
     fs::write(&other_source_path, b"a different secret").unwrap();
-    let second = lock_file(&conn, &other_source_path, &encrypted_path, "different-pw");
+    let other_password = other_passphrase(&password);
+    let second = lock_file(
+        &conn,
+        &other_source_path,
+        &encrypted_path,
+        other_password.as_str(),
+    );
     assert!(second.is_err());
 
     let id: i64 = conn

@@ -584,6 +584,17 @@ Each seeded person has `use` and `device bind` run for their own slot (re-run fo
   test's assertion message never formats a command's `Result`, error or
   output: name the command line instead. Both keep CodeQL
   (`rust/hard-coded-cryptographic-value`, `rust/cleartext-logging`) clean.
+- CodeQL's generated model of `std` counts `VecDeque::push_back`,
+  `push_front`, `insert`, `append` and `remove`, and `Vec::insert`, `remove`
+  and `swap_remove`, as log writes (`log-injection` sinks on the receiver),
+  and its name heuristics make any binding, field or called function named
+  `*secret*`, `*cert*`, `*password*` or `*api_key*` a source, as is every
+  value reached from one (so everything `provider::verify_certificate`
+  returns). A queue of prompted answers (`LabVm::staged_answers`,
+  `MemoryEnv::answer_prompt`) is therefore a `Vec<Zeroizing<String>>` popped
+  from the end, and the host reports the checked certificate's public id,
+  serial and expiry through `tracing::info!` like its other operating lines,
+  never `eprintln!`; keep both that way rather than suppressing the query.
 
 ## Security
 

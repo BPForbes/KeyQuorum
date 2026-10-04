@@ -13,6 +13,7 @@ use rusqlite::Connection;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
 pub const PASSPHRASE: &str = "correct horse";
 
@@ -22,8 +23,10 @@ pub struct MemoryEnv {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     stores: HashMap<PathBuf, Connection>,
-    /// Answers for the next prompts, in order; after that, [`PASSPHRASE`].
-    pub prompts: std::collections::VecDeque<String>,
+    /// Answers for the next prompts, each zeroized once consumed; after
+    /// that, [`PASSPHRASE`]. Tests queue one with [`MemoryEnv::answer_prompt`];
+    /// the next answer sits last, so a prompt pops it.
+    prompts: Vec<Zeroizing<String>>,
     /// The clock (`yyyy-mm-dd hh:mm`); a fixed default when unset.
     pub now: Option<String>,
     /// Milliseconds the precise clock adds after the seconds (`"482"`);
@@ -69,10 +72,10 @@ impl Env for MemoryEnv {
     }
 
     fn prompt_secret(&mut self, _prompt: &str) -> Result<String> {
-        Ok(self
-            .prompts
-            .pop_front()
-            .unwrap_or_else(|| PASSPHRASE.to_string()))
+        Ok(match self.prompts.pop() {
+            Some(mut answer) => std::mem::take(&mut *answer),
+            None => PASSPHRASE.to_string(),
+        })
     }
 
     fn var(&self, name: &str) -> Option<String> {
@@ -142,6 +145,16 @@ impl Env for MemoryEnv {
 }
 
 impl MemoryEnv {
+    /// Answer the next secret prompt with `answer` instead of [`PASSPHRASE`].
+    /// The answer is held zeroized until the prompt consumes it.
+    pub fn answer_prompt(&mut self, answer: impl Into<String>) {
+        // Answers already queued are asked first, so the new one goes in
+        // front of them, at the start of the popped-from-the-end list.
+        let mut prompts = vec![Zeroizing::new(answer.into())];
+        prompts.extend(std::mem::take(&mut self.prompts));
+        self.prompts = prompts;
+    }
+
     /// An environment whose relay is [`RELAY_URL`], answered in process.
     pub fn with_relay() -> Self {
         let mut env = MemoryEnv::default();

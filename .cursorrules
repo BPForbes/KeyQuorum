@@ -585,6 +585,17 @@ Each seeded person has `use` and `device bind` run for their own slot (re-run fo
   test's assertion message never formats a command's `Result`, error or
   output: name the command line instead. Both keep CodeQL
   (`rust/hard-coded-cryptographic-value`, `rust/cleartext-logging`) clean.
+- CodeQL's generated model of `std` counts `VecDeque::push_back`,
+  `push_front`, `insert`, `append` and `remove`, and `Vec::insert`, `remove`
+  and `swap_remove`, as log writes (`log-injection` sinks on the receiver),
+  and its name heuristics make any binding, field or called function named
+  `*secret*`, `*cert*`, `*password*` or `*api_key*` a source, as is every
+  value reached from one (so everything `provider::verify_certificate`
+  returns). A queue of prompted answers (`LabVm::staged_answers`,
+  `MemoryEnv::answer_prompt`) is therefore a `Vec<Zeroizing<String>>` popped
+  from the end, and the host reports the checked certificate's public id,
+  serial and expiry through `tracing::info!` like its other operating lines,
+  never `eprintln!`; keep both that way rather than suppressing the query.
 
 - Legacy checks: tests of deprecated verbs (`deliver`, `file receive|ack`, `relay pull` spellings) sit behind the `legacy-tests` feature and the `legacy` workflow (`.github/workflows/legacy.yml`), whose single job is skipped by default and run on the `legacy` PR label or a manual dispatch. `--all-features` includes them; the everyday CI gate is `--features provider,lab,tui`. Both run the same parallel test groups (`.github/workflows/tests.yml`: lab, cli, file_history, relay+provider+db, and everything else), so a new module needs no workflow edit.
 - Security checks: `.github/workflows/security.yml` runs `cargo audit`, `cargo deny --locked check` (policy in `deny.toml`), `gitleaks` over the full history (allowlist in `.gitleaks.toml`, which passes only the published Lab demo passphrases and lockfile checksums), `npm audit` for `lab/` and CodeQL (security-and-quality suite from `.github/codeql/codeql-config.yml`, for Rust, the Lab's TypeScript and the workflows; `.github/scripts/codeql_report.py` prints each finding as source, source quote, quoted lines, SOC 2 criterion and fix, and the `codeql gate` check fails on a high or critical finding in shipped code), on every PR, on `main` and weekly; `.github/workflows/sbom.yml` keeps CycloneDX SBOMs as artifacts. A new dependency must satisfy `deny.toml` (add a licence only after checking it). Dependabot covers Actions, Cargo and npm, but only Actions updates auto-merge; cargo and npm updates (which include the cryptographic crates) wait for a person. Vulnerabilities are reported privately as `SECURITY.md` describes.

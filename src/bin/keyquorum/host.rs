@@ -605,23 +605,29 @@ fn load_serve_identity(
     let now = provider::system_now_utc()?;
     let revoked =
         provider::load_revocation_list(&KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY, krl_path.as_deref())?;
-    let cert = provider::self_check(
+    let checked = provider::self_check(
         &KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY,
         &certificate,
         &relay_private_key,
         &now,
         &revoked,
     )?;
-    eprintln!(
+    // Only the public naming fields are logged, through the host's own log
+    // like its other operating lines: the same provider id, serial and expiry
+    // every client reads from `POST /provider-identity`. The certificate
+    // bytes and the relay key never are.
+    tracing::info!(
         "provider identity {} serial {} expires {}",
-        cert.provider_id, cert.serial, cert.expires_at
+        checked.provider_id,
+        checked.serial,
+        checked.expires_at
     );
     Ok((
         ProviderIdentity {
             certificate,
             relay_private_key,
         },
-        cert.provider_id,
+        checked.provider_id,
     ))
 }
 
