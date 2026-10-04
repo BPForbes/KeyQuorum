@@ -869,6 +869,33 @@ repeat that identity check and re-check the hash before using the key.
 An optional signed revocation list can be pointed at with
 `KEYQUORUM_PROVIDER_KRL`.
 
+#### Keys that arrive sealed
+
+A provider can hand you a key without ever showing it. The bearer is sealed
+to your encryption key and signed by the relay, together with the relay URL,
+the key's id and scope, an optional expiry, the device it is bound to if
+any, the relay's certificate and a licence statement, and written as a
+`customer.kqkey` bundle (a `KQXB` export bundle). Load it with the slot it
+was sealed to: `loadkey` verifies the certificate against the KeyQuorum
+root, the relay's signature, the relay URL and the device, then runs the
+same identity challenge as for a typed key. The relay that answers it must
+be the one whose key signed the bundle; if it is not, nothing is sent.
+Only then does `POST /keycheck` run, and the key is stored.
+
+```sh
+keyquorum loadkey --bundle customer.kqkey        # the slot from `keyquorum use`
+keyquorum loadkey --bundle customer.kqkey --slot /usb/alice=alice --url https://relay.example.com
+```
+
+A key issued that way is rotated the same way: the replacement arrives in
+your inbox as a sealed letter (`inbox` lists it as `relay API key`) and
+`inbox open` loads it in place of the old one, which stays usable long
+enough to collect it. A letter can only be collected with an `inbox.pull` key,
+so it is used for an `inbox.pull` key, or for another key when you also hold a
+live `inbox.pull` key; for any other key your provider hands you a new
+`.kqkey` bundle instead, and the old key then ends at once. Neither flow
+prints the bearer, and the provider's own operator lock never travels.
+
 `relay push` also uploads every public tree in `--db` and **merges** it
 into the mailbox (unrelated nodes stay put). `relay pull` merges the
 returned slices into `--db` (then `--import` opens envelopes).

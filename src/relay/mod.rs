@@ -12,6 +12,7 @@ pub mod audit;
 mod client;
 mod device_directory;
 mod device_mail;
+pub mod key_delivery;
 mod mailbox;
 mod org_tree;
 #[cfg(feature = "provider")]
@@ -26,6 +27,7 @@ pub use api_key::{
     record_provider_auth_event, revoke as revoke_api_key, rotate as rotate_api_key, ApiKeyEvent,
     ApiKeyInfo, ApiKeyScope, AuthedKey, CreatedApiKey, CreatedLicensee, KeyCheck, NewApiKey,
 };
+pub use api_key::{info as api_key_info, rotate_with as rotate_api_key_with, OldKey};
 #[cfg(not(target_arch = "wasm32"))]
 pub use client::UreqTransport;
 pub use client::{

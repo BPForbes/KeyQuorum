@@ -5,6 +5,7 @@ compile_error!(
     "provider and lab builds are mutually exclusive: the lab WASM must not carry mailbox-host code"
 );
 
+pub mod api_key_delivery;
 pub mod authority;
 pub mod bridge_command;
 pub mod cli;

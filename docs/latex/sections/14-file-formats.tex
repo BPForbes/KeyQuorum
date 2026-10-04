@@ -1,4 +1,5 @@
 \section{File formats quick reference}
+\label{sec:file-formats}
 
 Every on-disk and on-wire artifact this manual mentions has its own magic
 bytes, so a store can tell at a glance what it is holding without trusting
@@ -11,9 +12,12 @@ a file extension.
 \midrule
 \code{KQPB} & \file{.kqpb} & Sealed \code{PACKAGE} envelope: private-bridge
   letters, authenticated updates, device transfer/relocate letters, file
-  delivery letters and acks, tracked-file letters and acks. \\
+  delivery letters and acks, tracked-file letters and acks, and a rotated
+  relay API key (kind 20, signed by the relay). \\
 \code{KQXB} & \file{.kqxb} & Sealed \code{EXPORT_BUNDLE}: a portable
-  credential, locked-file or tracked-file export. \\
+  credential, locked-file or tracked-file export, or a relay-issued API key
+  (bundle type 4, written as \file{.kqkey}): the same relay-signed payload a
+  rotated key carries, handed over as a file for a first key. \\
 \code{KQBS} & \file{.kqbs} & Signature artifact from \code{sign} against a
   private bridge roster. \\
 \code{KQDV} & \file{device.kq} & Signed device descriptor, verified against

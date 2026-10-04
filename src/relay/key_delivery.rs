@@ -1,0 +1,276 @@
+//! Issuing a customer API key sealed to its customer, on the host.
+//!
+//! `host keys create --recipient-key` and `host keys rotate` call in here
+//! instead of printing a bearer. The key is minted and the sealed issue
+//! produced in one immediate transaction: for a first key a `.kqkey`
+//! bundle is handed to `write` while the transaction is open, so a write
+//! that fails leaves no key behind, and a commit that fails tells the
+//! caller to remove the file it wrote; for a rotation the letter is stored
+//! in this relay's own mailbox in the same transaction, addressed to the
+//! recipient's fingerprint like any pushed letter, so the key change and
+//! its delivery commit together or not at all.
+//!
+//! The key a mailbox letter replaces is not revoked at once: it keeps
+//! working for a grace period ([`DEFAULT_GRACE_SECONDS`], `--grace-seconds`)
+//! so its holder can still pull the letter, then expires; the letter
+//! expires with it, and `keys revoke` ends both sooner. A bundle replaces
+//! the old key at once, as `rotate` always did.
+//!
+//! A letter is only worth sending if the customer can collect it. Only an
+//! `inbox.pull` key bound to the recipient reads that mailbox, so
+//! [`rotate_as_letter`] refuses a key of any other scope unless such a key
+//! is live for the same recipient ([`Error::DeliveryNotCollectable`]), before
+//! it changes anything; the way out for the rest is [`rotate_as_bundle`].
+//!
+//! A bundle is a file, and a file is outside the database transaction:
+//! the write happens while it is open and a failure the process survives
+//! removes it, but a crash between the write and the commit can leave a
+//! bundle for a key that was never created. That bundle opens nothing (the
+//! relay never stored the key), and since files are never overwritten the
+//! operator removes it before retrying. The mailbox letter has no such gap:
+//! it commits with the key.
+//!
+//! Whom a key was sealed to is kept in `api_key_deliveries`, so a rotation
+//! needs no `--recipient-key` again. That table never holds a bearer, a
+//! hash of one, or the sealed bytes: a bundle is named by its SHA-256 and a
+//! letter by its mailbox id.
+
+use super::api_key::{self, ApiKeyInfo, ApiKeyScope, CreatedApiKey, NewApiKey, OldKey};
+use super::{mailbox, ProviderIdentity};
+use crate::api_key_delivery::{self, KeyIssue, DEVICE_ID_LEN};
+use crate::db::relay_credential::normalize_url;
+use crate::error::{Error, Result};
+use crate::keys;
+use rusqlite::{params, Connection, OptionalExtension};
+use sha2::{Digest, Sha256};
+
+/// How long the key a letter replaces stays usable to collect the letter.
+pub const DEFAULT_GRACE_SECONDS: i64 = 86_400;
+
+/// Whom a key is sealed to, and what its issue says about this relay.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Recipient {
+    /// The customer's X25519 encryption public key.
+    pub public_key: [u8; 32],
+    /// The URL the customer loads the key for.
+    pub relay_url: String,
+    /// The container the key may be loaded from, if bound to one.
+    pub device_id: Option<[u8; DEVICE_ID_LEN]>,
+    /// A licence statement to carry inside the sealed issue.
+    pub licence: Option<String>,
+}
+
+/// How a sealed issue left the host.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Via {
+    /// A `.kqkey` file, named by its digest.
+    Bundle { sha256: String },
+    /// A mailbox letter, by its id; usable until `until` (UTC), when the key
+    /// it replaces expires.
+    Letter { id: i64, until: Option<String> },
+}
+
+/// What an issue left behind on the host. Never the bearer.
+#[derive(Clone, Debug)]
+pub struct Delivered {
+    pub info: ApiKeyInfo,
+    pub recipient_fingerprint: String,
+    pub via: Via,
+}
+
+/// The recipient recorded for key `id`, if it was ever sealed to one.
+pub fn recipient_for(conn: &Connection, id: i64) -> Result<Option<Recipient>> {
+    conn.query_row(
+        "SELECT recipient_public_key, relay_url, device_id, licence
+         FROM api_key_deliveries WHERE api_key_id = ?1",
+        params![id],
+        |row| {
+            let public_key: Vec<u8> = row.get(0)?;
+            let device_id: Option<Vec<u8>> = row.get(2)?;
+            Ok((public_key, row.get::<_, String>(1)?, device_id, row.get(3)?))
+        },
+    )
+    .optional()?
+    .map(|(public_key, relay_url, device_id, licence)| {
+        Ok(Recipient {
+            public_key: public_key.try_into().map_err(|_| Error::InvalidPublicKey)?,
+            relay_url,
+            device_id: device_id
+                .map(|id| id.try_into().map_err(|_| Error::InvalidDevice))
+                .transpose()?,
+            licence,
+        })
+    })
+    .transpose()
+}
+
+/// Mint a new key and hand it to `write` as a sealed `.kqkey` bundle, in
+/// one transaction. `new.recipient_fingerprint` may be left out for a
+/// scope that binds one: it is the recipient key's fingerprint; given, it
+/// must match. On an error the key does not exist; if `write` had already
+/// succeeded the caller removes what it wrote.
+pub fn create_as_bundle(
+    conn: &Connection,
+    identity: &ProviderIdentity,
+    new: &NewApiKey,
+    recipient: &Recipient,
+    write: impl FnOnce(&[u8]) -> Result<()>,
+) -> Result<Delivered> {
+    let fingerprint = keys::fingerprint(&recipient.public_key);
+    let mut new = new.clone();
+    if new.scope.binds_recipient() {
+        match &new.recipient_fingerprint {
+            None => new.recipient_fingerprint = Some(fingerprint.clone()),
+            Some(given) if given.eq_ignore_ascii_case(&fingerprint) => {}
+            Some(_) => return Err(Error::InvalidApiKeyRequest),
+        }
+    }
+    crate::db::with_immediate_transaction(conn, || {
+        let created = api_key::create(conn, &new)?;
+        deliver_bundle(conn, identity, created, recipient, write)
+    })
+}
+
+/// Rotate key `id` and store the replacement in this relay's mailbox as a
+/// sealed letter for the recipient recorded for `id` (or `recipient`), in
+/// one transaction. The old key stays usable for `grace_seconds` to collect
+/// it, and the letter expires with it.
+pub fn rotate_as_letter(
+    conn: &Connection,
+    identity: &ProviderIdentity,
+    id: i64,
+    recipient: Option<Recipient>,
+    grace_seconds: i64,
+) -> Result<Delivered> {
+    crate::db::with_immediate_transaction(conn, || {
+        let recipient = resolve_recipient(conn, id, recipient)?;
+        let collectable = api_key::info(conn, id)?.scope == ApiKeyScope::InboxPull.as_str()
+            || api_key::has_live_pull_key(conn, &keys::fingerprint(&recipient.public_key))?;
+        if !collectable {
+            return Err(Error::DeliveryNotCollectable);
+        }
+        let created = api_key::rotate_with(conn, id, OldKey::ExpireAfter(grace_seconds))?;
+        let until: Option<String> = conn.query_row(
+            "SELECT expires_at FROM api_keys WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        let issue = issue_for(conn, identity, &created, &recipient)?;
+        let letter = api_key_delivery::seal_letter(identity, &recipient.public_key, &issue)?;
+        let (letter_id, fingerprint, _) = mailbox::store_until(conn, &letter, until.as_deref())?;
+        let via = Via::Letter {
+            id: letter_id,
+            until,
+        };
+        record(conn, created.info.id, &recipient, &via)?;
+        Ok(Delivered {
+            info: created.info,
+            recipient_fingerprint: fingerprint,
+            via,
+        })
+    })
+}
+
+/// Rotate key `id`, revoking it at once, and hand the replacement to
+/// `write` as a sealed `.kqkey` bundle, in one transaction.
+pub fn rotate_as_bundle(
+    conn: &Connection,
+    identity: &ProviderIdentity,
+    id: i64,
+    recipient: Option<Recipient>,
+    write: impl FnOnce(&[u8]) -> Result<()>,
+) -> Result<Delivered> {
+    crate::db::with_immediate_transaction(conn, || {
+        let recipient = resolve_recipient(conn, id, recipient)?;
+        let created = api_key::rotate_with(conn, id, OldKey::RevokeNow)?;
+        deliver_bundle(conn, identity, created, &recipient, write)
+    })
+}
+
+/// The recipient given now, else the one recorded for `id`. A key bound to
+/// a fingerprint is sealed only to the key with that fingerprint.
+fn resolve_recipient(conn: &Connection, id: i64, given: Option<Recipient>) -> Result<Recipient> {
+    let recipient = match given {
+        Some(recipient) => recipient,
+        None => recipient_for(conn, id)?.ok_or(Error::DeliveryRecipientMissing)?,
+    };
+    let info = api_key::info(conn, id)?;
+    if let Some(bound) = &info.recipient_fingerprint {
+        if !bound.eq_ignore_ascii_case(&keys::fingerprint(&recipient.public_key)) {
+            return Err(Error::InvalidApiKeyRequest);
+        }
+    }
+    Ok(recipient)
+}
+
+fn deliver_bundle(
+    conn: &Connection,
+    identity: &ProviderIdentity,
+    created: CreatedApiKey,
+    recipient: &Recipient,
+    write: impl FnOnce(&[u8]) -> Result<()>,
+) -> Result<Delivered> {
+    let issue = issue_for(conn, identity, &created, recipient)?;
+    let bundle = api_key_delivery::seal_bundle(identity, &recipient.public_key, &issue)?;
+    write(&bundle)?;
+    let via = Via::Bundle {
+        sha256: hex::encode(Sha256::digest(&bundle)),
+    };
+    record(conn, created.info.id, recipient, &via)?;
+    Ok(Delivered {
+        info: created.info,
+        recipient_fingerprint: keys::fingerprint(&recipient.public_key),
+        via,
+    })
+}
+
+fn issue_for(
+    conn: &Connection,
+    identity: &ProviderIdentity,
+    created: &CreatedApiKey,
+    recipient: &Recipient,
+) -> Result<KeyIssue> {
+    let issued_at: String =
+        conn.query_row("SELECT strftime('%Y-%m-%d %H:%M:%S', 'now')", [], |row| {
+            row.get(0)
+        })?;
+    Ok(KeyIssue {
+        relay_url: normalize_url(&recipient.relay_url),
+        key_id: created.info.id,
+        scope: created.info.scope.clone(),
+        token: created.token.clone(),
+        issued_at,
+        expires_at: created.info.expires_at.clone(),
+        device_id: recipient.device_id,
+        certificate: identity.certificate.clone(),
+        licence: recipient.licence.clone(),
+    })
+}
+
+fn record(conn: &Connection, key_id: i64, recipient: &Recipient, via: &Via) -> Result<()> {
+    let (kind, letter_id, sha256) = match via {
+        Via::Bundle { sha256 } => ("bundle", None, Some(sha256.as_str())),
+        Via::Letter { id, .. } => ("letter", Some(*id), None),
+    };
+    conn.execute(
+        "INSERT INTO api_key_deliveries
+            (api_key_id, recipient_public_key, relay_url, device_id, licence,
+             via, letter_id, bundle_sha256)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            key_id,
+            &recipient.public_key[..],
+            normalize_url(&recipient.relay_url),
+            recipient.device_id.as_ref().map(|id| &id[..]),
+            recipient.licence,
+            kind,
+            letter_id,
+            sha256,
+        ],
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "key_delivery/tests.rs"]
+mod tests;

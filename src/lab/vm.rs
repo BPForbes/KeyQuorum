@@ -36,10 +36,11 @@ use clap::error::ErrorKind;
 use clap::Parser;
 use rusqlite::{Connection, OpenFlags};
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
+use zeroize::Zeroizing;
 
 /// The organization's shared store: registry, device placements, the org
 /// tree and its bridges, and the quorum-locked files.
@@ -95,11 +96,14 @@ pub struct LabVm {
     vars: HashMap<String, String>,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
-    /// Secrets a GUI action staged for the next command's prompts, consumed
+    /// Answers a GUI action staged for the next command's prompts, consumed
     /// in order (one per `prompt_secret` call) before falling back to the
     /// seeded demo answer. Lets a person type their own passphrase, PIN, or
-    /// password instead of always getting the published demo value.
-    pending_secrets: VecDeque<String>,
+    /// password instead of always getting the published demo value. Each
+    /// answer is zeroized when consumed, cleared or dropped. Held with the
+    /// next answer last, so a prompt pops it; nothing is ever moved out from
+    /// the front.
+    staged_answers: Vec<Zeroizing<String>>,
 }
 
 impl LabVm {
@@ -145,7 +149,7 @@ impl LabVm {
             vars,
             stdout: Vec::new(),
             stderr: Vec::new(),
-            pending_secrets: VecDeque::new(),
+            staged_answers: Vec::new(),
         })
     }
 
@@ -154,14 +158,19 @@ impl LabVm {
     /// prompt should be answered with a person's own choice; the value is
     /// consumed by the first matching prompt.
     pub fn stage_secret(&mut self, value: impl Into<String>) {
-        self.pending_secrets.push_back(value.into());
+        self.stage_secrets([value.into()]);
     }
 
     /// Stage several secrets for a command that prompts more than once
     /// (e.g. a passphrase entered twice, or a password followed by a PIN),
     /// consumed in the order given.
     pub fn stage_secrets(&mut self, values: impl IntoIterator<Item = String>) {
-        self.pending_secrets.extend(values);
+        // The next answer sits last: the new ones go in, reversed, behind
+        // whatever is already staged, which is still answered first.
+        let mut staged: Vec<Zeroizing<String>> = values.into_iter().map(Zeroizing::new).collect();
+        staged.reverse();
+        staged.extend(std::mem::take(&mut self.staged_answers));
+        self.staged_answers = staged;
     }
 
     /// Drop any staged secrets that a command did not consume, so a later,
@@ -169,7 +178,7 @@ impl LabVm {
     /// that stage a secret should call this after running the command,
     /// whether or not it succeeded.
     pub fn clear_pending_secrets(&mut self) {
-        self.pending_secrets.clear();
+        self.staged_answers.clear();
     }
 
     pub fn cwd(&self) -> &Path {
@@ -424,10 +433,10 @@ impl Env for LabVm {
     }
 
     fn prompt_secret(&mut self, prompt: &str) -> Result<String> {
-        let answer = self
-            .pending_secrets
-            .pop_front()
-            .unwrap_or_else(|| Self::answer(prompt));
+        let answer = match self.staged_answers.pop() {
+            Some(mut staged) => std::mem::take(&mut *staged),
+            None => Self::answer(prompt),
+        };
         let shown = if answer.is_empty() { "" } else { "********" };
         let _ = writeln!(self.stderr, "{prompt}{shown}");
         Ok(answer)

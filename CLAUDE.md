@@ -255,6 +255,46 @@ expire `DEVICE_PACKAGE_TTL_DAYS` after they are stored and are never deleted
 on acknowledgement. `src/relay/device_mail.rs` owns the device mailbox;
 `src/relay/device_directory.rs` owns the public descriptor.
 
+`src/api_key_delivery.rs` owns a relay-issued customer API key as it travels
+sealed (issue #86): a `KeyIssue` (relay URL, key id, scope, bearer, issued
+and optional expiry times, optional device id, the relay's `KQPC`
+certificate, an optional licence statement), signed by the relay key over
+`signing::relay_key_issue_preimage` (which also binds the recipient's
+X25519 public key) and sealed either as `PACKAGE` kind `KIND_API_KEY_ISSUE`
+(20) for a rotated key the mailbox carries, or as `EXPORT_BUNDLE` type
+`export::BUNDLE_TYPE_API_KEY` (4), written as `<customer>.kqkey`, for a
+first key handed over as a file. Both carry the same signed payload; `open`
+accepts either only when it was sealed to the key that opened it, the
+certificate chains to the provider root unrevoked and valid now, the
+signature verifies under the key that certificate names, and the issue has
+not expired. `src/relay/key_delivery.rs` is the host side: `create_as_bundle`,
+`rotate_as_bundle` and `rotate_as_letter` mint the key and produce the
+sealed issue in one immediate transaction (a bundle is written while it is
+open and removed if the command survives a failed commit, which is
+compensation, not crash-atomicity: a crash between the write and the commit
+can leave an orphan bundle that opens nothing and that the operator removes
+before retrying; a letter goes into this relay's own mailbox in the same
+transaction), record whom it was sealed to in
+`api_key_deliveries` (never a bearer, only a letter id or bundle SHA-256)
+and, for a letter, leave the old key usable for `--grace-seconds`
+(`DEFAULT_GRACE_SECONDS`, 24 h) so its holder can still pull, then expire it
+(`api_key::rotate_with`, `OldKey`); `keys revoke` ends it sooner.
+`rotate_as_letter` refuses a key the customer cannot collect the letter with
+(`Error::DeliveryNotCollectable`: only an `inbox.pull` key can read that
+mailbox, so any other scope needs a live `inbox.pull` key bound to the
+recipient, `api_key::has_live_pull_key`) before it changes anything; the rest
+rotate by bundle. `host keys
+create --recipient-key --relay-url --out` and `host keys rotate` drive it
+and never print a sealed bearer. On the client, `loadkey --bundle` (with
+`--slot` or `--share-file`) and `inbox open` on kind 20 share
+`cli::install_key_issue`: the issue's relay URL must be the one being loaded
+for, a device-bound issue loads only from that container, and then the full
+provider challenge runs exactly as for a typed key, and the relay that
+answers it must be the one whose signing key signed the issue (else
+`KeyIssueRelayMismatch`, before any bearer is sent); only then does
+`POST /keycheck` run and `relay_credentials` get written. The `kql_…`
+operator lock and the `KQPL` policy never travel this way.
+
 `src/storage.rs` is where container files and quorum ciphertext live:
 `NativeStorage` is plain `std::fs` (new files still go through
 `write_owner_only`), and `device::*_in` / `quorum::lock_bytes_in` /
@@ -584,6 +624,17 @@ Each seeded person has `use` and `device bind` run for their own slot (re-run fo
   test's assertion message never formats a command's `Result`, error or
   output: name the command line instead. Both keep CodeQL
   (`rust/hard-coded-cryptographic-value`, `rust/cleartext-logging`) clean.
+- CodeQL's generated model of `std` counts `VecDeque::push_back`,
+  `push_front`, `insert`, `append` and `remove`, and `Vec::insert`, `remove`
+  and `swap_remove`, as log writes (`log-injection` sinks on the receiver),
+  and its name heuristics make any binding, field or called function named
+  `*secret*`, `*cert*`, `*password*` or `*api_key*` a source, as is every
+  value reached from one (so everything `provider::verify_certificate`
+  returns). A queue of prompted answers (`LabVm::staged_answers`,
+  `MemoryEnv::answer_prompt`) is therefore a `Vec<Zeroizing<String>>` popped
+  from the end, and the host reports the checked certificate's public id,
+  serial and expiry through `tracing::info!` like its other operating lines,
+  never `eprintln!`; keep both that way rather than suppressing the query.
 
 ## Security
 

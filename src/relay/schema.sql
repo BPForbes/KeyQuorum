@@ -131,3 +131,21 @@ CREATE TABLE IF NOT EXISTS audit_anchors (
     certificate BLOB NOT NULL,
     signature   BLOB NOT NULL
 );
+
+-- Whom a customer key was sealed to when the host issued it
+-- (`relay::key_delivery`): the recipient's X25519 public key, the relay URL
+-- the issue names, the device it is bound to if any, the licence statement
+-- it carried, and how it travelled (`bundle`, by the file's SHA-256, or a
+-- mailbox `letter`, by its id). A rotation reuses the row of the key it
+-- replaces. Never a bearer, a hash of one, or the sealed bytes.
+CREATE TABLE IF NOT EXISTS api_key_deliveries (
+    api_key_id            INTEGER PRIMARY KEY REFERENCES api_keys(id),
+    recipient_public_key  BLOB NOT NULL CHECK (length(recipient_public_key) = 32),
+    relay_url             TEXT NOT NULL,
+    device_id             BLOB CHECK (device_id IS NULL OR length(device_id) = 16),
+    licence               TEXT,
+    via                   TEXT NOT NULL CHECK (via IN ('bundle', 'letter')),
+    letter_id             INTEGER,
+    bundle_sha256         TEXT,
+    created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);

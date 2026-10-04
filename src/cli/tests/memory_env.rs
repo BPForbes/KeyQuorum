@@ -13,6 +13,7 @@ use rusqlite::Connection;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
 pub const PASSPHRASE: &str = "correct horse";
 
@@ -22,8 +23,10 @@ pub struct MemoryEnv {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     stores: HashMap<PathBuf, Connection>,
-    /// Answers for the next prompts, in order; after that, [`PASSPHRASE`].
-    pub prompts: std::collections::VecDeque<String>,
+    /// Answers for the next prompts, each zeroized once consumed; after
+    /// that, [`PASSPHRASE`]. Tests queue one with [`MemoryEnv::answer_prompt`];
+    /// the next answer sits last, so a prompt pops it.
+    prompts: Vec<Zeroizing<String>>,
     /// The clock (`yyyy-mm-dd hh:mm`); a fixed default when unset.
     pub now: Option<String>,
     /// Milliseconds the precise clock adds after the seconds (`"482"`);
@@ -41,8 +44,14 @@ pub struct TestRelay {
     pub conn: Connection,
     pub identity: ProviderIdentity,
     root_public: [u8; 32],
+    /// The test root's signing key, kept so a test can certify a second
+    /// relay under the same root ([`MemoryEnv::other_relay_identity`]).
+    root_private: Zeroizing<[u8; 32]>,
     /// How many `POST /provider-identity` challenges commands have made.
     pub identity_challenges: usize,
+    /// How many `POST /keycheck` requests commands have made: the one request
+    /// that carries a bearer to the relay.
+    pub key_checks: usize,
     /// Make uploads (`POST /inbox`) fail as a dropped connection would.
     pub fail_uploads: bool,
     /// Let this many uploads through, then fail every later one.
@@ -69,10 +78,10 @@ impl Env for MemoryEnv {
     }
 
     fn prompt_secret(&mut self, _prompt: &str) -> Result<String> {
-        Ok(self
-            .prompts
-            .pop_front()
-            .unwrap_or_else(|| PASSPHRASE.to_string()))
+        Ok(match self.prompts.pop() {
+            Some(mut answer) => std::mem::take(&mut *answer),
+            None => PASSPHRASE.to_string(),
+        })
     }
 
     fn var(&self, name: &str) -> Option<String> {
@@ -85,6 +94,9 @@ impl Env for MemoryEnv {
         };
         if request.url.path() == "/provider-identity" {
             relay.identity_challenges += 1;
+        }
+        if request.url.path() == "/keycheck" {
+            relay.key_checks += 1;
         }
         if request.method == "POST" && request.url.path() == "/inbox" {
             let out_of_uploads = match relay.fail_uploads_after.as_mut() {
@@ -142,6 +154,16 @@ impl Env for MemoryEnv {
 }
 
 impl MemoryEnv {
+    /// Answer the next secret prompt with `answer` instead of [`PASSPHRASE`].
+    /// The answer is held zeroized until the prompt consumes it.
+    pub fn answer_prompt(&mut self, answer: impl Into<String>) {
+        // Answers already queued are asked first, so the new one goes in
+        // front of them, at the start of the popped-from-the-end list.
+        let mut prompts = vec![Zeroizing::new(answer.into())];
+        prompts.extend(std::mem::take(&mut self.prompts));
+        self.prompts = prompts;
+    }
+
     /// An environment whose relay is [`RELAY_URL`], answered in process.
     pub fn with_relay() -> Self {
         let mut env = MemoryEnv::default();
@@ -176,10 +198,37 @@ impl MemoryEnv {
                 relay_private_key: relay_private,
             },
             root_public,
+            root_private,
             identity_challenges: 0,
+            key_checks: 0,
             fail_uploads: false,
             fail_uploads_after: None,
         });
+    }
+
+    /// A second relay identity the same test root certifies: a different relay
+    /// key and serial, so the root vouches for both and only the signing key
+    /// tells them apart.
+    pub fn other_relay_identity(&self) -> ProviderIdentity {
+        let relay = self.relay.as_ref().expect("a relay");
+        let (relay_private, relay_public) = provider::generate_relay_identity();
+        let certificate = provider::issue_certificate(
+            &relay.root_private,
+            &provider::NewCertificate {
+                provider_id: "Other test relay",
+                serial: "TEST-2",
+                relay_public_key: &relay_public,
+                issued_at: "2026-01-01 00:00:00",
+                expires_at: "2999-12-31 23:59:00",
+                capabilities: provider::CAP_PROVIDER,
+                issuer_id: "TestRoot",
+            },
+        )
+        .expect("test certificate");
+        ProviderIdentity {
+            certificate,
+            relay_private_key: relay_private,
+        }
     }
 
     /// Mint a relay key of `scope` (inbox push needs no recipient).

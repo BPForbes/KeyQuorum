@@ -153,6 +153,7 @@ pub(super) fn kind_name(kind: u8) -> &'static str {
         envelope::KIND_FILE_HISTORY_SNAPSHOT => "history snapshot",
         envelope::KIND_FILE_REQUEST => "file or change request",
         envelope::KIND_FILE_REQUEST_ANSWER => "answer to your request",
+        envelope::KIND_API_KEY_ISSUE => "relay API key",
         envelope::KIND_DEVICE_TRANSFER
         | envelope::KIND_DEVICE_TRANSFER_ACK
         | envelope::KIND_DEVICE_RELOCATE
@@ -410,6 +411,10 @@ fn open_letter(
                 ),
             )?
         }
+        // A rotated relay key: loaded as `loadkey` would load it, after the
+        // same relay challenge and key check, and stored in place of the key
+        // it replaces.
+        envelope::KIND_API_KEY_ISSUE => super::install_key_letter(conn, &path, url, slot)?,
         kind if manual_hint(kind, id).is_some() => return Ok(false),
         _ => {
             let bytes = env::read(&path)?;

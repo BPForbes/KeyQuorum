@@ -373,8 +373,45 @@ fn revoke_inner(conn: &Connection, id: i64, actor: &str) -> Result<()> {
     }
 }
 
+/// What a rotation does with the key it replaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OldKey {
+    /// Revoked in the same transaction: the bearer is handed over out of band.
+    RevokeNow,
+    /// Left usable for this many seconds, so its holder can still pull the
+    /// mailbox letter that carries the replacement, then expires. Cut short
+    /// with `revoke`.
+    ExpireAfter(i64),
+}
+
+/// Whether a live `inbox.pull` key is bound to `fingerprint` (a recipient key's
+/// SHA-256): the one scope that can collect a mailbox letter addressed to it.
+/// Live means not revoked and not past its own expiry.
+pub fn has_live_pull_key(conn: &Connection, fingerprint: &str) -> Result<bool> {
+    let fingerprint = normalize_fingerprint(fingerprint)?;
+    let found: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM api_keys
+         WHERE scope = 'inbox.pull' AND recipient_fingerprint = ?1
+           AND revoked_at IS NULL
+           AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))",
+        params![fingerprint],
+        |row| row.get(0),
+    )?;
+    Ok(found > 0)
+}
+
+/// A key's record, as `list` shows it. Never the bearer or its hash.
+pub fn info(conn: &Connection, id: i64) -> Result<ApiKeyInfo> {
+    load_info(conn, id)
+}
+
 /// Inserts a replacement key with the same scope and binding, then revokes the old one.
 pub fn rotate(conn: &Connection, id: i64) -> Result<CreatedApiKey> {
+    rotate_with(conn, id, OldKey::RevokeNow)
+}
+
+/// [`rotate`], ending the old key as `old` says.
+pub fn rotate_with(conn: &Connection, id: i64, old: OldKey) -> Result<CreatedApiKey> {
     crate::db::with_immediate_transaction(conn, || {
         let info = load_info(conn, id)?;
         if info.revoked_at.is_some() {
@@ -396,7 +433,24 @@ pub fn rotate(conn: &Connection, id: i64) -> Result<CreatedApiKey> {
                 params![expires_at, created.info.id],
             )?;
         }
-        revoke_inner(conn, id, HOST_ACTOR)?;
+        match old {
+            OldKey::RevokeNow => revoke_inner(conn, id, HOST_ACTOR)?,
+            OldKey::ExpireAfter(seconds) => {
+                if seconds <= 0 {
+                    return Err(Error::InvalidApiKeyRequest);
+                }
+                let until = expiry_from_ttl(conn, seconds)?;
+                conn.execute(
+                    "UPDATE api_keys
+                     SET expires_at = CASE
+                         WHEN expires_at IS NULL OR expires_at > ?1 THEN ?1
+                         ELSE expires_at
+                     END
+                     WHERE id = ?2",
+                    params![until, id],
+                )?;
+            }
+        }
         record_event(conn, created.info.id, "rotated", HOST_ACTOR, Some(id))?;
         Ok(CreatedApiKey {
             info: load_info(conn, created.info.id)?,

@@ -7,6 +7,7 @@ mod file;
 mod gate_link;
 mod inbox;
 mod inbox_files;
+mod keyload;
 mod memory_env;
 mod outbox;
 mod parse;
