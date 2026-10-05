@@ -61,6 +61,10 @@ pub const SCHEMA_VERSION: i64 = 1;
 /// before the request fails.
 const TRANSACTION_DEADLINE: Duration = Duration::from_secs(30);
 
+/// Documents the server sends a mailbox page's cursor at a time, so the
+/// driver never buffers more than a few letters ahead of the byte budget.
+const PAGE_BATCH: u32 = 4;
+
 /// How long `open` waits to find a server before giving up.
 const SERVER_SELECTION_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -890,35 +894,35 @@ fn page_letters(
 ) -> Result<(Vec<Letter>, Option<i64>)> {
     let page = mailbox::page_size(limit)?;
     purge_letters(tx, collection)?;
-    let docs = tx.find_all(
-        collection,
-        doc! {
-            "recipient_fingerprint": fingerprint,
-            "_id": { "$gt": after.unwrap_or(0) },
-            "$or": [
-                { "expires_at": Bson::Null },
-                { "expires_at": { "$gt": clock::now_seconds()? } },
-            ],
-        },
-        doc! { "_id": 1 },
-        Some(page.saturating_add(1)),
-    )?;
-    let letters = docs
-        .iter()
-        .map(|doc| {
-            Ok(Letter {
-                id: get_i64(doc, "_id")?,
-                recipient_fingerprint: get_str(doc, "recipient_fingerprint")?,
-                bytes: get_bytes(doc, payload_field)?,
-            })
+    let filter = doc! {
+        "recipient_fingerprint": fingerprint,
+        "_id": { "$gt": after.unwrap_or(0) },
+        "$or": [
+            { "expires_at": Bson::Null },
+            { "expires_at": { "$gt": clock::now_seconds()? } },
+        ],
+    };
+    // Stream the cursor a few documents a batch and stop at the page's byte
+    // budget, so the relay holds the budget plus one letter, not every
+    // candidate document (`Tx::find_all` would collect them all first).
+    let coll = tx.coll(collection);
+    let mut cursor = coll
+        .find(filter)
+        .sort(doc! { "_id": 1 })
+        .limit(page.saturating_add(1))
+        .batch_size(PAGE_BATCH)
+        .session(&mut *tx.session)
+        .run()
+        .map_err(store_err)?;
+    let rows = cursor.iter(&mut *tx.session).map(|doc| {
+        let doc = doc.map_err(store_err)?;
+        Ok(Letter {
+            id: get_i64(&doc, "_id")?,
+            recipient_fingerprint: get_str(&doc, "recipient_fingerprint")?,
+            bytes: get_bytes(&doc, payload_field)?,
         })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(mailbox::bound_page(
-        letters,
-        page,
-        |letter| letter.id,
-        |letter| letter.bytes.len(),
-    ))
+    });
+    mailbox::bound_page(rows, page, |letter| letter.id, |letter| letter.bytes.len())
 }
 
 fn purge_letters(tx: &mut Tx<'_>, collection: &str) -> Result<u64> {

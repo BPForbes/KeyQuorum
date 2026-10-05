@@ -399,6 +399,12 @@ below. None of it is a feature a hosting vendor supplies on its own.
   collected, and nothing caps a customer's stored bytes or count. Size the
   database volume (or the replica set) for the customers you issue keys to,
   alert on its use (`docs/soc2-controls.md`), and revoke a key that fills it.
+- **Memory sizing.** One inbox read holds at most `MAX_INBOX_PAGE_BYTES`
+  (16 MiB) of sealed letters, roughly three times that once Base64 and JSON
+  copies exist, and the relay admits `DEFAULT_STORE_CONCURRENCY` (64) store
+  calls at once. The chart's 512Mi limit therefore holds a handful of
+  full-size pages at once, not 64; size the limit (or the replica count) for
+  the concurrent readers you expect and watch memory under a load test.
 - **Licence statements are signed text.** `KeyIssue.licence` is carried and
   signed; the relay does not meter seats, suspend by subscription or
   enforce features. Revoking or letting a key expire is the control.

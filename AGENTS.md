@@ -169,10 +169,12 @@ client gets `--rate-limit-per-minute` requests (600 by default, 0 is off; 429
 with `Retry-After`), keyed by peer address (an IPv6 one by its /64), or by the last `X-Forwarded-For`
 entry behind `--behind-tls-proxy`, in a table capped at
 `MAX_RATE_LIMITED_CLIENTS`. An inbox read is also capped at
-`mailbox::MAX_INBOX_PAGE_BYTES` (64 MiB of sealed bytes, never fewer than one
-letter; `mailbox::bound_page`, shared by both mailboxes and both backends, with
-`next_after` pointing at the last letter kept), so a page can neither outgrow
-the relay's memory nor `relay::client::MAX_RESPONSE_BYTES` once encoded. Store
+`mailbox::MAX_INBOX_PAGE_BYTES` (16 MiB of sealed bytes, never fewer than one
+letter; `mailbox::bound_page`, shared by both mailboxes and both backends, reads
+rows as a stream and stops at the budget plus one letter, with `next_after`
+pointing at the last letter kept), so a page can neither outgrow the relay's
+memory nor `relay::client::MAX_RESPONSE_BYTES` once encoded; the MongoDB cursor
+sends `PAGE_BATCH` documents at a time for the same reason. Store
 work runs on the blocking pool behind an admission pool
 (`DEFAULT_STORE_CONCURRENCY`, 64 slots, `STORE_ADMISSION_WAIT` 5 s, then 503),
 and the slot is held until the store call itself returns, since a timed-out
