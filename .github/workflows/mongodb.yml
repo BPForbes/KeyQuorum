@@ -1,0 +1,66 @@
+# The MongoDB-backed relay store (`relay::mongo`, feature `mongodb`) against
+# a real single-node replica set: transactions need one, and the tests in
+# `src/relay/mongo/tests.rs` skip themselves when KEYQUORUM_TEST_MONGODB_URI
+# is unset, so this job is where they actually run. It runs the same
+# conformance suite the SQLite store passes on every `cargo test`, plus the
+# concurrency cases only a shared store has.
+
+name: MongoDB store
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  mongodb:
+    name: mongodb store
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: mongodb
+      - uses: taiki-e/install-action@badb8c3638e0b773c6c17a6025c2306a8f1c4303 # nextest tag
+        with:
+          tool: nextest
+      # A service container cannot be given `--replSet`, so the server is
+      # started by hand from the published image, pinned to a release tag,
+      # and initiated as a one-member replica set on the loopback interface.
+      - name: Start a single-node replica set
+        run: |
+          docker run -d --name kq-mongo -p 127.0.0.1:27017:27017 mongo:7.0 \
+            mongod --replSet rs0 --bind_ip_all
+          for attempt in $(seq 1 30); do
+            if docker exec kq-mongo mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          docker exec kq-mongo mongosh --quiet --eval \
+            'rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "127.0.0.1:27017" }] })'
+          for attempt in $(seq 1 30); do
+            if docker exec kq-mongo mongosh --quiet --eval 'db.hello().isWritablePrimary' | grep -q true; then
+              break
+            fi
+            sleep 2
+          done
+      - name: Test the MongoDB store
+        env:
+          KEYQUORUM_TEST_MONGODB_URI: mongodb://127.0.0.1:27017/?replicaSet=rs0&directConnection=true
+        run: cargo nextest run --locked --all-targets --features provider,mongodb --no-fail-fast -E 'test(/^relay::mongo::/)'
+      - name: Stop the replica set
+        if: always()
+        run: docker rm -f kq-mongo

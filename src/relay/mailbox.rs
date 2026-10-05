@@ -36,13 +36,7 @@ pub fn store_until(
     envelope: &[u8],
     expires_at: Option<&str>,
 ) -> Result<(i64, String, bool)> {
-    let kind = crate::envelope::kind(envelope)?;
-    if crate::envelope::is_device_workflow_kind(kind) {
-        return Err(Error::InvalidBridgePackage);
-    }
-    let recipient_public_key = private_bridge::routing_public_key(envelope)?;
-    let fingerprint = keys::fingerprint(&recipient_public_key);
-    let content_hash = hex::encode(Sha256::digest(envelope));
+    let (fingerprint, content_hash) = routing_of(envelope)?;
 
     conn.execute(
         "INSERT OR IGNORE INTO mailbox
@@ -64,17 +58,37 @@ pub fn store_until(
     }
 }
 
+/// Where a bridge letter is filed (the recipient fingerprint from its outer
+/// header) and what makes a repeat of it the same letter (its SHA-256).
+/// Device letters (kinds 9 to 12) are refused: they have their own mailbox.
+pub(crate) fn routing_of(envelope: &[u8]) -> Result<(String, String)> {
+    let kind = crate::envelope::kind(envelope)?;
+    if crate::envelope::is_device_workflow_kind(kind) {
+        return Err(Error::InvalidBridgePackage);
+    }
+    let recipient_public_key = private_bridge::routing_public_key(envelope)?;
+    let fingerprint = keys::fingerprint(&recipient_public_key);
+    let content_hash = hex::encode(Sha256::digest(envelope));
+    Ok((fingerprint, content_hash))
+}
+
+/// The page size a pull asked for: `DEFAULT_INBOX_PAGE` when omitted, else
+/// 1 to `MAX_INBOX_PAGE`.
+pub(crate) fn page_size(limit: Option<i64>) -> Result<i64> {
+    match limit {
+        None => Ok(DEFAULT_INBOX_PAGE),
+        Some(n) if (1..=MAX_INBOX_PAGE).contains(&n) => Ok(n),
+        Some(_) => Err(Error::InvalidInboxPage),
+    }
+}
+
 pub fn list_after(
     conn: &Connection,
     fingerprint: &str,
     after: Option<i64>,
     limit: Option<i64>,
 ) -> Result<MailboxPage> {
-    let page = match limit {
-        None => DEFAULT_INBOX_PAGE,
-        Some(n) if (1..=MAX_INBOX_PAGE).contains(&n) => n,
-        Some(_) => return Err(Error::InvalidInboxPage),
-    };
+    let page = page_size(limit)?;
     let after = after.unwrap_or(0);
     let fetch = page.saturating_add(1);
     purge_expired(conn)?;

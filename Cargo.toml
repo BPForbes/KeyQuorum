@@ -36,6 +36,12 @@ lab = ["dep:wasm-bindgen"]
 # Presentation only, over `cli::review_view`; native-only, never part of
 # the wasm32 lab build.
 tui = ["dep:ratatui"]
+# MongoDB-backed relay store (`relay::mongo::MongoRelayStore`) for the hosted
+# cloud relay, where several replicas share one deployment. Native-only and
+# never part of the wasm32 lab build (see build.rs); it is a persistence
+# backend, not authorization, and a relay on it still needs its signed
+# `provider.kqcert` and relay key.
+mongodb = ["dep:mongodb"]
 
 [[bin]]
 name = "keyquorum"
@@ -78,6 +84,7 @@ tracing = { version = "0.1", optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 ratatui = { version = "0.30", optional = true }
 tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter"] }
+mongodb = { version = "3", default-features = false, features = ["sync", "rustls-tls", "dns-resolver", "bson-3", "compat-3-3-0"], optional = true }
 
 # Terminal prompts and the HTTPS relay client are native-only: the browser
 # lab (wasm32) never prompts a TTY and never talks to a real relay.

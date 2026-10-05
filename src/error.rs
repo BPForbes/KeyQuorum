@@ -149,6 +149,12 @@ pub enum Error {
     /// holds can collect it: the key's own scope cannot, and no live
     /// `inbox.pull` key is bound to the recipient.
     DeliveryNotCollectable,
+    /// The relay's store (its SQLite file or its MongoDB deployment) failed
+    /// an operation; the text is the backend's own, never a bearer or a key.
+    Store(String),
+    /// Two relay replicas wrote the same record at once; the unit of work
+    /// is retried from the start. Only `relay::mongo` raises it.
+    StoreConflict,
 }
 
 impl fmt::Display for Error {
@@ -244,6 +250,8 @@ impl fmt::Display for Error {
                 f,
                 "this key's scope cannot collect a mailbox letter and no live inbox.pull key is bound to its recipient; write a sealed bundle with --out instead"
             ),
+            Error::Store(message) => write!(f, "relay store error: {message}"),
+            Error::StoreConflict => write!(f, "relay store write conflict; retry"),
             Error::InvalidTrackedFile => {
                 write!(f, "tracked file is malformed or its history fails verification")
             }
