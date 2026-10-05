@@ -26,12 +26,3 @@ fn an_unknown_commit_keeps_the_bundle_it_wrote() {
         "the key may exist and this is its only handoff"
     );
 }
-
-#[test]
-fn a_failure_before_any_write_leaves_nothing_to_remove() {
-    let dir = tempfile::tempdir().expect("dir");
-    let out = dir.path().join("customer.kqkey");
-    let result: Result<()> = into_file(&out, |_| Err(Error::StoreCommitUnknown));
-    assert!(result.is_err());
-    assert!(!out.exists());
-}

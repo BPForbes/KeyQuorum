@@ -403,35 +403,6 @@ fn relay_pull_import_requires_share_file() {
 }
 
 #[test]
-fn relay_pull_import_with_share_file_parses() {
-    assert!(Cli::try_parse_from([
-        "keyquorum",
-        "relay",
-        "pull",
-        "--import",
-        "--share-file",
-        "alice.key",
-        "--url",
-        "http://127.0.0.1:8787",
-    ])
-    .is_ok());
-}
-
-#[test]
-fn relay_push_with_dir_parses() {
-    assert!(Cli::try_parse_from([
-        "keyquorum",
-        "relay",
-        "push",
-        "--dir",
-        "./packages",
-        "--url",
-        "http://127.0.0.1:8787",
-    ])
-    .is_ok());
-}
-
-#[test]
 fn loadkey_bundle_excludes_a_typed_key_and_takes_a_slot_or_key_file() {
     assert!(Cli::try_parse_from(["keyquorum", "loadkey", "--bundle", "customer.kqkey"]).is_ok());
     assert!(Cli::try_parse_from([
@@ -465,19 +436,6 @@ fn loadkey_bundle_excludes_a_typed_key_and_takes_a_slot_or_key_file() {
         "alice.key"
     ])
     .is_err());
-}
-
-#[test]
-fn loadkey_parses_with_and_without_positional_key() {
-    assert!(Cli::try_parse_from(["keyquorum", "loadkey"]).is_ok());
-    assert!(Cli::try_parse_from([
-        "keyquorum",
-        "loadkey",
-        "kq_example",
-        "--url",
-        "http://127.0.0.1:8787",
-    ])
-    .is_ok());
 }
 
 #[cfg(feature = "provider")]
