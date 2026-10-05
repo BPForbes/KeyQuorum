@@ -34,7 +34,12 @@ pub fn merge_public_tree(conn: &Connection, snapshot: &PublicTree) -> Result<Pub
     })
 }
 
-fn merge_into_existing(existing: &PublicTree, incoming: &PublicTree) -> Result<PublicTree> {
+/// The document that results from merging `incoming` into `existing` (see
+/// [`merge_public_tree`]); the generation is the caller's to assign.
+pub(crate) fn merge_into_existing(
+    existing: &PublicTree,
+    incoming: &PublicTree,
+) -> Result<PublicTree> {
     let incoming_labels: HashSet<&str> = incoming.nodes.iter().map(|n| n.label.as_str()).collect();
     let mut nodes = incoming.nodes.clone();
     for node in &existing.nodes {
@@ -149,7 +154,9 @@ pub fn context_for_fingerprint(
     slice_for_fingerprint(&full, fingerprint).ok_or(Error::NodeNotFound)
 }
 
-fn slice_for_fingerprint(full: &PublicTree, fingerprint: &str) -> Option<PublicTree> {
+/// Slice one tree for every leaf bound to this fingerprint; `None` when the
+/// fingerprint appears nowhere in it.
+pub(crate) fn slice_for_fingerprint(full: &PublicTree, fingerprint: &str) -> Option<PublicTree> {
     let seeds: Vec<String> = full
         .nodes
         .iter()
@@ -169,7 +176,7 @@ pub fn contexts_for_fingerprint(conn: &Connection, fingerprint: &str) -> Result<
     slices_for_fingerprint(conn, fingerprint)
 }
 
-fn parse_document(document: &str) -> Result<PublicTree> {
+pub(crate) fn parse_document(document: &str) -> Result<PublicTree> {
     serde_json::from_str(document).map_err(|_| Error::InvalidTreeSpec)
 }
 

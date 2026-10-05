@@ -18,6 +18,39 @@ async fn body_json(response: axum::http::Response<Body>) -> serde_json::Value {
 }
 
 #[tokio::test]
+async fn ready_reports_the_store() {
+    let conn = relay::open_in_memory().expect("schema");
+    let app = router(AppState::new(conn));
+    let ready = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ready.status(), StatusCode::OK);
+    let json = body_json(ready).await;
+    assert_eq!(json["status"], "ok");
+    assert_eq!(json["store"], "sqlite");
+    // Documented, and public like /health.
+    let spec = app
+        .oneshot(
+            Request::builder()
+                .uri("/api-docs/openapi.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let json = body_json(spec).await;
+    assert!(json["paths"]["/ready"]["get"].is_object());
+    assert!(json["paths"]["/ready"]["get"].get("security").is_none());
+}
+
+#[tokio::test]
 async fn router_health_and_openapi_are_public() {
     let conn = relay::open_in_memory().expect("schema");
     let app = router(AppState::new(conn));
@@ -902,7 +935,7 @@ async fn audit_events_are_scoped_to_the_caller_and_revocations_are_signed_at_onc
             relay_private_key: issued.relay_private.clone(),
         },
     );
-    let db = state.db.clone();
+    let store = state.store();
     let app = router(state);
 
     // A push key sees only the event about itself, never another key's.
@@ -948,8 +981,8 @@ async fn audit_events_are_scoped_to_the_caller_and_revocations_are_signed_at_onc
     assert_eq!(last["actor"], "admin:1");
 
     // The revocation is already vouched for by this relay's key.
-    let conn = db.lock().expect("db");
-    let reports = relay::audit::verify(&conn, &issued.root_public, &Default::default(), None)
+    let reports = store
+        .verify_audit(&issued.root_public, &Default::default(), None)
         .expect("verify");
     let events = reports
         .iter()

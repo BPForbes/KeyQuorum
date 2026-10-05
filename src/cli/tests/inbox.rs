@@ -397,7 +397,10 @@ fn legacy_commands_say_what_replaces_them_on_stderr_only() {
 }
 
 /// Reaches the test relay without going through the environment.
-struct Direct<'a>(&'a crate::relay::ProviderIdentity, &'a rusqlite::Connection);
+struct Direct<'a>(
+    &'a crate::relay::ProviderIdentity,
+    &'a crate::relay::SqliteRelayStore,
+);
 
 impl crate::relay::RelayTransport for Direct<'_> {
     fn send(
@@ -432,7 +435,7 @@ fn a_letter_that_asks_for_a_decision_is_listed_and_left_for_a_person() {
     let push = env.relay_key(ApiKeyScope::InboxPush, None);
     let relay = env.relay.as_ref().unwrap();
     crate::relay::push_inbox(
-        &Direct(&relay.identity, &relay.conn),
+        &Direct(&relay.identity, &relay.store),
         RELAY_URL,
         &push,
         &letter,

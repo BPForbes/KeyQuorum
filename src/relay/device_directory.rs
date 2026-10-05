@@ -97,12 +97,12 @@ pub fn get(conn: &Connection, device_id: &str) -> Result<Option<DeviceDescriptor
     Ok(Some(descriptor))
 }
 
-#[cfg_attr(not(feature = "provider"), allow(dead_code))]
-pub fn require(conn: &Connection, device_id: &str) -> Result<DeviceDescriptor> {
+#[cfg(test)]
+pub(crate) fn require(conn: &Connection, device_id: &str) -> Result<DeviceDescriptor> {
     get(conn, device_id)?.ok_or(Error::DeviceNotFound)
 }
 
-fn normalize_fields(descriptor: &mut DeviceDescriptor) -> Result<()> {
+pub(crate) fn normalize_fields(descriptor: &mut DeviceDescriptor) -> Result<()> {
     descriptor.device_id = normalize_device_id(&descriptor.device_id)?;
     descriptor.verify_key = normalize_key(&descriptor.verify_key)?;
     let _ = decode_verify_key(&descriptor.verify_key)?;
@@ -141,7 +141,7 @@ fn directory_message(descriptor: &DeviceDescriptor) -> Result<Vec<u8>> {
     Ok(message)
 }
 
-fn normalize_device_id(value: &str) -> Result<String> {
+pub(crate) fn normalize_device_id(value: &str) -> Result<String> {
     let bytes = decode_device_id(value)?;
     Ok(hex::encode(bytes))
 }

@@ -3,6 +3,10 @@
 //!
 //! The relay never unseals envelopes and never holds wrapped shares or
 //! private keys. Full public-tree context is stored as JSON documents.
+//! Where that state lives is [`store::RelayStore`]'s business: the
+//! owner-only SQLite file this module opens ([`store::SqliteRelayStore`]),
+//! or, with the `mongodb` feature, a shared MongoDB deployment
+//! (`mongo::MongoRelayStore`) for a relay that runs as several replicas.
 //! Pushing envelopes merges the sender's public topology into those
 //! documents; pull returns a sliced copy for the recipient fingerprint
 //! that a personal SQLite store translates.
@@ -14,10 +18,13 @@ mod device_directory;
 mod device_mail;
 pub mod key_delivery;
 mod mailbox;
+#[cfg(feature = "mongodb")]
+pub mod mongo;
 mod org_tree;
 #[cfg(feature = "provider")]
 mod server;
 pub mod service;
+pub mod store;
 
 pub use api_key::{
     authenticate, authenticate_any, authenticate_licensee, authorize_licensee_or_bootstrap,
@@ -27,7 +34,7 @@ pub use api_key::{
     record_provider_auth_event, revoke as revoke_api_key, rotate as rotate_api_key, ApiKeyEvent,
     ApiKeyInfo, ApiKeyScope, AuthedKey, CreatedApiKey, CreatedLicensee, KeyCheck, NewApiKey,
 };
-pub use api_key::{info as api_key_info, rotate_with as rotate_api_key_with, OldKey};
+pub use api_key::{info as api_key_info, rotate_with as rotate_api_key_with, OldKey, HOST_ACTOR};
 #[cfg(not(target_arch = "wasm32"))]
 pub use client::UreqTransport;
 pub use client::{
@@ -63,6 +70,7 @@ pub use server::{
     REQUEST_TIMEOUT,
 };
 pub use service::{ProviderIdentity, MAX_ENVELOPE_BYTES};
+pub use store::{ProviderAuthEvent, RelayStore, SqliteRelayStore, StoredLetter};
 
 use crate::error::{Error, Result};
 use rusqlite::{Connection, OptionalExtension};

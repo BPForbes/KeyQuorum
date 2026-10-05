@@ -669,7 +669,8 @@ fn api_key_lifecycle_is_recorded_without_bearers() {
 
 #[test]
 fn http_revocation_records_the_admin_key_that_revoked() {
-    let conn = relay::open_in_memory().expect("schema");
+    let store = relay::SqliteRelayStore::open_in_memory().expect("schema");
+    let conn = store.connection();
     let new_key = |scope| NewApiKey {
         scope,
         recipient_fingerprint: None,
@@ -679,7 +680,9 @@ fn http_revocation_records_the_admin_key_that_revoked() {
     let admin = relay::create_api_key(&conn, &new_key(ApiKeyScope::Admin)).expect("admin");
     let target = relay::create_api_key(&conn, &new_key(ApiKeyScope::InboxPush)).expect("push");
 
-    relay::service::revoke_key(&conn, &admin.token, target.info.id).expect("revoke");
+    drop(conn);
+    relay::service::revoke_key(&store, &admin.token, target.info.id).expect("revoke");
+    let conn = store.connection();
 
     let last = key_events(&conn).pop().expect("an event");
     assert_eq!(
@@ -694,11 +697,12 @@ fn http_revocation_records_the_admin_key_that_revoked() {
     // A key without the admin scope cannot revoke, and nothing is recorded.
     let push = relay::create_api_key(&conn, &new_key(ApiKeyScope::InboxPush)).expect("push");
     let before = key_events(&conn).len();
+    drop(conn);
     assert!(matches!(
-        relay::service::revoke_key(&conn, &push.token, admin.info.id),
+        relay::service::revoke_key(&store, &push.token, admin.info.id),
         Err(Error::ApiKeyScopeDenied)
     ));
-    assert_eq!(key_events(&conn).len(), before);
+    assert_eq!(key_events(&store.connection()).len(), before);
 }
 
 #[test]
