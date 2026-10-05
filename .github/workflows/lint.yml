@@ -2,10 +2,6 @@
 # (`cargo fmt` and `cargo clippy --locked --all-targets --all-features -- -D
 # warnings`). Until this workflow, nothing in CI ran either, so a change could
 # merge with warnings or unformatted code that only a local run would catch.
-#
-# There is no separate compile check: clippy here type-checks every target
-# with every feature, and the native test job in deploy-lab.yml builds and
-# links every target the everyday gate ships.
 
 name: Lint
 
@@ -17,12 +13,6 @@ on:
 permissions:
   contents: read
 
-# A push to a pull request cancels the run for the commit it replaced, so a
-# superseded commit never holds a runner. Runs on main are never cancelled.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 env:
   CARGO_TERM_COLOR: always
 
@@ -30,7 +20,6 @@ jobs:
   lint:
     name: lint
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -43,11 +32,9 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: lint
-          # A run that fails on a lint still saves what it compiled.
-          cache-on-failure: true
       - name: rustfmt
         run: cargo fmt --all -- --check
-      # --all-features is provider, lab, tui, mongodb and legacy-tests together.
+      # --all-features is provider, lab, tui and legacy-tests together.
       - name: clippy (all features, all targets, warnings are errors)
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
       # The browser Lab builds the library for wasm32 with `lab` (never

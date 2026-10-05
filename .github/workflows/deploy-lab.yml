@@ -47,21 +47,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          shared-key: tests
-          # A run that fails a test still saves what it compiled.
-          cache-on-failure: true
-      - uses: taiki-e/install-action@badb8c3638e0b773c6c17a6025c2306a8f1c4303 # nextest tag
-        with:
-          tool: nextest
-      # One build of every target, then nextest runs the binaries side by
-      # side. This is the everyday test gate (AGENTS.md).
       - name: Test
-        run: cargo nextest run --locked --all-targets --features provider,lab,tui --no-fail-fast
+        run: cargo test --locked --all-targets --features provider,lab,tui
 
   build:
     name: Build and validate the lab
+    needs: native
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -72,10 +63,6 @@ jobs:
         with:
           toolchain: stable
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          shared-key: lab-wasm
-          cache-on-failure: true
 
       - name: Refuse a provider + lab WASM build
         # build.rs names the refusal; --keep-going lets cargo reach it past
@@ -167,8 +154,7 @@ jobs:
   deploy:
     # notify-portfolio.yml reads this job's conclusion by name.
     name: Publish KeyQuorum Lab to GitHub Pages
-    # native and build run side by side; publishing waits for both.
-    needs: [native, build]
+    needs: build
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10

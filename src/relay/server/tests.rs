@@ -1,5 +1,5 @@
 use super::super::test_helpers::*;
-use super::{router, AppState, ProviderIdentity};
+use super::{router, AppState, ProviderIdentity, MAX_ENVELOPE_BYTES};
 use crate::key_tree::PublicTree;
 use crate::keys;
 use crate::provider::test_helpers::issued_identity;
@@ -288,6 +288,11 @@ async fn router_enforces_scopes_and_returns_opaque_bytes() {
         .await
         .unwrap();
     assert_eq!(rotate_gone.status(), StatusCode::NOT_FOUND);
+}
+
+#[test]
+fn max_envelope_constant_is_one_mib() {
+    assert_eq!(MAX_ENVELOPE_BYTES, 1024 * 1024);
 }
 
 #[tokio::test]

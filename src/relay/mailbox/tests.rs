@@ -47,3 +47,10 @@ fn the_first_letter_is_always_returned_even_over_the_budget() {
     assert_eq!(kept.len(), 1);
     assert_eq!(next, Some(1));
 }
+
+#[test]
+fn the_worst_legal_page_fits_the_client_response_limit_once_encoded() {
+    // Base64 inflates by 4/3; JSON framing is small beside the letters.
+    let encoded = MAX_INBOX_PAGE_BYTES / 3 * 4 + 1024 * 1024;
+    assert!((encoded as u64) < crate::relay::client::MAX_RESPONSE_BYTES);
+}

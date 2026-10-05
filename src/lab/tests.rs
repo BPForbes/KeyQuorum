@@ -839,6 +839,23 @@ fn removing_a_link_keeps_the_whitelist_but_deny_clears_both() {
 }
 
 #[test]
+fn bridge_parse_errors_and_help_come_from_clap() {
+    let mut state = lab();
+    let (outcome, output) = term(&mut state, "keyquorum bridge --help");
+    assert!(outcome.ok);
+    assert!(output.iter().any(|line| line.contains("allow")));
+    // `add` without --to fails in clap's parser, before any state is touched.
+    let (outcome, output) = term(&mut state, "bridge add $KEY --from M.S.1");
+    assert!(!outcome.ok);
+    assert!(output.iter().any(|line| line.contains("--to")));
+    let (unknown, _) = term(&mut state, "bridge allow $KEY --node M.S.1 --peer M.Z");
+    assert_eq!(
+        unknown.message,
+        "error: no node with that label or id exists in this key"
+    );
+}
+
+#[test]
 fn the_terminal_is_a_shell_on_the_lab_machine() {
     let mut state = lab();
     let (_, output) = terminal::run(&mut state, "pwd").unwrap();
@@ -863,6 +880,23 @@ fn the_terminal_is_a_shell_on_the_lab_machine() {
     assert_eq!(snap(&state).cwd, "/srv/keyquorum");
     let (_, output) = terminal::run(&mut state, "cd").unwrap();
     assert_eq!(output, ["/home/alice"]);
+}
+
+#[test]
+fn an_unknown_recipient_is_a_usage_error_from_the_cli() {
+    let mut state = lab();
+    let (outcome, output) = terminal::run(
+        &mut state,
+        "keyquorum send /srv/keyquorum/public/company-handbook.txt --to M.Z --as M.S.1 --slot /media/alice-usb=M.S.1",
+    )
+    .unwrap();
+    assert!(!outcome.ok);
+    assert!(
+        output
+            .iter()
+            .any(|line| line.contains("no encryption key is registered for M.Z")),
+        "{output:?}"
+    );
 }
 
 // ----- custom secrets (password-locked files, device provisioning) --------

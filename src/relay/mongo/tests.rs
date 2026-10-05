@@ -96,6 +96,14 @@ fn mongo_store_keeps_every_invariant_under_concurrent_writers() {
 }
 
 #[test]
+fn mongo_store_names_its_backend_and_answers_a_ping() {
+    let Some(fresh) = fresh() else { return };
+    assert_eq!(fresh.store.backend(), "mongodb");
+    fresh.store.ping().expect("ping");
+    assert!(fresh.store.database_name().starts_with("kq_test_"));
+}
+
+#[test]
 fn two_replicas_share_one_store_and_one_audit_chain() {
     let Some(fresh) = fresh() else { return };
     let a = &fresh.store;
@@ -192,6 +200,26 @@ fn an_expired_letter_is_hidden_and_purged() {
             .expect("count"),
         1
     );
+}
+
+#[test]
+fn records_carry_the_same_time_text_as_the_sqlite_store() {
+    let Some(fresh) = fresh() else { return };
+    let created = fresh
+        .store
+        .mint_key(&NewApiKey {
+            ttl_seconds: Some(3_600),
+            ..new_key(ApiKeyScope::Admin)
+        })
+        .expect("create");
+    let iso = &created.info.created_at;
+    assert_eq!(iso.len(), 24, "{iso}");
+    assert!(iso.ends_with('Z') && iso.as_bytes()[10] == b'T', "{iso}");
+    let expires = created.info.expires_at.as_deref().expect("expiry");
+    assert_eq!(expires.len(), 19, "{expires}");
+    assert_eq!(expires.as_bytes()[10], b' ', "{expires}");
+    let event = &fresh.store.key_events(None).expect("events")[0];
+    assert_eq!(event.occurred_at.len(), 24);
 }
 
 #[test]
