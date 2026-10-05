@@ -1,0 +1,51 @@
+# Caddy in front of a single-node KeyQuorum relay.
+#
+# HTTPS terminates here with a certificate Caddy obtains and renews on its
+# own; the relay behind it listens on loopback and serves plain HTTP, which
+# never leaves this host. Replace the hostname; nothing else in this file is
+# specific to a deployment, and no KeyQuorum credential belongs in it.
+#
+# X-Forwarded-For: Caddy's reverse_proxy appends the client address to
+# X-Forwarded-For (and sets X-Forwarded-Proto/Host) by default, which is what
+# the relay reads for rate limiting when it was started with
+# --behind-tls-proxy. With the relay on loopback (the unit's default
+# KEYQUORUM_BIND=127.0.0.1:8787), --behind-tls-proxy is NOT needed and the
+# relay counts the proxy's loopback address as the one client, which is
+# harmless when the proxy is the only thing that can reach it. Pass
+# --behind-tls-proxy when (a) the relay binds a non-loopback address because
+# the proxy is on another host, or (b) you want the relay's per-client limit
+# to apply per end client rather than per proxy; in case (a) the network
+# between proxy and relay must be private, since that leg is plain HTTP.
+
+relay.example.com {
+	# Caddy's default TLS settings are current (TLS 1.2+, modern ciphers).
+	encode zstd gzip
+
+	# A letter is at most 1 MiB and a JSON push at most 2 MiB; the relay
+	# refuses more, so the proxy need not accept more either.
+	request_body {
+		max_size 3MB
+	}
+
+	reverse_proxy 127.0.0.1:8787 {
+		# Matches the relay's own 30 s request timeout.
+		transport http {
+			response_header_timeout 35s
+		}
+	}
+
+	# Hygiene headers for the few HTML pages (the OpenAPI UI).
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	log {
+		# Access logs name clients and paths, never bearers: a bearer
+		# travels in the Authorization header, which Caddy does not log by
+		# default.
+		output file /var/log/caddy/relay.access.log
+	}
+}

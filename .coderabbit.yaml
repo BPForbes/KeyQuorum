@@ -88,7 +88,23 @@ reviews:
         keys, and never mints API keys over HTTP. Check authentication and scope
         on every route, size limits, timeouts and rate limits, and that no
         secret reaches a log or audit record (SOC 2 CC6.1, CC6.2, CC6.6, CC7.2,
-        A1.2). Bearers are stored as hashes only.
+        A1.2). Bearers are stored as hashes only. Relay state is reached only
+        through `RelayStore` (src/relay/store.rs): a backend must keep each
+        unit of work atomic (the MongoDB store in one transaction with
+        compare-and-set audit heads), reuse the shared audit, routing, tree,
+        descriptor and key-delivery code rather than re-rolling a rule, and
+        never hold a raw bearer; every backend passes the conformance suite
+        (PI1.2, PI1.3, CC6.1, C1.1).
+    - path: "{Dockerfile,.dockerignore,deploy/**,.github/workflows/{deploy,mongodb}.yml,docs/operator/**}"
+      instructions: >
+        Deployment assets and the operator runbook. No credential, key,
+        bearer, connection string or certificate may be rendered, baked into
+        an image layer or written into a ConfigMap or values file; the relay
+        key and the MongoDB connection string arrive as mounted or
+        systemd-provided files, the provider-root key never enters a relay,
+        an image or a cluster, and the kql_ operator lock never reaches a
+        long-running relay. Commands, flags, paths and defaults quoted in the
+        runbook must match `--help` and the chart (CC6.7, CC6.8, C1.1, CC8.1).
     - path: "src/bin/keyquorum/host.rs"
       instructions: >
         The hidden mailbox host. It must stay out of customer-facing docs and the

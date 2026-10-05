@@ -64,6 +64,9 @@ secrets/
 keys/
 test-keys/
 provider-secrets/
+# systemd-creds encrypted credentials and files handed to a relay at run time
+*.cred
+/deploy/**/*.local.*
 
 # Local encrypted/decrypted test files
 tmp/
