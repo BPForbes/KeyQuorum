@@ -1,7 +1,7 @@
 # The deployment assets under deploy/ and the container image: the Helm
 # chart must lint and render to manifests that pass schema validation, and
-# the image must build with the provider and mongodb features and run as a
-# non-root user. Nothing here publishes an image or touches a cluster.
+# the image must build with the provider and mongodb features, run as a
+# non-root user and hold no key, certificate or database file. Nothing here publishes an image or touches a cluster.
 
 name: Deployment assets
 
@@ -42,7 +42,11 @@ jobs:
             -skip ExternalSecret,SecretProviderClass /rendered
       - name: No credential is rendered
         run: |
-          ! grep -Ei 'kq_[A-Za-z0-9_-]{20,}|kql_|BEGIN (RSA|EC|OPENSSH)|mongodb(\+srv)?://[^/@]+@' rendered/*.yaml
+          # -l prints only the names of matching files, never the match.
+          if grep -Eil 'kq_[A-Za-z0-9_-]{20,}|kql_|BEGIN (RSA|EC|OPENSSH)|mongodb(\+srv)?://[^/@]+@' rendered/*.yaml; then
+            echo "a credential-shaped value was rendered into the manifests"
+            exit 1
+          fi
 
   image:
     name: container image
@@ -58,7 +62,22 @@ jobs:
         run: |
           docker run --rm --user 65532:65532 keyquorum-relay:ci host serve --help >/dev/null
           test "$(docker inspect --format '{{.Config.User}}' keyquorum-relay:ci)" = "65532:65532"
-      - name: Image layers hold no key, certificate or database file
+      # The merged filesystem of the image (`docker export`), not the layer
+      # tarballs, so the names inside are what is listed. The final stage
+      # copies one binary onto a distroless base, so this is every file the
+      # image holds.
+      - name: The image holds no key, certificate or database file
         run: |
-          docker save keyquorum-relay:ci | tar -tv | \
-            ! grep -Ei '\.(key|pem|kqcert|kqrl|kqpolicy|kqkey|kqpb|sqlite|db)$|device\.skey'
+          cid=$(docker create keyquorum-relay:ci)
+          docker export "$cid" | tar -t > image-files.txt
+          docker rm "$cid" >/dev/null
+          test -s image-files.txt
+          grep -q 'usr/local/bin/keyquorum' image-files.txt
+          # The base image's public CA roots (etc/ssl/certs, the CA package's
+          # share directory) are not ours and are expected; anything else
+          # secret-shaped is a failure. Only file names are printed.
+          if grep -Ev '^(etc/ssl/certs/|usr/share/ca-certificates/)' image-files.txt \
+              | grep -Ei '\.(key|pem|kqcert|kqrl|kqpolicy|kqkey|kqpb|sqlite|db)$|device\.skey'; then
+            echo "a secret-shaped file is in the image"
+            exit 1
+          fi
