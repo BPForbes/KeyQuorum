@@ -4,6 +4,12 @@
 # Every test group runs at the same time in its own job instead of one long
 # linear nextest run. Groups are nextest filtersets over the module path, so a
 # new module lands in `core` without editing anything.
+#
+# Cache strategy: Each call passes a cache-key (standard or legacy). Rust-cache
+# uses shared-key to let all jobs in the matrix share one cache per key, so jobs
+# do not re-build on cache misses. Different feature builds (standard vs legacy)
+# use separate cache keys to prevent cache eviction between them; actual cache
+# hit rate and size should be measured to confirm the strategy is effective.
 
 name: Tests
 
