@@ -420,6 +420,17 @@ fn a_stale_anchor_inserted_late_cannot_hide_newer_coverage() {
 
 #[test]
 fn verification_reads_a_consistent_snapshot_while_writers_append() {
+    /// How many keys the writer mints (each anchored) while verification runs.
+    const WRITER_ROUNDS: usize = 60;
+    /// A flag the writer raises when it stops for any reason, a panic
+    /// included, so the verifying side can never wait on a dead writer.
+    struct Done<'a>(&'a std::sync::atomic::AtomicBool);
+    impl Drop for Done<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
     let Some(fresh) = fresh() else { return };
     let (identity, root) = test_identity();
     fresh
@@ -431,11 +442,14 @@ fn verification_reads_a_consistent_snapshot_while_writers_append() {
         .anchor_audit(&identity, "2026-06-01 00:00:00.000")
         .expect("anchor");
     let writer = fresh.replica();
-    let stop = std::sync::atomic::AtomicBool::new(false);
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let mut verified = 0;
+    // The writer is bounded and ends on its own, so a failed assertion below
+    // fails the test instead of leaving the scope waiting on it.
     std::thread::scope(|scope| {
         scope.spawn(|| {
-            let mut round = 0;
-            while !stop.load(Ordering::SeqCst) {
+            let _done = Done(&done);
+            for round in 0..WRITER_ROUNDS {
                 writer
                     .mint_key(&new_key(ApiKeyScope::InboxPush))
                     .expect("append");
@@ -445,19 +459,19 @@ fn verification_reads_a_consistent_snapshot_while_writers_append() {
                         &format!("2026-06-01 00:01:{:02}.000", round % 60),
                     )
                     .expect("anchor");
-                round += 1;
             }
         });
-        for _ in 0..25 {
+        while verified < 3 || (!done.load(Ordering::SeqCst) && verified < 200) {
             let reports = fresh
                 .store
                 .verify_audit(&root, &Default::default(), None)
                 .expect("verify");
             for report in &reports {
-                assert!(report.is_intact(), "a concurrent append broke verification");
-                assert_eq!(report.rejected_anchors, 0);
+                assert_eq!(report.broken_at, None, "the chain broke under appends");
+                assert_eq!(report.rejected_anchors, 0, "an anchor was refused");
             }
+            verified += 1;
         }
-        stop.store(true, Ordering::SeqCst);
     });
+    assert!(verified >= 3);
 }

@@ -60,7 +60,7 @@ jobs:
       - name: Test the MongoDB store
         env:
           KEYQUORUM_TEST_MONGODB_URI: mongodb://127.0.0.1:27017/?replicaSet=rs0&directConnection=true
-        run: cargo nextest run --locked --all-targets --features provider,mongodb --no-fail-fast -E 'test(/^relay::mongo::/)'
+        run: cargo nextest run --locked --all-targets --features provider,mongodb --profile mongodb --no-fail-fast -E 'test(/^relay::mongo::/)'
       - name: Stop the replica set
         if: always()
         run: docker rm -f kq-mongo
