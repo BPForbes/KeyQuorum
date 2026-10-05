@@ -5,17 +5,18 @@
 # never leaves this host. Replace the hostname; nothing else in this file is
 # specific to a deployment, and no KeyQuorum credential belongs in it.
 #
-# X-Forwarded-For: Caddy's reverse_proxy appends the client address to
-# X-Forwarded-For (and sets X-Forwarded-Proto/Host) by default, which is what
-# the relay reads for rate limiting when it was started with
-# --behind-tls-proxy. With the relay on loopback (the unit's default
-# KEYQUORUM_BIND=127.0.0.1:8787), --behind-tls-proxy is NOT needed and the
-# relay counts the proxy's loopback address as the one client, which is
-# harmless when the proxy is the only thing that can reach it. Pass
-# --behind-tls-proxy when (a) the relay binds a non-loopback address because
-# the proxy is on another host, or (b) you want the relay's per-client limit
-# to apply per end client rather than per proxy; in case (a) the network
-# between proxy and relay must be private, since that leg is plain HTTP.
+# Client address: the relay's per-client rate limit reads the LAST entry of
+# X-Forwarded-For (the unit starts it with --behind-tls-proxy). The
+# reverse_proxy block below overwrites the header with the single address
+# Caddy resolved for the client, so a forged header from a customer never
+# reaches the relay and the chain length does not matter. Behind Cloudflare or
+# another CDN, add its ranges to `trusted_proxies` in the global options
+# (`servers { trusted_proxies cloudflare }` with the caddy-cloudflare-ip module,
+# or static ranges) and set `client_ip_headers CF-Connecting-IP`, so
+# `{client_ip}` is the end client, not the CDN edge; and allow the origin's
+# port only from the CDN (firewall, security group, or Tunnel), since
+# otherwise the origin can be reached directly. This leg to the relay is
+# plain HTTP on loopback: keep the relay bound to 127.0.0.1.
 
 relay.example.com {
 	# Caddy's default TLS settings are current (TLS 1.2+, modern ciphers).
@@ -28,6 +29,7 @@ relay.example.com {
 	}
 
 	reverse_proxy 127.0.0.1:8787 {
+		header_up X-Forwarded-For {client_ip}
 		# Matches the relay's own 30 s request timeout.
 		transport http {
 			response_header_timeout 35s

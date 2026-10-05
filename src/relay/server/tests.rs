@@ -18,6 +18,45 @@ async fn body_json(response: axum::http::Response<Body>) -> serde_json::Value {
 }
 
 #[tokio::test]
+async fn a_full_store_pool_refuses_requests_but_not_the_readiness_probe() {
+    let conn = relay::open_in_memory().expect("schema");
+    let state = AppState::new(conn)
+        .with_store_concurrency(1)
+        .with_admission_wait(std::time::Duration::from_millis(50));
+    // A store call still running holds its slot, whatever became of its request.
+    let held = state
+        .admission
+        .clone()
+        .try_acquire_owned()
+        .expect("the one slot");
+    let app = router(state);
+    let keycheck = || {
+        Request::builder()
+            .method("POST")
+            .uri("/keycheck")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"key_hash":"00"}"#))
+            .unwrap()
+    };
+    let refused = app.clone().oneshot(keycheck()).await.unwrap();
+    assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let ready = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ready.status(), StatusCode::OK);
+    drop(held);
+    let served = app.oneshot(keycheck()).await.unwrap();
+    assert_ne!(served.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
 async fn ready_reports_the_store() {
     let conn = relay::open_in_memory().expect("schema");
     let app = router(AppState::new(conn));

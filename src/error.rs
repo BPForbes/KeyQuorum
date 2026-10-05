@@ -155,6 +155,9 @@ pub enum Error {
     /// Two relay replicas wrote the same record at once; the unit of work
     /// is retried from the start. Only `relay::mongo` raises it.
     StoreConflict,
+    /// A shared store could not tell whether a write committed (a lost
+    /// commit response). Nothing may be undone or repeated on a guess.
+    StoreCommitUnknown,
 }
 
 impl fmt::Display for Error {
@@ -252,6 +255,12 @@ impl fmt::Display for Error {
             ),
             Error::Store(message) => write!(f, "relay store error: {message}"),
             Error::StoreConflict => write!(f, "relay store write conflict; retry"),
+            Error::StoreCommitUnknown => write!(
+                f,
+                "relay store could not confirm the write committed; check \
+                 `host keys list` and `host keys events` before retrying, and \
+                 keep any sealed file this command wrote"
+            ),
             Error::InvalidTrackedFile => {
                 write!(f, "tracked file is malformed or its history fails verification")
             }

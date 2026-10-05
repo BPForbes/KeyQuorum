@@ -50,13 +50,18 @@ EnvironmentFile=-/etc/keyquorum/relay.env
 LoadCredentialEncrypted=relay-key:/etc/credstore.encrypted/keyquorum-relay-key.cred
 
 # The relay serves plain HTTP on loopback; Caddy (or another TLS-terminating
-# proxy) listens on 443 and forwards to it. Only pass --behind-tls-proxy
-# together with a non-loopback --bind when the proxy is on another host and
-# the path between them is private.
+# proxy) listens on 443 and forwards to it. --behind-tls-proxy makes the
+# per-client rate limit apply to the end client the proxy names in
+# X-Forwarded-For (deploy/caddy/Caddyfile.example sets it to one verified
+# address) rather than to the proxy's loopback address, which every customer
+# would otherwise share. It is safe here only because the relay binds loopback:
+# keep KEYQUORUM_BIND on loopback unless the proxy is on another host over a
+# private path, and never expose the relay's port directly.
 ExecStart=/usr/local/bin/keyquorum \
     --mailbox-db /var/lib/keyquorum/relay.sqlite \
     host serve \
     --bind ${KEYQUORUM_BIND} \
+    --behind-tls-proxy \
     --cert ${KEYQUORUM_PROVIDER_CERT} \
     --krl ${KEYQUORUM_PROVIDER_KRL} \
     --relay-key ${CREDENTIALS_DIRECTORY}/relay-key \
@@ -65,8 +70,7 @@ ExecStart=/usr/local/bin/keyquorum \
 
 Restart=on-failure
 RestartSec=5s
-# Ctrl-C semantics: the relay shuts down gracefully on SIGINT.
-KillSignal=SIGINT
+# systemd's default SIGTERM ends the server gracefully (SIGINT does too).
 TimeoutStopSec=30s
 
 # Files the relay creates (the database and its journal) are owner-only.

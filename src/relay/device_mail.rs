@@ -101,13 +101,12 @@ pub fn list_after(
             bytes: row.get(2)?,
         })
     })?;
-    let mut packages = rows.collect::<rusqlite::Result<Vec<_>>>()?;
-    let next_after = if packages.len() > page as usize {
-        packages.pop();
-        packages.last().map(|item| item.id)
-    } else {
-        None
-    };
+    let (packages, next_after) = super::mailbox::bound_page(
+        rows.collect::<rusqlite::Result<Vec<_>>>()?,
+        page,
+        |item| item.id,
+        |item| item.bytes.len(),
+    );
     Ok(DeviceMailPage {
         packages,
         next_after,

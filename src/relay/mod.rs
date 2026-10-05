@@ -58,7 +58,7 @@ pub use device_mail::{
 };
 pub use mailbox::{
     list_after, purge_expired as purge_expired_envelopes, store, store_until, MailboxPage,
-    StoredEnvelope, DEFAULT_INBOX_PAGE, MAX_INBOX_PAGE,
+    StoredEnvelope, DEFAULT_INBOX_PAGE, MAX_INBOX_PAGE, MAX_INBOX_PAGE_BYTES,
 };
 pub use org_tree::{
     context_for_fingerprint, contexts_for_fingerprint, get_public_tree, list_public_trees,
@@ -66,8 +66,8 @@ pub use org_tree::{
 };
 #[cfg(feature = "provider")]
 pub use server::{
-    anchor_now, check_bind, router, AppState, RateLimiter, MAX_RATE_LIMITED_CLIENTS,
-    REQUEST_TIMEOUT,
+    anchor_now, check_bind, router, AppState, RateLimiter, DEFAULT_STORE_CONCURRENCY,
+    MAX_RATE_LIMITED_CLIENTS, REQUEST_TIMEOUT, STORE_ADMISSION_WAIT,
 };
 pub use service::{ProviderIdentity, MAX_ENVELOPE_BYTES};
 pub use store::{ProviderAuthEvent, RelayStore, SqliteRelayStore, StoredLetter};

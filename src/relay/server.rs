@@ -26,6 +26,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::Semaphore;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
@@ -38,7 +39,21 @@ pub struct AppState {
     store: Arc<dyn RelayStore>,
     identity: Option<Arc<ProviderIdentity>>,
     rate_limit: Option<Arc<RateLimiter>>,
+    /// Store operations allowed in flight at once, and the separate few kept
+    /// for the readiness probe so a busy relay can still say it is busy.
+    admission: Arc<Semaphore>,
+    probe_admission: Arc<Semaphore>,
+    admission_wait: Duration,
 }
+
+/// Store operations a relay runs at once by default (see
+/// [`AppState::with_store_concurrency`]).
+pub const DEFAULT_STORE_CONCURRENCY: usize = 64;
+/// How long a request waits for a store slot before the relay answers
+/// `503 Service Unavailable`.
+pub const STORE_ADMISSION_WAIT: Duration = Duration::from_secs(5);
+/// Slots reserved for `GET /ready`, outside the pool above.
+const PROBE_CONCURRENCY: usize = 2;
 
 impl AppState {
     /// A relay on the SQLite connection `conn`, with no provider identity.
@@ -61,7 +76,26 @@ impl AppState {
             store,
             identity: identity.map(Arc::new),
             rate_limit: None,
+            admission: Arc::new(Semaphore::new(DEFAULT_STORE_CONCURRENCY)),
+            probe_admission: Arc::new(Semaphore::new(PROBE_CONCURRENCY)),
+            admission_wait: STORE_ADMISSION_WAIT,
         }
+    }
+
+    /// How long a request waits for a store slot (tests shorten it).
+    #[cfg(test)]
+    pub(crate) fn with_admission_wait(mut self, wait: Duration) -> Self {
+        self.admission_wait = wait;
+        self
+    }
+
+    /// Allow `operations` store operations in flight at once (at least 1).
+    /// A store operation cannot be cancelled once it starts, so the slot is
+    /// held until it finishes, not until its HTTP request times out; extra
+    /// requests wait up to [`STORE_ADMISSION_WAIT`] and are then refused.
+    pub fn with_store_concurrency(mut self, operations: usize) -> Self {
+        self.admission = Arc::new(Semaphore::new(operations.max(1)));
+        self
     }
 
     /// The store every handler and the scan loop reach the relay's state through.
@@ -165,11 +199,35 @@ where
     T: Send + 'static,
     F: FnOnce(&dyn RelayStore) -> crate::error::Result<T> + Send + 'static,
 {
+    run_blocking(state, state.admission.clone(), f).await
+}
+
+/// [`with_store`] on a given admission pool. The permit moves into the
+/// blocking task: a request that times out or is dropped does not free it
+/// while the store call it started is still running.
+async fn run_blocking<T, F>(state: &AppState, pool: Arc<Semaphore>, f: F) -> Result<T, ApiError>
+where
+    T: Send + 'static,
+    F: FnOnce(&dyn RelayStore) -> crate::error::Result<T> + Send + 'static,
+{
+    let permit = match tokio::time::timeout(state.admission_wait, pool.acquire_owned()).await {
+        Ok(Ok(permit)) => permit,
+        _ => {
+            tracing::warn!("relay store busy: request refused");
+            return Err(ApiError {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                message: "relay busy".to_string(),
+            });
+        }
+    };
     let store = state.store.clone();
-    tokio::task::spawn_blocking(move || f(store.as_ref()))
-        .await
-        .map_err(|_| ApiError::internal())
-        .and_then(|result| result.map_err(ApiError::from))
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        f(store.as_ref())
+    })
+    .await
+    .map_err(|_| ApiError::internal())
+    .and_then(|result| result.map_err(ApiError::from))
 }
 
 #[derive(Serialize, ToSchema)]
@@ -288,7 +346,7 @@ async fn health() -> Json<HealthResponse> {
     )
 )]
 async fn ready(State(state): State<AppState>) -> Result<Json<ReadyResponse>, ApiError> {
-    let backend = with_store(&state, |store| {
+    let backend = run_blocking(&state, state.probe_admission.clone(), |store| {
         store.ping()?;
         Ok(store.backend())
     })

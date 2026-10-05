@@ -11,6 +11,12 @@ use sha2::{Digest, Sha256};
 pub const DEFAULT_INBOX_PAGE: i64 = 100;
 /// Hard cap on a single inbox read. Keep in sync with `Error::InvalidInboxPage`.
 pub const MAX_INBOX_PAGE: i64 = 500;
+/// Hard cap on the sealed bytes of one inbox read, so a page of letters at
+/// `service::MAX_ENVELOPE_BYTES` each cannot outgrow the relay's memory or
+/// the client's `relay::client::MAX_RESPONSE_BYTES` once encoded. A page that
+/// stops here reports `next_after`, so the rest is read by the next pull. The
+/// first letter is always returned, so no letter is ever unreadable.
+pub const MAX_INBOX_PAGE_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct StoredEnvelope {
@@ -82,6 +88,36 @@ pub(crate) fn page_size(limit: Option<i64>) -> Result<i64> {
     }
 }
 
+/// Applies the page rules to the `page + 1` rows a store fetched, in id
+/// order: at most `page` rows and `MAX_INBOX_PAGE_BYTES` of sealed bytes
+/// (never fewer than one row), and `next_after` is the last row kept
+/// whenever any row was left behind. Both mailboxes and both backends use
+/// this, so the rule lives once.
+pub(crate) fn bound_page<T>(
+    mut rows: Vec<T>,
+    page: i64,
+    id_of: impl Fn(&T) -> i64,
+    len_of: impl Fn(&T) -> usize,
+) -> (Vec<T>, Option<i64>) {
+    let mut kept = 0usize;
+    let mut bytes = 0usize;
+    for row in &rows {
+        if kept as i64 >= page {
+            break;
+        }
+        let next = bytes.saturating_add(len_of(row));
+        if kept > 0 && next > MAX_INBOX_PAGE_BYTES {
+            break;
+        }
+        bytes = next;
+        kept += 1;
+    }
+    let more = rows.len() > kept;
+    rows.truncate(kept);
+    let next_after = if more { rows.last().map(id_of) } else { None };
+    (rows, next_after)
+}
+
 pub fn list_after(
     conn: &Connection,
     fingerprint: &str,
@@ -107,13 +143,12 @@ pub fn list_after(
             bytes: row.get(2)?,
         })
     })?;
-    let mut envelopes = rows.collect::<rusqlite::Result<Vec<_>>>()?;
-    let next_after = if envelopes.len() > page as usize {
-        envelopes.pop();
-        envelopes.last().map(|item| item.id)
-    } else {
-        None
-    };
+    let (envelopes, next_after) = bound_page(
+        rows.collect::<rusqlite::Result<Vec<_>>>()?,
+        page,
+        |item| item.id,
+        |item| item.bytes.len(),
+    );
     Ok(MailboxPage {
         envelopes,
         next_after,
@@ -131,3 +166,7 @@ pub fn purge_expired(conn: &Connection) -> Result<u64> {
     )?;
     Ok(conn.changes())
 }
+
+#[cfg(test)]
+#[path = "mailbox/tests.rs"]
+mod tests;

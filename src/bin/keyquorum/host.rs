@@ -492,7 +492,9 @@ fn recipient_from(
 /// Run `issue` with a writer that creates `out` owner-only, never
 /// overwriting. If `issue` fails after the file was written (the key change
 /// did not commit), the file is removed, so a retry is not refused by it.
-/// That is compensation, not atomicity: a crash between the write and the
+/// If the store could not say whether it committed
+/// ([`Error::StoreCommitUnknown`]) the file is kept: the key may exist, and
+/// the bundle is its only handoff. That is compensation, not atomicity: a crash between the write and the
 /// commit can leave a bundle for a key that was never created, which the
 /// operator removes before retrying (it opens nothing).
 fn into_file<T>(
@@ -505,8 +507,17 @@ fn into_file<T>(
         wrote = true;
         Ok(())
     });
-    if result.is_err() && wrote {
-        let _ = std::fs::remove_file(out);
+    match &result {
+        Err(Error::StoreCommitUnknown) if wrote => {
+            eprintln!(
+                "kept {}: the commit outcome is unknown, so the key may exist",
+                out.display()
+            );
+        }
+        Err(_) if wrote => {
+            let _ = std::fs::remove_file(out);
+        }
+        _ => {}
     }
     result
 }
@@ -962,6 +973,31 @@ fn scan_store(store: &dyn RelayStore, identity: Option<&ProviderIdentity>) {
     }
 }
 
+/// Ends the server on SIGINT or, as a container runtime or `systemctl stop`
+/// sends it, SIGTERM, so in-flight requests drain before the process exits.
 async fn shutdown_signal() {
-    let _ = signal::ctrl_c().await;
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal as unix_signal, SignalKind};
+        match unix_signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(err) => {
+                tracing::warn!("cannot listen for SIGTERM: {err}");
+                let _ = signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = signal::ctrl_c().await;
+    }
 }
+
+#[cfg(test)]
+#[path = "host/tests.rs"]
+mod tests;

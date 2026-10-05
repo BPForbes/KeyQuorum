@@ -285,10 +285,15 @@ and official clients refuse plain HTTP to any host but loopback, so a
 bearer never crosses a network in the clear:
 
 - **Single node:** Caddy (or another proxy) listens on 443 and forwards to
-  `127.0.0.1:8787`; `deploy/caddy/Caddyfile.example` is a complete example
-  and explains when `--behind-tls-proxy` is needed (a relay bound to a
-  non-loopback address for a proxy on another host, over a private
-  network) and when it is not.
+  `127.0.0.1:8787`; `deploy/caddy/Caddyfile.example` is a complete example.
+  The unit passes `--behind-tls-proxy` so the per-client rate limit counts
+  each end client, not the proxy's loopback address that all customers
+  would share; Caddy overwrites `X-Forwarded-For` with the one address it
+  resolved, so a customer's own header is never believed. The relay must
+  stay bound to loopback (or to a private address the proxy alone reaches):
+  the flag trusts that header, so a directly reachable relay could be told
+  any client address. Behind a CDN, the Caddyfile explains the trusted
+  proxy ranges and limiting the origin's port to the CDN.
 - **Kubernetes:** the Ingress terminates HTTPS (the chart leaves the
   certificate to cert-manager or your issuer) and forwards only to the
   relay Service over the cluster network; the relay is started with
@@ -373,6 +378,38 @@ Kubernetes Job from the image with the relay key and connection string
 mounted and the operator lock mounted from a Secret that exists only for
 that Job; copy the `.kqkey` out with `kubectl cp` and delete the Job. The
 long-running relay pods never carry the operator lock.
+
+## Before opening a relay to customers
+
+The persistence boundary and the deployment assets are the same for any
+host (a VM, a container platform, Kubernetes); they do not choose one. What
+they do not provide, and an operator must settle for the deployment, is
+below. None of it is a feature a hosting vendor supplies on its own.
+
+- **One organization per relay.** A relay does not separate customers from
+  one another. Any `inbox.push` key can publish a public tree for a label,
+  and the relay merges it into the stored document for that label (the
+  topology it holds is public, and a letter's contents stay sealed to its
+  recipient). A relay is therefore one customer's, or a group of mutually
+  trusting organizations'. Per-customer namespacing and an authenticated
+  publisher for tree changes are a separate design, to be done before one
+  relay serves unrelated customers. `tree publish` and `inbox.push` keys
+  should only go to people who may change the topology.
+- **No storage quotas.** A letter without an expiry stays until it is
+  collected, and nothing caps a customer's stored bytes or count. Size the
+  database volume (or the replica set) for the customers you issue keys to,
+  alert on its use (`docs/soc2-controls.md`), and revoke a key that fills it.
+- **Licence statements are signed text.** `KeyIssue.licence` is carried and
+  signed; the relay does not meter seats, suspend by subscription or
+  enforce features. Revoking or letting a key expire is the control.
+- **Production trust root.** Confirm that the compiled provider-root public
+  key (`KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`, `src/provider.rs`) is the key
+  from your offline ceremony before you issue anything. Clients trust only
+  that root.
+- **Recovery.** Restore a backup into an isolated environment and verify the
+  audit chains against the checkpoint for that restore point before you rely
+  on it; run a synthetic client that completes the provider challenge, since
+  `/ready` does not.
 
 ## Verification
 

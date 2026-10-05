@@ -520,7 +520,10 @@ impl MongoRelayStore {
                     Ok(()) => return Ok(value),
                     Err(err) if err.contains_label(UNKNOWN_TRANSACTION_COMMIT_RESULT) => {
                         if Instant::now() >= deadline {
-                            return Err(store_err(err));
+                            // The commit may have applied: say so, rather
+                            // than report a failure the caller would undo.
+                            tracing::warn!("relay store commit outcome unknown: {err}");
+                            return Err(Error::StoreCommitUnknown);
                         }
                         continue;
                     }
@@ -900,7 +903,7 @@ fn page_letters(
         doc! { "_id": 1 },
         Some(page.saturating_add(1)),
     )?;
-    let mut letters = docs
+    let letters = docs
         .iter()
         .map(|doc| {
             Ok(Letter {
@@ -910,13 +913,12 @@ fn page_letters(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let next_after = if letters.len() > page as usize {
-        letters.pop();
-        letters.last().map(|letter| letter.id)
-    } else {
-        None
-    };
-    Ok((letters, next_after))
+    Ok(mailbox::bound_page(
+        letters,
+        page,
+        |letter| letter.id,
+        |letter| letter.bytes.len(),
+    ))
 }
 
 fn purge_letters(tx: &mut Tx<'_>, collection: &str) -> Result<u64> {

@@ -168,7 +168,20 @@ pertain to it (`api_key::events_visible_to`; an admin key sees all). Each
 client gets `--rate-limit-per-minute` requests (600 by default, 0 is off; 429
 with `Retry-After`), keyed by peer address (an IPv6 one by its /64), or by the last `X-Forwarded-For`
 entry behind `--behind-tls-proxy`, in a table capped at
-`MAX_RATE_LIMITED_CLIENTS`. `identity
+`MAX_RATE_LIMITED_CLIENTS`. An inbox read is also capped at
+`mailbox::MAX_INBOX_PAGE_BYTES` (64 MiB of sealed bytes, never fewer than one
+letter; `mailbox::bound_page`, shared by both mailboxes and both backends, with
+`next_after` pointing at the last letter kept), so a page can neither outgrow
+the relay's memory nor `relay::client::MAX_RESPONSE_BYTES` once encoded. Store
+work runs on the blocking pool behind an admission pool
+(`DEFAULT_STORE_CONCURRENCY`, 64 slots, `STORE_ADMISSION_WAIT` 5 s, then 503),
+and the slot is held until the store call itself returns, since a timed-out
+request cannot cancel it; `GET /ready` has its own two slots. `host serve` ends
+gracefully on SIGINT or SIGTERM. A MongoDB commit whose result stays unknown
+past the retry deadline is `Error::StoreCommitUnknown`, not a failure: `host
+keys` keeps the sealed `.kqkey` it wrote (the key may exist; check `keys list`
+and `keys events` before retrying) and removes it only on a failure that is
+certain. `identity
 generate` and `root generate` write the private key only to
 `--private-key-out` (owner-only, never overwritten) and never print it.
 Prompted passphrases, passwords, PINs and pasted API keys are
