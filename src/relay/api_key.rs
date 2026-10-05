@@ -12,7 +12,7 @@ use zeroize::Zeroizing;
 
 const TOKEN_LEN: usize = 32;
 const TOKEN_PREFIX: &str = "kq_";
-const LICENSEE_PREFIX: &str = "kql_";
+pub(crate) const LICENSEE_PREFIX: &str = "kql_";
 
 /// The internal operator issuer, as minted: its bearer is shown once, zeroed
 /// on drop, and never printed by `Debug`.
@@ -114,7 +114,9 @@ pub struct AuthedKey {
     pub recipient_fingerprint: Option<String>,
 }
 
-fn generate_prefixed_bearer(prefix: &str) -> (Zeroizing<String>, String) {
+/// A fresh bearer with `prefix` and `hex(SHA-256(raw))`, the only thing a
+/// store keeps of it.
+pub(crate) fn generate_prefixed_bearer(prefix: &str) -> (Zeroizing<String>, String) {
     let mut raw = Zeroizing::new([0u8; TOKEN_LEN]);
     crate::crypto::fill_random(&mut *raw);
     let encoded = Zeroizing::new(URL_SAFE_NO_PAD.encode(*raw));
@@ -123,11 +125,11 @@ fn generate_prefixed_bearer(prefix: &str) -> (Zeroizing<String>, String) {
     (token, token_hash)
 }
 
-fn generate_bearer() -> (Zeroizing<String>, String) {
+pub(crate) fn generate_bearer() -> (Zeroizing<String>, String) {
     generate_prefixed_bearer(TOKEN_PREFIX)
 }
 
-fn hash_prefixed(token: &str, prefix: &str) -> Result<String> {
+pub(crate) fn hash_prefixed(token: &str, prefix: &str) -> Result<String> {
     let rest = token.strip_prefix(prefix).ok_or(Error::InvalidApiKey)?;
     let raw = Zeroizing::new(
         URL_SAFE_NO_PAD
@@ -147,7 +149,7 @@ pub fn hash_bearer(token: &str) -> Result<String> {
     hash_prefixed(token, TOKEN_PREFIX)
 }
 
-fn normalize_fingerprint(fingerprint: &str) -> Result<String> {
+pub(crate) fn normalize_fingerprint(fingerprint: &str) -> Result<String> {
     if fingerprint.len() != 64 || !fingerprint.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Error::InvalidApiKeyRequest);
     }
@@ -540,7 +542,7 @@ pub struct KeyCheck {
 }
 
 impl KeyCheck {
-    fn invalid() -> Self {
+    pub(crate) fn invalid() -> Self {
         Self {
             valid: false,
             id: None,

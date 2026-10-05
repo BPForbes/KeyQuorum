@@ -45,6 +45,8 @@ use crate::file_history::{EventDetails, HistoryEventType, HistoryOutcome};
 use gate_link::Gate;
 #[cfg(feature = "provider")]
 pub mod host_args;
+#[cfg(feature = "provider")]
+pub mod host_env;
 mod send;
 mod setup;
 mod transfer_cmd;
@@ -445,15 +447,35 @@ pub enum Command {
         command: profile::CacheCommand,
     },
     /// Provider mailbox host (capability build). Hidden from --help.
+    /// Boxed, like the everyday commands, so the host's many flags do not
+    /// widen every `Command` frame (debug-build test threads have little
+    /// stack).
     #[cfg(feature = "provider")]
     #[command(hide = true)]
-    Host {
-        /// Mailbox SQLite file (not an organization store)
-        #[arg(long, default_value = "keyquorum-relay.sqlite")]
-        mailbox_db: PathBuf,
-        #[command(subcommand)]
-        command: host_args::HostCommand,
-    },
+    Host(Box<HostOpts>),
+}
+
+/// The hidden provider `host` command: where the relay keeps its state, and
+/// the host subcommand to run.
+#[cfg(feature = "provider")]
+#[derive(clap::Args)]
+pub struct HostOpts {
+    /// Mailbox SQLite file (not an organization store). Not used when a
+    /// MongoDB deployment is configured.
+    #[arg(long, default_value = "keyquorum-relay.sqlite")]
+    pub mailbox_db: PathBuf,
+    /// A file holding the MongoDB connection string of the hosted relay's
+    /// store (or KEYQUORUM_MONGODB_URI_FILE, or the raw
+    /// KEYQUORUM_MONGODB_URI). Needs a build with the `mongodb` feature.
+    /// Never a flag value: the string may carry a password.
+    #[arg(long)]
+    pub mongodb_uri_file: Option<PathBuf>,
+    /// The database within that deployment (or KEYQUORUM_MONGODB_DB;
+    /// `keyquorum` by default)
+    #[arg(long)]
+    pub mongodb_db: Option<String>,
+    #[command(subcommand)]
+    pub command: host_args::HostCommand,
 }
 
 #[derive(Subcommand)]
@@ -976,7 +998,7 @@ pub fn run(db_path: &Path, command: Command) -> Result<()> {
             return env::with_db(db_path, |conn| run_everyday(conn, command));
         }
         #[cfg(feature = "provider")]
-        Command::Host { .. } => {
+        Command::Host(_) => {
             unreachable!("the keyquorum binary serves host before calling cli::run")
         }
         _ => {}
@@ -1075,7 +1097,7 @@ fn run_in_store(conn: &mut Connection, command: Command) -> Result<()> {
             unreachable!("transfer and relay commands are handled before opening the org db")
         }
         #[cfg(feature = "provider")]
-        Command::Host { .. } => {
+        Command::Host(_) => {
             unreachable!("host commands are handled before opening the org db")
         }
     }
@@ -1685,7 +1707,7 @@ fn run_tree_command(conn: &mut Connection, command: Command) -> Result<()> {
         | Command::Cache { .. }
         | Command::Transfer { .. } => unreachable!("non-tree commands are dispatched in run()"),
         #[cfg(feature = "provider")]
-        Command::Host { .. } => unreachable!("non-tree commands are dispatched in run()"),
+        Command::Host(_) => unreachable!("non-tree commands are dispatched in run()"),
     }
     Ok(())
 }

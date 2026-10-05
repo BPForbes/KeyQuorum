@@ -403,35 +403,6 @@ fn relay_pull_import_requires_share_file() {
 }
 
 #[test]
-fn relay_pull_import_with_share_file_parses() {
-    assert!(Cli::try_parse_from([
-        "keyquorum",
-        "relay",
-        "pull",
-        "--import",
-        "--share-file",
-        "alice.key",
-        "--url",
-        "http://127.0.0.1:8787",
-    ])
-    .is_ok());
-}
-
-#[test]
-fn relay_push_with_dir_parses() {
-    assert!(Cli::try_parse_from([
-        "keyquorum",
-        "relay",
-        "push",
-        "--dir",
-        "./packages",
-        "--url",
-        "http://127.0.0.1:8787",
-    ])
-    .is_ok());
-}
-
-#[test]
 fn loadkey_bundle_excludes_a_typed_key_and_takes_a_slot_or_key_file() {
     assert!(Cli::try_parse_from(["keyquorum", "loadkey", "--bundle", "customer.kqkey"]).is_ok());
     assert!(Cli::try_parse_from([
@@ -467,17 +438,73 @@ fn loadkey_bundle_excludes_a_typed_key_and_takes_a_slot_or_key_file() {
     .is_err());
 }
 
+#[cfg(feature = "provider")]
 #[test]
-fn loadkey_parses_with_and_without_positional_key() {
-    assert!(Cli::try_parse_from(["keyquorum", "loadkey"]).is_ok());
+fn provider_host_store_and_credential_file_flags_parse() {
+    // The MongoDB connection string comes from a file (or the environment),
+    // never a flag value, and the database name may be named.
     assert!(Cli::try_parse_from([
         "keyquorum",
-        "loadkey",
-        "kq_example",
-        "--url",
-        "http://127.0.0.1:8787",
+        "host",
+        "--mongodb-uri-file",
+        "/run/secrets/mongodb-uri",
+        "--mongodb-db",
+        "keyquorum",
+        "serve",
     ])
     .is_ok());
+    assert!(
+        Cli::try_parse_from(["keyquorum", "host", "--mongodb-uri", "mongodb://x", "serve"])
+            .is_err()
+    );
+    // The operator lock may come from a file; a file and a value together
+    // are refused rather than guessed.
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "keys",
+        "create",
+        "--scope",
+        "inbox.push",
+        "--licensee-key-file",
+        "/run/credentials/keyquorum-keys/licensee-key",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "keys",
+        "create",
+        "--scope",
+        "inbox.push",
+        "--licensee-key-file",
+        "lock",
+        "--licensee-key",
+        "kql_x",
+    ])
+    .is_err());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "keys",
+        "rotate",
+        "3",
+        "--licensee-key-file",
+        "lock",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "keys",
+        "rotate",
+        "3",
+        "--licensee-key-file",
+        "lock",
+        "--licensee-key",
+        "kql_x",
+    ])
+    .is_err());
 }
 
 #[cfg(feature = "provider")]

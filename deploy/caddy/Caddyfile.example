@@ -1,0 +1,53 @@
+# Caddy in front of a single-node KeyQuorum relay.
+#
+# HTTPS terminates here with a certificate Caddy obtains and renews on its
+# own; the relay behind it listens on loopback and serves plain HTTP, which
+# never leaves this host. Replace the hostname; nothing else in this file is
+# specific to a deployment, and no KeyQuorum credential belongs in it.
+#
+# Client address: the relay's per-client rate limit reads the LAST entry of
+# X-Forwarded-For (the unit starts it with --behind-tls-proxy). The
+# reverse_proxy block below overwrites the header with the single address
+# Caddy resolved for the client, so a forged header from a customer never
+# reaches the relay and the chain length does not matter. Behind Cloudflare or
+# another CDN, add its ranges to `trusted_proxies` in the global options
+# (`servers { trusted_proxies cloudflare }` with the caddy-cloudflare-ip module,
+# or static ranges) and set `client_ip_headers CF-Connecting-IP`, so
+# `{client_ip}` is the end client, not the CDN edge; and allow the origin's
+# port only from the CDN (firewall, security group, or Tunnel), since
+# otherwise the origin can be reached directly. This leg to the relay is
+# plain HTTP on loopback: keep the relay bound to 127.0.0.1.
+
+relay.example.com {
+	# Caddy's default TLS settings are current (TLS 1.2+, modern ciphers).
+	encode zstd gzip
+
+	# A letter is at most 1 MiB and a JSON push at most 2 MiB; the relay
+	# refuses more, so the proxy need not accept more either.
+	request_body {
+		max_size 3MB
+	}
+
+	reverse_proxy 127.0.0.1:8787 {
+		header_up X-Forwarded-For {client_ip}
+		# Matches the relay's own 30 s request timeout.
+		transport http {
+			response_header_timeout 35s
+		}
+	}
+
+	# Hygiene headers for the few HTML pages (the OpenAPI UI).
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	log {
+		# Access logs name clients and paths, never bearers: a bearer
+		# travels in the Authorization header, which Caddy does not log by
+		# default.
+		output file /var/log/caddy/relay.access.log
+	}
+}

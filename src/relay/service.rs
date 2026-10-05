@@ -2,7 +2,9 @@
 //!
 //! The provider-only axum server (`server.rs`) adapts HTTP to these
 //! functions, and [`dispatch`] routes an already-parsed request to them in
-//! process. That second path is how the browser lab runs a relay without a
+//! process. Every function reaches the relay's state through
+//! [`RelayStore`], so the same handlers serve the SQLite relay and the
+//! MongoDB-backed cloud relay. That second path is how the browser lab runs a relay without a
 //! listener: the same authentication, scopes, fingerprint binding, and
 //! opaque-envelope storage, reached through the CLI's relay client. Nothing
 //! here serves sockets, mints API keys, or issues certificates; those stay
@@ -14,15 +16,12 @@ use super::client::{
     InboxPush, KeyCheckRequest, KeyCheckResponse, ProviderIdentityRequest,
     ProviderIdentityResponse, RelayHttpRequest, RelayHttpResponse,
 };
-use super::device_directory::{self, DeviceDescriptor};
-use super::device_mail;
-use super::mailbox;
-use super::org_tree;
+use super::device_directory::DeviceDescriptor;
+use super::store::RelayStore;
 use crate::error::{Error, Result};
 use crate::key_tree::PublicTree;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
-use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use zeroize::Zeroizing;
@@ -147,9 +146,13 @@ impl From<ApiKeyInfo> for ApiKeyView {
 /// `GET /audit/api-keys` (any live key): the lifecycle events that pertain
 /// to the caller. An admin key sees every event; any other key only those
 /// about itself, so no key holder learns about another's.
-pub fn audit_events(conn: &Connection, token: &str) -> Result<Vec<api_key::ApiKeyEvent>> {
-    let auth = api_key::authenticate_any(conn, token)?;
-    api_key::events_visible_to(conn, &auth)
+pub fn audit_events(store: &dyn RelayStore, token: &str) -> Result<Vec<api_key::ApiKeyEvent>> {
+    let auth = store.authenticate_any(token)?;
+    if auth.scope == ApiKeyScope::Admin {
+        store.key_events(None)
+    } else {
+        store.key_events(Some(auth.id))
+    }
 }
 
 /// `POST /provider-identity`: the certificate plus a signature over the
@@ -171,12 +174,12 @@ pub fn provider_identity(
 
 /// `POST /keycheck`: whether a token or a stored hash is live. Exactly one
 /// of the two must be given.
-pub fn keycheck(conn: &Connection, body: &KeyCheckRequest) -> Result<KeyCheckResponse> {
+pub fn keycheck(store: &dyn RelayStore, body: &KeyCheckRequest) -> Result<KeyCheckResponse> {
     let token = body.token.as_deref().filter(|s| !s.is_empty());
     let key_hash = body.key_hash.as_deref().filter(|s| !s.is_empty());
     let check = match (token, key_hash) {
-        (Some(token), None) => api_key::check_token(conn, token)?,
-        (None, Some(key_hash)) => api_key::check_hash(conn, key_hash)?,
+        (Some(token), None) => store.check_token(token)?,
+        (None, Some(key_hash)) => store.check_hash(key_hash)?,
         _ => return Err(Error::InvalidApiKeyRequest),
     };
     Ok(KeyCheckResponse {
@@ -222,43 +225,39 @@ pub fn parse_inbox(is_json: bool, body: &[u8]) -> Result<ParsedInbox> {
 /// `POST /inbox` (`inbox.push`). Returns the stored id and whether the
 /// envelope was already there.
 pub fn inbox_push(
-    conn: &Connection,
+    store: &dyn RelayStore,
     token: &str,
     parsed: &ParsedInbox,
 ) -> Result<(InboxAccepted, bool)> {
     if parsed.envelope.len() > MAX_ENVELOPE_BYTES {
         return Err(Error::BundleFieldTooLarge);
     }
-    api_key::authenticate(conn, token, ApiKeyScope::InboxPush)?;
-    let (id, fingerprint, duplicate) = crate::db::with_immediate_transaction(conn, || {
-        if let Some(expires_at) = parsed.expires_at.as_deref() {
-            crate::locked_files::require_future_expires_utc(conn, expires_at)?;
-        }
-        for tree in &parsed.trees {
-            org_tree::merge_public_tree(conn, tree)?;
-        }
-        mailbox::store_until(conn, &parsed.envelope, parsed.expires_at.as_deref())
-    })?;
+    store.authenticate(token, ApiKeyScope::InboxPush)?;
+    let stored = store.inbox_push(
+        &parsed.trees,
+        &parsed.envelope,
+        parsed.expires_at.as_deref(),
+    )?;
     Ok((
         InboxAccepted {
-            id,
-            recipient_fingerprint: fingerprint,
+            id: stored.id,
+            recipient_fingerprint: stored.recipient_fingerprint,
         },
-        duplicate,
+        stored.duplicate,
     ))
 }
 
 /// `GET /inbox` (`inbox.pull`), bound to the key's recipient fingerprint.
 pub fn inbox_pull(
-    conn: &Connection,
+    store: &dyn RelayStore,
     token: &str,
     after: Option<i64>,
     limit: Option<i64>,
 ) -> Result<InboxList> {
-    let auth = api_key::authenticate(conn, token, ApiKeyScope::InboxPull)?;
+    let auth = store.authenticate(token, ApiKeyScope::InboxPull)?;
     let fingerprint = auth.recipient_fingerprint.ok_or(Error::ApiKeyScopeDenied)?;
-    let page = mailbox::list_after(conn, &fingerprint, after, limit)?;
-    let trees = org_tree::slices_for_fingerprint(conn, &fingerprint)?;
+    let page = store.list_envelopes_after(&fingerprint, after, limit)?;
+    let trees = slices_for_fingerprint(store, &fingerprint)?;
     Ok(InboxList {
         envelopes: page
             .envelopes
@@ -275,9 +274,10 @@ pub fn inbox_pull(
 }
 
 /// `GET /api-keys` (admin): keys without their bearers.
-pub fn list_keys(conn: &Connection, token: &str) -> Result<Vec<ApiKeyView>> {
-    api_key::authenticate(conn, token, ApiKeyScope::Admin)?;
-    Ok(api_key::list(conn)?
+pub fn list_keys(store: &dyn RelayStore, token: &str) -> Result<Vec<ApiKeyView>> {
+    store.authenticate(token, ApiKeyScope::Admin)?;
+    Ok(store
+        .list_keys()?
         .into_iter()
         .map(ApiKeyView::from)
         .collect())
@@ -285,30 +285,39 @@ pub fn list_keys(conn: &Connection, token: &str) -> Result<Vec<ApiKeyView>> {
 
 /// `POST /api-keys/{id}/revoke` (admin).
 /// Recorded in `api_key_events` with the admin key that revoked it.
-pub fn revoke_key(conn: &Connection, token: &str, id: i64) -> Result<()> {
-    let admin = api_key::authenticate(conn, token, ApiKeyScope::Admin)?;
-    api_key::revoke_by(conn, id, &api_key::admin_actor(admin.id))
+pub fn revoke_key(store: &dyn RelayStore, token: &str, id: i64) -> Result<()> {
+    let admin = store.authenticate(token, ApiKeyScope::Admin)?;
+    store.revoke_key_by(id, &api_key::admin_actor(admin.id))
 }
 
 /// `PUT /trees` (admin): replace a canonical public tree.
-pub fn put_tree(conn: &Connection, token: &str, tree: &PublicTree) -> Result<PublicTree> {
-    api_key::authenticate(conn, token, ApiKeyScope::Admin)?;
-    org_tree::put_public_tree(conn, tree)
+pub fn put_tree(store: &dyn RelayStore, token: &str, tree: &PublicTree) -> Result<PublicTree> {
+    store.authenticate(token, ApiKeyScope::Admin)?;
+    store.put_public_tree(tree)
 }
 
 /// `GET /trees/{label}/context` (`inbox.pull`): the slice visible to the
 /// key's fingerprint.
-pub fn tree_context(conn: &Connection, token: &str, label: &str) -> Result<PublicTree> {
-    let auth = api_key::authenticate(conn, token, ApiKeyScope::InboxPull)?;
+pub fn tree_context(store: &dyn RelayStore, token: &str, label: &str) -> Result<PublicTree> {
+    let auth = store.authenticate(token, ApiKeyScope::InboxPull)?;
     let fingerprint = auth.recipient_fingerprint.ok_or(Error::ApiKeyScopeDenied)?;
-    org_tree::context_for_fingerprint(conn, label, &fingerprint)
+    let full = store.get_public_tree(label)?;
+    super::org_tree::slice_for_fingerprint(&full, &fingerprint).ok_or(Error::NodeNotFound)
 }
 
-fn authenticate_device_read(conn: &Connection, token: &str) -> Result<AuthedKey> {
-    match api_key::authenticate(conn, token, ApiKeyScope::DevicePull) {
-        Err(Error::ApiKeyScopeDenied) => {
-            api_key::authenticate(conn, token, ApiKeyScope::DevicePush)
-        }
+/// Every stored tree this fingerprint appears in, sliced to what it may
+/// see. Trees that do not mention it are omitted, not an error.
+fn slices_for_fingerprint(store: &dyn RelayStore, fingerprint: &str) -> Result<Vec<PublicTree>> {
+    Ok(store
+        .list_public_trees()?
+        .iter()
+        .filter_map(|full| super::org_tree::slice_for_fingerprint(full, fingerprint))
+        .collect())
+}
+
+fn authenticate_device_read(store: &dyn RelayStore, token: &str) -> Result<AuthedKey> {
+    match store.authenticate(token, ApiKeyScope::DevicePull) {
+        Err(Error::ApiKeyScopeDenied) => store.authenticate(token, ApiKeyScope::DevicePush),
         other => other,
     }
 }
@@ -327,34 +336,34 @@ pub fn parse_device_package(is_json: bool, body: &[u8]) -> Result<Vec<u8>> {
 
 /// `POST /devices/packages` (`device.push`).
 pub fn device_push(
-    conn: &Connection,
+    store: &dyn RelayStore,
     token: &str,
     package: &[u8],
 ) -> Result<(InboxAccepted, bool)> {
     if package.len() > MAX_ENVELOPE_BYTES {
         return Err(Error::BundleFieldTooLarge);
     }
-    api_key::authenticate(conn, token, ApiKeyScope::DevicePush)?;
-    let (id, fingerprint, duplicate) = device_mail::store(conn, package)?;
+    store.authenticate(token, ApiKeyScope::DevicePush)?;
+    let stored = store.store_device_package(package)?;
     Ok((
         InboxAccepted {
-            id,
-            recipient_fingerprint: fingerprint,
+            id: stored.id,
+            recipient_fingerprint: stored.recipient_fingerprint,
         },
-        duplicate,
+        stored.duplicate,
     ))
 }
 
 /// `GET /devices/packages` (`device.pull`), bound to the key's fingerprint.
 pub fn device_pull(
-    conn: &Connection,
+    store: &dyn RelayStore,
     token: &str,
     after: Option<i64>,
     limit: Option<i64>,
 ) -> Result<DevicePackageList> {
-    let auth = api_key::authenticate(conn, token, ApiKeyScope::DevicePull)?;
+    let auth = store.authenticate(token, ApiKeyScope::DevicePull)?;
     let fingerprint = auth.recipient_fingerprint.ok_or(Error::ApiKeyScopeDenied)?;
-    let page = device_mail::list_after(conn, &fingerprint, after, limit)?;
+    let page = store.list_device_packages_after(&fingerprint, after, limit)?;
     Ok(DevicePackageList {
         packages: page
             .packages
@@ -371,29 +380,35 @@ pub fn device_pull(
 
 /// `PUT /devices` (`device.push`): store a signed public descriptor.
 pub fn put_device(
-    conn: &Connection,
+    store: &dyn RelayStore,
     token: &str,
     descriptor: &DeviceDescriptor,
 ) -> Result<DeviceDescriptor> {
-    api_key::authenticate(conn, token, ApiKeyScope::DevicePush)?;
-    device_directory::put(conn, descriptor)
+    store.authenticate(token, ApiKeyScope::DevicePush)?;
+    store.put_device_descriptor(descriptor)
 }
 
 /// `GET /devices/{device_id}` (`device.pull` or `device.push`).
-pub fn get_device(conn: &Connection, token: &str, device_id: &str) -> Result<DeviceDescriptor> {
-    authenticate_device_read(conn, token)?;
-    device_directory::require(conn, device_id)
+pub fn get_device(
+    store: &dyn RelayStore,
+    token: &str,
+    device_id: &str,
+) -> Result<DeviceDescriptor> {
+    authenticate_device_read(store, token)?;
+    store
+        .get_device_descriptor(device_id)?
+        .ok_or(Error::DeviceNotFound)
 }
 
 /// Route one request to the handler above, the way the HTTP router does,
 /// and render its result the way the HTTP server would. `GET /health` and
 /// the documentation routes are HTTP-only and not served here.
 pub fn dispatch(
-    conn: &Connection,
+    store: &dyn RelayStore,
     identity: Option<&ProviderIdentity>,
     request: &RelayHttpRequest,
 ) -> RelayHttpResponse {
-    match route(conn, identity, request) {
+    match route(store, identity, request) {
         Ok(response) => response,
         Err(err) => {
             let err = HttpError::from(err);
@@ -403,7 +418,7 @@ pub fn dispatch(
 }
 
 fn route(
-    conn: &Connection,
+    store: &dyn RelayStore,
     identity: Option<&ProviderIdentity>,
     request: &RelayHttpRequest,
 ) -> Result<RelayHttpResponse> {
@@ -430,22 +445,22 @@ fn route(
         }
         ("POST", ["keycheck"]) => {
             let body: KeyCheckRequest = parse_json(&request.body)?;
-            Ok(json_response(200, &keycheck(conn, &body)?))
+            Ok(json_response(200, &keycheck(store, &body)?))
         }
         ("POST", ["inbox"]) => {
             let parsed = parse_inbox(is_json, &request.body)?;
-            let (accepted, duplicate) = inbox_push(conn, &token()?, &parsed)?;
+            let (accepted, duplicate) = inbox_push(store, &token()?, &parsed)?;
             Ok(json_response(if duplicate { 200 } else { 201 }, &accepted))
         }
         ("GET", ["inbox"]) => Ok(json_response(
             200,
-            &inbox_pull(conn, &token()?, query("after")?, query("limit")?)?,
+            &inbox_pull(store, &token()?, query("after")?, query("limit")?)?,
         )),
-        ("GET", ["api-keys"]) => Ok(json_response(200, &list_keys(conn, &token()?)?)),
-        ("GET", ["audit", "api-keys"]) => Ok(json_response(200, &audit_events(conn, &token()?)?)),
+        ("GET", ["api-keys"]) => Ok(json_response(200, &list_keys(store, &token()?)?)),
+        ("GET", ["audit", "api-keys"]) => Ok(json_response(200, &audit_events(store, &token()?)?)),
         ("POST", ["api-keys", id, "revoke"]) => {
             let id = id.parse().map_err(|_| Error::ApiKeyNotFound)?;
-            revoke_key(conn, &token()?, id)?;
+            revoke_key(store, &token()?, id)?;
             Ok(RelayHttpResponse {
                 status: 204,
                 body: Vec::new(),
@@ -453,31 +468,32 @@ fn route(
         }
         ("PUT", ["trees"]) => {
             let tree: PublicTree = parse_json(&request.body)?;
-            Ok(json_response(200, &put_tree(conn, &token()?, &tree)?))
+            Ok(json_response(200, &put_tree(store, &token()?, &tree)?))
         }
         ("GET", ["trees", label, "context"]) => {
             let label = percent_decode(label)?;
-            Ok(json_response(200, &tree_context(conn, &token()?, &label)?))
+            Ok(json_response(200, &tree_context(store, &token()?, &label)?))
         }
         ("POST", ["devices", "packages"]) => {
             let package = parse_device_package(is_json, &request.body)?;
-            let (accepted, duplicate) = device_push(conn, &token()?, &package)?;
+            let (accepted, duplicate) = device_push(store, &token()?, &package)?;
             Ok(json_response(if duplicate { 200 } else { 201 }, &accepted))
         }
         ("GET", ["devices", "packages"]) => Ok(json_response(
             200,
-            &device_pull(conn, &token()?, query("after")?, query("limit")?)?,
+            &device_pull(store, &token()?, query("after")?, query("limit")?)?,
         )),
         ("PUT", ["devices"]) => {
             let descriptor: DeviceDescriptor = parse_json(&request.body)?;
             Ok(json_response(
                 200,
-                &put_device(conn, &token()?, &descriptor)?,
+                &put_device(store, &token()?, &descriptor)?,
             ))
         }
-        ("GET", ["devices", device_id]) => {
-            Ok(json_response(200, &get_device(conn, &token()?, device_id)?))
-        }
+        ("GET", ["devices", device_id]) => Ok(json_response(
+            200,
+            &get_device(store, &token()?, device_id)?,
+        )),
         _ => Ok(json_response(
             404,
             &ErrorBody {

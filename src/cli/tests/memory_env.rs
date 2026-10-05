@@ -5,7 +5,7 @@
 use crate::cli::env::{self, Env};
 use crate::cli::{self, device_tool, Cli};
 use crate::error::{Error, Result};
-use crate::relay::{self, ProviderIdentity, RelayHttpRequest, RelayHttpResponse};
+use crate::relay::{self, ProviderIdentity, RelayHttpRequest, RelayHttpResponse, SqliteRelayStore};
 use crate::storage::{MemoryStorage, Storage};
 use crate::{keys, provider};
 use clap::Parser;
@@ -41,7 +41,7 @@ pub struct MemoryEnv {
 /// The relay a test environment answers for: the crate's own request handling
 /// over an in-memory database, behind a certificate that chains to a test root.
 pub struct TestRelay {
-    pub conn: Connection,
+    pub store: SqliteRelayStore,
     pub identity: ProviderIdentity,
     root_public: [u8; 32],
     /// The test root's signing key, kept so a test can certify a second
@@ -112,7 +112,7 @@ impl Env for MemoryEnv {
             }
         }
         Ok(relay::service::dispatch(
-            &relay.conn,
+            &relay.store,
             Some(&relay.identity),
             &request,
         ))
@@ -192,7 +192,7 @@ impl MemoryEnv {
         self.vars
             .insert("KEYQUORUM_RELAY_URL".into(), RELAY_URL.into());
         self.relay = Some(TestRelay {
-            conn,
+            store: SqliteRelayStore::from_connection(conn),
             identity: ProviderIdentity {
                 certificate,
                 relay_private_key: relay_private,
@@ -235,7 +235,7 @@ impl MemoryEnv {
     pub fn relay_key(&self, scope: relay::ApiKeyScope, fingerprint: Option<String>) -> String {
         let relay = self.relay.as_ref().expect("a relay");
         relay::create_api_key(
-            &relay.conn,
+            &relay.store.connection(),
             &relay::NewApiKey {
                 scope,
                 recipient_fingerprint: fingerprint,

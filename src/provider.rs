@@ -403,7 +403,7 @@ pub(crate) fn unix_to_utc_minute(secs: u64) -> String {
 }
 
 /// Howard Hinnant's civil-from-days (UTC, proleptic Gregorian).
-fn civil_from_days(days_since_epoch: i64) -> (i32, u32, u32) {
+pub(crate) fn civil_from_days(days_since_epoch: i64) -> (i32, u32, u32) {
     let z = days_since_epoch + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = (z - era * 146_097) as u64;

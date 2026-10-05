@@ -817,7 +817,7 @@ impl LabState {
         label: &str,
     ) -> Result<String> {
         Ok(relay::create_api_key(
-            self.vm().relay_conn(),
+            &self.vm().relay_conn(),
             &NewApiKey {
                 scope,
                 recipient_fingerprint,
@@ -3425,7 +3425,7 @@ impl LabState {
             FileKind::Public { .. } => (None, None, None),
         };
         let expired = match &file.expires_at {
-            Some(expires_at) => expiry_passed(self.vm().relay_conn(), expires_at)?,
+            Some(expires_at) => expiry_passed(&self.vm().relay_conn(), expires_at)?,
             None => false,
         };
         Ok(FileView {

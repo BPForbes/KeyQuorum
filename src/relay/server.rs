@@ -8,6 +8,7 @@ use super::client::{
 };
 use super::device_directory::{DeviceDescriptor, DeviceSlotDescriptor};
 use super::service::{self, ApiKeyView, HttpError, ProviderIdentity, MAX_ENVELOPE_BYTES};
+use super::store::{RelayStore, SqliteRelayStore};
 use crate::error::Error;
 use crate::key_tree::{PublicEdge, PublicNode, PublicTree};
 use axum::body::Bytes;
@@ -25,6 +26,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::Semaphore;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
@@ -34,26 +36,71 @@ use zeroize::Zeroizing;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub db: Arc<Mutex<Connection>>,
+    store: Arc<dyn RelayStore>,
     identity: Option<Arc<ProviderIdentity>>,
     rate_limit: Option<Arc<RateLimiter>>,
+    /// Store operations allowed in flight at once, and the separate few kept
+    /// for the readiness probe so a busy relay can still say it is busy.
+    admission: Arc<Semaphore>,
+    probe_admission: Arc<Semaphore>,
+    admission_wait: Duration,
 }
 
+/// Store operations a relay runs at once by default (see
+/// [`AppState::with_store_concurrency`]).
+pub const DEFAULT_STORE_CONCURRENCY: usize = 64;
+/// How long a request waits for a store slot before the relay answers
+/// `503 Service Unavailable`.
+pub const STORE_ADMISSION_WAIT: Duration = Duration::from_secs(5);
+/// Slots reserved for `GET /ready`, outside the pool above.
+const PROBE_CONCURRENCY: usize = 2;
+
 impl AppState {
+    /// A relay on the SQLite connection `conn`, with no provider identity.
     pub fn new(conn: Connection) -> Self {
+        Self::with_store(Arc::new(SqliteRelayStore::from_connection(conn)), None)
+    }
+
+    /// A relay on the SQLite connection `conn` that presents `identity`.
+    pub fn with_identity(conn: Connection, identity: ProviderIdentity) -> Self {
+        Self::with_store(
+            Arc::new(SqliteRelayStore::from_connection(conn)),
+            Some(identity),
+        )
+    }
+
+    /// A relay on any [`RelayStore`] (the MongoDB-backed cloud relay shares
+    /// one store between every replica).
+    pub fn with_store(store: Arc<dyn RelayStore>, identity: Option<ProviderIdentity>) -> Self {
         Self {
-            db: Arc::new(Mutex::new(conn)),
-            identity: None,
+            store,
+            identity: identity.map(Arc::new),
             rate_limit: None,
+            admission: Arc::new(Semaphore::new(DEFAULT_STORE_CONCURRENCY)),
+            probe_admission: Arc::new(Semaphore::new(PROBE_CONCURRENCY)),
+            admission_wait: STORE_ADMISSION_WAIT,
         }
     }
 
-    pub fn with_identity(conn: Connection, identity: ProviderIdentity) -> Self {
-        Self {
-            db: Arc::new(Mutex::new(conn)),
-            identity: Some(Arc::new(identity)),
-            rate_limit: None,
-        }
+    /// How long a request waits for a store slot (tests shorten it).
+    #[cfg(test)]
+    pub(crate) fn with_admission_wait(mut self, wait: Duration) -> Self {
+        self.admission_wait = wait;
+        self
+    }
+
+    /// Allow `operations` store operations in flight at once (at least 1).
+    /// A store operation cannot be cancelled once it starts, so the slot is
+    /// held until it finishes, not until its HTTP request times out; extra
+    /// requests wait up to [`STORE_ADMISSION_WAIT`] and are then refused.
+    pub fn with_store_concurrency(mut self, operations: usize) -> Self {
+        self.admission = Arc::new(Semaphore::new(operations.max(1)));
+        self
+    }
+
+    /// The store every handler and the scan loop reach the relay's state through.
+    pub fn store(&self) -> Arc<dyn RelayStore> {
+        self.store.clone()
     }
 
     /// Limit each client to `per_minute` requests (0 turns the limit off).
@@ -144,15 +191,39 @@ impl IntoResponse for ApiError {
     }
 }
 
-async fn with_conn<T, F>(state: &AppState, f: F) -> Result<T, ApiError>
+/// Run `f` against the store on the blocking pool: every backend is
+/// synchronous (SQLite holds a lock, the MongoDB driver's sync API blocks),
+/// so no request handler stalls the async runtime on it.
+async fn with_store<T, F>(state: &AppState, f: F) -> Result<T, ApiError>
 where
     T: Send + 'static,
-    F: FnOnce(&Connection) -> crate::error::Result<T> + Send + 'static,
+    F: FnOnce(&dyn RelayStore) -> crate::error::Result<T> + Send + 'static,
 {
-    let db = state.db.clone();
+    run_blocking(state, state.admission.clone(), f).await
+}
+
+/// [`with_store`] on a given admission pool. The permit moves into the
+/// blocking task: a request that times out or is dropped does not free it
+/// while the store call it started is still running.
+async fn run_blocking<T, F>(state: &AppState, pool: Arc<Semaphore>, f: F) -> Result<T, ApiError>
+where
+    T: Send + 'static,
+    F: FnOnce(&dyn RelayStore) -> crate::error::Result<T> + Send + 'static,
+{
+    let permit = match tokio::time::timeout(state.admission_wait, pool.acquire_owned()).await {
+        Ok(Ok(permit)) => permit,
+        _ => {
+            tracing::warn!("relay store busy: request refused");
+            return Err(ApiError {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                message: "relay busy".to_string(),
+            });
+        }
+    };
+    let store = state.store.clone();
     tokio::task::spawn_blocking(move || {
-        let conn = db.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        f(&conn)
+        let _permit = permit;
+        f(store.as_ref())
     })
     .await
     .map_err(|_| ApiError::internal())
@@ -162,6 +233,13 @@ where
 #[derive(Serialize, ToSchema)]
 struct HealthResponse {
     status: &'static str,
+}
+
+#[derive(Serialize, ToSchema)]
+struct ReadyResponse {
+    status: &'static str,
+    /// The persistence backend the relay reached (`sqlite` or `mongodb`).
+    store: &'static str,
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -193,6 +271,7 @@ impl Modify for SecurityAddon {
 #[openapi(
     paths(
         health,
+        ready,
         post_keycheck,
         post_inbox,
         get_inbox,
@@ -210,6 +289,7 @@ impl Modify for SecurityAddon {
     components(
         schemas(
             HealthResponse,
+            ReadyResponse,
             KeyCheckRequest,
             KeyCheckResponse,
             InboxAccepted,
@@ -252,6 +332,38 @@ async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
 }
 
+/// `GET /ready`: the process is up *and* its store answers. This is what a
+/// Kubernetes readiness probe asks, so a replica that lost its database is
+/// taken out of rotation; it says nothing about the provider identity,
+/// which only `POST /provider-identity` proves.
+#[utoipa::path(
+    get,
+    path = "/ready",
+    tag = "inbox",
+    responses(
+        (status = 200, description = "Relay is up and its store answers", body = ReadyResponse),
+        (status = 503, description = "The store did not answer", body = ErrorBody)
+    )
+)]
+async fn ready(State(state): State<AppState>) -> Result<Json<ReadyResponse>, ApiError> {
+    let backend = run_blocking(&state, state.probe_admission.clone(), |store| {
+        store.ping()?;
+        Ok(store.backend())
+    })
+    .await
+    .map_err(|_| {
+        tracing::warn!("readiness check: the relay store did not answer");
+        ApiError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: "store unavailable".to_string(),
+        }
+    })?;
+    Ok(Json(ReadyResponse {
+        status: "ok",
+        store: backend,
+    }))
+}
+
 #[utoipa::path(
     post,
     path = "/provider-identity",
@@ -287,7 +399,7 @@ async fn post_keycheck(
     State(state): State<AppState>,
     Json(body): Json<KeyCheckRequest>,
 ) -> Result<Json<KeyCheckResponse>, ApiError> {
-    let check = with_conn(&state, move |conn| service::keycheck(conn, &body)).await?;
+    let check = with_store(&state, move |store| service::keycheck(store, &body)).await?;
     Ok(Json(check))
 }
 
@@ -313,8 +425,8 @@ async fn post_inbox(
     body: Bytes,
 ) -> Result<(StatusCode, Json<InboxAccepted>), ApiError> {
     let parsed = service::parse_inbox(is_json(&headers), &body)?;
-    let (accepted, duplicate) = with_conn(&state, move |conn| {
-        service::inbox_push(conn, &token, &parsed)
+    let (accepted, duplicate) = with_store(&state, move |store| {
+        service::inbox_push(store, &token, &parsed)
     })
     .await?;
     Ok((created_or_ok(duplicate), Json(accepted)))
@@ -362,8 +474,8 @@ async fn get_inbox(
     Query(query): Query<InboxQuery>,
 ) -> Result<Json<InboxList>, ApiError> {
     let (after, limit) = (query.after, query.limit);
-    let list = with_conn(&state, move |conn| {
-        service::inbox_pull(conn, &token, after, limit)
+    let list = with_store(&state, move |store| {
+        service::inbox_pull(store, &token, after, limit)
     })
     .await?;
     Ok(Json(list))
@@ -384,7 +496,7 @@ async fn list_keys(
     State(state): State<AppState>,
     ApiToken(token): ApiToken,
 ) -> Result<Json<Vec<ApiKeyView>>, ApiError> {
-    let keys = with_conn(&state, move |conn| service::list_keys(conn, &token)).await?;
+    let keys = with_store(&state, move |store| service::list_keys(store, &token)).await?;
     Ok(Json(keys))
 }
 
@@ -407,12 +519,12 @@ async fn revoke_key(
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
     let identity = state.identity();
-    with_conn(&state, move |conn| {
-        service::revoke_key(conn, &token, id)?;
+    with_store(&state, move |store| {
+        service::revoke_key(store, &token, id)?;
         // Sign the new chain head at once, so the revocation is vouched
         // for before the next scan.
         if let Some(identity) = identity {
-            if let Err(err) = anchor_now(conn, &identity) {
+            if let Err(err) = anchor_now(store, &identity) {
                 tracing::warn!("audit anchor after revocation failed: {err}");
             }
         }
@@ -423,9 +535,12 @@ async fn revoke_key(
 }
 
 /// Anchor the audit chains with this relay's key at the current time.
-pub fn anchor_now(conn: &Connection, identity: &ProviderIdentity) -> crate::error::Result<usize> {
+pub fn anchor_now(
+    store: &dyn RelayStore,
+    identity: &ProviderIdentity,
+) -> crate::error::Result<usize> {
     let now = crate::provider::system_now_utc_millis()?;
-    super::audit::anchor(conn, identity, &now)
+    store.anchor_audit(identity, &now)
 }
 
 #[utoipa::path(
@@ -442,7 +557,7 @@ async fn get_audit_events(
     State(state): State<AppState>,
     ApiToken(token): ApiToken,
 ) -> Result<Json<Vec<ApiKeyEvent>>, ApiError> {
-    let events = with_conn(&state, move |conn| service::audit_events(conn, &token)).await?;
+    let events = with_store(&state, move |store| service::audit_events(store, &token)).await?;
     Ok(Json(events))
 }
 
@@ -464,7 +579,7 @@ async fn put_tree(
     ApiToken(token): ApiToken,
     Json(tree): Json<PublicTree>,
 ) -> Result<Json<PublicTree>, ApiError> {
-    let stored = with_conn(&state, move |conn| service::put_tree(conn, &token, &tree)).await?;
+    let stored = with_store(&state, move |store| service::put_tree(store, &token, &tree)).await?;
     Ok(Json(stored))
 }
 
@@ -486,8 +601,8 @@ async fn get_tree_context(
     ApiToken(token): ApiToken,
     Path(label): Path<String>,
 ) -> Result<Json<PublicTree>, ApiError> {
-    let slice = with_conn(&state, move |conn| {
-        service::tree_context(conn, &token, &label)
+    let slice = with_store(&state, move |store| {
+        service::tree_context(store, &token, &label)
     })
     .await?;
     Ok(Json(slice))
@@ -515,8 +630,8 @@ async fn post_device_package(
     body: Bytes,
 ) -> Result<(StatusCode, Json<InboxAccepted>), ApiError> {
     let package = service::parse_device_package(is_json(&headers), &body)?;
-    let (accepted, duplicate) = with_conn(&state, move |conn| {
-        service::device_push(conn, &token, &package)
+    let (accepted, duplicate) = with_store(&state, move |store| {
+        service::device_push(store, &token, &package)
     })
     .await?;
     Ok((created_or_ok(duplicate), Json(accepted)))
@@ -541,8 +656,8 @@ async fn get_device_packages(
     Query(query): Query<InboxQuery>,
 ) -> Result<Json<DevicePackageList>, ApiError> {
     let (after, limit) = (query.after, query.limit);
-    let list = with_conn(&state, move |conn| {
-        service::device_pull(conn, &token, after, limit)
+    let list = with_store(&state, move |store| {
+        service::device_pull(store, &token, after, limit)
     })
     .await?;
     Ok(Json(list))
@@ -566,8 +681,8 @@ async fn put_device(
     ApiToken(token): ApiToken,
     Json(descriptor): Json<DeviceDescriptor>,
 ) -> Result<Json<DeviceDescriptor>, ApiError> {
-    let stored = with_conn(&state, move |conn| {
-        service::put_device(conn, &token, &descriptor)
+    let stored = with_store(&state, move |store| {
+        service::put_device(store, &token, &descriptor)
     })
     .await?;
     Ok(Json(stored))
@@ -591,8 +706,8 @@ async fn get_device(
     ApiToken(token): ApiToken,
     Path(device_id): Path<String>,
 ) -> Result<Json<DeviceDescriptor>, ApiError> {
-    let descriptor = with_conn(&state, move |conn| {
-        service::get_device(conn, &token, &device_id)
+    let descriptor = with_store(&state, move |store| {
+        service::get_device(store, &token, &device_id)
     })
     .await?;
     Ok(Json(descriptor))
@@ -762,6 +877,7 @@ pub fn router(state: AppState) -> Router {
     let app = Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .route("/health", get(health))
+        .route("/ready", get(ready))
         .route("/keycheck", post(post_keycheck))
         .route("/provider-identity", post(post_provider_identity))
         .route("/inbox", post(post_inbox).get(get_inbox))

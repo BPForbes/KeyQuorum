@@ -5,7 +5,6 @@
 //! kind are refused here so this table never becomes a second bridge inbox
 //! and never holds an unsealed transfer package.
 
-use super::mailbox::{DEFAULT_INBOX_PAGE, MAX_INBOX_PAGE};
 use crate::envelope::{self, routing_public_key};
 use crate::error::{Error, Result};
 use crate::keys;
@@ -33,7 +32,10 @@ pub struct DeviceMailPage {
     pub next_after: Option<i64>,
 }
 
-pub fn store(conn: &Connection, package: &[u8]) -> Result<(i64, String, bool)> {
+/// What this mailbox accepts: a sealed device letter (kinds 9 to 12) within
+/// the size cap, never a raw `KQTX` or a bridge letter. Returns where it is
+/// filed (the recipient fingerprint) and its content hash.
+pub(crate) fn check_package(package: &[u8]) -> Result<(String, String)> {
     if package.len() > MAX_DEVICE_PACKAGE_BYTES {
         return Err(Error::BundleFieldTooLarge);
     }
@@ -47,6 +49,11 @@ pub fn store(conn: &Connection, package: &[u8]) -> Result<(i64, String, bool)> {
     let recipient_public_key = routing_public_key(package)?;
     let fingerprint = keys::fingerprint(&recipient_public_key);
     let content_hash = hex::encode(Sha256::digest(package));
+    Ok((fingerprint, content_hash))
+}
+
+pub fn store(conn: &Connection, package: &[u8]) -> Result<(i64, String, bool)> {
+    let (fingerprint, content_hash) = check_package(package)?;
 
     purge_expired(conn)?;
     conn.execute(
@@ -75,11 +82,7 @@ pub fn list_after(
     after: Option<i64>,
     limit: Option<i64>,
 ) -> Result<DeviceMailPage> {
-    let page = match limit {
-        None => DEFAULT_INBOX_PAGE,
-        Some(n) if (1..=MAX_INBOX_PAGE).contains(&n) => n,
-        Some(_) => return Err(Error::InvalidInboxPage),
-    };
+    let page = super::mailbox::page_size(limit)?;
     let after = after.unwrap_or(0);
     let fetch = page.saturating_add(1);
     purge_expired(conn)?;
@@ -98,13 +101,8 @@ pub fn list_after(
             bytes: row.get(2)?,
         })
     })?;
-    let mut packages = rows.collect::<rusqlite::Result<Vec<_>>>()?;
-    let next_after = if packages.len() > page as usize {
-        packages.pop();
-        packages.last().map(|item| item.id)
-    } else {
-        None
-    };
+    let (packages, next_after) =
+        super::mailbox::bound_page(rows, page, |item| item.id, |item| item.bytes.len())?;
     Ok(DeviceMailPage {
         packages,
         next_after,

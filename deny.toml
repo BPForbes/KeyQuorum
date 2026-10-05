@@ -27,6 +27,9 @@ allow = [
   "Zlib",
   # Mozilla's CA root list (webpki-roots), used by the relay's TLS client.
   "CDLA-Permissive-2.0",
+  # Public-domain dedication (tiny-keccak, reached through the MongoDB
+  # driver's DNS resolver cache). No obligations; checked 2026-10-05.
+  "CC0-1.0",
 ]
 
 # This crate is not published, so a missing licence field is not an error.

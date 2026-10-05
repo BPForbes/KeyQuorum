@@ -17,10 +17,15 @@ fn main() -> ExitCode {
 
     let ran = match cli.command {
         #[cfg(feature = "provider")]
-        Command::Host {
-            mailbox_db,
-            command,
-        } => host::run(&mailbox_db, &cli::resolve_db(cli.db.as_deref()), command),
+        Command::Host(opts) => host::run(
+            &host::StoreArgs {
+                mailbox_db: opts.mailbox_db,
+                mongodb_uri_file: opts.mongodb_uri_file,
+                mongodb_db: opts.mongodb_db,
+            },
+            &cli::resolve_db(cli.db.as_deref()),
+            opts.command,
+        ),
         command => cli::run_cli(Cli { command, ..cli }),
     };
     match ran {

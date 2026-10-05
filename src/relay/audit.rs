@@ -38,7 +38,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
 const ENTRY_DOMAIN: &[u8] = b"KQ-RELAY-AUDIT-ENTRY-v1";
-const GENESIS: [u8; 32] = [0u8; 32];
+pub(crate) const GENESIS: [u8; 32] = [0u8; 32];
 const CHECKPOINT_FORMAT: &str = "KQ-RELAY-AUDIT-CHECKPOINT-v1";
 
 /// An audit table this module chains and anchors.
@@ -82,11 +82,25 @@ impl AuditTable {
     }
 }
 
-struct Row {
-    id: i64,
-    fields: Vec<Option<String>>,
-    prev_hash: Option<String>,
-    entry_hash: Option<String>,
+/// One audit row as the chain sees it: its id, its recorded fields in the
+/// table's fixed order (see [`AuditTable::fields_sql`]), and the two hashes.
+/// Every backend reads its rows into this shape; the chain arithmetic below
+/// never touches a database.
+pub(crate) struct Row {
+    pub id: i64,
+    pub fields: Vec<Option<String>>,
+    pub prev_hash: Option<String>,
+    pub entry_hash: Option<String>,
+}
+
+/// One relay-key anchor as stored: the row count and head it vouches for,
+/// when, under which certificate, and the signature.
+pub(crate) struct AnchorRow {
+    pub row_count: i64,
+    pub head_hash: String,
+    pub signed_at: String,
+    pub certificate: Vec<u8>,
+    pub signature: Vec<u8>,
 }
 
 fn read_rows(conn: &Connection, table: AuditTable, filter: &str) -> Result<Vec<Row>> {
@@ -111,7 +125,11 @@ fn read_rows(conn: &Connection, table: AuditTable, filter: &str) -> Result<Vec<R
 /// The chain hash of one row: domain, table, the previous row's hash, then
 /// each field tagged present (`1 || len || bytes`) or absent (`0`), so a
 /// NULL can never collide with an empty string.
-fn entry_hash(table: AuditTable, prev: &[u8; 32], fields: &[Option<String>]) -> Result<[u8; 32]> {
+pub(crate) fn entry_hash(
+    table: AuditTable,
+    prev: &[u8; 32],
+    fields: &[Option<String>],
+) -> Result<[u8; 32]> {
     let mut hasher = Sha256::new();
     hasher.update(ENTRY_DOMAIN);
     hash_len_prefixed(&mut hasher, table.name().as_bytes())?;
@@ -128,7 +146,7 @@ fn entry_hash(table: AuditTable, prev: &[u8; 32], fields: &[Option<String>]) -> 
     Ok(hasher.finalize().into())
 }
 
-fn decode_hash(hex_hash: &str) -> Option<[u8; 32]> {
+pub(crate) fn decode_hash(hex_hash: &str) -> Option<[u8; 32]> {
     hex::decode(hex_hash).ok()?.try_into().ok()
 }
 
@@ -233,14 +251,7 @@ pub fn anchor(conn: &Connection, identity: &ProviderIdentity, signed_at: &str) -
             if covered == Some(count as i64) {
                 continue;
             }
-            let preimage = signing::relay_audit_anchor_preimage(
-                table.name(),
-                count,
-                &head_hash,
-                signed_at,
-                &identity.certificate,
-            )?;
-            let signature = signing::sign(&identity.relay_private_key, &preimage);
+            let signature = sign_anchor(identity, table, count, &head_hash, signed_at)?;
             conn.execute(
                 "INSERT INTO audit_anchors
                  (table_name, row_count, head_hash, signed_at, certificate, signature)
@@ -258,6 +269,25 @@ pub fn anchor(conn: &Connection, identity: &ProviderIdentity, signed_at: &str) -
         }
         Ok(written)
     })
+}
+
+/// The relay key's signature over an anchor for `table` at `count` rows
+/// with head `head_hash`, dated `signed_at`.
+pub(crate) fn sign_anchor(
+    identity: &ProviderIdentity,
+    table: AuditTable,
+    count: u64,
+    head_hash: &[u8; 32],
+    signed_at: &str,
+) -> Result<[u8; 64]> {
+    let preimage = signing::relay_audit_anchor_preimage(
+        table.name(),
+        count,
+        head_hash,
+        signed_at,
+        &identity.certificate,
+    )?;
+    Ok(signing::sign(&identity.relay_private_key, &preimage))
 }
 
 /// One table's place in a [`Checkpoint`].
@@ -320,7 +350,7 @@ impl Checkpoint {
     /// Signed by a relay key whose certificate chains to the root, is not
     /// revoked and was valid when the checkpoint was taken. Only a yes or a
     /// no comes out: nothing read from the certificate leaves this check.
-    fn is_signed_by_trusted_relay(
+    pub(crate) fn is_signed_by_trusted_relay(
         &self,
         root_public_key: &[u8; 32],
         revoked: &HashSet<String>,
@@ -354,6 +384,17 @@ pub fn checkpoint(
         let (count, hash) = head(conn, table)?.unwrap_or((0, GENESIS));
         heads.push((table.name(), count, hash));
     }
+    sign_checkpoint(&heads, identity, taken_at)
+}
+
+/// A [`Checkpoint`] over the given heads (one per table, an empty table at
+/// row 0 with the genesis hash), signed with the relay key.
+pub(crate) fn sign_checkpoint(
+    heads: &[(&str, u64, [u8; 32])],
+    identity: &ProviderIdentity,
+    taken_at: &str,
+) -> Result<Checkpoint> {
+    let heads = heads.to_vec();
     let preimage =
         signing::relay_audit_checkpoint_preimage(&heads, taken_at, &identity.certificate)?;
     let signature = signing::sign(&identity.relay_private_key, &preimage);
@@ -467,9 +508,47 @@ pub fn verify(
     let mut reports = Vec::new();
     for table in AuditTable::ALL {
         let rows = read_rows(conn, table, "")?;
+        let mut stmt = conn.prepare(
+            "SELECT row_count, head_hash, signed_at, certificate, signature
+             FROM audit_anchors WHERE table_name = ?1 ORDER BY id",
+        )?;
+        let anchors = stmt
+            .query_map(params![table.name()], |row| {
+                Ok(AnchorRow {
+                    row_count: row.get(0)?,
+                    head_hash: row.get(1)?,
+                    signed_at: row.get(2)?,
+                    certificate: row.get(3)?,
+                    signature: row.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        reports.push(verify_table(
+            table,
+            &rows,
+            &anchors,
+            root_public_key,
+            revoked,
+            checkpoint,
+        )?);
+    }
+    Ok(reports)
+}
+
+/// Re-walk one table's chain and judge its anchors; the checkpoint, if
+/// given, has already been checked to be signed by a trusted relay key.
+pub(crate) fn verify_table(
+    table: AuditTable,
+    rows: &[Row],
+    anchors: &[AnchorRow],
+    root_public_key: &[u8; 32],
+    revoked: &HashSet<String>,
+    checkpoint: Option<&Checkpoint>,
+) -> Result<TableReport> {
+    {
         let mut heads = vec![GENESIS];
         let mut broken_at = None;
-        for row in &rows {
+        for row in rows {
             let prev = *heads.last().expect("starts with genesis");
             let recorded_prev = row.prev_hash.as_deref().and_then(decode_hash);
             let recorded = row.entry_hash.as_deref().and_then(decode_hash);
@@ -495,25 +574,17 @@ pub fn verify(
 
         let mut trusted: Option<TrustedAnchor> = None;
         let mut rejected_anchors = 0;
-        let mut stmt = conn.prepare(
-            "SELECT row_count, head_hash, signed_at, certificate, signature
-             FROM audit_anchors WHERE table_name = ?1 ORDER BY id",
-        )?;
-        let anchors = stmt
-            .query_map(params![table.name()], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Vec<u8>>(3)?,
-                    row.get::<_, Vec<u8>>(4)?,
-                ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        for (count, head_hex, signed_at, certificate, signature) in anchors {
+        for anchor in anchors {
+            let AnchorRow {
+                row_count: count,
+                head_hash: head_hex,
+                signed_at,
+                certificate,
+                signature,
+            } = anchor;
             let accepted = (|| -> Option<TrustedAnchor> {
-                let count = u64::try_from(count).ok()?;
-                let head_hash = decode_hash(&head_hex)?;
+                let count = u64::try_from(*count).ok()?;
+                let head_hash = decode_hash(head_hex)?;
                 if heads.get(usize::try_from(count).ok()?) != Some(&head_hash) {
                     return None;
                 }
@@ -524,21 +595,20 @@ pub fn verify(
                         return None;
                     }
                 }
-                let cert =
-                    certificate_at(root_public_key, &certificate, &signed_at, revoked).ok()?;
-                let signature: [u8; 64] = signature.try_into().ok()?;
+                let cert = certificate_at(root_public_key, certificate, signed_at, revoked).ok()?;
+                let signature: [u8; 64] = signature.as_slice().try_into().ok()?;
                 let preimage = signing::relay_audit_anchor_preimage(
                     table.name(),
                     count,
                     &head_hash,
-                    &signed_at,
-                    &certificate,
+                    signed_at,
+                    certificate,
                 )
                 .ok()?;
                 signing::verify_signature(&cert.relay_public_key, &preimage, &signature).ok()?;
                 Some(TrustedAnchor {
                     row_count: count,
-                    signed_at,
+                    signed_at: signed_at.clone(),
                     provider_id: cert.provider_id,
                     serial: cert.serial,
                 })
@@ -555,16 +625,15 @@ pub fn verify(
                 None => rejected_anchors += 1,
             }
         }
-        reports.push(TableReport {
+        Ok(TableReport {
             table: table.name(),
             rows: rows.len() as u64,
             broken_at,
             trusted,
             rejected_anchors,
             checkpoint: checkpoint_report,
-        });
+        })
     }
-    Ok(reports)
 }
 
 #[cfg(test)]

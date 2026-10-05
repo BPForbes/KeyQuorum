@@ -1,8 +1,15 @@
-# Reusable test run, shared by test.yml (standard) and legacy.yml (legacy).
+# Reusable test run, shared by deploy-lab.yml (the standard `--features
+# provider,lab,tui` run, as its `native` job) and legacy.yml (`--all-features`).
 #
 # Every test group runs at the same time in its own job instead of one long
 # linear nextest run. Groups are nextest filtersets over the module path, so a
 # new module lands in `core` without editing anything.
+#
+# Cache strategy: Each call passes a cache-key (standard or legacy). Rust-cache
+# uses shared-key to let all jobs in the matrix share one cache per key, so jobs
+# do not re-build on cache misses. Different feature builds (standard vs legacy)
+# use separate cache keys to prevent cache eviction between them; actual cache
+# hit rate and size should be measured to confirm the strategy is effective.
 
 name: Tests
 
@@ -56,5 +63,35 @@ jobs:
       - uses: taiki-e/install-action@badb8c3638e0b773c6c17a6025c2306a8f1c4303 # nextest tag
         with:
           tool: nextest
+      - name: Pre-download Swagger UI (workaround for proxy issues)
+        if: contains(inputs.features, 'lab') || contains(inputs.features, 'all-features')
+        run: |
+          SWAGGER_FILE="/tmp/swagger-ui-v5.32.6.zip"
+          for attempt in {1..3}; do
+            if [ -f "$SWAGGER_FILE" ]; then
+              if unzip -t "$SWAGGER_FILE" > /dev/null 2>&1; then
+                echo "✓ Using cached and verified swagger-ui"
+                echo "SWAGGER_UI_DOWNLOAD_URL=file://$SWAGGER_FILE" >> $GITHUB_ENV
+                exit 0
+              else
+                echo "Cached swagger-ui validation failed, removing..."
+                rm -f "$SWAGGER_FILE"
+              fi
+            fi
+            if curl -L --progress-bar -o "$SWAGGER_FILE" "https://github.com/swagger-api/swagger-ui/archive/refs/tags/v5.32.6.zip"; then
+              if unzip -t "$SWAGGER_FILE" > /dev/null 2>&1; then
+                echo "✓ Downloaded and verified swagger-ui"
+                echo "SWAGGER_UI_DOWNLOAD_URL=file://$SWAGGER_FILE" >> $GITHUB_ENV
+                exit 0
+              fi
+            fi
+            if [ $attempt -lt 3 ]; then
+              echo "Retrying... (attempt $((attempt + 1))/3)"
+              rm -f "$SWAGGER_FILE"
+              sleep $((2 ** (attempt - 1)))
+            fi
+          done
+          echo "Failed to download and verify swagger-ui after 3 attempts"
+          exit 1
       - name: Test ${{ matrix.name }}
         run: cargo nextest run --locked --all-targets ${{ inputs.features }} --no-fail-fast -E '${{ matrix.filter }}'

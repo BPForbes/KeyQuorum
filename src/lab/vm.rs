@@ -30,7 +30,7 @@ use crate::cli::{self, device_tool, Cli};
 use crate::error::{Error, Result};
 use crate::keys;
 use crate::provider::{self, NewCertificate};
-use crate::relay::{self, ProviderIdentity, RelayHttpRequest, RelayHttpResponse};
+use crate::relay::{self, ProviderIdentity, RelayHttpRequest, RelayHttpResponse, SqliteRelayStore};
 use crate::storage::{MemoryStorage, Storage};
 use clap::error::ErrorKind;
 use clap::Parser;
@@ -77,7 +77,7 @@ impl CommandRun {
 }
 
 struct RelayHost {
-    conn: Connection,
+    store: SqliteRelayStore,
     identity: ProviderIdentity,
     root_public: [u8; 32],
 }
@@ -138,7 +138,7 @@ impl LabVm {
             stores: HashMap::new(),
             db_namespace: NEXT_NAMESPACE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             relay: RelayHost {
-                conn,
+                store: SqliteRelayStore::from_connection(conn),
                 identity: ProviderIdentity {
                     certificate,
                     relay_private_key: relay_private,
@@ -190,9 +190,9 @@ impl LabVm {
     }
 
     /// The relay's own database, for the operator steps the provider
-    /// performs out of band (issuing API keys).
-    pub fn relay_conn(&self) -> &Connection {
-        &self.relay.conn
+    /// performs out of band (issuing API keys) and for its clock.
+    pub fn relay_conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.relay.store.connection()
     }
 
     /// Read-only access to a store for rendering the lab's views.
@@ -457,7 +457,7 @@ impl Env for LabVm {
             )));
         }
         Ok(relay::service::dispatch(
-            &self.relay.conn,
+            &self.relay.store,
             Some(&self.relay.identity),
             &request,
         ))
@@ -468,21 +468,19 @@ impl Env for LabVm {
     }
 
     fn now_utc(&self) -> Result<String> {
-        Ok(self
-            .relay
-            .conn
-            .query_row("SELECT strftime('%Y-%m-%d %H:%M:00', 'now')", [], |row| {
-                row.get(0)
-            })?)
+        Ok(self.relay.store.connection().query_row(
+            "SELECT strftime('%Y-%m-%d %H:%M:00', 'now')",
+            [],
+            |row| row.get(0),
+        )?)
     }
 
     fn now_utc_precise(&self) -> Result<String> {
-        Ok(self
-            .relay
-            .conn
-            .query_row("SELECT strftime('%Y-%m-%d %H:%M:%f', 'now')", [], |row| {
-                row.get(0)
-            })?)
+        Ok(self.relay.store.connection().query_row(
+            "SELECT strftime('%Y-%m-%d %H:%M:%f', 'now')",
+            [],
+            |row| row.get(0),
+        )?)
     }
 
     fn open_db(&mut self, path: &Path) -> Result<Connection> {

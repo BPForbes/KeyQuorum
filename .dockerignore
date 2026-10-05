@@ -1,0 +1,10 @@
+# Only what the image build needs: the crate. Nothing that could carry a
+# credential, a relay database, a key file or a customer's letter is sent to
+# the build context, so it cannot end up in a layer.
+*
+!Cargo.toml
+!Cargo.lock
+!build.rs
+!src/
+!deny.toml
+src/lab/**/*.wasm

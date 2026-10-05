@@ -3,6 +3,10 @@
 //!
 //! The relay never unseals envelopes and never holds wrapped shares or
 //! private keys. Full public-tree context is stored as JSON documents.
+//! Where that state lives is [`store::RelayStore`]'s business: the
+//! owner-only SQLite file this module opens ([`store::SqliteRelayStore`]),
+//! or, with the `mongodb` feature, a shared MongoDB deployment
+//! (`mongo::MongoRelayStore`) for a relay that runs as several replicas.
 //! Pushing envelopes merges the sender's public topology into those
 //! documents; pull returns a sliced copy for the recipient fingerprint
 //! that a personal SQLite store translates.
@@ -14,10 +18,13 @@ mod device_directory;
 mod device_mail;
 pub mod key_delivery;
 mod mailbox;
+#[cfg(feature = "mongodb")]
+pub mod mongo;
 mod org_tree;
 #[cfg(feature = "provider")]
 mod server;
 pub mod service;
+pub mod store;
 
 pub use api_key::{
     authenticate, authenticate_any, authenticate_licensee, authorize_licensee_or_bootstrap,
@@ -27,7 +34,7 @@ pub use api_key::{
     record_provider_auth_event, revoke as revoke_api_key, rotate as rotate_api_key, ApiKeyEvent,
     ApiKeyInfo, ApiKeyScope, AuthedKey, CreatedApiKey, CreatedLicensee, KeyCheck, NewApiKey,
 };
-pub use api_key::{info as api_key_info, rotate_with as rotate_api_key_with, OldKey};
+pub use api_key::{info as api_key_info, rotate_with as rotate_api_key_with, OldKey, HOST_ACTOR};
 #[cfg(not(target_arch = "wasm32"))]
 pub use client::UreqTransport;
 pub use client::{
@@ -51,7 +58,7 @@ pub use device_mail::{
 };
 pub use mailbox::{
     list_after, purge_expired as purge_expired_envelopes, store, store_until, MailboxPage,
-    StoredEnvelope, DEFAULT_INBOX_PAGE, MAX_INBOX_PAGE,
+    StoredEnvelope, DEFAULT_INBOX_PAGE, MAX_INBOX_PAGE, MAX_INBOX_PAGE_BYTES,
 };
 pub use org_tree::{
     context_for_fingerprint, contexts_for_fingerprint, get_public_tree, list_public_trees,
@@ -59,10 +66,11 @@ pub use org_tree::{
 };
 #[cfg(feature = "provider")]
 pub use server::{
-    anchor_now, check_bind, router, AppState, RateLimiter, MAX_RATE_LIMITED_CLIENTS,
-    REQUEST_TIMEOUT,
+    anchor_now, check_bind, router, AppState, RateLimiter, DEFAULT_STORE_CONCURRENCY,
+    MAX_RATE_LIMITED_CLIENTS, REQUEST_TIMEOUT, STORE_ADMISSION_WAIT,
 };
 pub use service::{ProviderIdentity, MAX_ENVELOPE_BYTES};
+pub use store::{ProviderAuthEvent, RelayStore, SqliteRelayStore, StoredLetter};
 
 use crate::error::{Error, Result};
 use rusqlite::{Connection, OptionalExtension};
