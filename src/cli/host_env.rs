@@ -72,6 +72,16 @@ pub fn read_credential_file(path: &Path) -> Result<Zeroizing<String>> {
     Ok(text)
 }
 
+/// A 32-byte key file (a relay or provider-root private key, a relay public
+/// key) as `host identity generate` and `host root generate` write it: hex
+/// text. It is read with the same bound and the same line-ending rule as any
+/// other credential file, so a misnamed large file cannot exhaust memory, and
+/// the key is zeroized when dropped.
+pub fn read_key_file(path: &Path) -> Result<Zeroizing<[u8; 32]>> {
+    let text = read_credential_file(path)?;
+    crate::keys::parse_key_32(&text)
+}
+
 /// A value's source, in the order it is looked for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {

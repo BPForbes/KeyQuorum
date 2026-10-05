@@ -231,3 +231,24 @@ fn the_mongodb_uri_comes_from_a_file_before_the_environment() {
         "flag"
     );
 }
+
+#[test]
+fn a_key_file_is_hex_read_with_the_credential_bound() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (secret, _public) = crate::keys::generate_signing_keypair();
+    let hex_key = hex::encode(*secret);
+    let plain = file_with(&dir, "key", format!("{hex_key}\n").as_bytes());
+    assert_eq!(*read_key_file(&plain).expect("read"), *secret);
+    // The wrong length, not hex, empty and oversized files are all refused.
+    let short = file_with(&dir, "short", b"abcd\n");
+    assert!(matches!(
+        read_key_file(&short),
+        Err(Error::InvalidPublicKey)
+    ));
+    let text = file_with(&dir, "text", b"not hex at all\n");
+    assert!(read_key_file(&text).is_err());
+    let empty = file_with(&dir, "empty", b"");
+    assert!(matches!(read_key_file(&empty), Err(Error::Usage(_))));
+    let huge = file_with(&dir, "huge", &vec![b'a'; MAX_CREDENTIAL_FILE_BYTES + 1]);
+    assert!(matches!(read_key_file(&huge), Err(Error::Usage(_))));
+}

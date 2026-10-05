@@ -120,7 +120,7 @@ fn now() -> String {
 
 fn key_lifecycle_create_authenticate_rotate_revoke(store: &dyn RelayStore) {
     let created = store
-        .create_api_key(&new_key(ApiKeyScope::InboxPush, None))
+        .mint_key(&new_key(ApiKeyScope::InboxPush, None))
         .expect("create");
     assert!(created.token.starts_with("kq_"));
     let authed = store
@@ -134,13 +134,13 @@ fn key_lifecycle_create_authenticate_rotate_revoke(store: &dyn RelayStore) {
     let any = store.authenticate_any(&created.token).expect("any scope");
     assert_eq!(any.scope, ApiKeyScope::InboxPush);
     assert!(store
-        .api_key_info(created.info.id)
+        .key_info(created.info.id)
         .expect("info")
         .last_used_at
         .is_some());
 
     let rotated = store
-        .rotate_api_key_with(created.info.id, OldKey::RevokeNow)
+        .rotate_key_with(created.info.id, OldKey::RevokeNow)
         .expect("rotate");
     assert_ne!(rotated.info.id, created.info.id);
     assert_eq!(rotated.info.scope, "inbox.push");
@@ -152,30 +152,30 @@ fn key_lifecycle_create_authenticate_rotate_revoke(store: &dyn RelayStore) {
         .authenticate(&rotated.token, ApiKeyScope::InboxPush)
         .expect("new key");
     assert!(matches!(
-        store.rotate_api_key_with(created.info.id, OldKey::RevokeNow),
+        store.rotate_key_with(created.info.id, OldKey::RevokeNow),
         Err(Error::ApiKeyRevoked)
     ));
 
     store
-        .revoke_api_key_by(rotated.info.id, "host")
+        .revoke_key_by(rotated.info.id, "host")
         .expect("revoke");
     store
-        .revoke_api_key_by(rotated.info.id, "host")
+        .revoke_key_by(rotated.info.id, "host")
         .expect("revoking again records nothing and is not an error");
     assert!(matches!(
         store.authenticate(&rotated.token, ApiKeyScope::InboxPush),
         Err(Error::ApiKeyRevoked)
     ));
     assert!(matches!(
-        store.revoke_api_key_by(9_999, "host"),
+        store.revoke_key_by(9_999, "host"),
         Err(Error::ApiKeyNotFound)
     ));
 
-    let listed = store.list_api_keys().expect("list");
+    let listed = store.list_keys().expect("list");
     assert_eq!(listed.len(), 2);
     assert!(listed.iter().all(|k| k.revoked_at.is_some()));
     let events: Vec<(i64, String, Option<i64>)> = store
-        .api_key_events(None)
+        .key_events(None)
         .expect("events")
         .into_iter()
         .map(|e| (e.key_id, e.event, e.related_key_id))
@@ -190,7 +190,7 @@ fn key_lifecycle_create_authenticate_rotate_revoke(store: &dyn RelayStore) {
         ]
     );
     let mine = store
-        .api_key_events(Some(created.info.id))
+        .key_events(Some(created.info.id))
         .expect("events for key");
     assert_eq!(
         mine.len(),
@@ -201,7 +201,7 @@ fn key_lifecycle_create_authenticate_rotate_revoke(store: &dyn RelayStore) {
 
 fn expired_unknown_and_zero_ttl_keys_are_refused(store: &dyn RelayStore) {
     let expired = store
-        .create_api_key(&NewApiKey {
+        .mint_key(&NewApiKey {
             ttl_seconds: Some(-1),
             ..new_key(ApiKeyScope::Admin, None)
         })
@@ -219,14 +219,14 @@ fn expired_unknown_and_zero_ttl_keys_are_refused(store: &dyn RelayStore) {
         Err(Error::InvalidApiKey)
     ));
     assert!(matches!(
-        store.create_api_key(&NewApiKey {
+        store.mint_key(&NewApiKey {
             ttl_seconds: Some(0),
             ..new_key(ApiKeyScope::Admin, None)
         }),
         Err(Error::InvalidApiKeyRequest)
     ));
     let live = store
-        .create_api_key(&NewApiKey {
+        .mint_key(&NewApiKey {
             ttl_seconds: Some(3_600),
             ..new_key(ApiKeyScope::Admin, None)
         })
@@ -237,7 +237,7 @@ fn expired_unknown_and_zero_ttl_keys_are_refused(store: &dyn RelayStore) {
         .expect("not yet expired");
     // A rotation keeps the expiry of the key it replaces.
     let rotated = store
-        .rotate_api_key_with(live.info.id, OldKey::RevokeNow)
+        .rotate_key_with(live.info.id, OldKey::RevokeNow)
         .expect("rotate");
     assert_eq!(rotated.info.expires_at, live.info.expires_at);
 }
@@ -246,21 +246,21 @@ fn pull_keys_bind_a_fingerprint_and_push_keys_must_not(store: &dyn RelayStore) {
     let (_, pk) = keys::generate_encryption_keypair();
     let fingerprint = keys::fingerprint(&pk);
     assert!(matches!(
-        store.create_api_key(&new_key(ApiKeyScope::InboxPull, None)),
+        store.mint_key(&new_key(ApiKeyScope::InboxPull, None)),
         Err(Error::InvalidApiKeyRequest)
     ));
     assert!(matches!(
-        store.create_api_key(&new_key(ApiKeyScope::InboxPush, Some(&fingerprint))),
+        store.mint_key(&new_key(ApiKeyScope::InboxPush, Some(&fingerprint))),
         Err(Error::InvalidApiKeyRequest)
     ));
     assert!(matches!(
-        store.create_api_key(&new_key(ApiKeyScope::InboxPull, Some("not-hex"))),
+        store.mint_key(&new_key(ApiKeyScope::InboxPull, Some("not-hex"))),
         Err(Error::InvalidApiKeyRequest)
     ));
     assert!(!store.has_live_pull_key(&fingerprint).expect("none yet"));
     let upper = fingerprint.to_ascii_uppercase();
     let pull = store
-        .create_api_key(&new_key(ApiKeyScope::InboxPull, Some(&upper)))
+        .mint_key(&new_key(ApiKeyScope::InboxPull, Some(&upper)))
         .expect("pull key");
     assert_eq!(
         pull.info.recipient_fingerprint.as_deref(),
@@ -276,16 +276,14 @@ fn pull_keys_bind_a_fingerprint_and_push_keys_must_not(store: &dyn RelayStore) {
     );
     assert!(store.has_live_pull_key(&fingerprint).expect("live"));
     let device = store
-        .create_api_key(&new_key(ApiKeyScope::DevicePull, Some(&fingerprint)))
+        .mint_key(&new_key(ApiKeyScope::DevicePull, Some(&fingerprint)))
         .expect("device pull key");
     assert_eq!(device.info.scope, "device.pull");
     assert!(matches!(
-        store.create_api_key(&new_key(ApiKeyScope::DevicePush, Some(&fingerprint))),
+        store.mint_key(&new_key(ApiKeyScope::DevicePush, Some(&fingerprint))),
         Err(Error::InvalidApiKeyRequest)
     ));
-    store
-        .revoke_api_key_by(pull.info.id, "host")
-        .expect("revoke");
+    store.revoke_key_by(pull.info.id, "host").expect("revoke");
     assert!(
         !store.has_live_pull_key(&fingerprint).expect("revoked"),
         "a device.pull key is not an inbox.pull key"
@@ -294,7 +292,7 @@ fn pull_keys_bind_a_fingerprint_and_push_keys_must_not(store: &dyn RelayStore) {
 
 fn keycheck_reports_liveness_without_stamping_use(store: &dyn RelayStore) {
     let created = store
-        .create_api_key(&new_key(ApiKeyScope::InboxPush, None))
+        .mint_key(&new_key(ApiKeyScope::InboxPush, None))
         .expect("create");
     let check = store.check_token(&created.token).expect("check token");
     assert!(check.valid);
@@ -308,7 +306,7 @@ fn keycheck_reports_liveness_without_stamping_use(store: &dyn RelayStore) {
     assert_eq!(by_hash, check);
     assert!(
         store
-            .api_key_info(created.info.id)
+            .key_info(created.info.id)
             .expect("info")
             .last_used_at
             .is_none(),
@@ -317,7 +315,7 @@ fn keycheck_reports_liveness_without_stamping_use(store: &dyn RelayStore) {
     assert!(!store.check_token("kq_nope").expect("unknown").valid);
     assert!(!store.check_hash("zz").expect("not a hash").valid);
     store
-        .revoke_api_key_by(created.info.id, "host")
+        .revoke_key_by(created.info.id, "host")
         .expect("revoke");
     assert!(!store.check_hash(&hash).expect("revoked").valid);
 }
@@ -608,10 +606,10 @@ fn device_descriptors_are_signed_and_keep_their_verify_key(store: &dyn RelayStor
 fn audit_trail_is_chained_anchored_and_checkpointed(store: &dyn RelayStore) {
     let (identity, root) = identity();
     let key = store
-        .create_api_key(&new_key(ApiKeyScope::InboxPush, None))
+        .mint_key(&new_key(ApiKeyScope::InboxPush, None))
         .expect("create");
     store
-        .rotate_api_key_with(key.info.id, OldKey::RevokeNow)
+        .rotate_key_with(key.info.id, OldKey::RevokeNow)
         .expect("rotate");
     store
         .record_provider_auth_event(&ProviderAuthEvent {
@@ -622,7 +620,7 @@ fn audit_trail_is_chained_anchored_and_checkpointed(store: &dyn RelayStore) {
             success: true,
         })
         .expect("auth event");
-    let events = store.api_key_events(None).expect("events");
+    let events = store.key_events(None).expect("events");
     assert_eq!(
         events.len(),
         3,
@@ -674,7 +672,7 @@ fn audit_trail_is_chained_anchored_and_checkpointed(store: &dyn RelayStore) {
         .expect("decode");
     assert_eq!(decoded, checkpoint);
     store
-        .revoke_api_key_by(key.info.id, "admin:1")
+        .revoke_key_by(key.info.id, "admin:1")
         .expect("revoked key already; not an error");
     let reports = store
         .verify_audit(&root, &empty_revoked(), Some(&checkpoint))
@@ -703,7 +701,7 @@ fn a_first_key_is_sealed_into_a_bundle_or_not_minted_at_all(store: &dyn RelaySto
     let (secret, public) = keys::generate_encryption_keypair();
     let written = RefCell::new(Vec::new());
     let delivered = store
-        .create_api_key_as_bundle(
+        .mint_key_as_bundle(
             &identity,
             &new_key(ApiKeyScope::InboxPull, None),
             &recipient(public),
@@ -748,21 +746,21 @@ fn a_first_key_is_sealed_into_a_bundle_or_not_minted_at_all(store: &dyn RelaySto
         .is_none());
 
     // A bundle that cannot be written leaves no key behind.
-    let before = store.list_api_keys().expect("list").len();
-    let failed = store.create_api_key_as_bundle(
+    let before = store.list_keys().expect("list").len();
+    let failed = store.mint_key_as_bundle(
         &identity,
         &new_key(ApiKeyScope::InboxPush, None),
         &recipient(public),
         &mut |_| Err(Error::InvalidPath),
     );
     assert!(matches!(failed, Err(Error::InvalidPath)));
-    assert_eq!(store.list_api_keys().expect("list").len(), before);
-    assert_eq!(store.api_key_events(None).expect("events").len(), 1);
+    assert_eq!(store.list_keys().expect("list").len(), before);
+    assert_eq!(store.key_events(None).expect("events").len(), 1);
 
     // A given fingerprint must be the recipient key's own.
     let (_, stranger) = keys::generate_encryption_keypair();
     assert!(matches!(
-        store.create_api_key_as_bundle(
+        store.mint_key_as_bundle(
             &identity,
             &new_key(ApiKeyScope::InboxPull, Some(&keys::fingerprint(&stranger))),
             &recipient(public),
@@ -777,7 +775,7 @@ fn a_rotation_by_letter_keeps_the_old_key_for_the_grace_period(store: &dyn Relay
     let (secret, public) = keys::generate_encryption_keypair();
     let fingerprint = keys::fingerprint(&public);
     let first = store
-        .create_api_key_as_bundle(
+        .mint_key_as_bundle(
             &identity,
             &new_key(ApiKeyScope::InboxPull, None),
             &recipient(public),
@@ -788,19 +786,19 @@ fn a_rotation_by_letter_keeps_the_old_key_for_the_grace_period(store: &dyn Relay
         // The bundle was discarded above; mint a plain key to hold a bearer
         // for the old key's grace-period check.
         store
-            .create_api_key(&new_key(ApiKeyScope::InboxPull, Some(&fingerprint)))
+            .mint_key(&new_key(ApiKeyScope::InboxPull, Some(&fingerprint)))
             .expect("second pull key")
     };
     assert!(matches!(
-        store.rotate_api_key_as_letter(&identity, old_token.info.id, None, 60),
+        store.rotate_key_as_letter(&identity, old_token.info.id, None, 60),
         Err(Error::DeliveryRecipientMissing)
     ));
     assert!(matches!(
-        store.rotate_api_key_as_letter(&identity, old_token.info.id, Some(recipient(public)), 0),
+        store.rotate_key_as_letter(&identity, old_token.info.id, Some(recipient(public)), 0),
         Err(Error::InvalidApiKeyRequest)
     ));
     let delivered = store
-        .rotate_api_key_as_letter(&identity, old_token.info.id, Some(recipient(public)), 3_600)
+        .rotate_key_as_letter(&identity, old_token.info.id, Some(recipient(public)), 3_600)
         .expect("rotate by letter");
     let Via::Letter {
         id: letter_id,
@@ -813,7 +811,7 @@ fn a_rotation_by_letter_keeps_the_old_key_for_the_grace_period(store: &dyn Relay
     store
         .authenticate(&old_token.token, ApiKeyScope::InboxPull)
         .expect("the old key still pulls during the grace period");
-    let old_info = store.api_key_info(old_token.info.id).expect("old info");
+    let old_info = store.key_info(old_token.info.id).expect("old info");
     assert!(old_info.revoked_at.is_none());
     assert_eq!(old_info.expires_at.as_deref(), until.as_deref());
 
@@ -838,7 +836,7 @@ fn a_rotation_by_letter_keeps_the_old_key_for_the_grace_period(store: &dyn Relay
         .expect("recorded");
     assert_eq!(recorded.public_key, public);
     let events: Vec<(String, Option<i64>)> = store
-        .api_key_events(Some(old_token.info.id))
+        .key_events(Some(old_token.info.id))
         .expect("events")
         .into_iter()
         .map(|e| (e.event, e.related_key_id))
@@ -852,7 +850,7 @@ fn a_rotation_by_letter_keeps_the_old_key_for_the_grace_period(store: &dyn Relay
     );
     // The next rotation of the replacement needs no recipient: it is recorded.
     let next = store
-        .rotate_api_key_as_letter(&identity, delivered.info.id, None, 60)
+        .rotate_key_as_letter(&identity, delivered.info.id, None, 60)
         .expect("rotate again");
     assert!(matches!(next.via, Via::Letter { .. }));
 
@@ -860,7 +858,7 @@ fn a_rotation_by_letter_keeps_the_old_key_for_the_grace_period(store: &dyn Relay
     // before anything changes.
     let (_, lonely) = keys::generate_encryption_keypair();
     let push = store
-        .create_api_key_as_bundle(
+        .mint_key_as_bundle(
             &identity,
             &new_key(ApiKeyScope::InboxPush, None),
             &recipient(lonely),
@@ -868,14 +866,14 @@ fn a_rotation_by_letter_keeps_the_old_key_for_the_grace_period(store: &dyn Relay
         )
         .expect("push key sealed to a recipient with no pull key");
     assert!(matches!(
-        store.rotate_api_key_as_letter(&identity, push.info.id, None, 60),
+        store.rotate_key_as_letter(&identity, push.info.id, None, 60),
         Err(Error::DeliveryNotCollectable)
     ));
-    let info = store.api_key_info(push.info.id).expect("info");
+    let info = store.key_info(push.info.id).expect("info");
     assert!(info.revoked_at.is_none() && info.expires_at.is_none());
     // A bound key is sealed only to the key it is bound to.
     assert!(matches!(
-        store.rotate_api_key_as_letter(&identity, first.info.id, Some(recipient(lonely)), 60),
+        store.rotate_key_as_letter(&identity, first.info.id, Some(recipient(lonely)), 60),
         Err(Error::InvalidApiKeyRequest)
     ));
 }
@@ -885,11 +883,11 @@ fn a_rotation_by_bundle_revokes_the_old_key_at_once(store: &dyn RelayStore) {
     let (_, public) = keys::generate_encryption_keypair();
     let fingerprint = keys::fingerprint(&public);
     let old = store
-        .create_api_key(&new_key(ApiKeyScope::InboxPull, Some(&fingerprint)))
+        .mint_key(&new_key(ApiKeyScope::InboxPull, Some(&fingerprint)))
         .expect("old key");
     let mut writes = 0;
     let delivered = store
-        .rotate_api_key_as_bundle(&identity, old.info.id, Some(recipient(public)), &mut |_| {
+        .rotate_key_as_bundle(&identity, old.info.id, Some(recipient(public)), &mut |_| {
             writes += 1;
             Ok(())
         })
@@ -902,7 +900,7 @@ fn a_rotation_by_bundle_revokes_the_old_key_at_once(store: &dyn RelayStore) {
     ));
     assert_eq!(
         store
-            .api_key_info(delivered.info.id)
+            .key_info(delivered.info.id)
             .expect("new")
             .recipient_fingerprint
             .as_deref(),
@@ -910,10 +908,10 @@ fn a_rotation_by_bundle_revokes_the_old_key_at_once(store: &dyn RelayStore) {
     );
     // A write that fails rolls the rotation back: the old key stays live.
     let fresh = store
-        .create_api_key(&new_key(ApiKeyScope::InboxPush, None))
+        .mint_key(&new_key(ApiKeyScope::InboxPush, None))
         .expect("another key");
     assert!(store
-        .rotate_api_key_as_bundle(
+        .rotate_key_as_bundle(
             &identity,
             fresh.info.id,
             Some(recipient(public)),
@@ -924,10 +922,7 @@ fn a_rotation_by_bundle_revokes_the_old_key_at_once(store: &dyn RelayStore) {
         .authenticate(&fresh.token, ApiKeyScope::InboxPush)
         .expect("a failed rotation changes nothing");
     assert_eq!(
-        store
-            .api_key_events(Some(fresh.info.id))
-            .expect("events")
-            .len(),
+        store.key_events(Some(fresh.info.id)).expect("events").len(),
         1
     );
 }
@@ -1013,13 +1008,13 @@ pub(crate) fn concurrent_writers_keep_every_invariant(store: &(impl RelayStore +
                 let mut pushed = Vec::new();
                 for round in 0..ROUNDS {
                     let key = store
-                        .create_api_key(&new_key(ApiKeyScope::InboxPush, None))
+                        .mint_key(&new_key(ApiKeyScope::InboxPush, None))
                         .expect("create");
                     let rotated = store
-                        .rotate_api_key_with(key.info.id, OldKey::ExpireAfter(600))
+                        .rotate_key_with(key.info.id, OldKey::ExpireAfter(600))
                         .expect("rotate");
                     store
-                        .revoke_api_key_by(rotated.info.id, "host")
+                        .revoke_key_by(rotated.info.id, "host")
                         .expect("revoke");
                     let letter = fake_letter(&pk, 1, &[writer as u8, round as u8]);
                     let stored = store.inbox_push(&[], &letter, None).expect("push");
@@ -1077,12 +1072,12 @@ pub(crate) fn concurrent_writers_keep_every_invariant(store: &(impl RelayStore +
         .expect("device page");
     assert_eq!(devices.packages.len(), WRITERS * ROUNDS);
 
-    let keys = store.list_api_keys().expect("list");
+    let keys = store.list_keys().expect("list");
     assert_eq!(keys.len(), 2 * WRITERS * ROUNDS);
     let mut key_ids: Vec<i64> = keys.iter().map(|k| k.id).collect();
     key_ids.dedup();
     assert_eq!(key_ids.len(), keys.len(), "every key got its own id");
-    let events = store.api_key_events(None).expect("events");
+    let events = store.key_events(None).expect("events");
     assert_eq!(events.len(), 3 * WRITERS * ROUNDS);
     let mut event_ids: Vec<i64> = events.iter().map(|e| e.id).collect();
     event_ids.dedup();

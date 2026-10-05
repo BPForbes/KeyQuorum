@@ -149,9 +149,9 @@ impl From<ApiKeyInfo> for ApiKeyView {
 pub fn audit_events(store: &dyn RelayStore, token: &str) -> Result<Vec<api_key::ApiKeyEvent>> {
     let auth = store.authenticate_any(token)?;
     if auth.scope == ApiKeyScope::Admin {
-        store.api_key_events(None)
+        store.key_events(None)
     } else {
-        store.api_key_events(Some(auth.id))
+        store.key_events(Some(auth.id))
     }
 }
 
@@ -277,7 +277,7 @@ pub fn inbox_pull(
 pub fn list_keys(store: &dyn RelayStore, token: &str) -> Result<Vec<ApiKeyView>> {
     store.authenticate(token, ApiKeyScope::Admin)?;
     Ok(store
-        .list_api_keys()?
+        .list_keys()?
         .into_iter()
         .map(ApiKeyView::from)
         .collect())
@@ -287,7 +287,7 @@ pub fn list_keys(store: &dyn RelayStore, token: &str) -> Result<Vec<ApiKeyView>>
 /// Recorded in `api_key_events` with the admin key that revoked it.
 pub fn revoke_key(store: &dyn RelayStore, token: &str, id: i64) -> Result<()> {
     let admin = store.authenticate(token, ApiKeyScope::Admin)?;
-    store.revoke_api_key_by(id, &api_key::admin_actor(admin.id))
+    store.revoke_key_by(id, &api_key::admin_actor(admin.id))
 }
 
 /// `PUT /trees` (admin): replace a canonical public tree.

@@ -228,20 +228,6 @@ impl Tx<'_> {
             .map_err(store_err)
     }
 
-    fn find_one_sorted(
-        &mut self,
-        name: &str,
-        filter: Document,
-        sort: Document,
-    ) -> Result<Option<Document>> {
-        self.coll(name)
-            .find_one(filter)
-            .sort(sort)
-            .session(&mut *self.session)
-            .run()
-            .map_err(store_err)
-    }
-
     fn find_all(
         &mut self,
         name: &str,
@@ -364,6 +350,23 @@ impl MongoRelayStore {
     /// Indexes are idempotent to create; the schema version is checked so
     /// an older build never writes into a layout it does not know.
     fn ensure_schema(&self) -> Result<()> {
+        let meta = self.db.collection::<Document>(SCHEMA_META);
+        // The recorded layout version is read, and a newer one refused,
+        // before anything is written: a build rolled back onto a newer
+        // database must leave it exactly as it found it, not first apply its
+        // own (older) index set to it.
+        let recorded = meta
+            .find_one(doc! { "_id": "schema" })
+            .run()
+            .map_err(store_err)?;
+        if let Some(existing) = &recorded {
+            let version = get_i64(existing, "version")?;
+            if version > SCHEMA_VERSION {
+                return Err(Error::Store(format!(
+                    "relay database schema is version {version}, newer than this build's {SCHEMA_VERSION}"
+                )));
+            }
+        }
         let unique = || IndexOptions::builder().unique(true).build();
         let ttl = || {
             IndexOptions::builder()
@@ -435,19 +438,9 @@ impl MongoRelayStore {
                 .run()
                 .map_err(store_err)?;
         }
-        let meta = self.db.collection::<Document>(SCHEMA_META);
-        match meta
-            .find_one(doc! { "_id": "schema" })
-            .run()
-            .map_err(store_err)?
-        {
+        match recorded {
             Some(existing) => {
                 let version = get_i64(&existing, "version")?;
-                if version > SCHEMA_VERSION {
-                    return Err(Error::Store(format!(
-                        "relay database schema is version {version}, newer than this build's {SCHEMA_VERSION}"
-                    )));
-                }
                 if version < SCHEMA_VERSION {
                     // No older layout exists yet; a later version adds its
                     // migration here and then records the new version.
@@ -1069,11 +1062,11 @@ impl RelayStore for MongoRelayStore {
             .map_err(store_err)
     }
 
-    fn create_api_key(&self, new: &NewApiKey) -> Result<CreatedApiKey> {
+    fn mint_key(&self, new: &NewApiKey) -> Result<CreatedApiKey> {
         self.transaction(|tx| create_key(tx, new))
     }
 
-    fn list_api_keys(&self) -> Result<Vec<ApiKeyInfo>> {
+    fn list_keys(&self) -> Result<Vec<ApiKeyInfo>> {
         self.with_session(|tx| {
             tx.find_all(API_KEYS, doc! {}, doc! { "_id": 1 }, None)?
                 .iter()
@@ -1082,15 +1075,15 @@ impl RelayStore for MongoRelayStore {
         })
     }
 
-    fn api_key_info(&self, id: i64) -> Result<ApiKeyInfo> {
+    fn key_info(&self, id: i64) -> Result<ApiKeyInfo> {
         self.with_session(|tx| key_info(tx, id))
     }
 
-    fn revoke_api_key_by(&self, id: i64, actor: &str) -> Result<()> {
+    fn revoke_key_by(&self, id: i64, actor: &str) -> Result<()> {
         self.transaction(|tx| revoke_key(tx, id, actor))
     }
 
-    fn rotate_api_key_with(&self, id: i64, old: OldKey) -> Result<CreatedApiKey> {
+    fn rotate_key_with(&self, id: i64, old: OldKey) -> Result<CreatedApiKey> {
         self.transaction(|tx| rotate_key(tx, id, old))
     }
 
@@ -1178,7 +1171,7 @@ impl RelayStore for MongoRelayStore {
         })
     }
 
-    fn api_key_events(&self, key: Option<i64>) -> Result<Vec<ApiKeyEvent>> {
+    fn key_events(&self, key: Option<i64>) -> Result<Vec<ApiKeyEvent>> {
         let filter = match key {
             None => doc! {},
             Some(id) => doc! {
@@ -1434,19 +1427,17 @@ impl RelayStore for MongoRelayStore {
             let Some((count, head_hash)) = self.with_session(|tx| audit_head(tx, table))? else {
                 continue;
             };
+            // Covered when an anchor already vouches for this head or a later
+            // one. Looked up by row count, never by insertion order: a slow
+            // replica can insert a stale anchor after a newer one, and that
+            // stale anchor must not hide the newer coverage.
             let covered = self.with_session(|tx| {
-                tx.find_one_sorted(
+                tx.find_one(
                     AUDIT_ANCHORS,
-                    doc! { "table_name": table.name() },
-                    doc! { "_id": -1 },
+                    doc! { "table_name": table.name(), "row_count": { "$gte": count as i64 } },
                 )
             })?;
-            if covered
-                .as_ref()
-                .map(|anchor| get_i64(anchor, "row_count"))
-                .transpose()?
-                == Some(count as i64)
-            {
+            if covered.is_some() {
                 continue;
             }
             let signature = audit::sign_anchor(identity, table, count, &head_hash, signed_at)?;
@@ -1496,7 +1487,10 @@ impl RelayStore for MongoRelayStore {
         }
         let mut reports = Vec::new();
         for table in AuditTable::ALL {
-            let (rows, anchors) = self.with_session(|tx| {
+            // One snapshot per table: an append and its anchor that commit
+            // while this runs are either both seen or both missed, never an
+            // anchor for a row the walk did not read.
+            let (rows, anchors) = self.transaction(|tx| {
                 let rows = audit_rows(tx, table)?;
                 let anchors = tx
                     .find_all(
@@ -1534,7 +1528,7 @@ impl RelayStore for MongoRelayStore {
         self.with_session(|tx| tx.recipient_for(id))
     }
 
-    fn create_api_key_as_bundle(
+    fn mint_key_as_bundle(
         &self,
         identity: &ProviderIdentity,
         new: &NewApiKey,
@@ -1558,7 +1552,7 @@ impl RelayStore for MongoRelayStore {
         })
     }
 
-    fn rotate_api_key_as_letter(
+    fn rotate_key_as_letter(
         &self,
         identity: &ProviderIdentity,
         id: i64,
@@ -1570,7 +1564,7 @@ impl RelayStore for MongoRelayStore {
         })
     }
 
-    fn rotate_api_key_as_bundle(
+    fn rotate_key_as_bundle(
         &self,
         identity: &ProviderIdentity,
         id: i64,

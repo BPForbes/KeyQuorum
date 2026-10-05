@@ -89,15 +89,15 @@ pub trait RelayStore: Send + Sync {
 
     /// Mint a key: the bearer is returned once and only its hash is stored,
     /// with a `created` audit event in the same unit of work.
-    fn create_api_key(&self, new: &NewApiKey) -> Result<CreatedApiKey>;
-    fn list_api_keys(&self) -> Result<Vec<ApiKeyInfo>>;
-    fn api_key_info(&self, id: i64) -> Result<ApiKeyInfo>;
+    fn mint_key(&self, new: &NewApiKey) -> Result<CreatedApiKey>;
+    fn list_keys(&self) -> Result<Vec<ApiKeyInfo>>;
+    fn key_info(&self, id: i64) -> Result<ApiKeyInfo>;
     /// Revoke key `id` and record who did it. Revoking an already revoked
     /// key succeeds and records nothing.
-    fn revoke_api_key_by(&self, id: i64, actor: &str) -> Result<()>;
+    fn revoke_key_by(&self, id: i64, actor: &str) -> Result<()>;
     /// Replace key `id` with a new key of the same scope and binding, ending
     /// the old one as `old` says, with a `rotated` event, atomically.
-    fn rotate_api_key_with(&self, id: i64, old: OldKey) -> Result<CreatedApiKey>;
+    fn rotate_key_with(&self, id: i64, old: OldKey) -> Result<CreatedApiKey>;
     /// Whether a live `inbox.pull` key is bound to `fingerprint`.
     fn has_live_pull_key(&self, fingerprint: &str) -> Result<bool>;
     /// Atomic lookup: stamps last-used only when the key is live, unexpired
@@ -111,7 +111,7 @@ pub trait RelayStore: Send + Sync {
     fn check_hash(&self, key_hash: &str) -> Result<KeyCheck>;
     /// The lifecycle audit trail, oldest first; with `key`, only the events
     /// that pertain to that key.
-    fn api_key_events(&self, key: Option<i64>) -> Result<Vec<ApiKeyEvent>>;
+    fn key_events(&self, key: Option<i64>) -> Result<Vec<ApiKeyEvent>>;
     /// Authenticate a supplied operator lock, or mint the issuer when none
     /// exists. A supplied key is never ignored in favour of a bootstrap.
     fn authorize_licensee_or_bootstrap(
@@ -192,7 +192,7 @@ pub trait RelayStore: Send + Sync {
     fn delivery_recipient_for(&self, id: i64) -> Result<Option<Recipient>>;
     /// Mint a key and hand it to `write` as a sealed `.kqkey` bundle, in one
     /// unit of work: on an error the key does not exist.
-    fn create_api_key_as_bundle(
+    fn mint_key_as_bundle(
         &self,
         identity: &ProviderIdentity,
         new: &NewApiKey,
@@ -201,7 +201,7 @@ pub trait RelayStore: Send + Sync {
     ) -> Result<Delivered>;
     /// Rotate key `id` and store the sealed replacement in this relay's own
     /// mailbox, the old key staying usable for `grace_seconds`, atomically.
-    fn rotate_api_key_as_letter(
+    fn rotate_key_as_letter(
         &self,
         identity: &ProviderIdentity,
         id: i64,
@@ -210,7 +210,7 @@ pub trait RelayStore: Send + Sync {
     ) -> Result<Delivered>;
     /// Rotate key `id`, revoking it at once, and hand the replacement to
     /// `write` as a sealed bundle, atomically.
-    fn rotate_api_key_as_bundle(
+    fn rotate_key_as_bundle(
         &self,
         identity: &ProviderIdentity,
         id: i64,
@@ -274,23 +274,23 @@ impl RelayStore for SqliteRelayStore {
         })
     }
 
-    fn create_api_key(&self, new: &NewApiKey) -> Result<CreatedApiKey> {
+    fn mint_key(&self, new: &NewApiKey) -> Result<CreatedApiKey> {
         self.with(|conn| api_key::create(conn, new))
     }
 
-    fn list_api_keys(&self) -> Result<Vec<ApiKeyInfo>> {
+    fn list_keys(&self) -> Result<Vec<ApiKeyInfo>> {
         self.with(api_key::list)
     }
 
-    fn api_key_info(&self, id: i64) -> Result<ApiKeyInfo> {
+    fn key_info(&self, id: i64) -> Result<ApiKeyInfo> {
         self.with(|conn| api_key::info(conn, id))
     }
 
-    fn revoke_api_key_by(&self, id: i64, actor: &str) -> Result<()> {
+    fn revoke_key_by(&self, id: i64, actor: &str) -> Result<()> {
         self.with(|conn| api_key::revoke_by(conn, id, actor))
     }
 
-    fn rotate_api_key_with(&self, id: i64, old: OldKey) -> Result<CreatedApiKey> {
+    fn rotate_key_with(&self, id: i64, old: OldKey) -> Result<CreatedApiKey> {
         self.with(|conn| api_key::rotate_with(conn, id, old))
     }
 
@@ -314,7 +314,7 @@ impl RelayStore for SqliteRelayStore {
         self.with(|conn| api_key::check_hash(conn, key_hash))
     }
 
-    fn api_key_events(&self, key: Option<i64>) -> Result<Vec<ApiKeyEvent>> {
+    fn key_events(&self, key: Option<i64>) -> Result<Vec<ApiKeyEvent>> {
         self.with(|conn| match key {
             Some(id) => api_key::events_for_key(conn, id),
             None => api_key::events(conn),
@@ -439,7 +439,7 @@ impl RelayStore for SqliteRelayStore {
         self.with(|conn| key_delivery::recipient_for(conn, id))
     }
 
-    fn create_api_key_as_bundle(
+    fn mint_key_as_bundle(
         &self,
         identity: &ProviderIdentity,
         new: &NewApiKey,
@@ -451,7 +451,7 @@ impl RelayStore for SqliteRelayStore {
         })
     }
 
-    fn rotate_api_key_as_letter(
+    fn rotate_key_as_letter(
         &self,
         identity: &ProviderIdentity,
         id: i64,
@@ -463,7 +463,7 @@ impl RelayStore for SqliteRelayStore {
         })
     }
 
-    fn rotate_api_key_as_bundle(
+    fn rotate_key_as_bundle(
         &self,
         identity: &ProviderIdentity,
         id: i64,

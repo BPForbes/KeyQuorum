@@ -109,19 +109,19 @@ fn two_replicas_share_one_store_and_one_audit_chain() {
     let a = &fresh.store;
     let b = fresh.replica();
     let created = a
-        .create_api_key(&new_key(ApiKeyScope::InboxPush))
+        .mint_key(&new_key(ApiKeyScope::InboxPush))
         .expect("create on a");
     let authed = b
         .authenticate(&created.token, ApiKeyScope::InboxPush)
         .expect("b sees a's key");
     assert_eq!(authed.id, created.info.id);
-    b.revoke_api_key_by(created.info.id, "admin:7")
+    b.revoke_key_by(created.info.id, "admin:7")
         .expect("revoke on b");
     assert!(matches!(
         a.authenticate(&created.token, ApiKeyScope::InboxPush),
         Err(Error::ApiKeyRevoked)
     ));
-    let events = a.api_key_events(None).expect("events");
+    let events = a.key_events(None).expect("events");
     assert_eq!(events.len(), 2);
     assert_eq!(events[1].actor, "admin:7");
     assert_eq!(events[1].id, 2, "one chain, whichever replica appended");
@@ -207,7 +207,7 @@ fn records_carry_the_same_time_text_as_the_sqlite_store() {
     let Some(fresh) = fresh() else { return };
     let created = fresh
         .store
-        .create_api_key(&NewApiKey {
+        .mint_key(&NewApiKey {
             ttl_seconds: Some(3_600),
             ..new_key(ApiKeyScope::Admin)
         })
@@ -218,12 +218,12 @@ fn records_carry_the_same_time_text_as_the_sqlite_store() {
     let expires = created.info.expires_at.as_deref().expect("expiry");
     assert_eq!(expires.len(), 19, "{expires}");
     assert_eq!(expires.as_bytes()[10], b' ', "{expires}");
-    let event = &fresh.store.api_key_events(None).expect("events")[0];
+    let event = &fresh.store.key_events(None).expect("events")[0];
     assert_eq!(event.occurred_at.len(), 24);
 }
 
 #[test]
-fn a_database_from_a_newer_build_is_refused() {
+fn a_database_from_a_newer_build_is_refused_before_any_index_is_touched() {
     let Some(fresh) = fresh() else { return };
     fresh
         .collection("schema_meta")
@@ -233,6 +233,13 @@ fn a_database_from_a_newer_build_is_refused() {
         )
         .run()
         .expect("bump the version");
+    // Remove an index this build would recreate; a refusal that had already
+    // applied the index plan would bring it back.
+    fresh
+        .collection("api_keys")
+        .drop_index("key_hash_1")
+        .run()
+        .expect("drop the unique key_hash index");
     let reopened = MongoRelayStore::open(
         &fresh.uri,
         &MongoSettings {
@@ -240,6 +247,15 @@ fn a_database_from_a_newer_build_is_refused() {
         },
     );
     assert!(matches!(reopened, Err(Error::Store(_))));
+    let names = fresh
+        .collection("api_keys")
+        .list_index_names()
+        .run()
+        .expect("list indexes");
+    assert!(
+        !names.iter().any(|name| name == "key_hash_1"),
+        "a refused open must leave the newer database's indexes as they were"
+    );
 }
 
 #[test]
@@ -277,7 +293,7 @@ fn the_store_holds_no_bearer_after_a_mint_and_a_sealed_rotation() {
     let mut bundle = Vec::new();
     let first = fresh
         .store
-        .create_api_key_as_bundle(
+        .mint_key_as_bundle(
             &identity,
             &new_key(ApiKeyScope::InboxPull),
             &recipient,
@@ -289,11 +305,11 @@ fn the_store_holds_no_bearer_after_a_mint_and_a_sealed_rotation() {
         .expect("first key");
     let rotated = fresh
         .store
-        .rotate_api_key_as_letter(&identity, first.info.id, None, 600)
+        .rotate_key_as_letter(&identity, first.info.id, None, 600)
         .expect("rotate by letter");
     let plain = fresh
         .store
-        .create_api_key(&new_key(ApiKeyScope::Admin))
+        .mint_key(&new_key(ApiKeyScope::Admin))
         .expect("plain key");
     for name in super::COLLECTIONS {
         let docs: Vec<Document> = fresh
@@ -317,4 +333,131 @@ fn the_store_holds_no_bearer_after_a_mint_and_a_sealed_rotation() {
         rotated.via,
         crate::relay::key_delivery::Via::Letter { .. }
     ));
+}
+
+fn test_identity() -> (crate::relay::ProviderIdentity, [u8; 32]) {
+    let issued = crate::provider::test_helpers::issued_identity("2099-01-01 00:00:00");
+    (
+        crate::relay::ProviderIdentity {
+            certificate: issued.certificate,
+            relay_private_key: issued.relay_private,
+        },
+        issued.root_public,
+    )
+}
+
+#[test]
+fn a_stale_anchor_inserted_late_cannot_hide_newer_coverage() {
+    let Some(fresh) = fresh() else { return };
+    let (identity, _root) = test_identity();
+    fresh
+        .store
+        .mint_key(&new_key(ApiKeyScope::InboxPush))
+        .expect("first key");
+    fresh
+        .store
+        .mint_key(&new_key(ApiKeyScope::InboxPush))
+        .expect("second key");
+    // This replica anchors the head at 2 rows ...
+    assert_eq!(
+        fresh
+            .store
+            .anchor_audit(&identity, "2026-06-01 00:00:00.000")
+            .expect("anchor"),
+        1
+    );
+    // ... and a slow replica then lands its anchor for the older head, which
+    // has the greatest insertion id.
+    fresh
+        .collection("audit_anchors")
+        .insert_one(doc! {
+            "_id": 1_000i64,
+            "table_name": "api_key_events",
+            "row_count": 1i64,
+            "head_hash": "00".repeat(32),
+            "signed_at": "2026-06-01 00:00:00.000",
+            "certificate": mongodb::bson::Binary { subtype: mongodb::bson::spec::BinarySubtype::Generic, bytes: Vec::new() },
+            "signature": mongodb::bson::Binary { subtype: mongodb::bson::spec::BinarySubtype::Generic, bytes: Vec::new() },
+        })
+        .run()
+        .expect("insert the stale anchor");
+    let counter = |store: &Fresh| -> i64 {
+        store
+            .collection("counters")
+            .find_one(doc! { "_id": "audit_anchors" })
+            .run()
+            .expect("counter")
+            .map_or(0, |doc| doc.get_i64("next").unwrap_or(0))
+    };
+    let before = counter(&fresh);
+    // The head at 2 rows is still covered: nothing is written, and no id is
+    // burned trying.
+    assert_eq!(
+        fresh
+            .store
+            .anchor_audit(&identity, "2026-06-01 00:00:05.000")
+            .expect("anchor again"),
+        0
+    );
+    assert_eq!(
+        counter(&fresh),
+        before,
+        "no anchor id is allocated for a covered head"
+    );
+    // A new row is not covered, and is anchored.
+    fresh
+        .store
+        .mint_key(&new_key(ApiKeyScope::InboxPush))
+        .expect("third key");
+    assert_eq!(
+        fresh
+            .store
+            .anchor_audit(&identity, "2026-06-01 00:00:10.000")
+            .expect("anchor the new head"),
+        1
+    );
+}
+
+#[test]
+fn verification_reads_a_consistent_snapshot_while_writers_append() {
+    let Some(fresh) = fresh() else { return };
+    let (identity, root) = test_identity();
+    fresh
+        .store
+        .mint_key(&new_key(ApiKeyScope::InboxPush))
+        .expect("seed");
+    fresh
+        .store
+        .anchor_audit(&identity, "2026-06-01 00:00:00.000")
+        .expect("anchor");
+    let writer = fresh.replica();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let mut round = 0;
+            while !stop.load(Ordering::SeqCst) {
+                writer
+                    .mint_key(&new_key(ApiKeyScope::InboxPush))
+                    .expect("append");
+                writer
+                    .anchor_audit(
+                        &identity,
+                        &format!("2026-06-01 00:01:{:02}.000", round % 60),
+                    )
+                    .expect("anchor");
+                round += 1;
+            }
+        });
+        for _ in 0..25 {
+            let reports = fresh
+                .store
+                .verify_audit(&root, &Default::default(), None)
+                .expect("verify");
+            for report in &reports {
+                assert!(report.is_intact(), "a concurrent append broke verification");
+                assert_eq!(report.rejected_anchors, 0);
+            }
+        }
+        stop.store(true, Ordering::SeqCst);
+    });
 }

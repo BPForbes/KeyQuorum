@@ -136,7 +136,7 @@ entry, the Caddy example, the non-secret environment example) and the
 `Dockerfile` builds the provider+mongodb binary into a distroless non-root
 image with no credential in any layer; `.github/workflows/deploy.yml` lints
 and renders the chart, validates the manifests, builds the image and checks
-it runs as non-root with no key, certificate or database file in a layer.
+it runs as non-root with no key, certificate or database file in its filesystem.
 `docs/operator/relay-deployment.md` is the operator runbook and
 `docs/operator/relay-secrets.md` the secret classification; neither is
 customer-facing, and the README still does not document `host`.

@@ -281,13 +281,13 @@ fn run_keys(store: &dyn RelayStore, command: KeysCommand) -> Result<()> {
                     let recipient =
                         recipient_from(&recipient_key, relay_url, device_id, licence_file)?;
                     let delivered = into_file(&out, |write| {
-                        store.create_api_key_as_bundle(&identity, &new, &recipient, write)
+                        store.mint_key_as_bundle(&identity, &new, &recipient, write)
                     })?;
                     println!("Created API key {}", delivered.info.id);
                     print_delivered(&delivered, Some(&out));
                 }
                 _ => {
-                    let created = store.create_api_key(&new)?;
+                    let created = store.mint_key(&new)?;
                     println!("Created API key {}", created.info.id);
                     println!("scope: {}", created.info.scope);
                     if let Some(fp) = &created.info.recipient_fingerprint {
@@ -302,7 +302,7 @@ fn run_keys(store: &dyn RelayStore, command: KeysCommand) -> Result<()> {
             anchor_audit(store, &identity);
         }
         KeysCommand::List => {
-            let keys = store.list_api_keys()?;
+            let keys = store.list_keys()?;
             if keys.is_empty() {
                 println!("(no API keys)");
             } else {
@@ -324,7 +324,7 @@ fn run_keys(store: &dyn RelayStore, command: KeysCommand) -> Result<()> {
             krl,
             checkpoint,
         } => {
-            let events = store.api_key_events(key)?;
+            let events = store.key_events(key)?;
             if events.is_empty() {
                 println!("(no API key events)");
             }
@@ -368,7 +368,7 @@ fn run_keys(store: &dyn RelayStore, command: KeysCommand) -> Result<()> {
             relay_key,
             krl,
         } => {
-            store.revoke_api_key_by(id, HOST_ACTOR)?;
+            store.revoke_key_by(id, HOST_ACTOR)?;
             println!("Revoked API key {id}");
             let configured = path_or_env(cert.clone(), "KEYQUORUM_PROVIDER_CERT").is_some()
                 && path_or_env(relay_key.clone(), "KEYQUORUM_RELAY_KEY").is_some();
@@ -419,18 +419,18 @@ fn run_keys(store: &dyn RelayStore, command: KeysCommand) -> Result<()> {
             };
             if recipient.is_none() && recorded.is_none() && out.is_none() {
                 // Never sealed to anyone: handed over as before.
-                let created = store.rotate_api_key_with(id, OldKey::RevokeNow)?;
+                let created = store.rotate_key_with(id, OldKey::RevokeNow)?;
                 println!("Rotated API key {id} -> {}", created.info.id);
                 println!("token (shown once): {}", created.token.as_str());
             } else if let Some(out) = out {
                 let delivered = into_file(&out, |write| {
-                    store.rotate_api_key_as_bundle(&identity, id, recipient, write)
+                    store.rotate_key_as_bundle(&identity, id, recipient, write)
                 })?;
                 println!("Rotated API key {id} -> {}", delivered.info.id);
                 print_delivered(&delivered, Some(&out));
             } else {
                 let delivered =
-                    store.rotate_api_key_as_letter(&identity, id, recipient, grace_seconds)?;
+                    store.rotate_key_as_letter(&identity, id, recipient, grace_seconds)?;
                 println!("Rotated API key {id} -> {}", delivered.info.id);
                 print_delivered(&delivered, None);
                 if let Via::Letter {
@@ -802,8 +802,10 @@ fn path_or_env(flag: Option<PathBuf>, env_name: &str) -> Option<PathBuf> {
         })
 }
 
+/// Every key file the host reads (relay private and public keys, the
+/// provider-root key) goes through the bounded credential reader.
 fn read_key_array_32(path: &Path) -> Result<Zeroizing<[u8; 32]>> {
-    cli::read_key_array_32(path).map(Zeroizing::new)
+    host_env::read_key_file(path)
 }
 
 /// The offline provider root key: `--root-key`, then

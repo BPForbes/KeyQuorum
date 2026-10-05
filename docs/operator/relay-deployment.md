@@ -125,8 +125,9 @@ a unit file, a pod spec or a shell history:
 | provider root key (offline only) | `--root-key PATH` | `KEYQUORUM_PROVIDER_ROOT_KEY_FILE` | `KEYQUORUM_PROVIDER_ROOT_KEY` |
 
 The file sources win over the raw ones. Passing both `--licensee-key` and
-`--licensee-key-file` is refused rather than guessed. A credential file is
-read with a bound (8 KiB), only one trailing line ending is removed, the
+`--licensee-key-file` is refused rather than guessed. A credential file, and
+every key file the host reads (the relay key and public key, the root key),
+is read with a bound (8 KiB), only one trailing line ending is removed, the
 value is zeroized when the command ends, and an error names the path, never
 the contents. The connection string is never accepted as a flag value
 because it may carry a password and `ps` shows flags.

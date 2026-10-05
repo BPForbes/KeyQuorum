@@ -40,10 +40,11 @@ credential mechanism.
 | `keyquorum host certify\|krl\|policy issue` (offline) | provider-root private key | `--root-key PATH` / `KEYQUORUM_PROVIDER_ROOT_KEY_FILE` (then the raw `KEYQUORUM_PROVIDER_ROOT_KEY`) |
 | a customer's `keyquorum loadkey --bundle` | their slot passphrase | a prompt, zeroized |
 
-Every file source is read with a bound (`MAX_CREDENTIAL_FILE_BYTES`, 8 KiB),
-loses only one trailing line ending, is held in zeroizing memory for the
-command's lifetime, and an error about it names the path, never the
-contents (`src/cli/host_env.rs`).
+Every file source, the relay and provider-root key files included
+(`host_env::read_key_file`), is read with a bound
+(`MAX_CREDENTIAL_FILE_BYTES`, 8 KiB), loses only one trailing line ending, is
+held in zeroizing memory for the command's lifetime, and an error about it
+names the path, never the contents (`src/cli/host_env.rs`).
 
 ## Why the relay key is not a `.kq*` file
 
