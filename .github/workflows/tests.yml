@@ -66,13 +66,13 @@ jobs:
       - name: Pre-download Swagger UI (workaround for proxy issues)
         if: contains(inputs.features, 'lab')
         run: |
-          mkdir -p ~/.cargo/registry/cache/swagger-ui
-          SWAGGER_FILE="${HOME}/.cargo/registry/cache/swagger-ui/v5.32.6.zip"
+          SWAGGER_FILE="/tmp/swagger-ui-v5.32.6.zip"
           if [ ! -f "$SWAGGER_FILE" ]; then
             for attempt in {1..3}; do
               if curl -L --progress-bar -o "$SWAGGER_FILE" "https://github.com/swagger-api/swagger-ui/archive/refs/tags/v5.32.6.zip"; then
                 if unzip -t "$SWAGGER_FILE" > /dev/null 2>&1; then
                   echo "✓ Downloaded and verified swagger-ui"
+                  echo "SWAGGER_UI_DOWNLOAD_URL=file://$SWAGGER_FILE" >> $GITHUB_ENV
                   exit 0
                 fi
               fi
@@ -84,6 +84,8 @@ jobs:
             done
             echo "Failed to download swagger-ui after 3 attempts"
             exit 1
+          else
+            echo "SWAGGER_UI_DOWNLOAD_URL=file://$SWAGGER_FILE" >> $GITHUB_ENV
           fi
       - name: Test ${{ matrix.name }}
         run: cargo nextest run --locked --all-targets ${{ inputs.features }} --no-fail-fast -E '${{ matrix.filter }}'
