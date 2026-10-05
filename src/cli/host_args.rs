@@ -44,7 +44,8 @@ pub enum HostCommand {
     },
     /// Issue a `provider.kqcert` with the offline provider-root private key.
     Certify {
-        /// Root private key file (or KEYQUORUM_PROVIDER_ROOT_KEY as key text)
+        /// Root private key file (or KEYQUORUM_PROVIDER_ROOT_KEY_FILE; the raw
+        /// KEYQUORUM_PROVIDER_ROOT_KEY key text is still accepted)
         #[arg(long)]
         root_key: Option<PathBuf>,
         #[arg(long)]
@@ -66,6 +67,7 @@ pub enum HostCommand {
     },
     /// Issue a signed provider revocation list (`.kqrl`).
     Krl {
+        /// Root private key file (or KEYQUORUM_PROVIDER_ROOT_KEY_FILE)
         #[arg(long)]
         root_key: Option<PathBuf>,
         #[arg(long)]
@@ -109,6 +111,7 @@ pub enum RootCommand {
 pub enum PolicyCommand {
     /// Write `provider-policy.kqpolicy` signed by the offline provider root.
     Issue {
+        /// Root private key file (or KEYQUORUM_PROVIDER_ROOT_KEY_FILE)
         #[arg(long)]
         root_key: Option<PathBuf>,
         #[arg(long)]
@@ -171,11 +174,17 @@ pub enum KeysCommand {
         /// Optional signed revocation list (or KEYQUORUM_PROVIDER_KRL)
         #[arg(long)]
         krl: Option<PathBuf>,
-        /// Internal operator lock (`kql_…`). Prompted or KEYQUORUM_LICENSEE_KEY if omitted.
-        #[arg(long)]
+        /// Internal operator lock (`kql_…`) as a value; prefer --licensee-key-file.
+        /// Without either, KEYQUORUM_LICENSEE_KEY_FILE, KEYQUORUM_LICENSEE_KEY,
+        /// then a prompt.
+        #[arg(long, conflicts_with = "licensee_key_file")]
         licensee_key: Option<String>,
+        /// A file holding the internal operator lock (one line; or
+        /// KEYQUORUM_LICENSEE_KEY_FILE)
+        #[arg(long)]
+        licensee_key_file: Option<PathBuf>,
         /// Seal the new key to this X25519 public key (hex, from the customer's
-        /// `keyquorum device public`) and write it as a `.kqkey` bundle at --out
+        /// `keyquorum device list`) and write it as a `.kqkey` bundle at --out
         /// instead of printing it. For inbox.pull and device.pull the key is
         /// bound to this key's fingerprint, so --fingerprint may be left out
         #[arg(long, requires = "out", requires = "relay_url")]
@@ -255,8 +264,12 @@ pub enum KeysCommand {
         relay_key: Option<PathBuf>,
         #[arg(long)]
         krl: Option<PathBuf>,
-        #[arg(long)]
+        /// Internal operator lock as a value; prefer --licensee-key-file
+        #[arg(long, conflicts_with = "licensee_key_file")]
         licensee_key: Option<String>,
+        /// A file holding the internal operator lock (or KEYQUORUM_LICENSEE_KEY_FILE)
+        #[arg(long)]
+        licensee_key_file: Option<PathBuf>,
         /// Seal the replacement to this X25519 public key (hex) from now on
         #[arg(long)]
         recipient_key: Option<String>,

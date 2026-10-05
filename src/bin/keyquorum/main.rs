@@ -19,8 +19,18 @@ fn main() -> ExitCode {
         #[cfg(feature = "provider")]
         Command::Host {
             mailbox_db,
+            mongodb_uri_file,
+            mongodb_db,
             command,
-        } => host::run(&mailbox_db, &cli::resolve_db(cli.db.as_deref()), command),
+        } => host::run(
+            &host::StoreArgs {
+                mailbox_db,
+                mongodb_uri_file,
+                mongodb_db,
+            },
+            &cli::resolve_db(cli.db.as_deref()),
+            command,
+        ),
         command => cli::run_cli(Cli { command, ..cli }),
     };
     match ran {

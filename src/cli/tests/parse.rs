@@ -482,6 +482,75 @@ fn loadkey_parses_with_and_without_positional_key() {
 
 #[cfg(feature = "provider")]
 #[test]
+fn provider_host_store_and_credential_file_flags_parse() {
+    // The MongoDB connection string comes from a file (or the environment),
+    // never a flag value, and the database name may be named.
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "--mongodb-uri-file",
+        "/run/secrets/mongodb-uri",
+        "--mongodb-db",
+        "keyquorum",
+        "serve",
+    ])
+    .is_ok());
+    assert!(
+        Cli::try_parse_from(["keyquorum", "host", "--mongodb-uri", "mongodb://x", "serve"])
+            .is_err()
+    );
+    // The operator lock may come from a file; a file and a value together
+    // are refused rather than guessed.
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "keys",
+        "create",
+        "--scope",
+        "inbox.push",
+        "--licensee-key-file",
+        "/run/credentials/keyquorum-keys/licensee-key",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "keys",
+        "create",
+        "--scope",
+        "inbox.push",
+        "--licensee-key-file",
+        "lock",
+        "--licensee-key",
+        "kql_x",
+    ])
+    .is_err());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "keys",
+        "rotate",
+        "3",
+        "--licensee-key-file",
+        "lock",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "keys",
+        "rotate",
+        "3",
+        "--licensee-key-file",
+        "lock",
+        "--licensee-key",
+        "kql_x",
+    ])
+    .is_err());
+}
+
+#[cfg(feature = "provider")]
+#[test]
 fn provider_host_keys_list_parses() {
     assert!(Cli::try_parse_from(["keyquorum", "host", "keys", "list"]).is_ok());
     assert!(Cli::try_parse_from([

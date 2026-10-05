@@ -45,6 +45,8 @@ use crate::file_history::{EventDetails, HistoryEventType, HistoryOutcome};
 use gate_link::Gate;
 #[cfg(feature = "provider")]
 pub mod host_args;
+#[cfg(feature = "provider")]
+pub mod host_env;
 mod send;
 mod setup;
 mod transfer_cmd;
@@ -448,9 +450,20 @@ pub enum Command {
     #[cfg(feature = "provider")]
     #[command(hide = true)]
     Host {
-        /// Mailbox SQLite file (not an organization store)
+        /// Mailbox SQLite file (not an organization store). Not used when a
+        /// MongoDB deployment is configured.
         #[arg(long, default_value = "keyquorum-relay.sqlite")]
         mailbox_db: PathBuf,
+        /// A file holding the MongoDB connection string of the hosted relay's
+        /// store (or KEYQUORUM_MONGODB_URI_FILE, or the raw
+        /// KEYQUORUM_MONGODB_URI). Needs a build with the `mongodb` feature.
+        /// Never a flag value: the string may carry a password.
+        #[arg(long)]
+        mongodb_uri_file: Option<PathBuf>,
+        /// The database within that deployment (or KEYQUORUM_MONGODB_DB;
+        /// `keyquorum` by default)
+        #[arg(long)]
+        mongodb_db: Option<String>,
         #[command(subcommand)]
         command: host_args::HostCommand,
     },
