@@ -36,19 +36,29 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The full suite, as the parallel groups of tests.yml (lab, cli,
+  # file_history, relay+provider+db, core), each in its own job with the
+  # shared `standard` cache. The checks are named "Native KeyQuorum tests /
+  # <group>".
   native:
     name: Native KeyQuorum tests
+    uses: ./.github/workflows/tests.yml
+    with:
+      features: --features provider,lab,tui
+      cache-key: standard
+
+  # One stable check name for the whole suite, whatever the groups are
+  # called. Branch protection requires this job: a job that is skipped
+  # because the tests failed would count as passing, this one fails.
+  test:
+    name: test
+    needs: native
+    if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
-        with:
-          toolchain: stable
-      - name: Test
-        run: cargo test --locked --all-targets --features provider,lab,tui
+      - name: Every test group passed
+        run: test "${{ needs.native.result }}" = success
 
   build:
     name: Build and validate the lab

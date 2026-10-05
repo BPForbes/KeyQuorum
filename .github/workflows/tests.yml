@@ -1,5 +1,5 @@
-# Reusable test run, used by legacy.yml (the `--all-features` run). The standard
-# run is the `native` job in deploy-lab.yml.
+# Reusable test run, shared by deploy-lab.yml (the standard `--features
+# provider,lab,tui` run, as its `native` job) and legacy.yml (`--all-features`).
 #
 # Every test group runs at the same time in its own job instead of one long
 # linear nextest run. Groups are nextest filtersets over the module path, so a
