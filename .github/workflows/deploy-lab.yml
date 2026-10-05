@@ -52,7 +52,6 @@ jobs:
 
   build:
     name: Build and validate the lab
-    needs: native
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -154,7 +153,8 @@ jobs:
   deploy:
     # notify-portfolio.yml reads this job's conclusion by name.
     name: Publish KeyQuorum Lab to GitHub Pages
-    needs: build
+    # native and build run side by side; publishing waits for both.
+    needs: [native, build]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
