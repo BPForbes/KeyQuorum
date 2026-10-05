@@ -1,0 +1,64 @@
+# The deployment assets under deploy/ and the container image: the Helm
+# chart must lint and render to manifests that pass schema validation, and
+# the image must build with the provider and mongodb features and run as a
+# non-root user. Nothing here publishes an image or touches a cluster.
+
+name: Deployment assets
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  chart:
+    name: helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Lint
+        run: helm lint deploy/kubernetes/keyquorum-relay --strict
+      - name: Render (defaults, external secrets, CSI)
+        run: |
+          mkdir -p rendered
+          helm template relay deploy/kubernetes/keyquorum-relay --namespace keyquorum \
+            > rendered/default.yaml
+          helm template relay deploy/kubernetes/keyquorum-relay --namespace keyquorum \
+            --set secrets.externalSecrets.enabled=true --set autoscaling.enabled=true \
+            > rendered/external-secrets.yaml
+          helm template relay deploy/kubernetes/keyquorum-relay --namespace keyquorum \
+            --set secrets.csi.enabled=true > rendered/csi.yaml
+      # Core resources against the Kubernetes schemas; the ExternalSecret
+      # and SecretProviderClass kinds are custom resources and are skipped.
+      - name: Validate rendered manifests
+        run: |
+          docker run --rm -v "$PWD/rendered:/rendered" ghcr.io/yannh/kubeconform:v0.6.7 \
+            -strict -summary -kubernetes-version 1.30.0 \
+            -skip ExternalSecret,SecretProviderClass /rendered
+      - name: No credential is rendered
+        run: |
+          ! grep -Ei 'kq_[A-Za-z0-9_-]{20,}|kql_|BEGIN (RSA|EC|OPENSSH)|mongodb(\+srv)?://[^/@]+@' rendered/*.yaml
+
+  image:
+    name: container image
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build (provider + mongodb)
+        run: docker build --tag keyquorum-relay:ci .
+      - name: Runs as a non-root user with the provider commands compiled in
+        run: |
+          docker run --rm --user 65532:65532 keyquorum-relay:ci host serve --help >/dev/null
+          test "$(docker inspect --format '{{.Config.User}}' keyquorum-relay:ci)" = "65532:65532"
+      - name: Image layers hold no key, certificate or database file
+        run: |
+          docker save keyquorum-relay:ci | tar -tv | \
+            ! grep -Ei '\.(key|pem|kqcert|kqrl|kqpolicy|kqkey|kqpb|sqlite|db)$|device\.skey'
