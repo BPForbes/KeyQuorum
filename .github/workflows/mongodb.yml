@@ -15,6 +15,12 @@ on:
 permissions:
   contents: read
 
+# A push to a pull request cancels the run for the commit it replaced, so a
+# superseded commit never holds a runner. Runs on main are never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -33,6 +39,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: mongodb
+          cache-on-failure: true
       - uses: taiki-e/install-action@badb8c3638e0b773c6c17a6025c2306a8f1c4303 # nextest tag
         with:
           tool: nextest
