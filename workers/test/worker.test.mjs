@@ -1,0 +1,327 @@
+// The public Worker (src/worker.js) with a fake Durable Object in place of the
+// relay: what it lets through to the object, what it never does, and what every
+// answer carries. Bearers are drawn at run time, never written as literals.
+import test from "node:test";
+import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import worker, { handle } from "../src/worker.js";
+import { MAX_REQUEST_BODY } from "../src/policy.js";
+import { STATUS_CSP, STATUS_CSS, STATUS_HTML, STATUS_JS } from "../src/status-page.js";
+
+const HOST = "relay.test";
+
+function bearer() {
+  return `kq_${randomBytes(32).toString("base64url")}`;
+}
+
+// A relay stand-in: records every request it was handed.
+function fakeEnv({ hosts = HOST, ready = true, answer, limiter, withObject = true } = {}) {
+  const forwarded = [];
+  const stub = {
+    ready: async () => {
+      if (ready instanceof Error) throw ready;
+      return ready;
+    },
+    fetch: async (request) => {
+      forwarded.push(request);
+      if (answer instanceof Error) throw answer;
+      return answer ? answer(request) : Response.json({ ok: true });
+    },
+  };
+  const env = { ALLOWED_HOSTS: hosts };
+  if (withObject) env.RELAY = { idFromName: (name) => name, get: () => stub };
+  if (limiter) env.RATE_LIMITER = limiter;
+  return { env, forwarded };
+}
+
+function spyLog() {
+  const lines = [];
+  const record = (level) => (...args) => lines.push([level, ...args]);
+  return { warn: record("warn"), error: record("error"), lines };
+}
+
+const call = (env, path, init = {}, host = HOST, log = spyLog()) =>
+  handle(new Request(`https://${host}${path}`, init), env, log);
+
+test("an unconfigured Worker serves nothing, whatever the path", async () => {
+  for (const hosts of ["", "   ", null, ","]) {
+    const { env, forwarded } = fakeEnv({ hosts });
+    if (hosts === null) delete env.ALLOWED_HOSTS; // the variable was never set
+    for (const path of ["/health", "/ready", "/", "/inbox"]) {
+      const response = await call(env, path);
+      assert.equal(response.status, 503, `${JSON.stringify(hosts)} ${path}`);
+      assert.deepEqual(await response.json(), { error: "relay not configured" });
+    }
+    assert.equal(forwarded.length, 0);
+  }
+});
+
+test("only the configured host is served: a Version URL, a lookalike and a suffix are refused", async () => {
+  const { env, forwarded } = fakeEnv({ hosts: "relay.test, Relay.Example.COM." });
+  for (const host of ["relay.test", "RELAY.test", "relay.test.", "relay.example.com"]) {
+    assert.equal((await call(env, "/health", {}, host)).status, 200, host);
+  }
+  for (const host of [
+    "80cd71cc-keyquorum-relay.example.workers.dev",
+    "cloudflare-workers-builds-keyquorum-relay.example.workers.dev",
+    "evil-relay.test",
+    "relay.test.evil.example",
+    "sub.relay.test",
+    "keyquorum-relay.example.workers.dev",
+  ]) {
+    for (const path of ["/health", "/inbox", "/"]) {
+      const response = await call(env, path, { headers: { authorization: `Bearer ${bearer()}` } }, host);
+      assert.equal(response.status, 404, `${host} ${path}`);
+      assert.deepEqual(await response.json(), { error: "not found" });
+    }
+  }
+  assert.equal(forwarded.length, 0, "a refused host never reaches the relay");
+});
+
+test("a refused host is logged without any header, bearer or body", async () => {
+  const { env } = fakeEnv();
+  const log = spyLog();
+  const token = bearer();
+  await call(env, "/inbox", { method: "POST", body: "{}", headers: { authorization: `Bearer ${token}` } }, "other.test", log);
+  assert.equal(log.lines.length, 1);
+  assert.ok(!JSON.stringify(log.lines).includes(token));
+});
+
+test("the wildcard serves any host (it is set only in the previews block)", async () => {
+  const { env } = fakeEnv({ hosts: "*" });
+  assert.equal((await call(env, "/health", {}, "anything-keyquorum-relay.example.workers.dev")).status, 200);
+});
+
+test("each customer route reaches the relay once, and nothing else does", async () => {
+  const allowed = [
+    ["POST", "/provider-identity"],
+    ["POST", "/keycheck"],
+    ["POST", "/inbox"],
+    ["GET", "/inbox"],
+    ["GET", "/inbox?after=3&limit=10"],
+    ["GET", "/audit/api-keys"],
+    ["PUT", "/trees"],
+    ["GET", "/trees/team.one/context"],
+    ["POST", "/devices/packages"],
+    ["GET", "/devices/packages?after=1"],
+    ["PUT", "/devices"],
+    ["GET", "/devices/abc123"],
+    ["GET", "/inbox/"],
+  ];
+  for (const [method, path] of allowed) {
+    const { env, forwarded } = fakeEnv();
+    const init = { method };
+    if (method !== "GET") init.body = "{}";
+    const response = await call(env, path, init);
+    assert.equal(response.status, 200, `${method} ${path}`);
+    assert.equal(forwarded.length, 1, `${method} ${path}`);
+  }
+});
+
+test("no operator, documentation or mint route is routed on the public Worker", async () => {
+  const refused = [
+    ["GET", "/api-keys"],
+    ["POST", "/api-keys"],
+    ["POST", "/api-keys/1/revoke"],
+    ["GET", "/audit"],
+    ["GET", "/audit/keys"],
+    ["GET", "/audit/api-keys/extra"],
+    ["GET", "/swagger-ui/"],
+    ["GET", "/api-docs/openapi.json"],
+    ["POST", "/keys"],
+    ["POST", "/keys/create"],
+    ["POST", "/keys/rotate"],
+    ["GET", "//api-keys"],
+    ["GET", "/%61pi-keys"],
+    ["GET", "/inbox/../api-keys"],
+    ["GET", "/./api-keys/"],
+    ["GET", "/health/"],
+    ["GET", "/ready/x"],
+  ];
+  for (const [method, path] of refused) {
+    const { env, forwarded } = fakeEnv();
+    const response = await call(env, path, { method, headers: { authorization: `Bearer ${bearer()}` } });
+    assert.equal(response.status, 404, `${method} ${path}`);
+    assert.equal(forwarded.length, 0, `${method} ${path}`);
+  }
+});
+
+test("a route with the wrong method is 405 with the methods it takes, anything unknown is 404", async () => {
+  const { env, forwarded } = fakeEnv();
+  const inbox = await call(env, "/inbox", { method: "DELETE" });
+  assert.equal(inbox.status, 405);
+  assert.equal(inbox.headers.get("allow"), "POST, GET");
+  const health = await call(env, "/health", { method: "POST", body: "{}" });
+  assert.equal(health.status, 405);
+  assert.equal(health.headers.get("allow"), "GET, HEAD");
+  assert.equal((await call(env, "/keycheck", { method: "GET" })).headers.get("allow"), "POST");
+  assert.equal((await call(env, "/nowhere", { method: "PATCH", body: "x" })).status, 404);
+  assert.equal((await call(env, "/inbox", { method: "OPTIONS" })).status, 405);
+  assert.equal(forwarded.length, 0);
+});
+
+test("a declared body over the cap is 413 and never reaches the relay; the cap itself is allowed", async () => {
+  const { env, forwarded } = fakeEnv();
+  const over = await call(env, "/inbox", {
+    method: "POST",
+    body: "x",
+    headers: { "content-length": String(MAX_REQUEST_BODY + 1) },
+  });
+  assert.equal(over.status, 413);
+  assert.equal(forwarded.length, 0);
+  const at = await call(env, "/inbox", {
+    method: "POST",
+    body: "x",
+    headers: { "content-length": String(MAX_REQUEST_BODY) },
+  });
+  assert.equal(at.status, 200);
+  assert.equal(forwarded.length, 1);
+});
+
+test("every answer is never cached and never sniffed, whatever the relay said", async () => {
+  const cacheable = () =>
+    new Response("{}", { status: 200, headers: { "cache-control": "public, max-age=600", etag: "x" } });
+  const { env } = fakeEnv({ answer: cacheable });
+  const answers = [
+    await call(env, "/health"),
+    await call(env, "/ready"),
+    await call(env, "/"),
+    await call(env, "/assets/status.js"),
+    await call(env, "/assets/status.css"),
+    await call(env, "/inbox"),
+    await call(env, "/api-keys"),
+    await call(env, "/inbox", { method: "DELETE" }),
+    await call(env, "/health", {}, "other.test"),
+    await call(fakeEnv({ hosts: "" }).env, "/health"),
+    await call(env, "/inbox", { method: "POST", body: "x", headers: { "content-length": String(MAX_REQUEST_BODY + 1) } }),
+  ];
+  for (const response of answers) {
+    assert.equal(response.headers.get("cache-control"), "no-store", String(response.status));
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  }
+});
+
+test("health answers from the Worker alone and takes HEAD", async () => {
+  const { env, forwarded } = fakeEnv({ withObject: false });
+  const get = await call(env, "/health");
+  assert.equal(get.status, 200);
+  assert.deepEqual(await get.json(), { status: "ok" });
+  assert.equal((await call(env, "/health", { method: "HEAD" })).status, 200);
+  assert.equal(forwarded.length, 0);
+});
+
+test("readiness is the relay's: ready is 200, anything else is 503 with Retry-After", async () => {
+  const ok = await call(fakeEnv({ ready: true }).env, "/ready");
+  assert.equal(ok.status, 200);
+  assert.deepEqual(await ok.json(), { status: "ready" });
+  for (const env of [
+    fakeEnv({ ready: false }).env,
+    fakeEnv({ ready: new Error("storage said something private") }).env,
+    fakeEnv({ withObject: false }).env,
+  ]) {
+    const log = spyLog();
+    const response = await call(env, "/ready", {}, HOST, log);
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("retry-after"), "5");
+    assert.deepEqual(await response.json(), { status: "unavailable" });
+    assert.ok(!JSON.stringify(log.lines).includes("private"), "the error text is not logged");
+  }
+});
+
+test("the relay's answer passes through with its status, body and content type", async () => {
+  const unauthorized = () =>
+    Response.json({ error: "invalid API key" }, { status: 401, headers: { "x-extra": "kept" } });
+  const { env } = fakeEnv({ answer: unauthorized });
+  const response = await call(env, "/inbox");
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), { error: "invalid API key" });
+  assert.match(response.headers.get("content-type"), /application\/json/);
+});
+
+test("the bearer reaches the relay untouched and is never logged", async () => {
+  const { env, forwarded } = fakeEnv({ limiter: { limit: async () => ({ success: true }) } });
+  const log = spyLog();
+  const token = bearer();
+  await call(env, "/inbox", { headers: { authorization: `Bearer ${token}`, "x-api-key": token } }, HOST, log);
+  assert.equal(forwarded[0].headers.get("authorization"), `Bearer ${token}`);
+  assert.equal(forwarded[0].headers.get("x-api-key"), token);
+  assert.ok(!JSON.stringify(log.lines).includes(token));
+});
+
+test("the rate limiter is keyed on the connecting address and refuses before the relay is called", async () => {
+  const keys = [];
+  let success = false;
+  const limiter = { limit: async ({ key }) => (keys.push(key), { success }) };
+  const { env, forwarded } = fakeEnv({ limiter });
+  const refused = await call(env, "/inbox", { headers: { "cf-connecting-ip": "203.0.113.7", "x-forwarded-for": "198.51.100.1" } });
+  assert.equal(refused.status, 429);
+  assert.equal(refused.headers.get("retry-after"), "60");
+  assert.deepEqual(keys, ["203.0.113.7"], "X-Forwarded-For is never read");
+  assert.equal(forwarded.length, 0);
+  success = true;
+  assert.equal((await call(env, "/inbox", { headers: { "cf-connecting-ip": "203.0.113.7" } })).status, 200);
+  await call(env, "/inbox");
+  assert.equal(keys.at(-1), "unknown");
+});
+
+test("health, readiness and the page are not counted by the limiter", async () => {
+  let counted = 0;
+  const { env } = fakeEnv({ limiter: { limit: async () => (counted += 1, { success: true }) } });
+  for (const path of ["/health", "/ready", "/", "/assets/status.js"]) await call(env, path);
+  assert.equal(counted, 0);
+});
+
+test("a limiter that cannot answer does not stop the relay", async () => {
+  const log = spyLog();
+  const limiter = { limit: async () => { throw new Error("limiter down"); } };
+  const { env, forwarded } = fakeEnv({ limiter });
+  assert.equal((await call(env, "/inbox", {}, HOST, log)).status, 200);
+  assert.equal(forwarded.length, 1);
+  assert.equal(log.lines.length, 1);
+});
+
+test("a relay object that fails is a generic 503, and its message is not shown or logged", async () => {
+  const { env } = fakeEnv({ answer: new Error("SQLITE_FULL: secret detail") });
+  const log = spyLog();
+  const response = await call(env, "/inbox", {}, HOST, log);
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("retry-after"), "5");
+  const text = await response.text();
+  assert.deepEqual(JSON.parse(text), { error: "relay unavailable" });
+  assert.ok(!text.includes("SQLITE_FULL"));
+  assert.ok(!JSON.stringify(log.lines).includes("secret detail"));
+});
+
+test("the status page is served with a locked-down policy and nothing inline or external", async () => {
+  const { env } = fakeEnv();
+  const page = await call(env, "/");
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get("content-type"), /text\/html/);
+  assert.equal(page.headers.get("content-security-policy"), STATUS_CSP);
+  assert.equal(await page.text(), STATUS_HTML);
+  assert.match((await call(env, "/assets/status.js")).headers.get("content-type"), /javascript/);
+  assert.equal(await (await call(env, "/assets/status.js")).text(), STATUS_JS);
+  assert.match((await call(env, "/assets/status.css")).headers.get("content-type"), /text\/css/);
+  assert.equal(await (await call(env, "/assets/status.css")).text(), STATUS_CSS);
+  assert.equal((await call(env, "/", { method: "POST", body: "x" })).status, 405);
+});
+
+test("the status page contract: no inline script or style, no handler, no outside origin, no innerHTML", () => {
+  assert.ok(!/<script(?![^>]*\bsrc=)/i.test(STATUS_HTML), "an inline script");
+  assert.ok(!/<style/i.test(STATUS_HTML), "an inline style block");
+  assert.ok(!/\sstyle=/i.test(STATUS_HTML), "an inline style attribute");
+  assert.ok(!/\son[a-z]+=/i.test(STATUS_HTML), "an inline event handler");
+  assert.ok(!/<form|<iframe|<object|<embed/i.test(STATUS_HTML));
+  for (const [name, text] of [["html", STATUS_HTML], ["css", STATUS_CSS], ["js", STATUS_JS]]) {
+    assert.ok(!/https?:\/\//i.test(text), `${name} names an outside origin`);
+  }
+  assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(|new Function/.test(STATUS_JS));
+  assert.ok(STATUS_CSP.includes("default-src 'none'") && STATUS_CSP.includes("frame-ancestors 'none'"));
+  assert.ok(!/unsafe-inline|unsafe-eval|\*/.test(STATUS_CSP));
+});
+
+test("the default export is the same handler", async () => {
+  const { env } = fakeEnv();
+  const response = await worker.fetch(new Request(`https://${HOST}/health`), env);
+  assert.equal(response.status, 200);
+});

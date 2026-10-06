@@ -8,11 +8,16 @@
 # The job named `workers` is the one stable check for branch protection, in the
 # same form as `test` in deploy-lab.yml and `codeql gate` in security.yml.
 #
-# Stage 2 deploys a health-only stub, so the pipeline is proven before the relay
-# exists. Nothing secret is built or deployed from here: the relay key,
-# provider.kqcert and provider.kqrl are Worker secrets the operator sets locally
-# with `wrangler secret put`, and the only Cloudflare credential in GitHub is the
-# Workers-deploy token and the account id, scoped to the two environments below.
+# The public Worker is the relay: a Durable Object running the Rust relay core as
+# WebAssembly (relay-wasm/, built here from the crate's `workers` feature, never
+# committed). Nothing secret is built or deployed from here: the relay key and
+# provider.kqcert are Worker secrets the operator sets locally with `wrangler
+# secret put`, and the only Cloudflare credential in GitHub is the Workers-deploy
+# token and the account id, scoped to the two environments below. The deploy
+# passes the relay's hostname, taken from the environment's RELAY_URL variable,
+# as the non-secret ALLOWED_HOSTS: the Worker serves that host and no other, so a
+# Version URL (a workers.dev host that shares the Worker's bindings and secrets)
+# is refused.
 # wrangler is installed from workers/package-lock.json, not through a
 # third-party deploy action.
 #
@@ -20,8 +25,9 @@
 #   - Environments `cloudflare-staging` and `cloudflare-production` (production
 #     with a required reviewer), each with the secrets CLOUDFLARE_API_TOKEN
 #     (Workers Scripts edit only) and CLOUDFLARE_ACCOUNT_ID, and the variable
-#     RELAY_URL (the Worker's custom domain, https://...), used for the
-#     environment link and the smoke test; optionally ADMIN_URL (the admin
+#     RELAY_URL (the Worker's custom domain, https://...; set it before the
+#     first deploy, because its host is the only one the Worker serves), used for
+#     the environment link and the smoke test; optionally ADMIN_URL (the admin
 #     Worker's hostname, which the smoke test expects to refuse an anonymous
 #     caller), and ACCESS_TEAM_DOMAIN and ACCESS_AUD (not secrets: the Access
 #     team's domain and the admin application's audience tag), which the admin
@@ -30,9 +36,9 @@
 #   - Optionally, the public Worker connected to Cloudflare Workers Builds, as
 #     the portfolio site is, for a "Workers Builds: keyquorum-relay" check and
 #     a Worker Preview on every pull request (docs/operator/relay-hosting.md,
-#     "Workers Builds and previews"): root directory `workers`, build and
-#     `main` deploy command `npm run check` (so this workflow stays the only
-#     deployer), Preview command `npm run preview`.
+#     "Workers Builds and previews"): root directory `workers`, build command
+#     `npm run builds:build`, `main` deploy command `npm run check` (so this
+#     workflow stays the only deployer), Preview command `npm run preview`.
 # Until the secrets exist a deploy job warns and passes, so a merge to main is
 # never blocked by setup that has not happened yet.
 
@@ -184,13 +190,47 @@ jobs:
             echo "configured=false" >> "${GITHUB_OUTPUT}"
             echo "::warning::cloudflare-staging has no CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets; nothing was deployed."
           fi
+      - name: Read the pinned wasm-bindgen version
+        if: steps.credentials.outputs.configured == 'true'
+        working-directory: .
+        run: |
+          set -euo pipefail
+          version="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)"
+          test -n "${version}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+        id: bindgen
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        if: steps.credentials.outputs.configured == 'true'
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@861a07ce7084f55488e375df125cdc99bba60eb7 # v2
+        if: steps.credentials.outputs.configured == 'true'
+        with:
+          tool: wasm-bindgen@${{ steps.bindgen.outputs.version }}
+      - name: Compile the relay core
+        if: steps.credentials.outputs.configured == 'true'
+        run: npm run build:relay-wasm
       - name: Deploy the staging Worker
         if: steps.credentials.outputs.configured == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: "false"
-        run: npx wrangler deploy --env staging
+          RELAY_URL: ${{ vars.RELAY_URL }}
+        run: |
+          # The Worker serves only the host named by ALLOWED_HOSTS and answers 404
+          # on any other, a Version URL included (a version shares this Worker's
+          # bindings and secrets). The host is the environment's RELAY_URL, which
+          # is not a secret. Without a usable one the Worker is deployed
+          # unconfigured and serves nothing, which is the safe state.
+          args=()
+          if host="$(node scripts/relay-host.mjs "${RELAY_URL}")"; then
+            args+=(--var "ALLOWED_HOSTS:${host}")
+          else
+            echo "::warning::cloudflare-staging has no usable RELAY_URL variable (an https URL); the Worker was deployed unconfigured and serves nothing."
+          fi
+          npx wrangler deploy --env staging "${args[@]}"
       - name: Deploy the staging admin Worker
         if: steps.credentials.outputs.configured == 'true'
         env:
@@ -261,12 +301,34 @@ jobs:
             echo "::error::cloudflare-production has no CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets."
             exit 1
           fi
+      - name: Read the pinned wasm-bindgen version
+        working-directory: .
+        run: |
+          set -euo pipefail
+          version="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)"
+          test -n "${version}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+        id: bindgen
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@861a07ce7084f55488e375df125cdc99bba60eb7 # v2
+        with:
+          tool: wasm-bindgen@${{ steps.bindgen.outputs.version }}
+      - name: Compile the relay core
+        run: npm run build:relay-wasm
       - name: Deploy the production Worker (the top-level configuration)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: "false"
-        run: npx wrangler deploy --env=""
+          RELAY_URL: ${{ vars.RELAY_URL }}
+        run: |
+          # As for staging, but production never deploys unconfigured: without a
+          # usable RELAY_URL this step fails before anything is uploaded.
+          host="$(node scripts/relay-host.mjs "${RELAY_URL}")"
+          npx wrangler deploy --env="" --var "ALLOWED_HOSTS:${host}"
       - name: Deploy the production admin Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

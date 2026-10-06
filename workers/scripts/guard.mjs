@@ -6,8 +6,12 @@
 //
 // The configuration check fails on: key material anywhere in the file, a
 // secret-like [vars] or [previews.vars] name (the relay key, certificate and
-// revocation list are Worker secrets, never vars), a Durable Object migration that deletes or
-// renames a class (which destroys its data), and a Worker or environment that
+// revocation list are Worker secrets, never vars), a wildcard ALLOWED_HOSTS
+// anywhere but [previews.vars] (the public Worker serves only the hosts that
+// variable names, so a Version URL of a deploy, which shares production's
+// bindings and secrets, is refused; a Preview has its own empty Durable Object
+// and no secrets, so only there may it be "*"), a Durable Object migration that
+// deletes or renames a class (which destroys its data), and a Worker or environment that
 // does not switch workers.dev off, or that leaves preview URLs on (one
 // hostname carries the relay's identity). Only the public Worker's file may be
 // checked with --allow-preview-urls, which accepts preview_urls = true there
@@ -60,6 +64,12 @@ function tableName(line) {
 
 // [vars], an environment's, and the vars of a previews block at either level
 // (a Worker Preview reads them the way production reads [vars]).
+// A line or fragment that assigns ALLOWED_HOSTS a value holding "*".
+function wildcardHost(text) {
+  const match = /"?ALLOWED_HOSTS"?\s*=\s*("[^"]*"|'[^']*')/.exec(text);
+  return match !== null && match[1].includes("*");
+}
+
 function isVarsTable(name) {
   return /^(env\.[^.]+\.)?(previews\.)?vars$/.test(name);
 }
@@ -89,8 +99,17 @@ export function checkConfig(
       if (key && SECRET_NAME.test(key[1])) {
         problems.push(`${label}: [vars] name "${key[1]}" looks like a secret; use a Worker secret`);
       }
+      if (current !== "previews.vars" && wildcardHost(line)) {
+        problems.push(
+          `${label}: [${current}] sets ALLOWED_HOSTS to a wildcard; only [previews.vars] may, ` +
+            "because a Version URL of a deploy shares production's bindings and secrets",
+        );
+      }
     }
     const inline = /\bvars\s*=\s*\{([^}]*)\}/.exec(line);
+    if (inline && wildcardHost(inline[1])) {
+      problems.push(`${label}: an inline vars table sets ALLOWED_HOSTS to a wildcard; use [previews.vars]`);
+    }
     if (inline) {
       for (const entry of inline[1].split(",")) {
         const key = /^\s*"?([A-Za-z0-9_.-]+)"?\s*=/.exec(entry);

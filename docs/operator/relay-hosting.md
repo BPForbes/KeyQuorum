@@ -3,7 +3,8 @@
 This is the hosting plan and decision record for issue #88. The owner has
 decided that Cloudflare is the sole hosting provider for the mailbox relay,
 because of cost. This document records that decision, the Cloudflare
-Workers design that follows from it (planned, not yet built), the controls
+Workers design that follows from it (the public Worker and its Durable Object are built and
+not yet deployed; the admin Worker's back end is not built), the controls
 the earlier AWS-first plan specified and where each one lands on
 Cloudflare, the gaps that remain, and the launch prerequisites from the
 architecture review of PR #87 revalidated against the code as it is today.
@@ -22,12 +23,12 @@ Status at the time of writing (2026-10-06):
 | Item | State |
 | --- | --- |
 | Hosting decision | **Cloudflare only.** No other hosting provider. Reason: cost (owner decision, recorded in the #88 comment). |
-| Cloudflare Workers relay (Path B) | **Planned, not implemented.** Status: **Adopt** (decided 2026-10-06 on the stage 3 spike, with production-only checks before launch). The design is in [The Workers relay](#the-workers-relay-planned-not-implemented) and the measurements in [What the spike measured](#what-the-spike-measured-stage-3). |
+| Cloudflare Workers relay (Path B) | **The runtime is built; the relay is not yet usable by a customer.** The public Worker (`workers/src/worker.js`) and the one SQLite-backed Durable Object (`workers/src/relay-object.js`, around the Rust relay core compiled to WebAssembly) are in this repository. They are tested over the real core under Node and were run under local workerd (`wrangler dev --local`); they have never been deployed to a Cloudflare account. **Missing:** a way to mint a customer API key. The relay has no create or rotate route by design, and the admin Worker's back end that would mint one (stage 4d) is not built, so a deployed relay answers every customer route with 401. Also missing: the account setup and a first deploy, and the production-only checks. Status: **Adopt** (decided 2026-10-06 on the stage 3 spike). The design is in [The Workers relay](#the-workers-relay) and the measurements in [What the spike measured](#what-the-spike-measured-stage-3). |
 | Native `keyquorum host serve` | **Kept as the dev, test and reference host.** `SqliteRelayStore`, `src/relay/server.rs` and `host keys` stay in the code. It is not a production deployment path. |
-| Deployment pipeline and Cloudflare Terraform | **Stage 2, in this repository; not yet exercised against a Cloudflare account.** `workers/` (a health-only stub Worker), `.github/workflows/workers.yml` and `deploy/cloudflare/terraform/` exist and are described in [Provisioning and the deployment pipeline](#provisioning-and-the-deployment-pipeline-stage-2). Honest limits: the relay itself is still unimplemented, so the deployed Worker is the stub; the Terraform passes CI's `terraform validate` against the pinned provider (`.terraform.lock.hcl`, `cloudflare/cloudflare` 5.27.0) but the repository's authors have never planned or applied it against a real account; Cloudflare Notifications and the R2 retention lock are dashboard steps, not Terraform; there is no wasm32 build step yet; and the owner's GitHub and Cloudflare setup is still to be done. |
+| Deployment pipeline and Cloudflare Terraform | **Stage 2, in this repository; not yet exercised against a Cloudflare account.** `workers/` (the public Worker and its Durable Object), `.github/workflows/workers.yml` and `deploy/cloudflare/terraform/` exist and are described in [Provisioning and the deployment pipeline](#provisioning-and-the-deployment-pipeline-stage-2). Honest limits: nothing has been deployed; the Terraform passes CI's `terraform validate` against the pinned provider (`.terraform.lock.hcl`, `cloudflare/cloudflare` 5.27.0) but the repository's authors have never planned or applied it against a real account; Cloudflare Notifications and the R2 retention lock are dashboard steps, not Terraform; and the owner's GitHub and Cloudflare setup is still to be done. |
 | Admin Worker's front door (stage 4a) | **In this repository; never deployed, and Access has never been configured on an account.** `workers/admin/` holds the Worker `keyquorum-relay-admin` (`[env.staging]` is `keyquorum-relay-admin-staging`): it verifies Cloudflare Access's signed token itself and serves a static operator page that shows who is signed in and that the relay is not connected yet. Its Terraform (`admin_environments`: a custom domain and an Access application with an MFA policy per environment) and its workflow steps exist; CI's `terraform` job checks the whole directory on every push. **Not built:** the relay-backed pages (key list, revoke, audit trail, status), the `/api` routes behind them and the service binding to the Durable Object (stage 4). See [The admin Worker's front door](#the-admin-workers-front-door-stage-4a). |
 | Relay domain and operator page | **Decided 2026-10-06 (owner).** The relay uses its own domain on Cloudflare, not `bailey-forbes.com`; the operator page is static files served from the admin Worker behind Access. See [Domain and operator page](#domain-and-operator-page-owner-decisions-2026-10-06). |
-| Live deployment, restore test, overload test | **Not done.** There is nothing to deploy until the Workers relay exists; they need the operator's Cloudflare account and run against a real deployment. The [acceptance checklist](#acceptance-checklist) says which rows this document settles and which the deployment must. |
+| Live deployment, restore test, overload test | **Not done.** Nothing has been deployed, and with no way to mint a key there is no customer to test with; they need the operator's Cloudflare account and run against a real deployment. The [acceptance checklist](#acceptance-checklist) says which rows this document settles and which the deployment must. |
 
 Nothing here is deployment approval, and no SOC 2 mapping below claims
 compliance; `docs/soc2-controls.md` says what the software provides and
@@ -202,20 +203,36 @@ procedure and the settings, so the connection is made once and the same way.
 - `wrangler.toml` names the Worker `keyquorum-relay` (the dashboard name and
   the `name` under the root directory must match, or the build fails), keeps
   `workers_dev = false`, sets `preview_urls = true` (the workers.dev host for
-  Previews, separate from production's) and carries an empty `previews = { }`
-  block, which `wrangler preview` requires ("The `previews` block is
-  required, but it can be empty if your Preview does not need separate
-  settings", Cloudflare, Worker Previews configuration, read 2026-10-06). The
-  staging environment has no `previews` block: it is not connected.
+  Previews, separate from production's) and carries the `[previews.vars]` and
+  `[[previews.durable_objects.bindings]]` tables a Preview starts with, since
+  "Previews do not inherit production settings" and the `previews` block is
+  required ("it can be empty if your Preview does not need separate
+  settings"; Cloudflare, Worker Previews and its configuration, read
+  2026-10-06). Classes and migrations stay at the top level, as Cloudflare
+  asks. The staging environment has no `previews` block: it is not connected.
 - `.node-version` pins Node 22, the version `workers.yml` runs; Builds reads
   it from the root directory (its default is Node 24).
-- `npm run check` runs the configuration guard, the four dry-run builds and
-  the bundle guard: the `workers build` job without the relay-core tests,
-  which need the WebAssembly build (Rust and `wasm-bindgen`, which the build
-  image does not have). `npm run preview` is `wrangler preview --env=""`.
+- `npm run builds:build` is the build command. Cloudflare's build image has
+  Node, Go, Python and Ruby but no Rust, and the relay core must be compiled to
+  WebAssembly first, so `scripts/builds-toolchain.sh` installs a pinned Rust
+  toolchain with the wasm32 target (`rustup-init` 1.28.2, Rust 1.97.0) and the
+  prebuilt `wasm-bindgen` CLI at the version `Cargo.lock` pins (0.2.127), each
+  download checked against a SHA-256 written in the script, then `npm run
+  build:relay-wasm` runs. The script refuses to run when `Cargo.lock` pins a
+  different `wasm-bindgen` than the one it has a hash for, so a lockfile bump
+  forces the pin to be raised on purpose. Measured in a clean container (not on
+  Cloudflare's image, where it has never run): the toolchain installs in about
+  26 seconds and a cold build of the core takes about 56. GitHub's workflow
+  installs the same things with its own SHA-pinned actions and never runs this
+  script.
+- `npm run check` is the `main` deploy command: the configuration guard, the
+  four dry-run builds and the bundle guard, which need the compiled core and
+  so run after the build command in the same build. `npm run preview` is
+  `wrangler preview --env=""`.
 - `scripts/guard.mjs` refuses a secret-like name in a `previews` block as it
-  does in `[vars]` (`guard.test.mjs`), and still refuses `preview_urls = true`
-  anywhere but the one file checked with `--allow-preview-urls`.
+  does in `[vars]`, refuses a wildcard `ALLOWED_HOSTS` anywhere but
+  `[previews.vars]` (below), and still refuses `preview_urls = true` anywhere
+  but the one file checked with `--allow-preview-urls` (`guard.test.mjs`).
 
 **Settings** (Worker `keyquorum-relay`, Settings, Builds; the same fields as
 `POST /builds/triggers`):
@@ -225,11 +242,11 @@ procedure and the settings, so the connection is made once and the same way.
 | Repository | `BPForbes/KeyQuorum`; the GitHub App's repository access limited to the repositories it builds | Cloudflare's own recommendation (GitHub integration, "Organizational access"). |
 | Production branch | `main` | |
 | Root directory | `workers` | Where `wrangler.toml`, `package.json` and `.node-version` are; Builds runs `npm ci` there itself. |
-| Build command | `npm run check` | The guards and dry runs CI runs. |
+| Build command | `npm run builds:build` | Installs the pinned toolchain and compiles the relay core. |
 | Deploy command (`main`) | `npm run check` | **Not** `wrangler deploy`: `workers.yml` deploys `main` (staging on push, production on a reviewed manual run), and two deployers of one Worker would race. A Builds run on `main` is a check only. |
 | Preview command (other branches) | `npm run preview` | Worker Previews, Cloudflare's default for a Worker connected now. Never `wrangler versions upload`: a version shares the production bindings and secrets, a Preview does not. |
 | Preview builds | on (Settings, Build, Branch control) | The check and the Preview URL on every pull request. |
-| Build watch paths | include `workers/**`; add `src/**`, `build.rs`, `Cargo.toml` and `Cargo.lock` when the Worker bundles the relay core | A build, and so a check run, only when the Worker can change. |
+| Build watch paths | include `workers/**`, `src/**`, `build.rs`, `Cargo.toml` and `Cargo.lock` | The Worker bundles the relay core, so a change to the crate changes it. A build, and so a check run, only then. |
 | Build variables | `CI=true`, `WRANGLER_SEND_METRICS=false` | As `workers.yml`. No secret: the build needs none, and none is set. |
 | Build token | the one Builds creates (Workers Scripts edit among its permissions), or an existing Workers-deploy token | It deploys nothing while the deploy command is `npm run check`; Previews are uploaded with it. |
 | Build caching | on | |
@@ -254,10 +271,13 @@ procedure and the settings, so the connection is made once and the same way.
    keyquorum-relay" appears, and the pull request comment carries the Preview
    URL (`<branch>-keyquorum-relay.<subdomain>.workers.dev`). Confirm on it what
    `smoke.mjs` confirms on a deploy: `/health` answers, the operator and mint
-   routes answer 404 or 405, and (once a Durable Object exists) the Preview
-   holds no data. Confirm in the Worker's Settings, Builds that the deploy
-   command on `main` is `npm run check` and the Preview command is `npm run
-   preview`: the repository cannot check either.
+   routes answer 404 or 405, `/ready` answers 200 through the Preview's own
+   Durable Object, and a request to the Preview URL for `/inbox` is 401: the
+   Preview's object is empty and no key can be in it. Confirm in the Worker's
+   Settings, Builds that the build command is `npm run builds:build`, the
+   deploy command on `main` is `npm run check` and the Preview command is `npm
+   run preview`: the repository cannot check any of them. The first build is
+   also the first time `builds-toolchain.sh` runs on Cloudflare's image.
 5. Only after that run, add "Workers Builds: keyquorum-relay" to the required
    checks beside `workers`, `test` and `codeql gate`.
 6. The staging Worker and the admin Worker are not connected. Staging is
@@ -280,43 +300,50 @@ procedure and the settings, so the connection is made once and the same way.
   namespace and container instances for each Preview." (Cloudflare, Worker
   Previews, read 2026-10-06). A Preview's secrets come only from the Previews
   base configuration (`wrangler preview base-config secret put`) or from one
-  Preview (`wrangler preview secret put`); none is set, and the relay key,
-  `provider.kqcert` and `provider.kqrl` are never to be set there. So a
-  Preview of the relay Worker holds no relay key, no certificate and no
-  letter, now and once the relay is real; a Preview of the relay would answer
-  the provider challenge with no certificate, so an official client
-  disconnects from it. That isolation belongs to Previews. It does not make
-  `preview_urls = true` safe, because the same Wrangler field controls
-  Cloudflare's Version URLs ("previously called preview URLs"), which
-  `wrangler deploy` creates as well as `wrangler versions upload`, which use
-  "that Worker version's existing configuration and resources", and which are
-  public when enabled ("If Version URLs are enabled, the URL is public";
-  Cloudflare, Version URLs, read 2026-10-06). So the staging and production
-  `wrangler deploy` steps of `workers.yml` each publish a public workers.dev
-  hostname for the version they upload, outside the custom domain's zone
-  rules, and once the Worker holds the relay key or a Durable Object binding
-  that hostname reaches live resources.
-- **Open item: the Version URLs of the public Worker.** Today the Worker is
-  the health-only stub with no binding and no secret, so nothing is reachable
-  through them. Before it serves the relay, one of these must hold and be
-  tested: (a) the Worker answers 404 on any host but its custom domain (a host
-  check in `src/index.js`, tested in `workers/src`); (b) the Worker's Version
-  URLs sit behind Cloudflare Access ("Access can protect Version URLs for one
-  Worker or every Worker in an account", same page; the Worker, Settings,
-  Domains & Routes, Version URLs); or (c) `preview_urls = false`, with
-  Previews served from a custom domain instead (Cloudflare, Worker Previews
-  custom domains: "Preview URLs can use a custom domain, `workers.dev`, or
-  both"; from memory, verify the Wrangler fields before relying on this).
-  `wrangler versions upload` is still never the Preview command.
+  Preview (`wrangler preview secret put`); none is set, and the relay key and
+  `provider.kqcert` are never to be set there. So a Preview of the relay Worker
+  holds no relay key, no certificate and no letter, and every customer route on
+  it is 401; with no identity it refuses the provider challenge, so an official
+  client disconnects from it.
+- **Version URLs of the public Worker: refused by the Worker.** That isolation
+  belongs to Previews. It does not make `preview_urls = true` safe, because the
+  same Wrangler field controls Cloudflare's Version URLs ("previously called
+  preview URLs"), which `wrangler deploy` creates as well as `wrangler versions
+  upload`, which use "that Worker version's existing configuration and
+  resources", and which are public when enabled ("If Version URLs are enabled,
+  the URL is public"; Cloudflare, Version URLs, read 2026-10-06). So each
+  `wrangler deploy` of `workers.yml` publishes a public workers.dev hostname
+  for its version, and that version has the production object and secrets.
+  The Worker therefore serves only the hosts named by the non-secret variable
+  `ALLOWED_HOSTS` (`policy.js`: `parseAllowedHosts`, `hostDecision`) and answers
+  404 on any other, logging the refusal without a header, bearer or body. A
+  Version URL is a workers.dev host, so it is refused before the relay is asked
+  anything. Empty or unset, the Worker is unconfigured and serves nothing (503).
+  The deploy jobs of `workers.yml` set it from the environment's `RELAY_URL`
+  (`scripts/relay-host.mjs` accepts only a plain https hostname: never a
+  wildcard, a list, a credential, an address or a single label). Only
+  `[previews.vars]` sets `*`, because a Preview has its own empty object and no
+  secrets; `scripts/guard.mjs` fails CI on a wildcard in `[vars]`,
+  `[env.<name>.vars]` or an environment's previews. Tested:
+  `test/worker.test.mjs` (a Version URL, a lookalike, a suffix and a subdomain
+  are refused and never reach the relay; an unset, empty or comma-only variable
+  is 503), `scripts/relay-host.test.mjs` and `scripts/guard.test.mjs`; and run
+  under local workerd with a forged `Host` header (404). **Not covered:** that
+  Cloudflare shows a Version URL's workers.dev host in the request URL (from
+  memory, verify at the first deploy: fetch a Version URL and expect 404), and
+  Access in front of the Version URLs (Cloudflare, Version URLs: "Access can
+  protect Version URLs for one Worker or every Worker in an account"), which
+  stays available as a second layer. `wrangler versions upload` is still never
+  the Preview command.
 - What else remains, recorded: a Preview or Version URL hostname is outside
   the zone's rate-limit and cache rules for the relay's hostname and outside
-  the admin Worker's Access application, and is public (Cloudflare adds
-  `X-Robots-Tag: noindex` to workers.dev Preview URLs). The operator can put
-  Cloudflare Access in front of every Preview URL of the account with one
+  the admin Worker's Access application, and a Preview is public (Cloudflare
+  adds `X-Robots-Tag: noindex` to workers.dev Preview URLs). The operator can
+  put Cloudflare Access in front of every Preview URL of the account with one
   setting (the Worker, Settings, Domains & Routes, Preview URLs, Enable
   Cloudflare Access; all Preview URLs share one "Cloudflare Workers Preview
-  URLs" policy). The smoke test's expectations hold for a Preview of the stub:
-  `/health` and 404.
+  URLs" policy). A Preview answers `/health`, `/ready`, the status page, 401
+  for a customer route and 404 for the rest.
 - "Pages" is not used: static assets on the admin Worker already serve the
   operator page, and a Pages project would be a second product and hostname.
 
@@ -349,11 +376,11 @@ procedure and the settings, so the connection is made once and the same way.
 ## Provisioning and the deployment pipeline (stage 2)
 
 Stage 2 is in the repository: the Worker project, the workflow and the
-Terraform below exist. What they deploy is a health-only stub, not the
-relay, and none of it has yet run against a Cloudflare account. Stage 4a
-added the admin Worker's front door to the same directories (below). What
-is still missing is listed under "Not yet, and honest limits" at the end of
-this section.
+Terraform below exist. What they deploy is the public Worker and its Durable
+Object (stage 4c, below), and none of it has yet run against a Cloudflare
+account. Stage 4a added the admin Worker's front door to the same directories
+(below). What is still missing is listed under "Not yet, and honest limits" at
+the end of this section.
 
 - **Infrastructure as code:** `deploy/cloudflare/terraform/`, with the
   `cloudflare/cloudflare` provider (`versions.tf`, `~> 5.0`). `main.tf` has
@@ -385,34 +412,46 @@ this section.
   an agent session.
 - **Workers:** `workers/` holds `wrangler.toml` (the top level is the
   production Worker `keyquorum-relay`; `[env.staging]` is
-  `keyquorum-relay-staging`; `workers_dev = false` at both levels and
-  `preview_urls = true` at both and an empty `previews = { }` at the top level
-  (public Worker only, see Workers Builds above);
-  no routes, because the hostnames are the Terraform's
-  custom domains; no `[vars]`), `src/index.js`, `package.json` and
-  `package-lock.json` with wrangler pinned to an exact version,
-  `.node-version` (22, what Workers Builds runs) and the `check` and
-  `preview` scripts Workers Builds runs (above); the admin
-  Worker is in `workers/admin/` (below). `src/index.js`
-  is a JavaScript stub: `GET` and `HEAD /health` answer `{"status":"ok"}`
-  with `Cache-Control: no-store`, any other method on `/health` answers 405,
-  and every other path answers 404. Two scripts, each with `node:test` tests
-  (`npm test`), back the pipeline. `scripts/guard.mjs` is the configuration
-  guard (it fails on key-material patterns, on a secret-like `[vars]` or
-  `[previews.vars]` name,
-  on a `deleted_classes` or `renamed_classes` migration unless
+  `keyquorum-relay-staging`; `workers_dev = false` and `preview_urls = true` at
+  both levels, public Worker only, see Workers Builds above; no routes, because
+  the hostnames are the Terraform's custom domains; the Durable Object binding
+  `RELAY` with class `RelayObject` and its `new_sqlite_classes` migration, the
+  rate-limit binding `RATE_LIMITER` and the non-secret `ALLOWED_HOSTS`, each
+  repeated for staging because wrangler does not inherit them, and the
+  `[previews]` tables), `src/` (below), `package.json` and `package-lock.json`
+  with wrangler pinned to an exact version and `sharp`, which wrangler's
+  `miniflare` pins below a fixed advisory, overridden to 0.35.5 (drop the
+  override when wrangler ships a `miniflare` that depends on 0.35.5 or later),
+  `.node-version` (22, what Workers Builds runs) and the `builds:build`,
+  `check` and `preview` scripts Workers Builds runs (above); the admin Worker
+  is in `workers/admin/` (below). `src/index.js` exports the handler and the
+  `RelayObject` class; `src/worker.js` is the public Worker; `src/policy.js`
+  holds the host, route, bearer and size rules as pure functions;
+  `src/relay-service.js` is the relay inside the object, over the WebAssembly
+  core; `src/relay-object.js` is the Durable Object class around it;
+  `src/status-page.js` is the status page; `src/sql-adapter.js` is the storage
+  adapter. Scripts, each with `node:test` tests (`npm test`), back the
+  pipeline. `scripts/guard.mjs` is the configuration guard (it fails on
+  key-material patterns, on a secret-like `[vars]` or `[previews.vars]` name,
+  on a wildcard `ALLOWED_HOSTS` outside `[previews.vars]`, on a
+  `deleted_classes` or `renamed_classes` migration unless
   `ALLOW_DESTRUCTIVE_MIGRATION=1` is set, on a missing `workers_dev = false`
   at the top level or in any environment, and on `preview_urls` other than
   `false` everywhere except a file checked with `--allow-preview-urls`, which
   `npm run guard` passes for `wrangler.toml` only and never for
   `admin/wrangler.toml` or `spike/wrangler.toml`) and the
   bundle guard (key material in the bundle's text files, and a gzip size
-  bound of 3 MiB). `scripts/smoke.mjs` is the post-deploy check: `/health`
-  must answer 200 with the expected body and `no-store`; the operator and
-  mint routes (`/api-keys`, `/api-keys/<id>/revoke`, `/keys`, `/keys/create`,
-  `/keys/rotate`) must answer 404 or 405; and an unauthenticated `GET /inbox`
-  must answer 401, or 404 before the relay exists. With `--admin <url>` it
-  also sends anonymous `GET /`, `/index.html`, `/app.js` and `/api/whoami`
+  bound of 3 MiB; the bundle with the WebAssembly core is about 810 KiB
+  gzipped). `scripts/relay-host.mjs` turns the environment's `RELAY_URL` into
+  the hostname the Worker serves. `scripts/smoke.mjs` is the post-deploy check:
+  `/health` must answer 200 with the expected body and `no-store`; `/ready` must
+  answer 200 through the Durable Object; `/` must be the status page with its
+  locked-down policy; the operator, documentation and mint routes (`/api-keys`,
+  `/api-keys/<id>/revoke`, `/audit`, `/swagger-ui/`, `/keys`, `/keys/create`,
+  `/keys/rotate`) must answer 404 or 405; an unauthenticated `GET /inbox` must
+  answer 401; and a provider challenge must answer 200 with a certificate and
+  signature, or 503 while the relay has no identity yet. With `--admin <url>`
+  it also sends anonymous `GET /`, `/index.html`, `/app.js` and `/api/whoami`
   and `POST /api/keys` to the admin hostname; each must be a redirect or a
   refusal, never a success and never a 404.
 - **CI:** `.github/workflows/workers.yml` with the jobs `workers build`
@@ -423,13 +462,16 @@ this section.
   -backend=false -lockfile=readonly` and `validate` in the pinned `hashicorp/terraform` Docker
   image, the way `security.yml` runs gitleaks, so no third-party action),
   `workers deploy staging` (a push to `main` only; GitHub environment
-  `cloudflare-staging`; `wrangler deploy --env staging`; then the admin Worker, `wrangler deploy
+  `cloudflare-staging`; it compiles the relay core, then `wrangler deploy --env
+  staging --var ALLOWED_HOSTS:<the RELAY_URL host>`, or deploys unconfigured
+  with a warning when `RELAY_URL` is not a usable https URL; then the admin Worker, `wrangler deploy
   -c admin/wrangler.toml --env staging`; then the smoke test
   against the environment variable `RELAY_URL`, and against `ADMIN_URL` when
   it is set), `workers deploy production`
   (a manual run on `main` with the `production` input; GitHub environment
   `cloudflare-production`, which is intended to have a required reviewer;
-  the same two deploys, public Worker first; missing secrets are an error), and `workers`, the one stable required
+  the same two deploys, public Worker first; missing secrets or an unusable
+  `RELAY_URL` are an error), and `workers`, the one stable required
   check: `workers build` and `terraform` must pass, and each deploy job must
   pass or be skipped on purpose. The staging job warns and passes when its
   environment lacks the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`
@@ -521,11 +563,16 @@ Worker's front door and a placeholder page, not the operator console.
 
 **Not yet, and honest limits:**
 
-- The deployed public Worker is the stub. The admin Worker is only its front
+- Nothing is deployed. The public Worker and its Durable Object (stage 4c) are
+  built and tested but have never run on a Cloudflare account, and a Durable
+  Object migration has never been applied. The admin Worker is only a front
   door (stage 4a, above): no relay-backed page, no `/api` route beyond
-  `/api/whoami`, no service binding. There is no Durable Object and no
-  migration. The admin Worker has never been deployed, and Access has never
-  been configured on an account.
+  `/api/whoami`, no service binding to the Durable Object. It has never been
+  deployed, and Access has never been configured on an account.
+- **No key can be minted for a customer.** The relay has no create or rotate
+  route, by design, and the admin Worker's back end (stage 4d) that would mint
+  through the Durable Object does not exist. Until it does, a deployed relay
+  answers every customer route with 401, and nobody can use it.
 - The Terraform has been validated only by CI: the `terraform` job ran
   `fmt -check`, `init -backend=false` and `validate` on commit `f73223f` and
   reported "The configuration is valid" against provider 5.27.0. The
@@ -537,8 +584,9 @@ Worker's front door and a placeholder page, not the operator console.
 - Cloudflare Notifications (Worker and Durable Object error alerts) and the
   R2 bucket's retention lock are not in Terraform; they are dashboard steps
   for now.
-- There is no wasm32 build step in `workers.yml`. The stub is plain
-  JavaScript; the build step is added with the Rust Worker.
+- The wasm32 build runs in `workers.yml` (the `workers build` job and both
+  deploy jobs) and in Workers Builds (`builds:build`); the latter has never run
+  on Cloudflare's image.
 - The relay-backed admin pages, their `/api` routes and the service binding
   to the Durable Object are not built (stage 4). The admin Worker's custom
   domain and Access application are in `access.tf`, created only once
@@ -574,30 +622,70 @@ Record each role's token scopes and policy with the deployment;
 `docs/soc2-controls.md`, "Operator responsibilities", names these as the
 operator's controls.
 
-## The Workers relay (planned, not implemented)
+## The Workers relay
 
-**The relay does not run on Workers today.** The `provider` feature (axum,
-tokio, rusqlite) cannot build for wasm32, and `build.rs` refuses it there.
-What is portable is `relay::service::dispatch` (`src/relay/service.rs`), the
-synchronous, runtime-independent request router that the browser lab
-already runs in process on wasm32. The Workers relay is therefore a new
-store and a thin fetch adapter around it, not a rewrite. Everything in this
-section is a design: the stage 3 spike proved the platform parts a local run
-can (below), and the store and adapter remain to be built.
+**The public Worker and its Durable Object are built, and have never been
+deployed.** The `provider` feature (axum, tokio, rusqlite) cannot build for
+wasm32, and `build.rs` refuses it there, so the Worker runs the part that is
+portable: `relay::service::dispatch` (`src/relay/service.rs`), the synchronous,
+runtime-independent request router that the browser lab already runs in process
+on wasm32, behind `SqlRelayStore` over the Durable Object's SQL
+(`src/relay/worker.rs`, `RelayCore`, compiled to WebAssembly by `npm run
+build:relay-wasm`). Around it, `workers/src/` holds the public Worker and the
+Durable Object. It is a new store and a thin fetch adapter around the existing
+router, not a rewrite, and it re-rolls no relay rule. **What is not built, and
+the reason the relay is not yet usable by a customer:** nothing can mint a
+customer API key. The relay has no create or rotate route by design (HTTP never
+mints), and the admin Worker's back end (stage 4d: Access-protected list,
+revoke, mint, rotate, events and checkpoint through a binding to the same
+Durable Object, with the operator-lock bootstrap) does not exist. The
+architecture below says which parts are built.
 
 ### Architecture
 
-- **Public Worker `keyquorum-relay`.** A fetch handler that maps a request
-  to `RelayHttpRequest` (`src/relay/client.rs`; its `method` and
-  `content_type` would have to become static literals), enforces the
-  2 MiB body cap (`MAX_ENVELOPE_BYTES` is 1 MiB per envelope), reads
-  `Authorization: Bearer` or `x-api-key`, applies a rate limit keyed on
-  `CF-Connecting-IP`, sets `Cache-Control: no-store` on every response,
-  answers `/health` (the Worker alone) and `/ready` (only when the Durable
-  Object answers), and calls the Durable Object. It does no redirects and
-  no challenge on API paths: the client uses `max_redirects(0)` and treats a
-  503 from `/provider-identity` as an untrusted relay (`src/relay/client.rs`,
+- **Public Worker `keyquorum-relay` (built: `workers/src/worker.js`).**
+  Serves only the hosts in `ALLOWED_HOSTS` and answers 404 on any other (a
+  Version URL included, above). Routes only the customer routes, an allowlist
+  in `policy.js`: `POST /provider-identity`, `POST /keycheck`, `POST` and `GET
+  /inbox`, `GET /audit/api-keys`, `PUT /trees`, `GET /trees/<label>/context`,
+  `POST` and `GET /devices/packages`, `PUT /devices` and `GET /devices/<id>`;
+  every other path is 404 and a known path with another method is 405, so
+  `/api-keys*`, the full `/audit/*`, `/swagger-ui/*` and anything that mints are
+  not on this Worker, whatever the core's own router would do with them. Splits
+  a path the way the core does, so a path means the same in both. Refuses a
+  declared body over 2 MiB (`MAX_ENVELOPE_BYTES` is 1 MiB per envelope) before
+  reading it and bounds an undeclared one while reading. Applies a per-client
+  limit keyed on `CF-Connecting-IP` through a Workers rate-limiting binding
+  (`RATE_LIMITER`, 300 per 60 seconds, never reading `X-Forwarded-For`); a
+  missing or failing limiter does not stop the relay, since the zone rule and
+  the object's bound still apply. Sets `Cache-Control: no-store` and
+  `X-Content-Type-Options: nosniff` on every response, including the object's.
+  Answers `/health` (the Worker alone), `/ready` (only when the Durable
+  Object's store answers) and a status page at `/` with its two asset files
+  (no inline code, no outside origin, a locked-down policy). Hands everything
+  else to the Durable Object. It does no redirects and no challenge on API
+  paths: the client uses `max_redirects(0)` and treats a 503 from
+  `/provider-identity` as an untrusted relay (`src/relay/client.rs`,
   `http_agent_config`, `authenticate_provider`).
+- **The relay inside the object (built: `workers/src/relay-service.js`,
+  `relay-object.js`).** It reads the bearer as the native router does
+  (`Authorization: Bearer <token>` with that exact prefix, else a non-empty
+  `x-api-key`; `src/relay/server.rs`, `token_from_headers`) and hands it to the
+  core, never logging, storing or echoing it. It bounds the object's queue:
+  past `MAX_IN_FLIGHT` (32) concurrent requests a new one is refused at once
+  with 503 and `Retry-After: 1`, so nothing waits behind the single writer
+  unbounded. It takes the identity from two Worker secrets, `RELAY_PRIVATE_KEY`
+  (the file `host identity generate` writes, a hex dump of 32 bytes, or its
+  base64) and `RELAY_CERTIFICATE` (`provider.kqcert`, base64). With neither,
+  the relay answers its routes and refuses the provider challenge, so no
+  official client trusts it; with only one, or a certificate that is not valid
+  base64, or a key that is not 32 bytes, it fails closed with 503 `relay
+  identity misconfigured` and names no value; the copy of the key in JavaScript
+  is zeroed once the core has taken its own. A core that throws is a generic 500,
+  and nothing it says is logged beyond the error's name. Its alarm runs hourly:
+  the core's `scan` drops expired letters and signs the audit heads, and the
+  next alarm is set even if the scan failed. The core takes no revocation list
+  yet, so `provider.kqrl` is not read by the Worker.
 - **One SQLite-backed Durable Object.** It holds the whole relay and runs
   `relay::service::dispatch(&DoRelayStore, Some(&identity), &req)`. One
   object is the single writer, which the audit hash chain, the key tables
@@ -652,8 +740,8 @@ can (below), and the store and adapter remain to be built.
 - **Which routes are public.** Customer routes (`/inbox`, `/keycheck`,
   `/provider-identity`, `/devices/*`, `/trees/*`, `GET /audit/api-keys`)
   are on the public Worker. The operator routes (`/api-keys*`, the full
-  `/audit/*`, anything that mints) are planned for the admin Worker only (it
-  has none yet), and the
+  `/audit/*`, anything that mints) are for the admin Worker only (its back end
+  is not built; the public Worker's allowlist routes none of them), and the
   public Worker serves no console and no `/swagger-ui/*`. Whether an admin
   API key may still revoke over the public Worker, as it can on the native
   router today, is a PR 4 decision; until it is made, the public Worker
@@ -665,7 +753,9 @@ can (below), and the store and adapter remain to be built.
   survive a deploy; from memory, verify), used by the same `signing` code,
   so signatures, sealed key delivery (`KQPB` kind 20, `.kqkey`) and audit
   anchors stay byte-compatible: the formats are the crate's, not the
-  host's. Never on a Worker: the provider-root private key and the `kql_…`
+  host's. They are set as `npx wrangler secret put RELAY_PRIVATE_KEY <
+  relay.key` and `base64 < provider.kqcert | tr -d '\n' | npx wrangler secret
+  put RELAY_CERTIFICATE`. Never on a Worker: the provider-root private key and the `kql_…`
   operator lock.
 - **Build guards.** A new `workers` cargo feature excludes tokio and axum.
   `build.rs` and `lib.rs` keep refusing `lab` with `provider` and also
@@ -776,9 +866,9 @@ reference host or in a Worker alike:
   `POST /api-keys/{id}/revoke`; there is no create or rotate route), which
   `src/relay/server/tests.rs` (`router_enforces_scopes_and_returns_opaque_bytes`)
   pins. For the Workers relay, the staging smoke test
-  (`workers/scripts/smoke.mjs`, which already asserts that the operator and
-  mint routes answer 404 or 405 on the stub) and the miniflare checks in
-  PR 4 must pin it again.
+  (`workers/scripts/smoke.mjs`, which asserts that the operator, documentation
+  and mint routes answer 404 or 405 on the deployed Worker) and the route
+  allowlist test (`workers/test/worker.test.mjs`) pin it.
 - **Customers receive bearers sealed**, as a `.kqkey` bundle or a mailbox
   letter signed by the relay key (`src/api_key_delivery.rs`,
   `src/relay/key_delivery.rs`); a bearer is never printed by the host.
@@ -877,12 +967,13 @@ Each concern from the PR #87 review, checked against the code now:
 | --- | --- | --- |
 | Tree-level authorization and customer isolation | **Open.** Any `inbox.push` key may publish a public tree for a label and the relay merges it (`src/relay/service.rs`, `inbox_push`; `src/relay/org_tree.rs`, `merge_into_existing`); letters stay sealed to their recipient, but the public topology is shared. | **Scope decision:** one organization (or one group of mutually trusting organizations) per relay, as `relay-deployment.md`, "Before opening a relay to customers", states. Per-customer namespacing and an authenticated tree publisher are a separate design before a shared relay. |
 | Byte-bounded inbox responses | **Done in the library.** `MAX_INBOX_PAGE_BYTES` (16 MiB) in `src/relay/mailbox.rs`, `bound_page`, shared by every backend; at least one letter per page, `next_after` stateless. **Unverified on Workers:** whether a 16 MiB page fits the isolate memory. | Production-only check (peak memory); a smaller Workers page budget through `bound_page` if it does not fit. |
-| Bounded database admission | **Done for the native host.** `DEFAULT_STORE_CONCURRENCY` (64) and `STORE_ADMISSION_WAIT` (5 s, then 503) in `src/relay/server.rs`, two separate slots for `/ready`; the permit is held until the store call returns. **Not carried over:** the Durable Object serialises requests through its single writer, and what bounds the queue in front of it is unverified. | The Workers relay must name and test its own bound (a queue limit and a 503 answer); measure under the overload test. |
+| Bounded database admission | **Done for the native host.** `DEFAULT_STORE_CONCURRENCY` (64) and `STORE_ADMISSION_WAIT` (5 s, then 503) in `src/relay/server.rs`, two separate slots for `/ready`; the permit is held until the store call returns. **Workers:** the Durable Object serialises requests through its single writer, and `MAX_IN_FLIGHT` (32, `workers/src/relay-service.js`) bounds what is in it: past that a request is refused at once with 503 and `Retry-After`, tested with stalled bodies. Not measured under real overload. | Measure under the overload test, and tune the bound. |
 | Provider-controlled retention and storage quotas | **Partly.** Letters expire when pushed with `--expires`, device letters after `DEVICE_PACKAGE_TTL_DAYS` (30, `src/relay/device_mail.rs`), and the native scan purges both; the Workers relay needs a Durable Object alarm for the scan (from memory, verify). Nothing caps a customer's stored bytes or count. | **Scope decision:** alert on database size (above) and revoke a key that fills it; a per-key quota is a follow-up. |
 | Trusted client-IP handling | **Changed by the platform.** There is no proxy chain to trust: the Worker reads `CF-Connecting-IP` for its rate limit and ignores `X-Forwarded-For` altogether. The native router's rule (the last `X-Forwarded-For` entry, only with `--behind-tls-proxy`; `src/relay/server.rs`, `RateLimiter::client`; test `behind_a_proxy_the_last_forwarded_address_is_the_client`) stays for the reference host. | Test forged headers at deployment (the edge section lists the commands). |
 | Recoverable key issuance when a transaction outcome is indeterminate | **The error exists, the Workers use does not.** `Error::StoreCommitUnknown` keeps the sealed `.kqkey` and tells the operator to check `keys list` and `keys events` before retrying (`src/bin/keyquorum/host.rs`). On Workers the same situation arises when the admin Worker's response is lost after the Durable Object commits. **SQLite native:** a bundle is written while the transaction is open; a crash between the write and the commit can leave an orphan that opens nothing (`src/relay/key_delivery.rs`). | The admin client must map a lost response to `StoreCommitUnknown` (PR 4); the runbook already says to remove an orphan bundle before retrying. |
 | SIGTERM handling | **Done for the native host** (`host.rs`, `shutdown_signal`). **Not applicable to Workers**, which have no process to stop; a deploy replaces the version and the platform handles in-flight requests (from memory, verify). | None for Workers. |
-| Public Version URLs of the Worker | **Open.** `preview_urls = true` (`workers/wrangler.toml`) also enables Version URLs, so each `wrangler deploy` of `workers.yml` publishes a public workers.dev hostname that uses the version's own bindings and secrets (Cloudflare, Version URLs). Harmless for the stub, which has none. | One of: the Worker refuses any host but its custom domain (tested in `workers/src`), Access in front of the Version URLs, or Previews on a custom domain with `preview_urls = false`. Decided and tested before the relay key or a Durable Object binding is added. |
+| Public Version URLs of the Worker | **Closed in the Worker; to verify at the first deploy.** `preview_urls = true` (`workers/wrangler.toml`) also enables Version URLs, so each `wrangler deploy` of `workers.yml` publishes a public workers.dev hostname that uses the version's own bindings and secrets (Cloudflare, Version URLs). The Worker serves only the hosts in `ALLOWED_HOSTS` and answers 404 on any other; empty, it serves nothing (`policy.js`, `worker.test.mjs`); a wildcard is refused by the guard outside `[previews.vars]`. | At the first deploy, fetch a Version URL and expect 404, and record it. Access in front of the Version URLs stays available as a second layer. |
+| Customer API keys cannot be minted on the Workers relay | **Open.** The relay has no create or rotate route by design, and the admin Worker's back end (stage 4d) does not exist, so a deployed relay answers every customer route with 401. | Required before launch: the Access-protected admin routes through a binding to the Durable Object, with the operator-lock (`kql_`) bootstrap and the sealed `.kqkey` output (`relay-deployment.md`, "Customer API-key bootstrap"), tested like the native `host keys` commands. A design of its own: it touches key issuance. |
 
 ## Edge behavior of the public Worker
 
@@ -1034,7 +1125,7 @@ are the record of operator sessions (from memory, verify).
 | Hosting decision records the provider, ownership, limits, cost basis, effort, and the disposition of AWS and MongoDB | yes (the cost estimate needs the owner's account) | none |
 | Workers architecture maps atomicity (one Durable Object) and provider-only signing and minting (admin Worker, Worker secrets) to a runtime and a backend, with an adopt/defer decision | yes: adopt (stage 3) | record the production-only checks when they are run |
 | The feasibility spike answers each unknown with a measured value | yes for what a local run can measure; the production-only items are listed | run the production-only checks |
-| An unauthorized client cannot mint provider-issued keys or licences | design: no public mint route; native router test pinned; the smoke test asserts the operator and mint routes answer 404 or 405 on the deployed stub | re-run against the public Worker (staging smoke test, miniflare) |
+| An unauthorized client cannot mint provider-issued keys or licences | design: no public mint route; native router test pinned; the route allowlist (`workers/test/worker.test.mjs`) and the smoke test assert the operator, documentation and mint routes answer 404 or 405 | re-run the smoke test against the deployed public Worker; the admin Worker's mint path (stage 4d) is not built |
 | The admin Worker cannot be reached without Access and MFA | design plus the token check and its tests: its only hostname is to sit behind the Access application and MFA policy in `access.tf`, and the Worker verifies the Access token itself (`workers/admin/src/access.js`, 18 `node:test` tests, stage 4a); the Access application has not been created | deploy the admin Worker, create the live Access application, and test it with and without MFA, and with a forged or missing token (`smoke.mjs --admin` covers the anonymous cases) |
 | Provider-root custody and operator credential separation documented and verified | documented | verify at the ceremony and record it |
 | Launch prerequisites revalidated and linked to fixes or scope decisions | yes (table above) | none |
@@ -1043,7 +1134,7 @@ are the record of operator sessions (from memory, verify).
 | Overload and storage-limit tests show bounded resource use | the bounds are named | run the tests, record memory, the 503 and 429 behaviour and the Durable Object's storage |
 | Backup restoration meets the objectives and reconciles credential state | procedure | run the drill |
 | Upgrade, rollback, incident response demonstrated | procedures | demonstrate |
-| `DoRelayStore` passes `relay::store::conformance` | not applicable until it exists (PR 4) | PR 4 |
+| `DoRelayStore` passes `relay::store::conformance` | `SqlRelayStore` over the Durable Object's executor passes it on an executor that refuses transaction statements (`src/relay/store/tests.rs`), and `workers/test/relay-core.test.mjs` and `relay-service.test.mjs` run the built core over a Durable Object-shaped storage | a run on a real Durable Object |
 | The pipeline builds, deploys to staging, and gates production | design and workflow (`.github/workflows/workers.yml`, stage 2) | prove with a run on staging once the owner's setup exists (environments, secrets, `RELAY_URL`, and for the admin Worker `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` and `ADMIN_URL`, Cloudflare account, zone and custom domain) |
 | Gaps (no customer-managed key, Cloudflare sees bearers in transit, one vendor) recorded | yes | the owner accepts them; `docs/soc2-controls.md` carries the subprocessor point |
 | Runbooks distinguish hosting-provider controls from relay authorization | yes (this document and `relay-deployment.md`) | none |

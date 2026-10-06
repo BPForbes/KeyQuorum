@@ -1,24 +1,61 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import worker from "../src/index.js";
+import { handle } from "../src/worker.js";
 import { runAdminSmoke, runSmoke } from "./smoke.mjs";
 
-const viaStub = (url, init) => worker.fetch(new Request(url, init));
+// The real public Worker over a stand-in relay object: ready, 401 without a
+// bearer, and a provider challenge that answers like a relay with an identity.
+function relayEnv({ ready = true, identity = true } = {}) {
+  const object = {
+    ready: async () => ready,
+    fetch: async (request) => {
+      const path = new URL(request.url).pathname;
+      if (path === "/inbox") return Response.json({ error: "unauthorized" }, { status: 401 });
+      if (path === "/provider-identity") {
+        return identity
+          ? Response.json({ certificate: "AAAA", signature: "BBBB" })
+          : Response.json({ error: "mailbox host is not configured with a provider identity" }, { status: 503 });
+      }
+      return Response.json({ error: "not found" }, { status: 404 });
+    },
+  };
+  return { ALLOWED_HOSTS: "relay.test", RELAY: { idFromName: (name) => name, get: () => object } };
+}
 
-test("the stub passes the smoke test", async () => {
-  assert.deepEqual(await runSmoke("https://relay.test", { fetchImpl: viaStub }), []);
+const silent = { warn() {}, error() {} };
+const via = (env) => (url, init) => handle(new Request(url, init), env, silent);
+const viaWorker = via(relayEnv());
+
+test("the Worker passes the smoke test", async () => {
+  assert.deepEqual(await runSmoke("https://relay.test", { fetchImpl: viaWorker }), []);
 });
 
-test("the stub answers health, refuses other methods, and exposes nothing else", async () => {
-  const health = await viaStub("https://relay.test/health", { method: "GET" });
+test("a relay without its identity yet is not a smoke failure, a broken one is", async () => {
+  const unconfigured = via(relayEnv({ identity: false }));
+  assert.deepEqual(await runSmoke("https://relay.test", { fetchImpl: unconfigured }), []);
+  const broken = (url, init) =>
+    new URL(url).pathname === "/provider-identity"
+      ? Promise.resolve(new Response("{}", { status: 500 }))
+      : viaWorker(url, init);
+  const problems = await runSmoke("https://relay.test", { fetchImpl: broken });
+  assert.ok(problems.some((p) => p.includes("POST /provider-identity answered 500")));
+  const empty = (url, init) =>
+    new URL(url).pathname === "/provider-identity"
+      ? Promise.resolve(Response.json({ certificate: "AAAA" }))
+      : viaWorker(url, init);
+  assert.ok((await runSmoke("https://relay.test", { fetchImpl: empty })).some((p) => p.includes("without a certificate")));
+});
+
+test("the Worker answers health, refuses other methods, and routes no operator path", async () => {
+  const health = await viaWorker("https://relay.test/health", { method: "GET" });
   assert.equal(health.status, 200);
   assert.equal(health.headers.get("cache-control"), "no-store");
   assert.deepEqual(await health.json(), { status: "ok" });
-  const post = await viaStub("https://relay.test/health", { method: "POST" });
+  const post = await viaWorker("https://relay.test/health", { method: "POST" });
   assert.equal(post.status, 405);
   assert.equal(post.headers.get("allow"), "GET, HEAD");
-  for (const path of ["/", "/inbox", "/api-keys", "/keys/create"]) {
-    assert.equal((await viaStub(`https://relay.test${path}`, { method: "GET" })).status, 404);
+  for (const path of ["/api-keys", "/keys/create", "/audit", "/swagger-ui/"]) {
+    assert.equal((await viaWorker(`https://relay.test${path}`, { method: "GET" })).status, 404);
   }
 });
 
@@ -26,9 +63,14 @@ test("a public operator route is caught", async () => {
   const leaky = (url, init) =>
     new URL(url).pathname === "/api-keys"
       ? Promise.resolve(new Response("[]", { status: 200 }))
-      : viaStub(url, init);
+      : viaWorker(url, init);
   const problems = await runSmoke("https://relay.test", { fetchImpl: leaky });
   assert.ok(problems.some((p) => p.includes("/api-keys answered 200")));
+  const docs = (url, init) =>
+    new URL(url).pathname === "/swagger-ui/"
+      ? Promise.resolve(new Response("<html>", { status: 200 }))
+      : viaWorker(url, init);
+  assert.ok((await runSmoke("https://relay.test", { fetchImpl: docs })).some((p) => p.includes("/swagger-ui/ answered 200")));
 });
 
 test("a cacheable health response, a wrong body and a successful /inbox are caught", async () => {
@@ -44,6 +86,25 @@ test("a cacheable health response, a wrong body and a successful /inbox are caug
   assert.ok(problems.some((p) => p.includes("unauthenticated GET /inbox answered 200")));
 });
 
+test("a relay whose store is not ready is caught", async () => {
+  const problems = await runSmoke("https://relay.test", { fetchImpl: via(relayEnv({ ready: false })) });
+  assert.ok(problems.some((p) => p.includes("GET /ready answered 503")));
+});
+
+test("a missing status page or a loose policy is caught", async () => {
+  const noPage = (url, init) =>
+    new URL(url).pathname === "/" ? Promise.resolve(new Response("", { status: 404 })) : viaWorker(url, init);
+  assert.ok((await runSmoke("https://relay.test", { fetchImpl: noPage })).some((p) => p.includes("GET / answered 404")));
+  const loose = async (url, init) => {
+    const response = await viaWorker(url, init);
+    if (new URL(url).pathname !== "/") return response;
+    const headers = new Headers(response.headers);
+    headers.set("content-security-policy", "default-src *");
+    return new Response(await response.text(), { status: 200, headers });
+  };
+  assert.ok((await runSmoke("https://relay.test", { fetchImpl: loose })).some((p) => p.includes("content security policy")));
+});
+
 test("an unreachable hostname is reported, not thrown", async () => {
   const down = () => Promise.reject(Object.assign(new Error("down"), { name: "TypeError" }));
   const problems = await runSmoke("https://relay.test", { fetchImpl: down });
@@ -57,10 +118,22 @@ test("health is retried until it answers", async () => {
     if (new URL(url).pathname === "/health" && (calls += 1) < 3) {
       return Promise.resolve(new Response("", { status: 503 }));
     }
-    return viaStub(url, init);
+    return viaWorker(url, init);
   };
   const problems = await runSmoke("https://relay.test", { fetchImpl: flaky, attempts: 5, delayMs: 0 });
   assert.deepEqual(problems, []);
+  assert.equal(calls, 3);
+});
+
+test("readiness is retried too, since the object starts on its first request", async () => {
+  let calls = 0;
+  const warming = (url, init) => {
+    if (new URL(url).pathname === "/ready" && (calls += 1) < 3) {
+      return Promise.resolve(new Response("", { status: 503 }));
+    }
+    return viaWorker(url, init);
+  };
+  assert.deepEqual(await runSmoke("https://relay.test", { fetchImpl: warming, attempts: 5, delayMs: 0 }), []);
   assert.equal(calls, 3);
 });
 
