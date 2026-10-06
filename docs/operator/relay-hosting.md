@@ -212,7 +212,8 @@ procedure and the settings, so the connection is made once and the same way.
   asks. The staging environment has no `previews` block: it is not connected.
 - `.node-version` pins Node 22, the version `workers.yml` runs; Builds reads
   it from the root directory (its default is Node 24).
-- `npm run builds:build` is the build command. Cloudflare's build image has
+- `npm run builds:build` is the build command (`scripts/ensure-relay-wasm.mjs`).
+  Cloudflare's build image has
   Node, Go, Python and Ruby but no Rust, and the relay core must be compiled to
   WebAssembly first, so `scripts/builds-toolchain.sh` installs a pinned Rust
   toolchain with the wasm32 target (`rustup-init` 1.28.2, Rust 1.97.0) and the
@@ -226,9 +227,14 @@ procedure and the settings, so the connection is made once and the same way.
   installs the same things with its own SHA-pinned actions and never runs this
   script.
 - `npm run check` is the `main` deploy command: the configuration guard, the
-  four dry-run builds and the bundle guard, which need the compiled core and
-  so run after the build command in the same build. `npm run preview` is
-  `wrangler preview --env=""`.
+  four dry-run builds and the bundle guard, which need the compiled core.
+  `npm run preview` is `wrangler preview --env=""`, which needs it too. Both
+  begin with the same step as the build command, so a dashboard that still
+  names `npm run check` as its build command works: when the core is missing
+  and the variable `WORKERS_CI=1`, which Workers Builds injects, is set, the
+  step installs the toolchain and builds it; anywhere else (a developer's
+  machine, GitHub, where the workflow builds the core first) a missing core is
+  an error that names the command to run, and no toolchain is ever installed.
 - `scripts/guard.mjs` refuses a secret-like name in a `previews` block as it
   does in `[vars]`, refuses a wildcard `ALLOWED_HOSTS` anywhere but
   `[previews.vars]` (below), and still refuses `preview_urls = true` anywhere
@@ -242,7 +248,7 @@ procedure and the settings, so the connection is made once and the same way.
 | Repository | `BPForbes/KeyQuorum`; the GitHub App's repository access limited to the repositories it builds | Cloudflare's own recommendation (GitHub integration, "Organizational access"). |
 | Production branch | `main` | |
 | Root directory | `workers` | Where `wrangler.toml`, `package.json` and `.node-version` are; Builds runs `npm ci` there itself. |
-| Build command | `npm run builds:build` | Installs the pinned toolchain and compiles the relay core. |
+| Build command | `npm run builds:build` | Installs the pinned toolchain and compiles the relay core. (`npm run check` works too, since it does the same first.) |
 | Deploy command (`main`) | `npm run check` | **Not** `wrangler deploy`: `workers.yml` deploys `main` (staging on push, production on a reviewed manual run), and two deployers of one Worker would race. A Builds run on `main` is a check only. |
 | Preview command (other branches) | `npm run preview` | Worker Previews, Cloudflare's default for a Worker connected now. Never `wrangler versions upload`: a version shares the production bindings and secrets, a Preview does not. |
 | Preview builds | on (Settings, Build, Branch control) | The check and the Preview URL on every pull request. |

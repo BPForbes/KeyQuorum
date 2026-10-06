@@ -9,9 +9,9 @@
     "guard": "node scripts/guard.mjs wrangler.toml --allow-preview-urls && node scripts/guard.mjs admin/wrangler.toml && node scripts/guard.mjs spike/wrangler.toml",
     "build": "wrangler deploy --dry-run --outdir dist --env=\"\" && wrangler deploy --dry-run --outdir dist/staging --env staging && wrangler deploy --dry-run --outdir dist/admin --env=\"\" -c admin/wrangler.toml && wrangler deploy --dry-run --outdir dist/admin-staging --env staging -c admin/wrangler.toml",
     "guard:bundle": "node scripts/guard.mjs --bundle dist --max-gzip-bytes 3145728",
-    "builds:build": "bash scripts/builds-toolchain.sh && PATH=\"$HOME/.cargo/bin:$PATH\" npm run build:relay-wasm",
-    "check": "npm run guard && npm run build && npm run guard:bundle",
-    "preview": "wrangler preview --env=\"\"",
+    "builds:build": "node scripts/ensure-relay-wasm.mjs",
+    "check": "node scripts/ensure-relay-wasm.mjs && npm run guard && npm run build && npm run guard:bundle",
+    "preview": "node scripts/ensure-relay-wasm.mjs && wrangler preview --env=\"\"",
     "smoke": "node scripts/smoke.mjs"
   },
   "devDependencies": {

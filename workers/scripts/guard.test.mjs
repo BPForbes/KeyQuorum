@@ -62,7 +62,7 @@ test("a wildcard ALLOWED_HOSTS is refused everywhere but [previews.vars]", () =>
     const problems = checkConfig("wrangler.toml", `${CLEAN}\n[${table}]\nALLOWED_HOSTS = "*"\n`);
     assert.equal(problems.length, 1, table);
     assert.match(problems[0], /ALLOWED_HOSTS/);
-    assert.match(problems[0], new RegExp(table.replace(/\./g, "\\.")));
+    assert.ok(problems[0].includes(`[${table}]`), "the problem names the table");
   }
   for (const value of ["relay.example.com,*", "*.example.com", "'*'"]) {
     const quoted = value.startsWith("'") ? value : `"${value}"`;
