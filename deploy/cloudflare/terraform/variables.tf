@@ -4,12 +4,12 @@ variable "account_id" {
 }
 
 variable "zone_id" {
-  description = "The zone that carries the relay's hostnames."
+  description = "The zone that carries the relay's and the console's hostnames (the zone of the domain, for example keyquorum.dev)."
   type        = string
 }
 
 variable "environments" {
-  description = "Each environment's public hostname and the Worker that serves it (production is the top-level wrangler configuration, staging is [env.staging])."
+  description = "Each environment's hostname (the bare domain or a subdomain, with no path) and the Worker that serves it under /relay on that hostname (production is the top-level wrangler configuration, staging is [env.staging])."
   type = map(object({
     hostname = string
     worker   = string

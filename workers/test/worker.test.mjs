@@ -40,7 +40,11 @@ function spyLog() {
   return { warn: record("warn"), error: record("error"), lines };
 }
 
+// Every route is under /relay (policy.js, RELAY_PREFIX): `call` adds it, so the
+// tests read as the routes do; `callRaw` sends a path exactly as given.
 const call = (env, path, init = {}, host = HOST, log = spyLog()) =>
+  handle(new Request(`https://${host}/relay${path}`, init), env, log);
+const callRaw = (env, path, init = {}, host = HOST, log = spyLog()) =>
   handle(new Request(`https://${host}${path}`, init), env, log);
 
 test("an unconfigured Worker serves nothing, whatever the path", async () => {
@@ -322,7 +326,7 @@ test("the status page contract: no inline script or style, no handler, no outsid
 
 test("the default export is the same handler", async () => {
   const { env } = fakeEnv();
-  const response = await worker.fetch(new Request(`https://${HOST}/health`), env);
+  const response = await worker.fetch(new Request(`https://${HOST}/relay/health`), env);
   assert.equal(response.status, 200);
 });
 
@@ -392,4 +396,56 @@ test("a preflight from another site is refused, not answered", async () => {
   assert.equal(response.status, 403);
   assert.equal(response.headers.get("access-control-allow-origin"), null);
   assert.equal(forwarded.length, 0);
+});
+
+test("nothing outside /relay is served, so the rest of the domain is not the relay's", async () => {
+  const outside = [
+    ["GET", "/"],
+    ["GET", "/health"],
+    ["GET", "/ready"],
+    ["GET", "/inbox"],
+    ["POST", "/keycheck"],
+    ["POST", "/provider-identity"],
+    ["GET", "/assets/status.js"],
+    ["GET", "/app"],
+    ["GET", "/relayx/inbox"],
+    ["GET", "/relay-admin/inbox"],
+    ["GET", "/%72elay/inbox"],
+    ["GET", "/relay%2Finbox"],
+    ["GET", "/other/relay/inbox"],
+    ["GET", "/RELAY/inbox"],
+  ];
+  for (const [method, path] of outside) {
+    const { env, forwarded } = fakeEnv();
+    const init = { method, headers: { authorization: `Bearer ${bearer()}` } };
+    if (method !== "GET") init.body = "{}";
+    const response = await callRaw(env, path, init);
+    assert.equal(response.status, 404, `${method} ${path}`);
+    assert.equal(forwarded.length, 0, `${method} ${path}`);
+  }
+});
+
+test("the prefix itself is the status page, and the relay is given the path below it", async () => {
+  for (const path of ["/relay", "/relay/"]) {
+    const { env, forwarded } = fakeEnv();
+    const page = await callRaw(env, path);
+    assert.equal(page.status, 200, path);
+    assert.equal(await page.text(), STATUS_HTML, path);
+    assert.equal(forwarded.length, 0, path);
+  }
+  const { env, forwarded } = fakeEnv();
+  const response = await call(env, "/inbox?after=3&limit=10", { method: "GET" });
+  assert.equal(response.status, 200);
+  assert.equal(forwarded.length, 1);
+  const seen = new URL(forwarded[0].url);
+  assert.equal(seen.pathname, "/inbox");
+  assert.equal(seen.search, "?after=3&limit=10");
+  assert.equal(seen.pathname.includes("relay"), false);
+});
+
+test("the status page loads its files and reads its health from under /relay", () => {
+  assert.match(STATUS_HTML, /href="\/relay\/assets\/status\.css"/);
+  assert.match(STATUS_HTML, /src="\/relay\/assets\/status\.js"/);
+  assert.match(STATUS_JS, /check\("\/relay\/health"\)/);
+  assert.match(STATUS_JS, /check\("\/relay\/ready"\)/);
 });

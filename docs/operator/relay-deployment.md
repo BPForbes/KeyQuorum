@@ -23,7 +23,7 @@ application with MFA (Terraform, `admin_environments`); no route bypasses
 Access, and the Worker verifies Access's token itself. It reaches the relay
 through a private Durable Object binding, and it has never been deployed or
 configured on a real account. The
-relay uses subdomains of the portfolio's domain, `bailey-forbes.com` (see `relay-hosting.md`, "Domain and operator page"). CI's
+relay is mounted at `https://keyquorum.dev/relay` (the owner's domain; the console has its own hostname; see `relay-hosting.md`, "Domain and operator page"). CI's
 `terraform validate` accepts the Terraform, but the authors never planned or
 applied it against a real account, and the owner's GitHub and Cloudflare setup
 (environments, secrets, `RELAY_URL`, the `workers` required check, account,
@@ -193,8 +193,9 @@ value; with neither it answers its routes but refuses the provider challenge,
 so no official client trusts it. A Worker secret survives a deploy and cannot
 be read back, so rotating one means putting a new value. The relay's hostname
 is not a secret: it is the non-secret variable `ALLOWED_HOSTS`, which the
-deploy jobs set from the GitHub environment's `RELAY_URL`; the Worker serves
-that host and no other (`relay-hosting.md`, "Workers Builds and previews").
+deploy jobs set from the GitHub environment's `RELAY_URL` (the relay's URL,
+`https://<domain>/relay`); the Worker serves that host, only under `/relay`,
+and no other (`relay-hosting.md`, "Workers Builds and previews").
 `provider.kqrl` is not read by the Worker, which takes no revocation list yet.
 
 ## State
@@ -310,6 +311,9 @@ hosting vendor supplies on its own.
 
 ## Verification
 
+- On the Cloudflare relay every path below is under `/relay` (`GET
+  /relay/health`, and a client's URL is `https://<domain>/relay`); on the native
+  host there is no prefix.
 - `GET /health` says the process is up. It proves nothing about the
   provider identity or the store.
 - `GET /ready` says the store answered too (`{"status":"ok","store":"sqlite"}`);
@@ -317,7 +321,7 @@ hosting vendor supplies on its own.
 - The provider identity is proved only by a real client:
 
   ```sh
-  keyquorum --db ./check.sqlite loadkey --url https://relay.example.com
+  keyquorum --db ./check.sqlite loadkey --url https://keyquorum.dev/relay
   ```
 
   (the bearer is prompted, so it stays out of shell history). `loadkey` challenges `POST /provider-identity`, checks the certificate
@@ -361,7 +365,7 @@ Customers never see a bearer (issue #86):
    ```sh
    keyquorum host --mailbox-db /var/lib/keyquorum/relay.sqlite keys create \
      --scope inbox.pull \
-     --recipient-key <hex public key> --relay-url https://relay.example.com \
+     --recipient-key <hex public key> --relay-url https://keyquorum.dev/relay \
      --out acme.kqkey --licensee-key-file /run/user/1000/kq-lock \
      --cert provider.kqcert --relay-key relay.key --krl provider.kqrl
    ```
@@ -373,7 +377,7 @@ Customers never see a bearer (issue #86):
    but a crash between the write and the commit can leave an orphan bundle
    that opens nothing (the key was never created); remove it before
    retrying. The long-running relay never carries the operator lock.
-3. The customer loads it: `keyquorum loadkey --url https://relay.example.com --bundle acme.kqkey --slot ./usb=M.S`.
+3. The customer loads it: `keyquorum loadkey --url https://keyquorum.dev/relay --bundle acme.kqkey --slot ./usb=M.S`.
    The issue's relay URL must be the one being loaded for, a device-bound
    issue loads only from that container, the full provider challenge runs,
    and the relay that answers must be the one whose key signed the issue.

@@ -1,6 +1,6 @@
 output "relay_urls" {
-  description = "The public URL of each environment."
-  value       = { for name, environment in var.environments : name => "https://${environment.hostname}" }
+  description = "The relay's URL in each environment, as a client is given it (the GitHub environment variable RELAY_URL)."
+  value       = { for name, environment in var.environments : name => "https://${environment.hostname}/relay" }
 }
 
 output "admin_urls" {

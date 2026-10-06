@@ -25,8 +25,9 @@
 #   - Environments `cloudflare-staging` and `cloudflare-production` (production
 #     with a required reviewer), each with the secrets CLOUDFLARE_API_TOKEN
 #     (Workers Scripts edit only) and CLOUDFLARE_ACCOUNT_ID, and the variable
-#     RELAY_URL (the Worker's custom domain, https://...; set it before the
-#     first deploy, because its host is the only one the Worker serves), used for
+#     RELAY_URL (the relay's URL as a client is given it, https://<domain>/relay,
+#     for example https://keyquorum.dev/relay; the Worker serves only under
+#     /relay and only that host, so set it before the first deploy), used for
 #     the environment link and the smoke test; optionally ADMIN_URL (the admin
 #     Worker's hostname, which the smoke test expects to refuse an anonymous
 #     caller), and ACCESS_TEAM_DOMAIN and ACCESS_AUD (not secrets: the Access
@@ -252,7 +253,7 @@ jobs:
           fi
           # Not a secret: the address the issue form pre-fills for clients.
           if host="$(node scripts/relay-host.mjs "${RELAY_URL}")"; then
-            args+=(--var "RELAY_PUBLIC_URL:https://${host}")
+            args+=(--var "RELAY_PUBLIC_URL:https://${host}/relay")
           fi
           # The console binds the staging relay's Durable Object, so the public
           # Worker above must exist first (it was deployed just before).
@@ -355,7 +356,7 @@ jobs:
             echo "::warning::cloudflare-production has no ACCESS_TEAM_DOMAIN and ACCESS_AUD variables; the admin Worker was deployed unconfigured and serves nothing."
           fi
           if host="$(node scripts/relay-host.mjs "${RELAY_URL}")"; then
-            args+=(--var "RELAY_PUBLIC_URL:https://${host}")
+            args+=(--var "RELAY_PUBLIC_URL:https://${host}/relay")
           fi
           # The console binds the production relay's Durable Object; the public
           # Worker was deployed by the step above.

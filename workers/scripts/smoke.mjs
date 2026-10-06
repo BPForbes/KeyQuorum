@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // Post-deploy smoke test for the public Worker:
 //
-//   node scripts/smoke.mjs https://relay.example.com
+//   node scripts/smoke.mjs https://relay.example.com/relay
+//
+// The URL is the relay's, as a client is given it: the Worker serves only under
+// /relay (policy.js), so every path below is relative to that.
 //
 // It proves what a deploy exposed: /health answers and is never cacheable, the
 // Durable Object answers readiness, the status page carries its locked-down
@@ -28,6 +31,16 @@ const OPERATOR_ROUTES = [
 export async function runSmoke(baseUrl, { fetchImpl = fetch, attempts = 1, delayMs = 0 } = {}) {
   const base = baseUrl.replace(/\/+$/, "");
   const problems = [];
+  // The Worker serves only under /relay, so that is the URL a client is given.
+  let relayPath = "";
+  try {
+    relayPath = new URL(base).pathname.replace(/\/+$/, "");
+  } catch {
+    // an unparseable URL is reported below
+  }
+  if (relayPath !== "/relay") {
+    return [`the relay URL must end in /relay (https://<domain>/relay), the only path the Worker serves; got ${new URL(base, "https://invalid").pathname || "/"}`];
+  }
   const call = (method, path, init = {}) =>
     fetchImpl(`${base}${path}`, {
       method,

@@ -1,7 +1,7 @@
 # Cloudflare infrastructure for the relay
 
 Infrastructure as code for the parts of the relay's hosting that live in
-Cloudflare outside the Worker code: custom domains, the edge rate limit, the
+Cloudflare outside the Worker code: the relay's routes, the edge rate limit, the
 cache bypass, the Access application for the admin Worker and an optional R2
 archive bucket. The plan of record is `docs/operator/relay-hosting.md`; this
 directory is an operator document, not customer-facing.
@@ -15,13 +15,22 @@ Access that only shows who is signed in). CI runs `terraform fmt -check` and
 `.github/workflows/workers.yml`); nothing here has been applied to a real
 account by the repository's authors.
 
-The relay uses subdomains of `bailey-forbes.com` (owner decision, revised
-2026-10-06): `zone_id` is the portfolio's zone and every hostname below is a
-subdomain of it. Nothing here edits the portfolio's DNS records, but
-`rules.tf` manages the zone's rate-limit and cache-settings entry-point
-rulesets and **replaces any rules already in those two phases**. Look in the
-dashboard first (Security, WAF, Rate limiting rules; Caching, Cache Rules) and
-import what exists before `terraform apply`.
+The relay uses the owner's domain `keyquorum.dev` (owner decision, 2026-10-06,
+replacing the earlier `bailey-forbes.com` plan: that domain's DNS is not on
+Cloudflare, and a Worker can only be served on a zone that is). `zone_id` is
+`keyquorum.dev`'s zone, so the domain must be a zone on the owner's Cloudflare
+account: add it in the dashboard and change its nameservers at the registrar to
+the two Cloudflare gives, or register or transfer it to Cloudflare. The domain
+is meant to carry more than the relay (a customer app, later), so the relay is
+mounted under a path: it answers at `https://keyquorum.dev/relay/...` and
+nowhere else on the hostname, through two Workers routes (`main.tf`), and the
+two rulesets in `rules.tf` match only that prefix. The console has its own
+hostname (`admin.keyquorum.dev`), a separate origin behind Access, so that
+nothing the customer app serves shares an origin with it. `rules.tf` manages
+the zone's rate-limit and cache-settings entry-point rulesets and **replaces any
+rules already in those two phases**, which matters only if the zone already has
+some: look in the dashboard first (Security, WAF, Rate limiting rules; Caching,
+Cache Rules) and import what exists before `terraform apply`.
 
 ## Who runs it, and with what
 
@@ -38,9 +47,10 @@ a variable file in this directory, or an agent session.
 - `terraform.tfvars`, copied from `terraform.tfvars.example`. It is ignored by
   git. It holds identifiers, hostnames and the operators' email addresses, not
   secrets. Its variables:
-  - `account_id`, `zone_id`: the account and the dedicated relay zone.
-  - `environments`: a map of `{hostname, worker}`, the public relay Worker's
-    custom domain per environment.
+  - `account_id`, `zone_id`: the account and the domain's zone.
+  - `environments`: a map of `{hostname, worker}`, the hostname that carries the
+    public relay Worker under `/relay` per environment (`keyquorum.dev` for
+    production, `staging.keyquorum.dev` for staging; a bare hostname, no path).
   - `admin_environments`: a map of `{hostname, worker}` for the admin Worker
     (`keyquorum-relay-admin`, `keyquorum-relay-admin-staging`), empty by
     default. It replaces the earlier single `admin_hostname`. For each entry
@@ -73,8 +83,12 @@ a variable file in this directory, or an agent session.
 1. Create the Zero Trust organisation in the dashboard (once), and note its team
    domain.
 2. Choose the hostnames: the relay's, per environment, in `terraform.tfvars`
-   (`environments`). Set the GitHub environment variable `RELAY_URL` in each
-   environment to `https://<that hostname>` **before the first deploy**. The
+   (`environments`). Add a proxied (orange-clouded) DNS record for each, which
+   Terraform does not create (for a hostname with no site yet, an A record to the
+   placeholder address 192.0.2.1). Set the GitHub environment variable
+   `RELAY_URL` in each environment to `https://<that hostname>/relay` (the URL a
+   client is given; the scripts refuse one without `/relay`) **before the first
+   deploy**. The
    deploy passes its host to the Worker as `ALLOWED_HOSTS`, and the Worker
    serves that host and no other, so a Worker deployed without it serves
    nothing (staging warns and deploys that way; production refuses to deploy).
@@ -82,7 +96,7 @@ a variable file in this directory, or an agent session.
    admin Worker on a push to `main` (or, from `workers/`, `npm run
    build:relay-wasm` and then `npx wrangler deploy --env staging --var
    ALLOWED_HOSTS:<host>`, and `npx wrangler deploy -c admin/wrangler.toml --env
-   staging`). A custom domain names an existing Worker, so `apply` fails before
+   staging`). A route names an existing Worker, so `apply` fails before
    this. Until the Access variables below are set the admin Worker is deployed
    unconfigured and serves nothing (503), which is the safe state. Once the
    public Worker exists it can be connected to Cloudflare Workers Builds for the
@@ -91,7 +105,7 @@ a variable file in this directory, or an agent session.
    connection deploys nothing on `main` and needs nothing from this directory.
 4. Set `operator_emails` and `admin_environments` in `terraform.tfvars`, then
    `terraform init`, `terraform plan`, review, `terraform apply`. Check that
-   `terraform output relay_urls` shows the same hostnames as `RELAY_URL`; if
+   `terraform output relay_urls` shows the same URLs as `RELAY_URL`; if
    they differ, fix `RELAY_URL` and deploy again.
 5. Set the admin Worker's Access settings as GitHub environment variables (not
    secrets) in each environment: `ACCESS_AUD` from `terraform output

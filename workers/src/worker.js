@@ -6,6 +6,9 @@
 // core in that object decides who may do what; this file only keeps everything
 // else out. Every response is `Cache-Control: no-store`.
 //
+// Everything is under the prefix `/relay` (policy.js, RELAY_PREFIX); a path
+// outside it is a 404, so the rest of the domain belongs to other things.
+//
 // What it will not do: answer another website's browser (see
 // browser-isolation.js: the Lab and the portfolio are other sites, and the relay
 // shares no origin, hosting or code with either), serve a host other than the relay's own (a Version URL
@@ -91,7 +94,7 @@ export async function handle(request, env, log = console) {
         }),
       });
     case "asset": {
-      const [type, body] = ASSETS.get(url.pathname);
+      const [type, body] = ASSETS.get(route.path);
       return new Response(body, { status: 200, headers: baseHeaders({ "content-type": type }) });
     }
   }
@@ -116,9 +119,14 @@ export async function handle(request, env, log = console) {
     if (!allowed) return jsonResponse(429, { error: "too many requests" }, { "retry-after": "60" });
   }
 
+  // The core is given the path below the prefix, as it has always had it.
+  const inner = new URL(request.url);
+  inner.pathname = route.path;
+  const forwarded = new Request(inner, request);
+
   let answer;
   try {
-    answer = await relayObject(env).fetch(request);
+    answer = await relayObject(env).fetch(forwarded);
   } catch (error) {
     log.error("relay: the relay object did not answer", error?.name);
     return unavailable();

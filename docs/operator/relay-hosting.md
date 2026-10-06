@@ -28,7 +28,7 @@ Status at the time of writing (2026-10-06):
 | Native `keyquorum host serve` | **Kept as the dev, test and reference host.** `SqliteRelayStore`, `src/relay/server.rs` and `host keys` stay in the code. It is not a production deployment path. |
 | Deployment pipeline and Cloudflare Terraform | **Stage 2, in this repository; not yet exercised against a Cloudflare account.** `workers/` (the public Worker and its Durable Object), `.github/workflows/workers.yml` and `deploy/cloudflare/terraform/` exist and are described in [Provisioning and the deployment pipeline](#provisioning-and-the-deployment-pipeline-stage-2). Honest limits: nothing has been deployed; the Terraform passes CI's `terraform validate` against the pinned provider (`.terraform.lock.hcl`, `cloudflare/cloudflare` 5.27.0) but the repository's authors have never planned or applied it against a real account; Cloudflare Notifications and the R2 retention lock are dashboard steps, not Terraform; and the owner's GitHub and Cloudflare setup is still to be done. |
 | Admin Worker and operator console (stage 4a, issue #99) | **In this repository; never deployed, and Access has never been configured on an account.** `workers/admin/` holds the Worker `keyquorum-relay-admin` (`[env.staging]` is `keyquorum-relay-admin-staging`): it verifies Cloudflare Access's signed token itself and serves the provider's console, a static page and a documented `/api` that reaches the relay only through the private binding `RELAY_ADMIN`. Customers, licences (immutable statement versions), keys with lineage, per-key activity, status, audit and checkpoint, and the two-step operator lock are built; see [The operator console](#the-operator-console-issue-99). Its Terraform (`admin_environments`: a custom domain and an Access application with an MFA policy per environment) and workflow steps exist; CI's `terraform` job checks the whole directory on every push. **Not done:** every check on a real account (Access and MFA, the binding on Cloudflare, staging, restore, overload, cost); see the console section's list. |
-| Relay domain and operator page | **Decided 2026-10-06 (owner).** The relay's hostnames are subdomains of `bailey-forbes.com` (owner decision, revised 2026-10-06; it first chose a separate domain); the operator page is static files served from the admin Worker behind Access. See [Domain and operator page](#domain-and-operator-page-owner-decisions-2026-10-06). |
+| Relay domain and operator page | **Decided 2026-10-06 (owner).** The relay is mounted at `keyquorum.dev/relay` and the console has its own hostname (owner decision, revised 2026-10-06); the operator page is static files served from the admin Worker behind Access. See [Domain and operator page](#domain-and-operator-page-owner-decisions-2026-10-06). |
 | Live deployment, restore test, overload test | **Not done.** Nothing has been deployed. They need the operator's Cloudflare account and run against a real deployment. The [acceptance checklist](#acceptance-checklist) says which rows this document settles and which the deployment must. |
 
 Nothing here is deployment approval, and no SOC 2 mapping below claims
@@ -171,25 +171,34 @@ actually takes.
 
 Two decisions of the owner, recorded as decisions:
 
-1. **The relay lives on subdomains of `bailey-forbes.com`.** The owner first
-   chose a separate domain, then revised that the same day: the relay and the
-   console use subdomains of `bailey-forbes.com` (for example `relay.` and
-   `relay-admin.`), because the owner has no other domain. The zone is the
-   portfolio's, so these hold and must be checked before `terraform apply`:
-   the two rulesets in `rules.tf` are the zone's rate-limit and cache-settings
-   entry points, and applying them **replaces any rules already in those
-   phases** for the portfolio's zone (look in the dashboard under Security,
-   WAF, Rate limiting rules and Caching, Cache Rules, and import any that
-   exist first; they match only the relay hostnames, but the replacement is
-   zone-wide). The portfolio's DNS records are not edited, only the relay's
-   custom-domain records are added. The sites stay independent in code: the
-   relay Workers refuse a browser request marked `same-site` as well as
-   `cross-site` (`workers/src/browser-isolation.js`), the relay sets no CORS
-   header and no cookie, and the Lab and portfolio name no relay host. A
-   cookie the portfolio sets for `.bailey-forbes.com` would be sent to the
-   relay's hostnames; the relay ignores cookies, and the Access cookie is for
-   the console's own host. The relay and admin hostnames are Terraform inputs
-   (`deploy/cloudflare/terraform/`) and are not named in the repository.
+1. **The relay lives at `keyquorum.dev/relay`.** The owner's domain
+   `keyquorum.dev` (bought to carry a customer app as well) hosts the relay
+   mounted under a path, so a path says what it is: the relay answers at
+   `https://keyquorum.dev/relay/...` and nowhere else on the hostname
+   (revised twice on 2026-10-06: first a separate new domain, then subdomains of
+   `bailey-forbes.com`, which was dropped because that domain's DNS is not on
+   Cloudflare and a Worker can be served only on a zone that is). A client's
+   relay URL is `https://keyquorum.dev/relay`; the client already adds each
+   route to a URL's path (`src/relay/client/tests.rs`,
+   `a_relay_url_with_a_path_prefix_keeps_it_in_front_of_every_route`), so no
+   client changed. The prefix is the public Worker's mount point only
+   (`workers/src/policy.js`, `RELAY_PREFIX`): it strips it, so the relay core
+   sees the paths it always had, and it answers 404 to everything outside it,
+   `/health` and `/` included, so no path of the domain that is not the relay's
+   is answered by it. Two Workers routes send it `keyquorum.dev/relay` and
+   `keyquorum.dev/relay/*` and nothing else (`deploy/cloudflare/terraform/
+   main.tf`), and the zone's rate-limit and cache-bypass rules match only that
+   prefix (`rules.tf`), so a customer app on the same domain is neither limited
+   nor cache-bypassed by them. The hostname must be proxied in the zone's DNS,
+   which Terraform does not create. **The console is not under `/relay`**: it
+   has its own hostname (`admin.keyquorum.dev`, behind Access), a separate
+   origin, so that nothing the customer app serves shares an origin with the
+   page that can issue and revoke keys. The native host (`host serve`) is
+   unchanged and has no prefix. `keyquorum.dev` must be a zone on the owner's
+   Cloudflare account; if it was bought elsewhere, add it there and change its
+   nameservers at the registrar. The root of the hostname has no site yet, so
+   until the customer app exists a request to `https://keyquorum.dev/` is not
+   answered by the relay and shows whatever the zone does for an unused path.
 2. **The operator page is hosted the way the portfolio is hosted.** It is
    static files served from the admin Worker on its own hostname, a Workers
    custom domain, simply styled. The hostname is behind Cloudflare Access
@@ -300,9 +309,10 @@ procedure and the settings, so the connection is made once and the same way.
 4. Push a branch and open a pull request. The check "Workers Builds:
    keyquorum-relay" appears, and the pull request comment carries the Preview
    URL (`<branch>-keyquorum-relay.<subdomain>.workers.dev`). Confirm on it what
-   `smoke.mjs` confirms on a deploy: `/health` answers, the operator and mint
-   routes answer 404 or 405, `/ready` answers 200 through the Preview's own
-   Durable Object, and a request to the Preview URL for `/inbox` is 401: the
+   `smoke.mjs` confirms on a deploy, with `/relay` on the Preview URL
+   (`https://<preview host>/relay/...`): `/relay/health` answers, the operator
+   and mint routes answer 404 or 405, `/relay/ready` answers 200 through the
+   Preview's own Durable Object, and a request for `/relay/inbox` is 401: the
    Preview's object is empty and no key can be in it. Confirm in the Worker's
    Settings, Builds that the build command is `npm run builds:build`, the
    deploy command on `main` is `npm run check` and the Preview command is `npm
@@ -350,8 +360,9 @@ procedure and the settings, so the connection is made once and the same way.
   Version URL is a workers.dev host, so it is refused before the relay is asked
   anything. Empty or unset, the Worker is unconfigured and serves nothing (503).
   The deploy jobs of `workers.yml` set it from the environment's `RELAY_URL`
-  (`scripts/relay-host.mjs` accepts only a plain https hostname: never a
-  wildcard, a list, a credential, an address or a single label). Only
+  (`scripts/relay-host.mjs` takes `https://<domain>/relay` and returns only the
+  host, refusing anything else: a URL without the `/relay` path, a wildcard, a
+  list, a credential, an address or a single label). Only
   `[previews.vars]` sets `*`, because a Preview has its own empty object and no
   secrets; `scripts/guard.mjs` fails CI on a wildcard in `[vars]`,
   `[env.<name>.vars]` or an environment's previews. Tested:
@@ -372,8 +383,9 @@ procedure and the settings, so the connection is made once and the same way.
   put Cloudflare Access in front of every Preview URL of the account with one
   setting (the Worker, Settings, Domains & Routes, Preview URLs, Enable
   Cloudflare Access; all Preview URLs share one "Cloudflare Workers Preview
-  URLs" policy). A Preview answers `/health`, `/ready`, the status page, 401
-  for a customer route and 404 for the rest.
+  URLs" policy). A Preview answers `/relay/health`, `/relay/ready`, the status page at
+  `/relay/`, 401 for a customer route under `/relay` and 404 for the rest
+  (including `/`).
 - "Pages" is not used: static assets on the admin Worker already serve the
   operator page, and a Pages project would be a second product and hostname.
 
@@ -425,10 +437,11 @@ the end of this section.
   application's audience tag, which is set as the GitHub environment
   variable `ACCESS_AUD`; Terraform does not output the Access team domain
   (for `ACCESS_TEAM_DOMAIN`), which is read from the Zero Trust dashboard.
-  The hostnames, relay and admin, belong to the domain dedicated to the
-  relay (see the decisions above). `rules.tf` has the zone rate-limit ruleset on
-  every route except `/health`, and a ruleset that bypasses
-  the cache for the relay hostnames. `r2.tf` has an optional archive bucket
+  The relay's hostnames and the admin hostname belong to the owner's
+  domain (see the decisions above). `main.tf` has two Workers routes per
+  environment (`<host>/relay` and `<host>/relay/*`). `rules.tf` has the zone
+  rate-limit ruleset on every route under `/relay` except `/relay/health`, and a
+  ruleset that bypasses the cache under `/relay`. `r2.tf` has an optional archive bucket
   (created only when `archive_bucket_name` is set). `variables.tf`,
   `outputs.tf`, `terraform.tfvars.example` and a `README.md` complete it. CI
   runs `terraform fmt -check`, `terraform init -backend=false -lockfile=readonly` and `terraform
@@ -474,8 +487,10 @@ the end of this section.
   bound of 3 MiB; the bundle with the WebAssembly core is about 810 KiB
   gzipped). `scripts/relay-host.mjs` turns the environment's `RELAY_URL` into
   the hostname the Worker serves. `scripts/smoke.mjs` is the post-deploy check:
-  `/health` must answer 200 with the expected body and `no-store`; `/ready` must
-  answer 200 through the Durable Object; `/` must be the status page with its
+  the URL is the relay's, ending in `/relay` (the script refuses another),
+  and every path below is under it: `/health` must answer 200 with the expected
+  body and `no-store`; `/ready` must answer 200 through the Durable Object; `/`
+  (that is, `/relay/`) must be the status page with its
   locked-down policy; the operator, documentation and mint routes (`/api-keys`,
   `/api-keys/<id>/revoke`, `/audit`, `/swagger-ui/`, `/keys`, `/keys/create`,
   `/keys/rotate`) must answer 404 or 405; an unauthenticated `GET /inbox` must
@@ -628,9 +643,10 @@ console and is still true of the front door.
   `cloudflare-production` with their `CLOUDFLARE_API_TOKEN` and
   `CLOUDFLARE_ACCOUNT_ID` secrets and the `RELAY_URL` variable (and the
   production required reviewer), add `workers` to the required checks, and
-  have a Cloudflare account, the `bailey-forbes.com` zone on it and the relay
-  and admin subdomains chosen (check the zone's existing rate-limit and cache
-  rules first: the Terraform replaces them, see the domain decision). The
+  have a Cloudflare account, the `keyquorum.dev` zone on it, a proxied DNS
+  record for each relay hostname (Terraform does not create it) and the admin
+  hostname chosen (check the zone's existing rate-limit and cache rules first:
+  the Terraform replaces them in those two phases). The
   Worker must be
   deployed before `terraform apply`, because a custom domain names an
   existing Worker. For the admin Worker the order is: deploy it (it serves
@@ -881,8 +897,9 @@ The architecture below says which parts are built.
   missing or failing limiter does not stop the relay, since the zone rule and
   the object's bound still apply. Sets `Cache-Control: no-store` and
   `X-Content-Type-Options: nosniff` on every response, including the object's.
-  Answers `/health` (the Worker alone), `/ready` (only when the Durable
-  Object's store answers) and a status page at `/` with its two asset files
+  Serves only under `/relay` (everything else is 404). Answers `/relay/health`
+  (the Worker alone), `/relay/ready` (only when the Durable
+  Object's store answers) and a status page at `/relay/` with its two asset files
   (no inline code, no outside origin, a locked-down policy). Hands everything
   else to the Durable Object. It does no redirects and no challenge on API
   paths: the client uses `max_redirects(0)` and treats a 503 from
@@ -996,11 +1013,12 @@ The architecture below says which parts are built.
 
 The relay has its own front ends and shares nothing with the Lab
 (`lab/`, published to GitHub Pages) or the portfolio
-(`bailey-forbes.com`), which embeds the Lab.
+(`bailey-forbes.com`), which embeds the Lab. The relay's domain,
+`keyquorum.dev`, is a different site from both.
 
-- **Public site (built).** The public Worker's own pages, `/` (a status page
-  with a policy that allows no inline code and no outside origin) and `/health`
-  and `/ready`, on the relay's custom domain only. Customers do not use a web
+- **Public site (built).** The public Worker's own pages, `/relay/` (a status page
+  with a policy that allows no inline code and no outside origin) and
+  `/relay/health` and `/relay/ready`, on the relay's hostname only. Customers do not use a web
   page to send letters: `keyquorum` does, with a `kq_…` bearer, and a browser
   client would need the sealing and signing done in the page, which is not built.
 - **Operator console (built, not deployed).** The admin Worker, on its own
@@ -1205,7 +1223,7 @@ Before launch and then on a schedule:
 
 | Signal | Source | Threshold |
 | --- | --- | --- |
-| health and readiness | an external probe of `GET /health` and `GET /ready` over the public hostname | 3 failures in a row |
+| health and readiness | an external probe of `GET /relay/health` and `GET /relay/ready` over the public hostname | 3 failures in a row |
 | provider identity | a synthetic client that runs `keyquorum loadkey` with a throwaway store and key (only this proves the identity; `/ready` does not) | daily, any failure |
 | certificate expiry | the external probe's TLS check (the edge certificate's renewal is Cloudflare's), and the expiry date of `provider.kqcert` known from issuance and checked by the operator on a schedule | 30 days before either |
 | storage | the database size against the Durable Object's 10 GB limit, from the console's status page (`storage_bytes`, read by the Durable Object; unverified on Cloudflare) or Cloudflare's Durable Object metrics (from memory, verify which is available) | 70 % warn, 85 % page |
@@ -1290,15 +1308,17 @@ The client identity is taken from one place only:
 # Forged forwarding headers are not believed: the Worker's limiter must
 # count these against the real client, so enough of them from one address
 # still end in a 429 (set the limit low for the test).
-curl -sS -H 'X-Forwarded-For: 203.0.113.9' -H 'CF-Connecting-IP: 203.0.113.9' https://relay.example.com/health
+curl -sS -H 'X-Forwarded-For: 203.0.113.9' -H 'CF-Connecting-IP: 203.0.113.9' https://example.com/relay/health
 # There is no second way in: the workers.dev hostname does not answer, the
 # admin Worker has no workers.dev or preview hostname and no route from the
 # public hostname, and the public Worker's preview hostnames (only while
-# Workers Builds previews are on) must answer /health or 404 and nothing else.
-curl -sS --connect-timeout 5 https://keyquorum-relay.<account>.workers.dev/health
-curl -sS -o /dev/null -w '%{http_code}\n' https://relay.example.com/api-keys
+# Workers Builds previews are on) must answer /relay/health or 404 and nothing else.
+curl -sS --connect-timeout 5 https://keyquorum-relay.<account>.workers.dev/relay/health
+curl -sS -o /dev/null -w '%{http_code}\n' https://example.com/relay/api-keys
+# Nothing outside /relay is the relay's: this must not be the relay's answer.
+curl -sS -o /dev/null -w '%{http_code}\n' https://example.com/health
 # The provider challenge still passes through the edge.
-keyquorum --db ./check.sqlite loadkey --url https://relay.example.com
+keyquorum --db ./check.sqlite loadkey --url https://example.com/relay
 ```
 
 ### Cache
@@ -1328,7 +1348,7 @@ fingerprints must show `BYPASS`.
 ### Rate limits, layered
 
 Zone rate-limiting rules (`rules.tf`, `relay_rate_limit`: counted per
-client address and Cloudflare data centre on every route except `/health`,
+client address and Cloudflare data centre on every route under `/relay` except `/relay/health`,
 600 requests per 60 seconds by default, managed in the
 Terraform) absorb floods before the
 Worker runs; the Worker's own rate limit on `CF-Connecting-IP` (a Workers

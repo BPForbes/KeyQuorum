@@ -34,6 +34,37 @@ fn rejects_backslash_host_confusion() {
     assert_eq!(url.path(), "/inbox");
 }
 
+// The Cloudflare relay is mounted under `/relay` on its domain
+// (`workers/src/policy.js`, `RELAY_PREFIX`), so its URL is
+// `https://<domain>/relay`: the client adds each route to that path and keeps
+// the query, with or without a trailing slash on the base.
+#[test]
+fn a_relay_url_with_a_path_prefix_keeps_it_in_front_of_every_route() {
+    for base in [
+        "https://keyquorum.dev/relay",
+        "https://keyquorum.dev/relay/",
+    ] {
+        let inbox = relay_request_url(base, "/inbox").expect("https url");
+        assert_eq!(inbox.host_str(), Some("keyquorum.dev"));
+        assert_eq!(inbox.path(), "/relay/inbox");
+        for route in [
+            "/keycheck",
+            "/provider-identity",
+            "/devices/packages",
+            "/audit/api-keys",
+        ] {
+            let url = relay_request_url(base, route).expect("https url");
+            assert_eq!(url.path(), format!("/relay{route}"));
+        }
+    }
+    let loopback = relay_request_url("http://127.0.0.1:8787/relay", "/inbox").expect("loopback");
+    assert_eq!(loopback.path(), "/relay/inbox");
+    assert_eq!(
+        crate::db::relay_credential::normalize_url("https://keyquorum.dev/relay/"),
+        "https://keyquorum.dev/relay"
+    );
+}
+
 #[test]
 fn stalled_peer_is_terminated_by_timeout() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");

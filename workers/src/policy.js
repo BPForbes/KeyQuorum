@@ -58,7 +58,24 @@ const RELAY_ROUTES = [
   ["GET", ["devices", "*"]],
 ];
 
-// The Worker's own answers.
+// Every route of this Worker lives under this prefix, so that one domain can
+// carry the relay beside other things (the customer app, later) and a path says
+// what it is: `https://<domain>/relay/inbox`. It is the Worker's mount point
+// only: the relay core is unchanged and sees the path without it, and a client
+// is given `https://<domain>/relay` as the relay's URL and adds the rest.
+// Nothing outside the prefix is served, `/health` and `/` included, so the
+// domain's other paths are never answered by the relay.
+export const RELAY_PREFIX = "/relay";
+
+// The path with the prefix removed ("/" for the prefix itself), or null when
+// the path is not under it. The match is on the raw path: `/relay` and
+// `/relay/...` only, so `/relayx` and an encoded `/%72elay/...` are not under it.
+export function stripRelayPrefix(pathname) {
+  if (pathname === RELAY_PREFIX) return "/";
+  return pathname.startsWith(`${RELAY_PREFIX}/`) ? pathname.slice(RELAY_PREFIX.length) : null;
+}
+
+// The Worker's own answers, as paths below the prefix.
 const OWN_ROUTES = new Map([
   ["/health", "health"],
   ["/ready", "ready"],
@@ -80,21 +97,25 @@ function matches(pattern, segments) {
   );
 }
 
-// -> { kind: "health" | "ready" | "status" | "asset" | "relay" }
+// `pathname` is the full request path, prefix included.
+// -> { kind: "health" | "ready" | "status" | "asset" | "relay", path }
 //    | { kind: "not-found" }
 //    | { kind: "method-not-allowed", allow: "GET, HEAD" }
+// `path` is the path below the prefix, which is what the relay core is given.
 export function classify(method, pathname) {
-  const own = OWN_ROUTES.get(pathname);
+  const path = stripRelayPrefix(pathname);
+  if (path === null) return { kind: "not-found" };
+  const own = OWN_ROUTES.get(path);
   if (own) {
     return method === "GET" || method === "HEAD"
-      ? { kind: own }
+      ? { kind: own, path }
       : { kind: "method-not-allowed", allow: "GET, HEAD" };
   }
-  const segments = segmentsOf(pathname);
+  const segments = segmentsOf(path);
   const methods = new Set();
   for (const [routeMethod, pattern] of RELAY_ROUTES) {
     if (!matches(pattern, segments)) continue;
-    if (routeMethod === method) return { kind: "relay" };
+    if (routeMethod === method) return { kind: "relay", path };
     methods.add(routeMethod);
   }
   if (methods.size > 0) return { kind: "method-not-allowed", allow: [...methods].join(", ") };
