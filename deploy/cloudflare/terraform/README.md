@@ -47,9 +47,14 @@ a variable file in this directory, or an agent session.
     Terraform creates a custom domain for the admin Worker and a self-hosted
     Access application (1 hour session) for that hostname; all of them share
     one allow policy.
-  - `operator_emails`: the operators the policy allows. MFA is required of
-    them as well (`auth_method = "mfa"`). Setting `admin_environments` with no
-    operator email fails the plan (a precondition).
+  - `operator_emails`: the operators the policy allows (the email the login
+    asserts must match exactly). Setting `admin_environments` with no operator
+    email fails the plan (a precondition).
+  - `idp_mfa_required` (default `false`): also require that the identity
+    provider reports MFA. Only Okta, Entra ID, generic OIDC and generic SAML can
+    report it; with one-time PIN, the Cloudflare identity provider or Sign in
+    with Apple it would lock the operator out. The second factor for those is
+    independent MFA, below.
   - `rate_limit_requests`, `rate_limit_period`, `rate_limit_timeout`,
     `archive_bucket_name`: see the variable descriptions.
 - Outputs: `relay_urls`, `admin_urls` (the Access-protected URL per admin
@@ -108,9 +113,26 @@ a variable file in this directory, or an agent session.
 - The rate-limit counting periods and block timeouts that are allowed depend on
   the Cloudflare plan; the defaults are meant to suit the lowest plan (from
   memory, verify). Tune them in `terraform.tfvars`.
-- `auth_method = "mfa"` in the Access policy relies on the identity provider
-  reporting that MFA was used (from memory, verify for your provider). Test the
-  admin Access application with an operator who has no MFA before relying on it.
+- **Operator login and MFA.** Terraform creates the Access application and an
+  allow policy for `operator_emails`; it does **not** create or verify the
+  second factor. The recommended setup (a decision of the owner, 2026-10-06) is
+  login by the Cloudflare identity provider or a one-time PIN to the operator's
+  own address, plus Access's **independent MFA** with a hardware security key:
+  in Zero Trust, Access controls, Access settings, under "Allow multi-factor
+  authentication (MFA)" allow **Security key** (and, if you accept it, nothing
+  weaker), set an authentication duration, and turn on "Apply global MFA
+  settings by default" (or set the admin application's or policy's MFA to
+  custom, security key only); then enrol the key at
+  `<team>.cloudflareaccess.com/AddMfaDevice` and enrol a second, spare key. This
+  is Cloudflare's feature of 2026 and is described from its documentation (MFA
+  requirements; Independent MFA), not from a run; whether the pinned provider
+  (5.27.0) can manage it is not established, so it is a dashboard step. Test it
+  with the operator signed out before relying on it, and keep the spare key
+  elsewhere: losing every enrolled key locks the operator out of the console.
+  Sign in with Apple is not a built-in identity provider, would need the generic
+  OIDC connector (an Apple client secret is a signed token that expires), and
+  can assert a private-relay address instead of the real one that the policy
+  matches; it is not recommended.
 - The admin custom domains and Access applications are created only when
   `admin_environments` is set. No route bypasses Access: the hostname sits
   behind the application, and the admin Worker also verifies Access's token

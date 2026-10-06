@@ -1,6 +1,6 @@
 # The admin Worker's only hostname sits behind an Access application that
-# requires an operator identity and MFA, and the Worker also verifies Access's
-# signed token itself (workers/admin/src/access.js), so a mistake here cannot
+# requires an operator identity (the policy below), and the Worker also
+# verifies Access's signed token itself (workers/admin/src/access.js), so a mistake here cannot
 # expose it. Nothing is created until admin_environments is set. As with the
 # relay, the admin Worker must already be deployed before `terraform apply`,
 # because a custom domain names an existing Worker.
@@ -12,11 +12,19 @@ resource "cloudflare_zero_trust_access_policy" "operators" {
   count = local.admin_enabled ? 1 : 0
 
   account_id = var.account_id
-  name       = "keyquorum relay operators (MFA required)"
+  name       = "keyquorum relay operators"
   decision   = "allow"
 
   include = [for email in var.operator_emails : { email = { email = email } }]
-  require = [{ auth_method = { auth_method = "mfa" } }]
+
+  # Identity-provider MFA (the IdP reports it) works only with Okta, Entra ID,
+  # generic OIDC and generic SAML. With one-time PIN, the Cloudflare identity
+  # provider or Sign in with Apple it can never be satisfied and would lock the
+  # operator out, so it is off unless idp_mfa_required is set. The second
+  # factor for those logins is Access's independent MFA, a Zero Trust setting
+  # (a security key, enrolled in the App Launcher) that this repository cannot
+  # create or verify: see README.md, "Operator login and MFA".
+  require = [for n in range(var.idp_mfa_required ? 1 : 0) : { auth_method = { auth_method = "mfa" } }]
 
   lifecycle {
     precondition {

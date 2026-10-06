@@ -403,7 +403,9 @@ been run against a real Cloudflare account. Prerequisites: the public Worker
 deployed (the console binds its Durable Object), the relay key and certificate
 set as Worker secrets (see "Secret provisioning"), the admin Worker deployed,
 `terraform apply` done and `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` and `ADMIN_URL`
-set, so that the operator can sign in through Access with MFA.
+set, and Access's independent MFA turned on with a security key enrolled (a
+dashboard step: `deploy/cloudflare/terraform/README.md`, "Operator login and
+MFA"), so that the operator can sign in through Access with MFA.
 
 1. **Check status.** Open the console's *Status* page: ready, the relay's
    identity and certificate (and its expiry), the housekeeping alarm, storage

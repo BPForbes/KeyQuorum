@@ -17,7 +17,7 @@ variable "environments" {
 }
 
 variable "admin_environments" {
-  description = "Each environment's admin hostname and the admin Worker that serves it. Every hostname is placed behind an Access application with MFA. Leave empty to create none."
+  description = "Each environment's admin hostname and the admin Worker that serves it. Every hostname is placed behind an Access application. Leave empty to create none."
   type = map(object({
     hostname = string
     worker   = string
@@ -25,8 +25,14 @@ variable "admin_environments" {
   default = {}
 }
 
+variable "idp_mfa_required" {
+  description = "Require that the identity provider reports MFA (auth_method = mfa). Only for Okta, Entra ID, generic OIDC or generic SAML; with one-time PIN, the Cloudflare identity provider or Sign in with Apple leave it false and turn on Access's independent MFA with a security key instead."
+  type        = bool
+  default     = false
+}
+
 variable "operator_emails" {
-  description = "Operators allowed through the admin Access application (and still required to pass MFA)."
+  description = "Operators allowed through the admin Access application. The second factor is Access's independent MFA (a Zero Trust setting), or idp_mfa_required for an IdP that reports it."
   type        = list(string)
   default     = []
 }
