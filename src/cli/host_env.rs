@@ -5,11 +5,10 @@
 //! The order, for each value, is: a file named by a flag, a file named by
 //! an environment variable, then (for compatibility) the raw value from a
 //! flag or an environment variable, then a prompt where one makes sense.
-//! A file is the preferred source for a long-lived secret: systemd hands a
-//! credential to the service as a file in `$CREDENTIALS_DIRECTORY`, and a
-//! Kubernetes secret is mounted as one, so the value never sits in the
-//! process environment, in a unit file or in a shell history. The raw
-//! sources stay for existing deployments.
+//! A file is the preferred source for a long-lived secret (for example a
+//! systemd credential in `$CREDENTIALS_DIRECTORY`, or a mounted secret), so
+//! the value never sits in the process environment, in a unit file or in a
+//! shell history. The raw sources stay for compatibility.
 //!
 //! Files are read with a bound, only a trailing line ending is removed,
 //! the value is zeroized when dropped, and no error names what was read.
@@ -20,8 +19,7 @@ use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
 /// The most a credential or settings file may hold. A `kql_…` lock is 47
-/// bytes, a hex key 64, a MongoDB URI a few hundred; anything larger is
-/// not the file the operator meant.
+/// bytes, a hex key 64; anything larger is not the file the operator meant.
 pub const MAX_CREDENTIAL_FILE_BYTES: usize = 8 * 1024;
 
 /// The internal operator lock (`kql_…`) for `host keys create|rotate`.
@@ -32,12 +30,6 @@ pub const LICENSEE_KEY_FILE_VAR: &str = "KEYQUORUM_LICENSEE_KEY_FILE";
 pub const PROVIDER_ROOT_KEY_VAR: &str = "KEYQUORUM_PROVIDER_ROOT_KEY";
 /// A file holding that key, as `root generate --private-key-out` wrote it.
 pub const PROVIDER_ROOT_KEY_FILE_VAR: &str = "KEYQUORUM_PROVIDER_ROOT_KEY_FILE";
-/// The hosted relay's MongoDB connection string, raw.
-pub const MONGODB_URI_VAR: &str = "KEYQUORUM_MONGODB_URI";
-/// A file holding that connection string.
-pub const MONGODB_URI_FILE_VAR: &str = "KEYQUORUM_MONGODB_URI_FILE";
-/// The database within the deployment (`keyquorum` when unset).
-pub const MONGODB_DATABASE_VAR: &str = "KEYQUORUM_MONGODB_DB";
 
 /// Read a credential file: at most [`MAX_CREDENTIAL_FILE_BYTES`], UTF-8,
 /// with one trailing line ending (`\n` or `\r\n`) removed and nothing else
@@ -155,32 +147,6 @@ pub fn root_key_source(flag: Option<PathBuf>, vars: &dyn Vars) -> Source {
         return Source::Raw;
     }
     Source::Absent
-}
-
-/// The hosted relay's MongoDB settings when one is configured:
-/// `--mongodb-uri-file`, `KEYQUORUM_MONGODB_URI_FILE`, then the raw
-/// `KEYQUORUM_MONGODB_URI`. `None` means the relay keeps its SQLite file.
-/// The connection string may carry a password, so it is zeroized and never
-/// taken from a flag.
-pub fn mongodb_uri(
-    file_flag: Option<PathBuf>,
-    vars: &dyn Vars,
-) -> Result<Option<Zeroizing<String>>> {
-    if let Some(path) = non_empty_path(file_flag) {
-        return read_credential_file(&path).map(Some);
-    }
-    if let Some(path) = vars.var(MONGODB_URI_FILE_VAR) {
-        return read_credential_file(Path::new(&path)).map(Some);
-    }
-    Ok(vars.var(MONGODB_URI_VAR).map(Zeroizing::new))
-}
-
-/// The database name: `--mongodb-db`, `KEYQUORUM_MONGODB_DB`, else the
-/// default.
-pub fn mongodb_database(flag: Option<String>, vars: &dyn Vars) -> String {
-    flag.filter(|name| !name.is_empty())
-        .or_else(|| vars.var(MONGODB_DATABASE_VAR))
-        .unwrap_or_else(|| "keyquorum".to_string())
 }
 
 #[cfg(test)]

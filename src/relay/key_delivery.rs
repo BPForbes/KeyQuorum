@@ -106,9 +106,9 @@ pub fn recipient_for(conn: &Connection, id: i64) -> Result<Option<Recipient>> {
 
 /// What a sealed issue needs from the store it runs in, inside the one unit
 /// of work that mints or rotates the key. The SQLite store implements it
-/// over its open transaction ([`SqliteOps`]) and the MongoDB store over its
-/// session, so the flow that decides whom a key is sealed to, whether a
-/// letter can be collected, and what is recorded is written once, here.
+/// over its open transaction ([`SqliteOps`]) and any other backend over its
+/// own, so the flow that decides whom a key is sealed to, whether a letter
+/// can be collected, and what is recorded is written once, here.
 pub(crate) trait DeliveryOps {
     fn key_info(&mut self, id: i64) -> Result<ApiKeyInfo>;
     fn has_live_pull_key(&mut self, fingerprint: &str) -> Result<bool>;

@@ -3,10 +3,8 @@
 //!
 //! The relay never unseals envelopes and never holds wrapped shares or
 //! private keys. Full public-tree context is stored as JSON documents.
-//! Where that state lives is [`store::RelayStore`]'s business: the
-//! owner-only SQLite file this module opens ([`store::SqliteRelayStore`]),
-//! or, with the `mongodb` feature, a shared MongoDB deployment
-//! (`mongo::MongoRelayStore`) for a relay that runs as several replicas.
+//! Where that state lives is [`store::RelayStore`]'s business: today the
+//! owner-only SQLite file this module opens ([`store::SqliteRelayStore`]).
 //! Pushing envelopes merges the sender's public topology into those
 //! documents; pull returns a sliced copy for the recipient fingerprint
 //! that a personal SQLite store translates.
@@ -18,8 +16,6 @@ mod device_directory;
 mod device_mail;
 pub mod key_delivery;
 mod mailbox;
-#[cfg(feature = "mongodb")]
-pub mod mongo;
 mod org_tree;
 #[cfg(feature = "provider")]
 mod server;

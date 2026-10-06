@@ -39,8 +39,6 @@ use zeroize::Zeroizing;
 /// Where the relay keeps its state, from the `host` command's own flags.
 pub struct StoreArgs {
     pub mailbox_db: PathBuf,
-    pub mongodb_uri_file: Option<PathBuf>,
-    pub mongodb_db: Option<String>,
 }
 
 pub fn run(store_args: &StoreArgs, org_db: &Path, command: HostCommand) -> Result<()> {
@@ -71,10 +69,10 @@ pub fn run(store_args: &StoreArgs, org_db: &Path, command: HostCommand) -> Resul
             relay::check_bind(&addr, behind_tls_proxy)?;
             let (identity, _) = load_serve_identity(cert, relay_key, krl)?;
             // The store is opened, and the first anchor signed, before the
-            // async runtime exists: every store blocks (SQLite on its lock,
-            // the MongoDB driver's sync API on its own runtime), and a
-            // blocking call belongs on the blocking pool once the runtime
-            // runs (`with_store`, the scan), never on its driver thread.
+            // async runtime exists: the store blocks (SQLite on its lock),
+            // and a blocking call belongs on the blocking pool once the
+            // runtime runs (`with_store`, the scan), never on its driver
+            // thread.
             let store = open_store(store_args)?;
             tracing::info!("relay store: {}", store.backend());
             // Anything recorded while the relay was down (host `keys`
@@ -155,38 +153,11 @@ fn licensee_secret(
     }
 }
 
-/// The relay's state: the owner-only SQLite file at `mailbox_db` unless a
-/// MongoDB deployment is configured (`--mongodb-uri-file`,
-/// `KEYQUORUM_MONGODB_URI_FILE` or `KEYQUORUM_MONGODB_URI`), in which case
-/// the SQLite file is not opened at all. Every host `keys` command and the
-/// server go through the same choice, so an operator cannot mint a key into
-/// one store while the relay serves from another by mistake.
+/// The relay's state: the owner-only SQLite file at `mailbox_db`. Every host
+/// `keys` command and the server open it the same way.
 fn open_store(args: &StoreArgs) -> Result<Arc<dyn RelayStore>> {
-    let uri = host_env::mongodb_uri(args.mongodb_uri_file.clone(), &ProcessVars)?;
-    match uri {
-        Some(uri) => open_mongodb_store(
-            &uri,
-            host_env::mongodb_database(args.mongodb_db.clone(), &ProcessVars),
-        ),
-        None => {
-            let db_path = args.mailbox_db.to_str().ok_or(Error::InvalidPath)?;
-            Ok(Arc::new(SqliteRelayStore::open(db_path)?))
-        }
-    }
-}
-
-#[cfg(feature = "mongodb")]
-fn open_mongodb_store(uri: &str, database: String) -> Result<Arc<dyn RelayStore>> {
-    use keyquorum::relay::mongo::{MongoRelayStore, MongoSettings};
-    let store = MongoRelayStore::open(uri, &MongoSettings { database })?;
-    Ok(Arc::new(store))
-}
-
-#[cfg(not(feature = "mongodb"))]
-fn open_mongodb_store(_uri: &str, _database: String) -> Result<Arc<dyn RelayStore>> {
-    Err(Error::Usage(
-        "a MongoDB store is configured but this build has no MongoDB support; build with --features provider,mongodb".into(),
-    ))
+    let db_path = args.mailbox_db.to_str().ok_or(Error::InvalidPath)?;
+    Ok(Arc::new(SqliteRelayStore::open(db_path)?))
 }
 
 /// Every mint authorization, granted or refused, lands in

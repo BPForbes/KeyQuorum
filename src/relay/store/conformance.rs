@@ -1,10 +1,9 @@
 //! What every [`RelayStore`] backend must do, as one suite run against each.
 //!
-//! The SQLite store runs it in `store/tests.rs` on every `cargo test`; the
-//! MongoDB store runs the same cases in `mongo/tests.rs` whenever
-//! `KEYQUORUM_TEST_MONGODB_URI` names a replica set to test against. A case
-//! gets a fresh, empty store and may only reach it through the trait, so
-//! what it checks is the relay's behaviour, not a backend's rows.
+//! The SQLite store runs it in `store/tests.rs` on every `cargo test`; any
+//! further backend runs the same cases. A case gets a fresh, empty store and
+//! may only reach it through the trait, so what it checks is the relay's
+//! behaviour, not a backend's rows.
 
 use super::{ProviderAuthEvent, RelayStore};
 use crate::api_key_delivery;

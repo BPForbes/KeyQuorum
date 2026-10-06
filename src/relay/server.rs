@@ -69,8 +69,7 @@ impl AppState {
         )
     }
 
-    /// A relay on any [`RelayStore`] (the MongoDB-backed cloud relay shares
-    /// one store between every replica).
+    /// A relay on any [`RelayStore`].
     pub fn with_store(store: Arc<dyn RelayStore>, identity: Option<ProviderIdentity>) -> Self {
         Self {
             store,
@@ -192,8 +191,8 @@ impl IntoResponse for ApiError {
 }
 
 /// Run `f` against the store on the blocking pool: every backend is
-/// synchronous (SQLite holds a lock, the MongoDB driver's sync API blocks),
-/// so no request handler stalls the async runtime on it.
+/// synchronous (SQLite holds a lock), so no request handler stalls the async
+/// runtime on it.
 async fn with_store<T, F>(state: &AppState, f: F) -> Result<T, ApiError>
 where
     T: Send + 'static,
@@ -238,7 +237,7 @@ struct HealthResponse {
 #[derive(Serialize, ToSchema)]
 struct ReadyResponse {
     status: &'static str,
-    /// The persistence backend the relay reached (`sqlite` or `mongodb`).
+    /// The persistence backend the relay reached (`sqlite`).
     store: &'static str,
 }
 

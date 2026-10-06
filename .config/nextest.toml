@@ -1,6 +1,0 @@
-# cargo-nextest settings. The default profile is untouched; the `mongodb`
-# profile is what .github/workflows/mongodb.yml runs. Those tests wait on a
-# real database, so a test that stops making progress is stopped after two
-# minutes and named in the log instead of holding the job until its timeout.
-[profile.mongodb]
-slow-timeout = { period = "30s", terminate-after = 4 }

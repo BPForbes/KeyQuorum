@@ -6,9 +6,8 @@
 //! reached through [`RelayStore`]. The route handlers (`service.rs`), the
 //! HTTP server, the host `keys` commands and the browser lab all speak to
 //! this trait, never to a database handle, so the same relay can run on the
-//! owner-only SQLite file it always had ([`SqliteRelayStore`]) or, with the
-//! `mongodb` feature, on a shared MongoDB deployment (`relay::mongo`) where
-//! several relay processes serve one mailbox.
+//! owner-only SQLite file it always had ([`SqliteRelayStore`]) or on another
+//! backend that keeps each unit of work atomic.
 //!
 //! The boundary is drawn at the relay's units of work, not at rows: a
 //! method is one thing the relay does atomically (push a letter together
@@ -76,7 +75,7 @@ pub struct ProviderAuthEvent<'a> {
 /// Every method is one atomic unit of work. Methods take `&self` and the
 /// trait is `Send + Sync`, so one store is shared by every request handler
 /// and the scan loop; a backend serializes inside (the SQLite store holds
-/// one connection behind a mutex, MongoDB runs transactions on the server).
+/// one connection behind a mutex).
 pub trait RelayStore: Send + Sync {
     /// The backend, for the operator's log line at startup.
     fn backend(&self) -> &'static str;
