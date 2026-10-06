@@ -181,6 +181,18 @@ These are stated so an auditor need not discover them:
 
 ## Audit log
 
+### 2026-10-06 (seventh pass): Workers Builds connection and Worker Previews (#88)
+
+The owner asked for the relay Worker to be set up on Cloudflare the way the portfolio site is: connected to Cloudflare Workers Builds, with a "Workers Builds: <worker>" check and a Preview on every pull request. The connection is made in the Cloudflare dashboard or through the Builds API with the operator's own user-scoped token, never from GitHub Actions or an agent session; the repository now holds what the connection needs, and `relay-hosting.md`, "Workers Builds and previews", is the procedure with every setting and its source.
+
+| Severity | Criterion | Finding | Fix |
+| --- | --- | --- | --- |
+| high | CC6.1, CC6.6 | The fourth pass left open that a preview of the public Worker would share the production Durable Object namespace and secrets once the relay exists. That holds for version preview URLs (`wrangler versions upload`), not for Worker Previews, which Workers Builds runs for a branch by default and which Cloudflare documents as inheriting no production setting and getting their own Durable Object namespace (read 2026-10-06). | `workers/wrangler.toml` carries the empty `previews = { }` block `wrangler preview` requires, `npm run preview` is that command, and no secret is set for Previews. `relay-hosting.md` requires the Preview command to be `npm run preview` and never `versions upload`, and records what remains: a Preview hostname is outside the zone rules and Access, is public, and can be put behind Access with one account-wide setting. Closed for isolation. Not checkable from the repository: the dashboard's commands; the procedure has the operator confirm them on the first pull request after connecting. |
+| minor | CC8.1 | A second deployer of `main` beside `workers.yml`. | The deploy command on `main` is `npm run check` (the configuration guard, the four dry-run builds and the bundle guard), so a Builds run on `main` is a check only and `workers.yml` stays the one deployer; `.node-version` keeps Builds on the Node version CI runs. |
+| minor | C1.1 | A `previews` block can carry `vars`, which the configuration guard did not read. | `scripts/guard.mjs` checks `previews.vars` and `env.<name>.previews.vars` like `[vars]`; `guard.test.mjs` covers both tables and the inline form. |
+
+Evidence that exists: `workers/scripts/guard.test.mjs` (`npm test`); `workers.yml` (`workers build` runs the pieces of `npm run check`). Not covered: the connection on the real account and a Preview on it (owner, dashboard or API).
+
 ### 2026-10-06 (sixth pass): the relay core as WebAssembly for a Durable Object, stage 4c part 1 (#88)
 
 `src/relay/worker.rs` (feature `workers`) builds the relay core for wasm32: `RelayCore` is `SqlRelayStore` over `DoSql`, the Durable Object's SQL API reached through `workers/src/sql-adapter.js`, running `relay::service::dispatch`. Nothing is deployed and no Worker serves it yet (the public Worker and the Durable Object class are the next step).

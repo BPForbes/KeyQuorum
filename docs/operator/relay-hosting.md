@@ -45,6 +45,10 @@ them), so each source below is marked by how it was read:
 - **search summary:** the page was found and summarised by a web search on
   2026-10-06; the wording in this document is a paraphrase of that summary,
   not a quotation. Re-read the page before relying on a number.
+- **docs search (2026-10-06):** the page's text was returned by Cloudflare's
+  own documentation search (the `search_cloudflare_documentation` tool of the
+  Cloudflare Developer Platform MCP server) on 2026-10-06; a sentence in
+  quotation marks is verbatim from that text, the rest paraphrases it.
 - **not retrieved:** named for the reader; nothing in this document rests on
   it alone.
 - **not retrieved (from memory, verify):** a statement about Cloudflare's
@@ -75,6 +79,17 @@ them), so each source below is marked by how it was read:
 | Cloudflare, scoped API tokens, Notifications (Worker and Durable Object error alerts), Workers Logs. | https://developers.cloudflare.com/fundamentals/api/get-started/create-token/ | not retrieved (from memory, verify) |
 | Cloudflare, R2 bucket lock (retention rules) | https://developers.cloudflare.com/r2/buckets/bucket-locks/ | not retrieved (from memory, verify) |
 | Cloudflare Terraform provider (`cloudflare/cloudflare`): resources for Workers custom domains, DNS, Access applications and policies, rulesets, R2 buckets, notification policies. | https://registry.terraform.io/providers/cloudflare/cloudflare/latest/docs | not retrieved (from memory, verify) |
+| Cloudflare, Workers Builds configuration: a push runs the build command, then the deploy command (default `npx wrangler deploy`) on the production branch or the Preview command (default `npx wrangler preview`) on another branch; root directory for a monorepo; build variables; "Workers Builds will use the Wrangler version set in your package.json"; the token Builds creates holds Account Settings read, Workers Scripts edit, Workers KV Storage edit, Workers R2 Storage edit, Workers Routes edit, User Details read, Memberships read; "For new Workers Builds projects, preview builds use `wrangler preview` by default". | https://developers.cloudflare.com/workers/ci-cd/builds/configuration/ | docs search (2026-10-06) |
+| Cloudflare, Builds, connecting an existing Worker: "When connecting a repository to a Workers project, the Worker name in the Cloudflare dashboard must match the `name` in the Wrangler configuration file in the specified root directory, or the build will fail." | https://developers.cloudflare.com/workers/ci-cd/builds/ | docs search (2026-10-06) |
+| Cloudflare, Build branches: "Preview builds are builds for branches that are not your production branch. New Workers use Worker Previews for preview builds by default. Their Preview command is `npx wrangler preview`."; "Enable Preview Builds" under Settings, Build, Branch control. | https://developers.cloudflare.com/workers/ci-cd/builds/build-branches/ | docs search (2026-10-06) |
+| Cloudflare, Build image: Node.js 24.18.0 by default, overridden by `NODE_VERSION` or a `.nvmrc` or `.node-version` file in the root directory; Ubuntu 24.04 with `build-essential`; Go, Python and Ruby are listed, Rust is not. | https://developers.cloudflare.com/workers/ci-cd/builds/build-image/ | docs search (2026-10-06) |
+| Cloudflare, GitHub integration: one check run per connected Worker, "only projects that trigger a build will generate a check run" when watch paths are set; Cloudflare recommends limiting the Workers & Pages GitHub App to the repositories it builds. | https://developers.cloudflare.com/workers/ci-cd/builds/git-integration/github-integration/ | docs search (2026-10-06) |
+| Cloudflare, Builds advanced setups: a monorepo connects the repository to each Worker with its own root directory and watch paths; a Wrangler environment's Worker is connected separately with `--env <name>` in its deploy and Preview commands. | https://developers.cloudflare.com/workers/ci-cd/builds/advanced-setups/ | docs search (2026-10-06) |
+| Cloudflare, Builds API reference: a user-scoped token with Workers Builds Configuration edit and Workers Scripts read; after the GitHub App is installed in the dashboard, `PUT /builds/repos/connections`, then `POST /builds/triggers` with `trigger_name`, `build_token_uuid`, `build_command`, `deploy_command`, `root_directory`, `path_includes`, `path_excludes`, `build_caching_enabled`, `environment_variables`; at most two triggers per Worker, production and preview. | https://developers.cloudflare.com/workers/ci-cd/builds/api-reference/ | docs search (2026-10-06) |
+| Cloudflare, Worker Previews: "Previews do not inherit production settings."; "Cloudflare automatically provisions a new Durable Object namespace and container instances for each Preview."; a Preview URL on workers.dev is `<preview-name>-<worker-name>.<subdomain>.workers.dev`; "Preview URLs are public by default. Use Cloudflare Access to require sign-in." | https://developers.cloudflare.com/workers/previews/ | docs search (2026-10-06) |
+| Cloudflare, Worker Previews configuration: "The `previews` block is required, but it can be empty if your Preview does not need separate settings."; secrets reach a Preview only through `wrangler preview base-config secret put` (every new Preview) or `wrangler preview secret put --name <preview>` (one); an environment's Previews are configured under `env.<name>.previews` and run with `--env <name>`. | https://developers.cloudflare.com/workers/previews/configuration/ | docs search (2026-10-06) |
+| Cloudflare, Worker Previews custom domains: "Preview URLs can use a custom domain, `workers.dev`, or both. Enable at least one host to get a Preview URL."; `preview_urls = true` in the configuration turns on the workers.dev Preview host, separately from production's `workers_dev`; Cloudflare adds `X-Robots-Tag: noindex` to workers.dev Preview URLs. | https://developers.cloudflare.com/workers/previews/custom-domains/ | docs search (2026-10-06) |
+| Cloudflare changelog, one-click Access for Workers: every Preview URL of an account shares one "Cloudflare Workers Preview URLs" Access policy, enabled from the Worker's Settings, Domains & Routes. | https://developers.cloudflare.com/changelog/ (Workers, Access for workers.dev and Preview URLs) | docs search (2026-10-06) |
 | MongoDB, Atlas Data API and custom HTTPS endpoints: end of life and deprecation (end of life 30 Sep 2025). | https://mongodb.com/community/forums/t/mongodb-atlas-data-api-and-custom-https-endpoints-end-of-life-and-deprecation/296686 | search summary (2026-10-06) |
 | AICPA, 2017 Trust Services Criteria (2022 points of focus), A1.3: "The entity tests recovery plan procedures supporting system recovery to meet its objectives." | https://www.aicpa-cima.com/resources/download/2017-trust-services-criteria-with-revised-points-of-focus-2022 | verbatim (issue #88) |
 
@@ -167,31 +182,120 @@ Two decisions of the owner, recorded as decisions:
 
 ### Workers Builds and previews (owner decisions, 2026-10-06)
 
-The portfolio site gets a "Workers Builds: <name>" check on its pull requests
-from Cloudflare's Git integration. The owner wants the same here, **in
-addition to** the `workers` check of `workers.yml`, which stays the stable
-required check and keeps the staging and production deploy jobs.
+The portfolio site is connected to Cloudflare Workers Builds, Cloudflare's Git
+integration: its Worker `bailey-forbes-portfolio-site-github-io` builds from
+the repository on every push, and each pull request carries a check named
+"Workers Builds: bailey-forbes-portfolio-site-github-io" (read from the check
+runs of that repository's pull request #20 on 2026-10-06). The owner wants the
+same here for the relay Worker, **in addition to** the `workers` check of
+`workers.yml`, which stays the stable required check and keeps the staging and
+production deploy jobs. The connection itself is made outside the repository:
+the Cloudflare Workers & Pages GitHub App is installed and the repository is
+connected in the dashboard, or through the Builds API with a user-scoped token
+the operator holds (neither GitHub Actions nor an agent session holds one).
+The repository holds everything the connection needs; this section is the
+procedure and the settings, so the connection is made once and the same way.
 
-- **Connected by the owner in the dashboard** (each Worker, Settings, Builds):
-  the repository cannot switch it on. One check appears per connected Worker.
-  Build command `cd workers && npm ci && npm run build` (the same dry-run
-  builds and guards as CI); the non-production deploy command only builds or
-  dry-runs. `main` is deployed by `workers.yml`; leave Workers Builds'
-  production deploy off, or the two would both deploy it. Add the new checks
-  to the required ones only after they have run once.
-- **Preview URLs are on for the public Worker only.** `workers/wrangler.toml`
-  sets `preview_urls = true`; `workers_dev` stays false. The admin Worker and
-  the spike keep both off, and the guard refuses `preview_urls = true`
-  anywhere but a file checked with `--allow-preview-urls`, which only
-  `npm run guard` passes, for `wrangler.toml`. Reason: a preview hostname is
-  outside the admin Worker's Access application, and outside the zone's
-  rate-limit and cache rules for the relay's hostname.
-- **Before the relay is real**, a preview of the public Worker would share the
-  production Durable Object namespace and secrets (a preview is another
-  version of the same Worker). Today the Worker is the health-only stub, which
-  holds neither. Before it serves the relay the Worker must answer 404 on any
-  host but the custom domain (tested in `workers/src`), or previews must bind
-  a throwaway namespace. Until then this is a recorded open item.
+**What the repository holds for it** (`workers/`):
+
+- `wrangler.toml` names the Worker `keyquorum-relay` (the dashboard name and
+  the `name` under the root directory must match, or the build fails), keeps
+  `workers_dev = false`, sets `preview_urls = true` (the workers.dev host for
+  Previews, separate from production's) and carries an empty `previews = { }`
+  block, which `wrangler preview` requires ("The `previews` block is
+  required, but it can be empty if your Preview does not need separate
+  settings", Cloudflare, Worker Previews configuration, read 2026-10-06). The
+  staging environment has no `previews` block: it is not connected.
+- `.node-version` pins Node 22, the version `workers.yml` runs; Builds reads
+  it from the root directory (its default is Node 24).
+- `npm run check` runs the configuration guard, the four dry-run builds and
+  the bundle guard: the `workers build` job without the relay-core tests,
+  which need the WebAssembly build (Rust and `wasm-bindgen`, which the build
+  image does not have). `npm run preview` is `wrangler preview --env=""`.
+- `scripts/guard.mjs` refuses a secret-like name in a `previews` block as it
+  does in `[vars]` (`guard.test.mjs`), and still refuses `preview_urls = true`
+  anywhere but the one file checked with `--allow-preview-urls`.
+
+**Settings** (Worker `keyquorum-relay`, Settings, Builds; the same fields as
+`POST /builds/triggers`):
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| Repository | `BPForbes/KeyQuorum`; the GitHub App's repository access limited to the repositories it builds | Cloudflare's own recommendation (GitHub integration, "Organizational access"). |
+| Production branch | `main` | |
+| Root directory | `workers` | Where `wrangler.toml`, `package.json` and `.node-version` are; Builds runs `npm ci` there itself. |
+| Build command | `npm run check` | The guards and dry runs CI runs. |
+| Deploy command (`main`) | `npm run check` | **Not** `wrangler deploy`: `workers.yml` deploys `main` (staging on push, production on a reviewed manual run), and two deployers of one Worker would race. A Builds run on `main` is a check only. |
+| Preview command (other branches) | `npm run preview` | Worker Previews, Cloudflare's default for a Worker connected now. Never `wrangler versions upload`: a version shares the production bindings and secrets, a Preview does not. |
+| Preview builds | on (Settings, Build, Branch control) | The check and the Preview URL on every pull request. |
+| Build watch paths | include `workers/**`; add `src/**`, `build.rs`, `Cargo.toml` and `Cargo.lock` when the Worker bundles the relay core | A build, and so a check run, only when the Worker can change. |
+| Build variables | `CI=true`, `WRANGLER_SEND_METRICS=false` | As `workers.yml`. No secret: the build needs none, and none is set. |
+| Build token | the one Builds creates (Workers Scripts edit among its permissions), or an existing Workers-deploy token | It deploys nothing while the deploy command is `npm run check`; Previews are uploaded with it. |
+| Build caching | on | |
+
+**Order:**
+
+1. The Worker must exist before it is connected. Deploy it once: by the
+   `workers` workflow's staging and production jobs once the GitHub
+   environments hold their secrets (`relay-deployment.md`), or, before that,
+   by the operator from `workers/` with `npx wrangler deploy --env=""` under
+   their own token. Do not create it through "Import a repository": that path
+   deploys with the default deploy command.
+2. Install the Cloudflare Workers & Pages GitHub App for `BPForbes`, limited to
+   `KeyQuorum` (and the portfolio, which the same installation serves): the
+   dashboard, any Worker, Settings, Builds, Connect, GitHub.
+3. Connect `keyquorum-relay` with the settings above: in the dashboard, or
+   with the Builds API (`PUT /builds/repos/connections`, then
+   `POST /builds/triggers` twice, production and preview, under a user-scoped
+   token with Workers Builds Configuration edit and Workers Scripts read; the
+   API reference is in the sources table).
+4. Push a branch and open a pull request. The check "Workers Builds:
+   keyquorum-relay" appears, and the pull request comment carries the Preview
+   URL (`<branch>-keyquorum-relay.<subdomain>.workers.dev`). Confirm on it what
+   `smoke.mjs` confirms on a deploy: `/health` answers, the operator and mint
+   routes answer 404 or 405, and (once a Durable Object exists) the Preview
+   holds no data. Confirm in the Worker's Settings, Builds that the deploy
+   command on `main` is `npm run check` and the Preview command is `npm run
+   preview`: the repository cannot check either.
+5. Only after that run, add "Workers Builds: keyquorum-relay" to the required
+   checks beside `workers`, `test` and `codeql gate`.
+6. The staging Worker and the admin Worker are not connected. Staging is
+   deployed by `workers.yml` from `main` and needs no Preview; the admin
+   Worker keeps previews off (its hostname sits behind Access, a Preview
+   hostname would not), so a connection to it would only build, which
+   `workers build` already does.
+
+**Previews** (owner decision: preview URLs on for the public Worker only):
+
+- `preview_urls = true` with `workers_dev = false`: "Preview URLs can use a
+  custom domain, `workers.dev`, or both. Enable at least one host to get a
+  Preview URL." (Cloudflare, Worker Previews custom domains, read 2026-10-06).
+  Production stays off workers.dev. The admin Worker and the spike keep both
+  off, and the guard refuses `preview_urls = true` anywhere but a file checked
+  with `--allow-preview-urls`, which only `npm run guard` passes, for
+  `wrangler.toml`.
+- A Preview is isolated by the platform: "Previews do not inherit production
+  settings." and "Cloudflare automatically provisions a new Durable Object
+  namespace and container instances for each Preview." (Cloudflare, Worker
+  Previews, read 2026-10-06). A Preview's secrets come only from the Previews
+  base configuration (`wrangler preview base-config secret put`) or from one
+  Preview (`wrangler preview secret put`); none is set, and the relay key,
+  `provider.kqcert` and `provider.kqrl` are never to be set there. So a
+  Preview of the relay Worker holds no relay key, no certificate and no
+  letter, now and once the relay is real; a Preview of the relay would answer
+  the provider challenge with no certificate, so an official client
+  disconnects from it. This closes the item the earlier text recorded (a
+  preview sharing the production Durable Object namespace and secrets): that
+  is true of version preview URLs (`wrangler versions upload`) and is why that
+  command is never the Preview command.
+- What remains, recorded: a Preview hostname is outside the zone's rate-limit
+  and cache rules for the relay's hostname and outside the admin Worker's
+  Access application; it is public (Cloudflare adds `X-Robots-Tag: noindex`
+  to workers.dev Preview URLs). The operator can put Cloudflare Access in
+  front of every Preview URL of the account with one setting (the Worker,
+  Settings, Domains & Routes, Preview URLs, Enable Cloudflare Access; all
+  Preview URLs share one "Cloudflare Workers Preview URLs" policy). The
+  smoke test's expectations hold for a Preview of the stub: `/health` and 404.
 - "Pages" is not used: static assets on the admin Worker already serve the
   operator page, and a Pages project would be a second product and hostname.
 
@@ -261,16 +365,20 @@ this section.
 - **Workers:** `workers/` holds `wrangler.toml` (the top level is the
   production Worker `keyquorum-relay`; `[env.staging]` is
   `keyquorum-relay-staging`; `workers_dev = false` at both levels and
-  `preview_urls = true` at both (public Worker only, see Workers Builds below);
+  `preview_urls = true` at both and an empty `previews = { }` at the top level
+  (public Worker only, see Workers Builds above);
   no routes, because the hostnames are the Terraform's
   custom domains; no `[vars]`), `src/index.js`, `package.json` and
-  `package-lock.json` with wrangler pinned to an exact version; the admin
+  `package-lock.json` with wrangler pinned to an exact version,
+  `.node-version` (22, what Workers Builds runs) and the `check` and
+  `preview` scripts Workers Builds runs (above); the admin
   Worker is in `workers/admin/` (below). `src/index.js`
   is a JavaScript stub: `GET` and `HEAD /health` answer `{"status":"ok"}`
   with `Cache-Control: no-store`, any other method on `/health` answers 405,
   and every other path answers 404. Two scripts, each with `node:test` tests
   (`npm test`), back the pipeline. `scripts/guard.mjs` is the configuration
-  guard (it fails on key-material patterns, on a secret-like `[vars]` name,
+  guard (it fails on key-material patterns, on a secret-like `[vars]` or
+  `[previews.vars]` name,
   on a `deleted_classes` or `renamed_classes` migration unless
   `ALLOW_DESTRUCTIVE_MIGRATION=1` is set, on a missing `workers_dev = false`
   at the top level or in any environment, and on `preview_urls` other than

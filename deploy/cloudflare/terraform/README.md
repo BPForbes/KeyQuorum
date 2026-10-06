@@ -69,6 +69,10 @@ a variable file in this directory, or an agent session.
    --env staging`). A custom domain names an existing Worker, so `apply` fails
    before this. Until the Access variables below are set the admin Worker is
    deployed unconfigured and serves nothing (503), which is the safe state.
+   Once the public Worker exists it can be connected to Cloudflare Workers
+   Builds for the pull-request check and Previews, the way the portfolio site
+   is (`docs/operator/relay-hosting.md`, "Workers Builds and previews"); that
+   connection deploys nothing on `main` and needs nothing from this directory.
 3. Set `operator_emails` and `admin_environments` in `terraform.tfvars`, then
    `terraform init`, `terraform plan`, review, `terraform apply`.
 4. Set the GitHub environment variable `RELAY_URL` for each environment to the

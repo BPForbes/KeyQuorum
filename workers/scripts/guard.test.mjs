@@ -40,6 +40,23 @@ test("a secret-like name in an environment's vars or an inline table is refused"
   assert.match(problems[0], /API_TOKEN/);
 });
 
+test("a secret-like name in a previews block is refused, at the top level and in an environment", () => {
+  for (const table of ["previews.vars", "env.staging.previews.vars"]) {
+    const problems = checkConfig("wrangler.toml", `${CLEAN}\n[${table}]\nRELAY_KEY = "x"\nREGION = "eu"\n`);
+    assert.equal(problems.length, 1);
+    assert.match(problems[0], /RELAY_KEY/);
+  }
+  const inline = `${CLEAN}\npreviews = { vars = { PROVIDER_CERT = "x" } }\n`;
+  const problems = checkConfig("wrangler.toml", inline);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /PROVIDER_CERT/);
+});
+
+test("an empty previews block and harmless previews vars are allowed", () => {
+  assert.deepEqual(checkConfig("wrangler.toml", `${CLEAN}\npreviews = { }\n`), []);
+  assert.deepEqual(checkConfig("wrangler.toml", `${CLEAN}\n[previews.vars]\nREGION = "eu"\n`), []);
+});
+
 test("a harmless [vars] name is allowed", () => {
   assert.deepEqual(checkConfig("wrangler.toml", `${CLEAN}\n[vars]\nREGION = "eu"\n`), []);
 });

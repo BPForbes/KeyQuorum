@@ -5,8 +5,8 @@
 //   node scripts/guard.mjs --bundle dist --max-gzip-bytes 3145728
 //
 // The configuration check fails on: key material anywhere in the file, a
-// secret-like [vars] name (the relay key, certificate and revocation list are
-// Worker secrets, never vars), a Durable Object migration that deletes or
+// secret-like [vars] or [previews.vars] name (the relay key, certificate and
+// revocation list are Worker secrets, never vars), a Durable Object migration that deletes or
 // renames a class (which destroys its data), and a Worker or environment that
 // does not switch workers.dev off, or that leaves preview URLs on (one
 // hostname carries the relay's identity). Only the public Worker's file may be
@@ -58,8 +58,10 @@ function tableName(line) {
   return match ? match[1] : null;
 }
 
+// [vars], an environment's, and the vars of a previews block at either level
+// (a Worker Preview reads them the way production reads [vars]).
 function isVarsTable(name) {
-  return name === "vars" || /^env\.[^.]+\.vars$/.test(name);
+  return /^(env\.[^.]+\.)?(previews\.)?vars$/.test(name);
 }
 
 export function checkConfig(

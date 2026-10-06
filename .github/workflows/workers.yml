@@ -27,6 +27,12 @@
 #     team's domain and the admin application's audience tag), which the admin
 #     Worker needs before it will serve anything.
 #   - `workers` added to the required checks.
+#   - Optionally, the public Worker connected to Cloudflare Workers Builds, as
+#     the portfolio site is, for a "Workers Builds: keyquorum-relay" check and
+#     a Worker Preview on every pull request (docs/operator/relay-hosting.md,
+#     "Workers Builds and previews"): root directory `workers`, build and
+#     `main` deploy command `npm run check` (so this workflow stays the only
+#     deployer), Preview command `npm run preview`.
 # Until the secrets exist a deploy job warns and passes, so a merge to main is
 # never blocked by setup that has not happened yet.
 
