@@ -53,7 +53,7 @@ path = "src/bin/keyquorum-device.rs"
 
 [dependencies]
 rusqlite = { version = "0.40", features = ["bundled"] }
-argon2 = "0.5"
+argon2 = "0.6"
 aes-gcm = "0.10"
 rand = "0.10"
 # ed25519-dalek, crypto_box and the Shamir dealer take a rand_core 0.6 RNG.
