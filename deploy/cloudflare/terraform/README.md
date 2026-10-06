@@ -146,7 +146,7 @@ a variable file in this directory, or an agent session.
   `/relay` and its descendants on every hostname in this dedicated zone (except
   paths ending in `/health`). The cache-bypass rule still matches only the
   configured relay hostnames. Longer counting or blocking windows require a
-  paid zone plan; do not upgrade without the owner\'s approval. These limits
+  paid zone plan; do not upgrade without the owner's approval. These limits
   constrain short bursts; they are not an exact 600-request rolling minute.
   Source: [Cloudflare rate limiting availability](https://developers.cloudflare.com/waf/rate-limiting-rules/#availability), read 2026-10-06.
 - **Operator login and MFA.** Terraform creates the Access application and an

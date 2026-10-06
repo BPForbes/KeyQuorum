@@ -58,7 +58,7 @@ variable "operator_emails" {
 }
 
 variable "rate_limit_requests" {
-  description = "Requests allowed per client per period on the customer routes before the edge blocks."
+  description = "Requests allowed per client IP and data centre per period on the paths under /relay before the edge blocks (Free zone plan: 10-second period and block)."
   type        = number
   default     = 100
 }
