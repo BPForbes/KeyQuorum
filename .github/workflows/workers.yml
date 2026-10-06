@@ -112,7 +112,9 @@ jobs:
   deploy-staging:
     name: workers deploy staging
     needs: [build, terraform]
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    # A push to main only: a manual run (with or without `production`) never
+    # touches staging.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
