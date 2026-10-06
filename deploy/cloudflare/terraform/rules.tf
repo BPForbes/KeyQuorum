@@ -22,7 +22,7 @@ resource "cloudflare_ruleset" "relay_rate_limit" {
     enabled     = true
     # Free plans allow Path, but not Host, in a rate-limit expression.
     # This applies to /relay on every hostname in this dedicated zone.
-    expression  = "((http.request.uri.path eq \"/relay\" or starts_with(http.request.uri.path, \"/relay/\")) and not ends_with(http.request.uri.path, \"/health\"))"
+    expression = "((http.request.uri.path eq \"/relay\" or starts_with(http.request.uri.path, \"/relay/\")) and not ends_with(http.request.uri.path, \"/health\"))"
     ratelimit = {
       characteristics     = ["cf.colo.id", "ip.src"]
       period              = var.rate_limit_period
