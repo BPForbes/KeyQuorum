@@ -103,8 +103,10 @@ them in the operator's own controls.
   admin hostname; the Worker also verifies the Access token itself), then set
   the GitHub environment variables `ACCESS_TEAM_DOMAIN` (from the Zero Trust
   dashboard), `ACCESS_AUD` (the `admin_access_aud` output) and `ADMIN_URL`
-  (for the smoke test). They are not secrets. The relay uses its own
-  dedicated Cloudflare domain, not the portfolio's. Cloudflare Notifications
+  (for the smoke test). They are not secrets. The relay uses
+  subdomains of the portfolio's zone (`bailey-forbes.com`), so applying the
+  Terraform rulesets would replace any existing rules in that zone's two
+  entry-point phases unless they are imported first. Cloudflare Notifications
   and the R2 retention lock are set in the dashboard
   (`docs/operator/relay-hosting.md`).
 - **Subprocessor** (CC9.1; nothing is deployed yet): Cloudflare terminates

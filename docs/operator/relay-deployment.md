@@ -23,7 +23,7 @@ application with MFA (Terraform, `admin_environments`); no route bypasses
 Access, and the Worker verifies Access's token itself. It reaches the relay
 through a private Durable Object binding, and it has never been deployed or
 configured on a real account. The
-relay uses its own dedicated Cloudflare domain, not the portfolio's. CI's
+relay uses subdomains of the portfolio's domain, `bailey-forbes.com` (see `relay-hosting.md`, "Domain and operator page"). CI's
 `terraform validate` accepts the Terraform, but the authors never planned or
 applied it against a real account, and the owner's GitHub and Cloudflare setup
 (environments, secrets, `RELAY_URL`, the `workers` required check, account,

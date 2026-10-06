@@ -28,7 +28,7 @@ Status at the time of writing (2026-10-06):
 | Native `keyquorum host serve` | **Kept as the dev, test and reference host.** `SqliteRelayStore`, `src/relay/server.rs` and `host keys` stay in the code. It is not a production deployment path. |
 | Deployment pipeline and Cloudflare Terraform | **Stage 2, in this repository; not yet exercised against a Cloudflare account.** `workers/` (the public Worker and its Durable Object), `.github/workflows/workers.yml` and `deploy/cloudflare/terraform/` exist and are described in [Provisioning and the deployment pipeline](#provisioning-and-the-deployment-pipeline-stage-2). Honest limits: nothing has been deployed; the Terraform passes CI's `terraform validate` against the pinned provider (`.terraform.lock.hcl`, `cloudflare/cloudflare` 5.27.0) but the repository's authors have never planned or applied it against a real account; Cloudflare Notifications and the R2 retention lock are dashboard steps, not Terraform; and the owner's GitHub and Cloudflare setup is still to be done. |
 | Admin Worker and operator console (stage 4a, issue #99) | **In this repository; never deployed, and Access has never been configured on an account.** `workers/admin/` holds the Worker `keyquorum-relay-admin` (`[env.staging]` is `keyquorum-relay-admin-staging`): it verifies Cloudflare Access's signed token itself and serves the provider's console, a static page and a documented `/api` that reaches the relay only through the private binding `RELAY_ADMIN`. Customers, licences (immutable statement versions), keys with lineage, per-key activity, status, audit and checkpoint, and the two-step operator lock are built; see [The operator console](#the-operator-console-issue-99). Its Terraform (`admin_environments`: a custom domain and an Access application with an MFA policy per environment) and workflow steps exist; CI's `terraform` job checks the whole directory on every push. **Not done:** every check on a real account (Access and MFA, the binding on Cloudflare, staging, restore, overload, cost); see the console section's list. |
-| Relay domain and operator page | **Decided 2026-10-06 (owner).** The relay uses its own domain on Cloudflare, not `bailey-forbes.com`; the operator page is static files served from the admin Worker behind Access. See [Domain and operator page](#domain-and-operator-page-owner-decisions-2026-10-06). |
+| Relay domain and operator page | **Decided 2026-10-06 (owner).** The relay's hostnames are subdomains of `bailey-forbes.com` (owner decision, revised 2026-10-06; it first chose a separate domain); the operator page is static files served from the admin Worker behind Access. See [Domain and operator page](#domain-and-operator-page-owner-decisions-2026-10-06). |
 | Live deployment, restore test, overload test | **Not done.** Nothing has been deployed. They need the operator's Cloudflare account and run against a real deployment. The [acceptance checklist](#acceptance-checklist) says which rows this document settles and which the deployment must. |
 
 Nothing here is deployment approval, and no SOC 2 mapping below claims
@@ -171,12 +171,25 @@ actually takes.
 
 Two decisions of the owner, recorded as decisions:
 
-1. **The relay has its own domain.** The relay uses a separate new domain on
-   Cloudflare, dedicated to the relay (for example bought through Cloudflare
-   Registrar). It does not live under `bailey-forbes.com`, so the portfolio's
-   DNS and hosting are untouched. The relay and admin hostnames come from
-   that domain's zone; the repository names neither, because the zone id and
-   the hostnames are Terraform inputs (`deploy/cloudflare/terraform/`).
+1. **The relay lives on subdomains of `bailey-forbes.com`.** The owner first
+   chose a separate domain, then revised that the same day: the relay and the
+   console use subdomains of `bailey-forbes.com` (for example `relay.` and
+   `relay-admin.`), because the owner has no other domain. The zone is the
+   portfolio's, so these hold and must be checked before `terraform apply`:
+   the two rulesets in `rules.tf` are the zone's rate-limit and cache-settings
+   entry points, and applying them **replaces any rules already in those
+   phases** for the portfolio's zone (look in the dashboard under Security,
+   WAF, Rate limiting rules and Caching, Cache Rules, and import any that
+   exist first; they match only the relay hostnames, but the replacement is
+   zone-wide). The portfolio's DNS records are not edited, only the relay's
+   custom-domain records are added. The sites stay independent in code: the
+   relay Workers refuse a browser request marked `same-site` as well as
+   `cross-site` (`workers/src/browser-isolation.js`), the relay sets no CORS
+   header and no cookie, and the Lab and portfolio name no relay host. A
+   cookie the portfolio sets for `.bailey-forbes.com` would be sent to the
+   relay's hostnames; the relay ignores cookies, and the Access cookie is for
+   the console's own host. The relay and admin hostnames are Terraform inputs
+   (`deploy/cloudflare/terraform/`) and are not named in the repository.
 2. **The operator page is hosted the way the portfolio is hosted.** It is
    static files served from the admin Worker on its own hostname, a Workers
    custom domain, simply styled. The hostname is behind Cloudflare Access
@@ -615,8 +628,9 @@ console and is still true of the front door.
   `cloudflare-production` with their `CLOUDFLARE_API_TOKEN` and
   `CLOUDFLARE_ACCOUNT_ID` secrets and the `RELAY_URL` variable (and the
   production required reviewer), add `workers` to the required checks, and
-  have a Cloudflare account, a zone for the domain dedicated to the relay
-  (which still has to be chosen and registered) and a custom domain. The
+  have a Cloudflare account, the `bailey-forbes.com` zone on it and the relay
+  and admin subdomains chosen (check the zone's existing rate-limit and cache
+  rules first: the Terraform replaces them, see the domain decision). The
   Worker must be
   deployed before `terraform apply`, because a custom domain names an
   existing Worker. For the admin Worker the order is: deploy it (it serves
@@ -1015,7 +1029,7 @@ The relay has its own front ends and shares nothing with the Lab
   person or script outside a browser can set any header, and who may use the
   relay is decided by the bearer (public Worker) or the Access token (admin
   Worker). Separate DNS names, Access and the zone's own rules are the operator's
-  to keep (the custom domain is not a subdomain of the portfolio's).
+  to keep (the relay's hostnames are subdomains of the portfolio's zone, so its existing rules matter; see the domain decision).
 
 ### What the spike measured (stage 3)
 

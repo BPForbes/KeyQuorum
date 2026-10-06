@@ -15,10 +15,13 @@ Access that only shows who is signed in). CI runs `terraform fmt -check` and
 `.github/workflows/workers.yml`); nothing here has been applied to a real
 account by the repository's authors.
 
-The relay uses a separate Cloudflare domain dedicated to it (owner decision,
-2026-10-06), not bailey-forbes.com: `zone_id` and every hostname below belong to
-that zone, and the portfolio's DNS and hosting are not touched by anything in
-this directory.
+The relay uses subdomains of `bailey-forbes.com` (owner decision, revised
+2026-10-06): `zone_id` is the portfolio's zone and every hostname below is a
+subdomain of it. Nothing here edits the portfolio's DNS records, but
+`rules.tf` manages the zone's rate-limit and cache-settings entry-point
+rulesets and **replaces any rules already in those two phases**. Look in the
+dashboard first (Security, WAF, Rate limiting rules; Caching, Cache Rules) and
+import what exists before `terraform apply`.
 
 ## Who runs it, and with what
 
