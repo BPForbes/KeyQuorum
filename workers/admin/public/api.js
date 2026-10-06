@@ -1,5 +1,5 @@
 // The console's calls to the admin Worker, and the sealed bundle download.
-import { describeError } from "./format.js";
+import { describeError, outcomeUnknown } from "./format.js";
 
 export class ApiError extends Error {
   constructor(status, body) {
@@ -7,46 +7,69 @@ export class ApiError extends Error {
     this.name = "ApiError";
     this.status = status;
     this.body = body;
+    this.unknownOutcome = outcomeUnknown(status, body);
   }
 }
 
-// One call to the relay's console (POST /api/operate). `lock` is the operator
-// lock for an action that changes something; it travels in a header for this
-// request only.
-export async function operate(op, fields = {}, lock = null) {
-  const headers = { "content-type": "application/json", accept: "application/json" };
+// An error for a request that got no answer at all (the network, or a response
+// that never arrived): a change that did this may have been made.
+export class NetworkError extends Error {
+  constructor() {
+    super("The console did not get an answer. If this was a change, it may have been made: submit again with the same operation id and it will be done once at most.");
+    this.name = "NetworkError";
+    this.unknownOutcome = true;
+  }
+}
+
+function withQuery(path, query) {
+  const params = new URLSearchParams();
+  for (const [name, value] of Object.entries(query ?? {})) {
+    if (value !== undefined && value !== null && value !== "") params.set(name, String(value));
+  }
+  const text = params.toString();
+  return text ? `${path}?${text}` : path;
+}
+
+// One call to the console API. A change passes an `operationId` (sent as the
+// Idempotency-Key) and the operator `lock` (sent as x-operator-lock, for this
+// request only). Nothing is kept: the lock is not stored anywhere by this page.
+export async function api(method, path, { query, body, lock, operationId } = {}) {
+  const headers = { accept: "application/json" };
+  if (body !== undefined) headers["content-type"] = "application/json";
   if (lock) headers["x-operator-lock"] = lock;
-  const response = await fetch("/api/operate", {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ op, ...fields }),
-    credentials: "same-origin",
-    cache: "no-store",
-  });
-  let body = null;
+  if (operationId) headers["idempotency-key"] = operationId;
+  let response;
   try {
-    body = await response.json();
+    response = await fetch(withQuery(path, query), {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      credentials: "same-origin",
+      cache: "no-store",
+    });
   } catch {
-    // not JSON: leave body null
+    throw new NetworkError();
   }
-  if (!response.ok) throw new ApiError(response.status, body);
-  return body;
+  let parsed = null;
+  try {
+    parsed = await response.json();
+  } catch {
+    // not JSON: leave it null
+  }
+  if (!response.ok) throw new ApiError(response.status, parsed);
+  return parsed;
 }
 
-export async function getJson(path) {
-  const response = await fetch(path, { headers: { accept: "application/json" }, credentials: "same-origin" });
-  let body = null;
-  try {
-    body = await response.json();
-  } catch {
-    // not JSON
-  }
-  return { status: response.status, body };
-}
+export const get = (path, query) => api("GET", path, { query });
 
 export function errorText(error) {
-  if (error instanceof ApiError) return error.message;
-  return "Could not reach the console. Check your connection and try again.";
+  if (error instanceof ApiError || error instanceof NetworkError) return error.message;
+  return "Something went wrong in the console. Reload the page and try again.";
+}
+
+// A new operation id, one per attempt at a change.
+export function newOperationId() {
+  return crypto.randomUUID();
 }
 
 // Hands a base64 file to the browser as a download.

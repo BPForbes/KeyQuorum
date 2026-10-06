@@ -1,17 +1,20 @@
 // The provider's console. Everything shown is built as elements and set with
 // textContent. The operator lock is typed into a field for one action and is
 // never kept: not in a variable, in storage or in the address.
-import { errorText, getJson } from "./api.js";
+import { errorText, get } from "./api.js";
 import { clear, h, notice } from "./ui.js";
 
+// [route, title, loader, in the menu]
 const ROUTES = [
-  ["overview", "Overview", () => import("./view-overview.js")],
-  ["clients", "Clients and licences", () => import("./view-clients.js")],
-  ["issue", "Issue", () => import("./view-issue.js")],
-  ["keys", "Keys", () => import("./view-keys.js")],
-  ["activity", "Activity", () => import("./view-activity.js")],
-  ["letters", "Letters and trees", () => import("./view-letters.js")],
-  ["audit", "Audit", () => import("./view-audit.js")],
+  ["overview", "Overview", () => import("./view-overview.js"), true],
+  ["users", "Users", () => import("./view-users.js"), true],
+  ["user", "User", () => import("./view-user.js"), false],
+  ["issue", "Issue keys", () => import("./view-issue.js"), true],
+  ["keys", "Keys", () => import("./view-keys.js"), true],
+  ["activity", "Activity", () => import("./view-activity.js"), true],
+  ["letters", "Letters and trees", () => import("./view-letters.js"), true],
+  ["status", "Status", () => import("./view-status.js"), true],
+  ["audit", "Audit", () => import("./view-audit.js"), true],
 ];
 
 const nav = document.getElementById("nav");
@@ -28,8 +31,11 @@ function parseHash() {
 
 function drawNav(current) {
   clear(nav);
-  for (const [key, label] of ROUTES) {
-    nav.append(h("a", { href: `#${key}`, text: label, "aria-current": key === current ? "page" : null }));
+  // A user's own page is under Users in the menu.
+  const shown = current === "user" ? "users" : current;
+  for (const [key, label, , inMenu] of ROUTES) {
+    if (!inMenu) continue;
+    nav.append(h("a", { href: `#${key}`, text: label, "aria-current": key === shown ? "page" : null }));
   }
 }
 
@@ -71,14 +77,14 @@ async function render() {
 
 async function start() {
   try {
-    const { status, body } = await getJson("/api/whoami");
-    who.textContent = status === 200 && body?.email ? `Signed in as ${body.email}` : "Cloudflare Access did not identify you.";
+    const body = await get("/api/whoami");
+    who.textContent = body?.email ? `Signed in as ${body.email}` : "Cloudflare Access did not identify you.";
   } catch {
     who.textContent = "Could not reach the console.";
   }
   try {
-    const { status, body } = await getJson("/api/config");
-    if (status === 200 && typeof body?.relayUrl === "string") config.relayUrl = body.relayUrl;
+    const body = await get("/api/config");
+    if (typeof body?.relayUrl === "string") config.relayUrl = body.relayUrl;
   } catch {
     // the form is simply not pre-filled
   }

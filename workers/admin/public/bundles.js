@@ -1,6 +1,7 @@
 // What the console shows after it issues or replaces a key: the sealed bundles
-// to download. A bundle is sealed to the client's public key, so it is safe to
-// send over any channel; the bearer inside is never shown here.
+// to download, or the sealed letter waiting in the customer's mailbox. A bundle
+// is sealed to the client's public key, so it is safe to send over any
+// channel; the bearer inside is never shown here.
 import { downloadBase64 } from "./api.js";
 import { formatTime, scopeLabel } from "./format.js";
 import { h, notice, table } from "./ui.js";
@@ -33,6 +34,22 @@ export function bundleList(bundles) {
       "Issued. Each file is sealed to the client's public key, so it can be sent by any channel. The client loads it with keyquorum loadkey --bundle.",
     ),
     rows,
-    h("p", { class: "note", text: "The bundles are not stored by this page or the relay: download them now. A lost bundle is replaced by rotating its key." }),
+    h("p", { class: "note", text: "The files are not stored by this page or the relay: download them now. A lost file is replaced by replacing its key." }),
+  );
+}
+
+// The result of replacing a key, by file or by letter.
+export function replacement(result) {
+  if (result.bundle) {
+    return h(
+      "div",
+      {},
+      notice("good", `Key #${result.replaced_key_id} was replaced by key #${result.key_id}. The old key stopped working at once.`),
+      bundleList([result.bundle]),
+    );
+  }
+  return notice(
+    "good",
+    `Key #${result.replaced_key_id} was replaced by key #${result.key_id}, sent as a sealed letter to the customer's own mailbox. The old key keeps working until ${formatTime(result.letter?.old_key_ends)} so they can collect it with their next keyquorum inbox open.`,
   );
 }

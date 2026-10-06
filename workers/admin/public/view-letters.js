@@ -1,4 +1,4 @@
-import { operate } from "./api.js";
+import { get } from "./api.js";
 import { formatBytes, formatTime, shortId } from "./format.js";
 import { h, notice, section, table } from "./ui.js";
 
@@ -6,7 +6,7 @@ function letterTable(group) {
   return table(
     [
       { label: "Letter", cell: (l) => `#${l.id}` },
-      { label: "For", cell: (l) => l.client ?? h("code", { text: shortId(l.recipient_fingerprint) }) },
+      { label: "For", cell: (l) => l.customer ?? h("code", { text: shortId(l.recipient_fingerprint) }) },
       { label: "Kind", cell: (l) => l.kind_name },
       { label: "Size", align: "end", cell: (l) => formatBytes(l.size) },
       { label: "Stored", cell: (l) => formatTime(l.stored_at) },
@@ -18,7 +18,7 @@ function letterTable(group) {
 }
 
 export default async function letters() {
-  const [view, { trees }] = await Promise.all([operate("letters"), operate("trees")]);
+  const [view, { trees }] = await Promise.all([get("/api/letters"), get("/api/trees")]);
   return h(
     "div",
     {},

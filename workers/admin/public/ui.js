@@ -112,7 +112,9 @@ export async function busy(button, status, task, describe) {
     return outcome;
   } catch (error) {
     clear(status);
-    status.append(notice("bad", describe(error)));
+    // `describe` gives the words, or the words and how serious they are.
+    const told = describe(error);
+    status.append(typeof told === "string" ? notice("bad", told) : notice(told.kind, told.text));
     return undefined;
   } finally {
     button.disabled = false;

@@ -3,8 +3,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  daysUntil,
   describeError,
   formatBytes,
+  formatMs,
+  outcomeUnknown,
+  shortOperation,
   formatDate,
   formatTime,
   hourlyBars,
@@ -60,7 +64,12 @@ test("an error is told in words the operator can act on, never raw", () => {
   assert.match(describeError(401, { code: "lock_required" }), /needs the operator lock/);
   assert.match(describeError(401, { code: "lock_refused" }), /refused.*recorded/);
   assert.match(describeError(409, { code: "no_lock" }), /Overview/);
-  assert.match(describeError(409, { code: "lock_exists" }), /cannot be shown again/);
+  assert.match(describeError(409, { code: "lock_exists" }), /Replace it with the current lock/);
+  assert.match(describeError(409, { code: "lock_unconfirmed" }), /not confirmed/);
+  assert.match(describeError(400, { code: "operation_id_required" }), /operation id/);
+  assert.match(describeError(500, { code: "commit_unknown" }), /same operation id/);
+  assert.equal(describeError(409, { code: "already_done", error: "This was done." }), "This was done.");
+  assert.match(describeError(429, null), /Too many requests/);
   assert.match(describeError(503, { code: "no_identity" }), /no identity/);
   assert.equal(describeError(400, { error: "licence is malformed" }), "licence is malformed");
   assert.equal(describeError(503, null), "The relay is not available right now.");
@@ -93,4 +102,28 @@ test("a state has a badge kind", () => {
   assert.equal(stateKind("expired"), "warn");
   assert.equal(stateKind("ended"), "warn");
   assert.equal(stateKind("?"), "plain");
+});
+
+test("a change whose outcome is not known is told apart from one the relay refused", () => {
+  assert.equal(outcomeUnknown(undefined, null), true, "no answer at all");
+  assert.equal(outcomeUnknown(500, null), true);
+  assert.equal(outcomeUnknown(502, null), true);
+  assert.equal(outcomeUnknown(503, { error: "relay unavailable" }), true);
+  assert.equal(outcomeUnknown(200, { code: "commit_unknown" }), true);
+  for (const status of [400, 401, 403, 404, 409, 413, 429]) assert.equal(outcomeUnknown(status, { error: "x" }), false, String(status));
+});
+
+test("times, durations and operation ids are shown briefly", () => {
+  assert.equal(formatMs(12.4), "12 ms");
+  assert.equal(formatMs(1500), "1.5 s");
+  assert.equal(formatMs(-1), "\u2014");
+  assert.equal(formatMs("x"), "\u2014");
+  assert.equal(shortOperation("0123456789abcdef"), "01234567");
+  assert.equal(shortOperation(null), "\u2014");
+  const now = Date.parse("2026-10-06T12:00:00Z");
+  assert.equal(daysUntil("2026-10-16 12:00:00", now), 10);
+  assert.equal(daysUntil("2026-10-16T12:00:00.000Z", now), 10);
+  assert.equal(daysUntil("2026-10-05", now), -2);
+  assert.equal(daysUntil("not a date", now), null);
+  assert.equal(daysUntil(null, now), null);
 });
