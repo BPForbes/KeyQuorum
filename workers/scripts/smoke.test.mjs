@@ -157,11 +157,20 @@ test("the admin smoke test catches a success, a 404 and a hostname that does not
   assert.ok(unreachable.every((p) => p.includes("did not answer")));
 });
 
+test("a staging relay on its own mount passes, and production's path does not answer there", async () => {
+  const env = relayEnv();
+  env.MOUNT_PATH = "/relay/staging-user";
+  const staging = via(env);
+  assert.deepEqual(await runSmoke("https://relay.test/relay/staging-user", { fetchImpl: staging }), []);
+  const wrong = await runSmoke("https://relay.test/relay", { fetchImpl: staging });
+  assert.ok(wrong.length > 0);
+});
+
 test("a relay URL that is not under /relay is reported, since the Worker serves nothing else", async () => {
   for (const url of ["https://relay.test", "https://relay.test/", "https://relay.test/other", "https://relay.test/relay/inbox"]) {
     const problems = await runSmoke(url, { fetchImpl: viaWorker });
     assert.equal(problems.length, 1, url);
-    assert.match(problems[0], /must end in \/relay/);
+    assert.match(problems[0], /https:\/\/<domain>\/relay/);
   }
   assert.deepEqual(await runSmoke("https://relay.test/relay/", { fetchImpl: viaWorker }), []);
 });

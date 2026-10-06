@@ -28,7 +28,7 @@ Status at the time of writing (2026-10-06):
 | Native `keyquorum host serve` | **Kept as the dev, test and reference host.** `SqliteRelayStore`, `src/relay/server.rs` and `host keys` stay in the code. It is not a production deployment path. |
 | Deployment pipeline and Cloudflare Terraform | **Stage 2, in this repository; not yet exercised against a Cloudflare account.** `workers/` (the public Worker and its Durable Object), `.github/workflows/workers.yml` and `deploy/cloudflare/terraform/` exist and are described in [Provisioning and the deployment pipeline](#provisioning-and-the-deployment-pipeline-stage-2). Honest limits: nothing has been deployed; the Terraform passes CI's `terraform validate` against the pinned provider (`.terraform.lock.hcl`, `cloudflare/cloudflare` 5.27.0) but the repository's authors have never planned or applied it against a real account; Cloudflare Notifications and the R2 retention lock are dashboard steps, not Terraform; and the owner's GitHub and Cloudflare setup is still to be done. |
 | Admin Worker and operator console (stage 4a, issue #99) | **In this repository; never deployed, and Access has never been configured on an account.** `workers/admin/` holds the Worker `keyquorum-relay-admin` (`[env.staging]` is `keyquorum-relay-admin-staging`): it verifies Cloudflare Access's signed token itself and serves the provider's console, a static page and a documented `/api` that reaches the relay only through the private binding `RELAY_ADMIN`. Customers, licences (immutable statement versions), keys with lineage, per-key activity, status, audit and checkpoint, and the two-step operator lock are built; see [The operator console](#the-operator-console-issue-99). Its Terraform (`admin_environments`: a custom domain and an Access application with an MFA policy per environment) and workflow steps exist; CI's `terraform` job checks the whole directory on every push. **Not done:** every check on a real account (Access and MFA, the binding on Cloudflare, staging, restore, overload, cost); see the console section's list. |
-| Relay domain and operator page | **Decided 2026-10-06 (owner).** The relay is mounted at `keyquorum.dev/relay` and the console has its own hostname (owner decision, revised 2026-10-06); the operator page is static files served from the admin Worker behind Access. See [Domain and operator page](#domain-and-operator-page-owner-decisions-2026-10-06). |
+| Relay domain and operator page | **Decided 2026-10-06 (owner).** The relay and the console are mounted under paths of `keyquorum.dev` (`/relay`, `/relay/staging-user`, `/relay/admin`, `/relay/staging-admin`), through Workers routes (owner decision, revised 2026-10-06); the operator page is static files served from the admin Worker behind Access. See [Domain and operator page](#domain-and-operator-page-owner-decisions-2026-10-06). |
 | Live deployment, restore test, overload test | **Not done.** Nothing has been deployed. They need the operator's Cloudflare account and run against a real deployment. The [acceptance checklist](#acceptance-checklist) says which rows this document settles and which the deployment must. |
 
 Nothing here is deployment approval, and no SOC 2 mapping below claims
@@ -171,37 +171,66 @@ actually takes.
 
 Two decisions of the owner, recorded as decisions:
 
-1. **The relay lives at `keyquorum.dev/relay`.** The owner's domain
-   `keyquorum.dev` (bought to carry a customer app as well) hosts the relay
-   mounted under a path, so a path says what it is: the relay answers at
-   `https://keyquorum.dev/relay/...` and nowhere else on the hostname
-   (revised twice on 2026-10-06: first a separate new domain, then subdomains of
-   `bailey-forbes.com`, which was dropped because that domain's DNS is not on
-   Cloudflare and a Worker can be served only on a zone that is). A client's
-   relay URL is `https://keyquorum.dev/relay`; the client already adds each
-   route to a URL's path (`src/relay/client/tests.rs`,
+1. **The relay and the console live under paths of `keyquorum.dev`.** The
+   owner's domain `keyquorum.dev` (bought to carry a customer app as well)
+   hosts everything under paths, so a path says what each thing is, and
+   Workers routes carry them, not custom domains (a custom domain takes a whole
+   hostname). Revised three times on 2026-10-06: a separate new domain, then
+   subdomains of `bailey-forbes.com` (dropped: that domain's DNS is not on
+   Cloudflare, and a Worker can be served only on a zone that is), then the
+   relay under `/relay` with the console on a hostname of its own, then, at the
+   owner's request, all four under paths:
+
+   | Path on `keyquorum.dev` | What | Worker |
+   | --- | --- | --- |
+   | `/relay` | the production relay | `keyquorum-relay` |
+   | `/relay/staging-user` | the staging relay, for ordinary users | `keyquorum-relay-staging` |
+   | `/relay/admin` | the production console (Access) | `keyquorum-relay-admin` |
+   | `/relay/staging-admin` | the staging console (Access) | `keyquorum-relay-admin-staging` |
+
+   (The production console path, `/relay/admin`, is the repository's default,
+   not an owner decision; it is a Terraform input and a `MOUNT_PATH`.) A
+   client's relay URL is the relay's path: `https://keyquorum.dev/relay` or
+   `https://keyquorum.dev/relay/staging-user`; the client already adds each route
+   to a URL's path (`src/relay/client/tests.rs`,
    `a_relay_url_with_a_path_prefix_keeps_it_in_front_of_every_route`), so no
-   client changed. The prefix is the public Worker's mount point only
-   (`workers/src/policy.js`, `RELAY_PREFIX`): it strips it, so the relay core
-   sees the paths it always had, and it answers 404 to everything outside it,
-   `/health` and `/` included, so no path of the domain that is not the relay's
-   is answered by it. Two Workers routes send it `keyquorum.dev/relay` and
-   `keyquorum.dev/relay/*` and nothing else (`deploy/cloudflare/terraform/
-   main.tf`), and the zone's rate-limit and cache-bypass rules match only that
-   prefix (`rules.tf`), so a customer app on the same domain is neither limited
-   nor cache-bypassed by them. The hostname must be proxied in the zone's DNS,
-   which Terraform does not create. **The console is not under `/relay`**: it
-   has its own hostname (`admin.keyquorum.dev`, behind Access), a separate
-   origin, so that nothing the customer app serves shares an origin with the
-   page that can issue and revoke keys. The native host (`host serve`) is
-   unchanged and has no prefix. `keyquorum.dev` must be a zone on the owner's
-   Cloudflare account; if it was bought elsewhere, add it there and change its
-   nameservers at the registrar. The root of the hostname has no site yet, so
-   until the customer app exists a request to `https://keyquorum.dev/` is not
-   answered by the relay and shows whatever the zone does for an unused path.
+   client changed. **Each Worker serves only below its own mount**
+   (`workers/src/mount.js`, from the non-secret variable `MOUNT_PATH`, which the
+   deploy takes from the path of `RELAY_URL` or `ADMIN_URL` so a URL and its
+   Worker cannot disagree): it strips the mount, so the relay core and the
+   console's routes see the paths they always had, answers 404 to everything
+   else (a mount without its slash is redirected to the slash, because the pages
+   use relative links), and is unconfigured, serving nothing, if the value is
+   not exactly `/relay` or `/relay/<name>` (for the console `/relay/<name>`, or
+   empty for a hostname of its own); a name may not be one of the relay's own
+   routes (`inbox`, `keycheck`, `provider-identity`, `audit`, `trees`,
+   `devices`, `health`, `ready`, `assets`). Where routes overlap, Cloudflare uses
+   the more specific one (from memory, verify at the first apply); a request that
+   reaches the wrong Worker is a 404 there. The zone's rate-limit and
+   cache-bypass rules match only paths under `/relay`
+   (`deploy/cloudflare/terraform/rules.tf`). The hostname must be proxied in the
+   zone's DNS, which Terraform does not create. The native host is unchanged and
+   has no prefix. `keyquorum.dev` must be a zone on the owner's Cloudflare
+   account. The root of the hostname has no site yet, so until the customer app
+   exists a request to `https://keyquorum.dev/` is not answered by these Workers.
+
+   **One origin.** All four share the origin `https://keyquorum.dev`, which the
+   earlier plan of a hostname of its own for the console avoided, and which the
+   owner chose knowing it. Access's session cookie is scoped to the host, not
+   the path, so the browser sends it to every path on the host: the relay
+   Workers, and later the customer app, receive the operator's `HttpOnly` Access
+   cookie, and a script flaw in anything else on the origin (the customer app
+   above all) runs on the console's origin and can call its API as the signed-in
+   operator, although a change still needs the operator lock, which the page
+   never keeps. Staging and production also share the origin. What still holds:
+   the console's Access token check, its lock and same-origin `Origin` checks,
+   and the relay Workers ignoring cookies. The cost is real and the remedy is a
+   configuration change: put the console on a hostname of its own again before
+   the customer app is built (`deploy/cloudflare/terraform/README.md`, "One
+   origin").
 2. **The operator page is hosted the way the portfolio is hosted.** It is
-   static files served from the admin Worker on its own hostname, a Workers
-   custom domain, simply styled. The hostname is behind Cloudflare Access
+   static files served from the admin Worker on its own path (decision 1),
+   simply styled. The path is behind Cloudflare Access
    (operator identity plus MFA), and the Worker verifies Access's token
    itself rather than trusting the Access configuration alone.
 
@@ -360,8 +389,10 @@ procedure and the settings, so the connection is made once and the same way.
   Version URL is a workers.dev host, so it is refused before the relay is asked
   anything. Empty or unset, the Worker is unconfigured and serves nothing (503).
   The deploy jobs of `workers.yml` set it from the environment's `RELAY_URL`
-  (`scripts/relay-host.mjs` takes `https://<domain>/relay` and returns only the
-  host, refusing anything else: a URL without the `/relay` path, a wildcard, a
+  (`scripts/relay-host.mjs` takes `https://<domain>/relay` or
+  `https://<domain>/relay/<name>` and returns the host (`--mount`: the path, for
+  `MOUNT_PATH`; `--admin-mount`: the console's, from `ADMIN_URL`), refusing
+  anything else: a URL with another path, a wildcard, a
   list, a credential, an address or a single label). Only
   `[previews.vars]` sets `*`, because a Preview has its own empty object and no
   secrets; `scripts/guard.mjs` fails CI on a wildcard in `[vars]`,
@@ -439,9 +470,11 @@ the end of this section.
   (for `ACCESS_TEAM_DOMAIN`), which is read from the Zero Trust dashboard.
   The relay's hostnames and the admin hostname belong to the owner's
   domain (see the decisions above). `main.tf` has two Workers routes per
-  environment (`<host>/relay` and `<host>/relay/*`). `rules.tf` has the zone
-  rate-limit ruleset on every route under `/relay` except `/relay/health`, and a
-  ruleset that bypasses the cache under `/relay`. `r2.tf` has an optional archive bucket
+  environment for the relay and for the console (`<host><path>` and
+  `<host><path>/*`), and `access.tf` the console's Access application on its
+  path. `rules.tf` has the zone rate-limit ruleset on every route under
+  `/relay` except a health check, and a ruleset that bypasses the cache under
+  `/relay`. `r2.tf` has an optional archive bucket
   (created only when `archive_bucket_name` is set). `variables.tf`,
   `outputs.tf`, `terraform.tfvars.example` and a `README.md` complete it. CI
   runs `terraform fmt -check`, `terraform init -backend=false -lockfile=readonly` and `terraform
@@ -457,7 +490,7 @@ the end of this section.
   production Worker `keyquorum-relay`; `[env.staging]` is
   `keyquorum-relay-staging`; `workers_dev = false` and `preview_urls = true` at
   both levels, public Worker only, see Workers Builds above; no routes, because
-  the hostnames are the Terraform's custom domains; the Durable Object binding
+  the routes are the Terraform's; the Durable Object binding
   `RELAY` with class `RelayObject` and its `new_sqlite_classes` migration, the
   rate-limit binding `RATE_LIMITER` and the non-secret `ALLOWED_HOSTS`, each
   repeated for staging because wrangler does not inherit them, and the
@@ -637,7 +670,7 @@ console and is still true of the front door.
 - The wasm32 build runs in `workers.yml` (the `workers build` job and both
   deploy jobs) and in Workers Builds (`builds:build`); the latter has never run
   on Cloudflare's image.
-- The admin Worker's custom domain and Access application are in `access.tf`,
+- The admin Worker's routes and Access application are in `access.tf`,
   created only once `admin_environments` is set, and have never been applied.
 - The owner must create the GitHub environments `cloudflare-staging` and
   `cloudflare-production` with their `CLOUDFLARE_API_TOKEN` and
@@ -648,8 +681,8 @@ console and is still true of the front door.
   hostname chosen (check the zone's existing rate-limit and cache rules first:
   the Terraform replaces them in those two phases). The
   Worker must be
-  deployed before `terraform apply`, because a custom domain names an
-  existing Worker. For the admin Worker the order is: deploy it (it serves
+  deployed before `terraform apply`, because a route names an existing
+  Worker. For the admin Worker the order is: deploy it (it serves
   nothing while unconfigured), `terraform apply`, read the application's
   audience tag from the `admin_access_aud` output and the team domain from
   the Zero Trust dashboard, set the variables `ACCESS_AUD`,
@@ -684,7 +717,7 @@ see what each key did, and download evidence. It extends the admin Worker
 
 ```text
 Operator browser
-  -> admin custom domain
+  -> keyquorum.dev/relay/admin (staging: /relay/staging-admin), a Workers route
   -> Cloudflare Access (operator identity + MFA)
   -> admin Worker (Access token check, Fetch Metadata and Origin checks,
                    per-operator rate limits, route table, bounded bodies)
@@ -692,7 +725,8 @@ Operator browser
   -> RelayObject.operate / status -> Rust core (relay::operator) -> SQLite
 
 Customer API client
-  -> public relay custom domain -> public Worker (host and route allowlists)
+  -> keyquorum.dev/relay (staging: /relay/staging-user), a Workers route
+  -> public Worker (host, mount and route allowlists)
   -> the same RelayObject -> relay::service::dispatch
 ```
 
@@ -954,7 +988,7 @@ The architecture below says which parts are built.
   parameter, and certificate validity) need an injected clock on wasm.
 - **Admin Worker `keyquorum-relay-admin`.** Its front door exists (stage
   4a, `workers/admin/`, described under Provisioning); the relay-backed part
-  is planned. Its only hostname is a custom domain behind an Access
+  is planned. Its only path is a Workers route behind an Access
   self-hosted application (operator identity plus MFA), no route bypasses
   Access, and `workers.dev` and preview URLs are off (that this switches
   them off is from memory, verify; `scripts/guard.mjs` fails CI if either
@@ -984,7 +1018,7 @@ The architecture below says which parts are built.
   public Worker serves no console and no `/swagger-ui/*`. Whether an admin
   API key may still revoke over the public Worker, as it can on the native
   router today, is a PR 4 decision; until it is made, the public Worker
-  does not route it. The admin Worker's only hostname is a custom domain
+  does not route it. The admin Worker's only path is a Workers route
   behind an Access application; no route bypasses Access, and the Worker
   verifies the token itself.
 - **Secrets on the Worker.** The relay private key, `provider.kqcert` and

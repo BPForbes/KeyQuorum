@@ -21,12 +21,26 @@ Cloudflare, and a Worker can only be served on a zone that is). `zone_id` is
 `keyquorum.dev`'s zone, so the domain must be a zone on the owner's Cloudflare
 account: add it in the dashboard and change its nameservers at the registrar to
 the two Cloudflare gives, or register or transfer it to Cloudflare. The domain
-is meant to carry more than the relay (a customer app, later), so the relay is
-mounted under a path: it answers at `https://keyquorum.dev/relay/...` and
-nowhere else on the hostname, through two Workers routes (`main.tf`), and the
-two rulesets in `rules.tf` match only that prefix. The console has its own
-hostname (`admin.keyquorum.dev`), a separate origin behind Access, so that
-nothing the customer app serves shares an origin with it. `rules.tf` manages
+is meant to carry more than the relay (a customer app, later), so everything
+here is mounted under paths of that one hostname, through Workers routes
+(`main.tf`, `access.tf`), not custom domains (a custom domain takes a whole
+hostname):
+
+| Path on `keyquorum.dev` | What | Worker |
+| --- | --- | --- |
+| `/relay` | the production relay | `keyquorum-relay` |
+| `/relay/staging-user` | the staging relay | `keyquorum-relay-staging` |
+| `/relay/admin` | the production console (behind Access) | `keyquorum-relay-admin` |
+| `/relay/staging-admin` | the staging console (behind Access) | `keyquorum-relay-admin-staging` |
+
+Each Worker serves only below its own path (`workers/src/mount.js`, set by its
+`MOUNT_PATH`, which the deploy takes from the path of `RELAY_URL` or
+`ADMIN_URL`) and answers 404 to anything else, and where two routes overlap
+Cloudflare uses the more specific one (from memory, verify at the first apply).
+The two rulesets in `rules.tf` match only paths under `/relay`.
+**One origin carries all four**, the console and the customer app (later)
+included, which the earlier plan of a hostname of its own for the console
+avoided: see "One origin" below. `rules.tf` manages
 the zone's rate-limit and cache-settings entry-point rulesets and **replaces any
 rules already in those two phases**, which matters only if the zone already has
 some: look in the dashboard first (Security, WAF, Rate limiting rules; Caching,
@@ -48,15 +62,17 @@ a variable file in this directory, or an agent session.
   git. It holds identifiers, hostnames and the operators' email addresses, not
   secrets. Its variables:
   - `account_id`, `zone_id`: the account and the domain's zone.
-  - `environments`: a map of `{hostname, worker}`, the hostname that carries the
-    public relay Worker under `/relay` per environment (`keyquorum.dev` for
-    production, `staging.keyquorum.dev` for staging; a bare hostname, no path).
-  - `admin_environments`: a map of `{hostname, worker}` for the admin Worker
-    (`keyquorum-relay-admin`, `keyquorum-relay-admin-staging`), empty by
-    default. It replaces the earlier single `admin_hostname`. For each entry
-    Terraform creates a custom domain for the admin Worker and a self-hosted
-    Access application (1 hour session) for that hostname; all of them share
-    one allow policy.
+  - `environments`: a map of `{hostname, path, worker}`: the hostname (the bare
+    domain, no path), the path the public relay Worker is mounted under
+    (`/relay`, or `/relay/<name>`; the name may not be one of the relay's own
+    routes, which a validation checks) and the Worker. It is also the path of
+    `RELAY_URL`.
+  - `admin_environments`: a map of `{hostname, path, worker}` for the admin
+    Worker (`keyquorum-relay-admin`, `keyquorum-relay-admin-staging`), empty by
+    default. The path is `/relay/<name>`, never `/relay` itself, and is also the
+    path of `ADMIN_URL`. For each entry Terraform creates routes for the admin
+    Worker and a self-hosted Access application (1 hour session) for that
+    hostname and path; all of them share one allow policy.
   - `operator_emails`: the operators the policy allows (the email the login
     asserts must match exactly). Setting `admin_environments` with no operator
     email fails the plan (a precondition).
@@ -82,13 +98,13 @@ a variable file in this directory, or an agent session.
 
 1. Create the Zero Trust organisation in the dashboard (once), and note its team
    domain.
-2. Choose the hostnames: the relay's, per environment, in `terraform.tfvars`
-   (`environments`). Add a proxied (orange-clouded) DNS record for each, which
-   Terraform does not create (for a hostname with no site yet, an A record to the
-   placeholder address 192.0.2.1). Set the GitHub environment variable
-   `RELAY_URL` in each environment to `https://<that hostname>/relay` (the URL a
-   client is given; the scripts refuse one without `/relay`) **before the first
-   deploy**. The
+2. Choose the hostname and paths in `terraform.tfvars` (`environments`, and
+   `admin_environments` later). Add a proxied (orange-clouded) DNS record for the
+   hostname, which Terraform does not create (for a hostname with no site yet, an
+   A record to the placeholder address 192.0.2.1). Set the GitHub environment
+   variable `RELAY_URL` in each environment to `https://<hostname><path>` (for
+   staging `https://keyquorum.dev/relay/staging-user`: the URL a client is
+   given; the scripts refuse any other path) **before the first deploy**. The
    deploy passes its host to the Worker as `ALLOWED_HOSTS`, and the Worker
    serves that host and no other, so a Worker deployed without it serves
    nothing (staging warns and deploys that way; production refuses to deploy).
@@ -147,8 +163,22 @@ a variable file in this directory, or an agent session.
   OIDC connector (an Apple client secret is a signed token that expires), and
   can assert a private-relay address instead of the real one that the policy
   matches; it is not recommended.
-- The admin custom domains and Access applications are created only when
-  `admin_environments` is set. No route bypasses Access: the hostname sits
+- **One origin.** The console shares an origin (`https://keyquorum.dev`) with
+  the relay and, later, the customer app. Access's session cookie is scoped to
+  the host, not the path, so the browser sends it to every path of the host: the
+  relay Workers and a customer app would receive the operator's Access cookie
+  (it is `HttpOnly`, so a script cannot read it, but a server on that origin
+  can), and a script flaw in anything else served from `keyquorum.dev` runs on
+  the same origin as the console and could call its API as the signed-in
+  operator, though a change still needs the operator lock and cannot be made
+  without it. The staging and production consoles and relays share the origin
+  too. The admin Worker's own checks (the Access token, the lock, same-origin
+  `Origin`) still apply, and the relay Workers ignore cookies; but the isolation
+  of a hostname of its own is given up. If the customer app is built, a
+  hostname of its own for the console (set `path` to a `/relay/<name>` on a
+  different hostname, or return to a custom domain) restores it.
+- The admin routes and Access applications are created only when
+  `admin_environments` is set. No route bypasses Access: the path sits
   behind the application, and the admin Worker also verifies Access's token
   itself (`workers/admin/src/access.js`), so a mistake in the policy does not
   serve the page. Today the page only shows who is signed in; the relay-backed

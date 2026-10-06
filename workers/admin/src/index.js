@@ -18,6 +18,7 @@
 // identity sent to the relay is Access's, never one the browser claims.
 import { verifyAccessToken } from "./access.js";
 import { ISOLATION_HEADERS, crossSiteRefusal } from "../../src/browser-isolation.js";
+import { adminMount, stripMount } from "../../src/mount.js";
 import { MAX_REQUEST_BODY_CONSOLE, readLimitedText } from "./limits.js";
 import { matchRoute } from "./routes.js";
 
@@ -184,16 +185,41 @@ async function api(request, env, claims, url) {
   });
 }
 
-export async function handle(request, env, { verify = verifyAccessToken } = {}) {
+export async function handle(incoming, env, { verify = verifyAccessToken } = {}) {
   // Another website, the Lab and the portfolio included, may not fetch, embed
   // or frame this console. A top-level page load is let through to the token
   // check below, because Access's sign-in redirect lands here marked cross-site;
   // it still needs a valid Access token.
-  const refusal = crossSiteRefusal(request, { allowNavigation: true });
+  const refusal = crossSiteRefusal(incoming, { allowNavigation: true });
   if (refusal) {
     console.warn(`admin: refused ${refusal}`);
     return json(403, { error: "cross-site requests are not served" });
   }
+
+  // Where this Worker is mounted on its host (MOUNT_PATH, src/mount.js): a
+  // path of its own such as /relay/staging-admin, or none. The routes and
+  // assets below see the path without it. A value that is not a valid mount
+  // leaves the Worker unconfigured; a path outside the mount is not served,
+  // and the mount without its slash goes to the slash (the page's links are
+  // relative to it). None of this answers anything about the operator.
+  const mount = adminMount(env.MOUNT_PATH);
+  if (mount === null) return json(503, { error: "admin not configured" });
+  const asked = new URL(incoming.url);
+  const below = stripMount(asked.pathname, mount);
+  if (below === null) return json(404, { error: "not found" });
+  if (below.redirect !== undefined) {
+    if (incoming.method !== "GET" && incoming.method !== "HEAD") {
+      return json(405, { error: "method not allowed" }, { allow: "GET, HEAD" });
+    }
+    return new Response(null, {
+      status: 308,
+      headers: { ...SECURITY_HEADERS, location: `${below.redirect}${asked.search}` },
+    });
+  }
+  const inner = new URL(asked);
+  inner.pathname = below.path;
+  const request = new Request(inner, incoming);
+
   const outcome = await verify(request.headers.get("cf-access-jwt-assertion"), {
     teamDomain: env.ACCESS_TEAM_DOMAIN,
     audience: env.ACCESS_AUD,

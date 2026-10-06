@@ -1,5 +1,5 @@
 // The one page the public Worker serves to a browser: whether the relay is up.
-// It holds nothing secret and reads nothing but /relay/health and /relay/ready, which any
+// It holds nothing secret and reads nothing but health and ready (relative to the page, so it works under any mount), which any
 // caller can read. No inline script or style, no outside origin, no form: the
 // content security policy below allows only this origin's two asset files.
 
@@ -14,8 +14,8 @@ export const STATUS_HTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <title>KeyQuorum relay</title>
-<link rel="stylesheet" href="/relay/assets/status.css">
-<script src="/relay/assets/status.js" defer></script>
+<link rel="stylesheet" href="assets/status.css">
+<script src="assets/status.js" defer></script>
 </head>
 <body>
 <main>
@@ -94,6 +94,6 @@ function show(id, ok, up, down) {
   element.textContent = ok ? up : down;
   element.className = ok ? "up" : "down";
 }
-check("/relay/health").then((ok) => show("health", ok, "running", "not answering"));
-check("/relay/ready").then((ok) => show("ready", ok, "ready", "not ready"));
+check("health").then((ok) => show("health", ok, "running", "not answering"));
+check("ready").then((ok) => show("ready", ok, "ready", "not ready"));
 `;

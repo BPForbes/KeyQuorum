@@ -12,15 +12,15 @@ locals {
 resource "cloudflare_ruleset" "relay_rate_limit" {
   zone_id     = var.zone_id
   name        = "keyquorum relay rate limit"
-  description = "Per-client limit on every relay route except /relay/health, ahead of the Worker's own limit."
+  description = "Per-client limit on every route under /relay (the relay's and the console's) except a health check, ahead of the Worker's own limit."
   kind        = "zone"
   phase       = "http_ratelimit"
 
   rules = [{
     action      = "block"
-    description = "Every relay route except /relay/health"
+    description = "Every route under /relay except a health check"
     enabled     = true
-    expression  = "(${local.relay_match} and http.request.uri.path ne \"/relay/health\")"
+    expression  = "(${local.relay_match} and not ends_with(http.request.uri.path, \"/health\"))"
     ratelimit = {
       characteristics     = ["cf.colo.id", "ip.src"]
       period              = var.rate_limit_period

@@ -1,4 +1,4 @@
-# The admin Worker's only hostname sits behind an Access application that
+# The admin Worker's only path sits behind an Access application that
 # requires an operator identity (the policy below), and the Worker also
 # verifies Access's signed token itself (workers/admin/src/access.js), so a mistake here cannot
 # expose it. Nothing is created until admin_environments is set. As with the
@@ -37,9 +37,13 @@ resource "cloudflare_zero_trust_access_policy" "operators" {
 resource "cloudflare_zero_trust_access_application" "admin" {
   for_each = var.admin_environments
 
-  account_id       = var.account_id
-  name             = "keyquorum relay admin (${each.key})"
-  domain           = each.value.hostname
+  account_id = var.account_id
+  name       = "keyquorum relay admin (${each.key})"
+  # The console's mount: its hostname and path, and everything below it (from
+  # memory, verify at the first apply that Access takes a path with a trailing
+  # wildcard here). The admin Worker verifies the Access token itself, so a path
+  # this does not cover is still refused without a valid token.
+  domain           = "${each.value.hostname}${each.value.path}/*"
   type             = "self_hosted"
   session_duration = "1h"
 
@@ -49,11 +53,19 @@ resource "cloudflare_zero_trust_access_application" "admin" {
   }]
 }
 
-resource "cloudflare_workers_custom_domain" "admin" {
+# The console's routes, as for the relay (main.tf): its path below the host.
+resource "cloudflare_workers_route" "admin" {
   for_each = var.admin_environments
 
-  account_id = var.account_id
-  zone_id    = var.zone_id
-  hostname   = each.value.hostname
-  service    = each.value.worker
+  zone_id = var.zone_id
+  pattern = "${each.value.hostname}${each.value.path}/*"
+  script  = each.value.worker
+}
+
+resource "cloudflare_workers_route" "admin_root" {
+  for_each = var.admin_environments
+
+  zone_id = var.zone_id
+  pattern = "${each.value.hostname}${each.value.path}"
+  script  = each.value.worker
 }

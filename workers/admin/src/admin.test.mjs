@@ -137,7 +137,8 @@ test("the static page keeps to the CSP: no inline code, no outside origin, no in
     assert.doesNotMatch(text, /innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(/, `${name} writes HTML`);
     if (name.endsWith(".html")) {
       for (const script of text.matchAll(/<script\b([^>]*)>/gi)) {
-        assert.match(script[1], /\ssrc="\/[^"]+"/, `${name} has an inline script`);
+        // A file of the page's own, by a relative path (the page may be mounted).
+        assert.match(script[1], /\ssrc="(?![a-z][a-z0-9+.-]*:|\/)[^"]+"/i, `${name} has an inline script`);
       }
       assert.doesNotMatch(text, /<style\b/i, `${name} has an inline style element`);
     }
@@ -174,4 +175,74 @@ test("a top-level link (the Access sign-in redirect) reaches the token check, wh
   assert.equal(signedIn.headers.get("cross-origin-resource-policy"), "same-origin");
   const anonymous = await handle(get("/", { headers: link }), env, { verify: refuse("no token") });
   assert.equal(anonymous.status, 403);
+});
+
+// The console may sit under a path of its own on a host it shares (the staging
+// console is /relay/staging-admin on the domain the relay is on).
+const MOUNT = "/relay/staging-admin";
+const mounted = (extra = {}) => ({ ...ENV, MOUNT_PATH: MOUNT, ...extra });
+
+test("a mounted console serves its page and API below the mount, and nothing outside it", async () => {
+  const assets = assetsStub();
+  const env = mounted({ ASSETS: assets });
+  const page = await handle(get(`${MOUNT}/`), env, { verify: allow() });
+  assert.equal(page.status, 200);
+  assert.deepEqual(assets.calls, ["https://admin.test/"]);
+  await handle(get(`${MOUNT}/app.js`), env, { verify: allow() });
+  assert.equal(assets.calls[1], "https://admin.test/app.js");
+  const who = await handle(get(`${MOUNT}/api/whoami`), env, { verify: allow() });
+  assert.deepEqual((await who.json()).email, "operator@example.com");
+  assert.equal((await handle(get(`${MOUNT}/api/config`), env, { verify: allow() })).status, 200);
+
+  let verified = 0;
+  const counting = async () => (verified++, { ok: true, claims: { email: "operator@example.com", exp: 1_900_000_000 } });
+  for (const path of ["/", "/app.js", "/api/whoami", "/api/users", "/relay/", "/relay/inbox", "/relay/staging-user/api/whoami", `${MOUNT}x/api/whoami`, "/relay/admin/api/whoami", "/%72elay/staging-admin/"]) {
+    const response = await handle(get(path), env, { verify: counting });
+    assert.equal(response.status, 404, path);
+    assert.deepEqual(await response.json(), { error: "not found" });
+  }
+  assert.equal(verified, 0);
+  assert.equal(assets.calls.length, 2);
+});
+
+test("below the mount a token is still required, and the mount without its slash goes to the slash", async () => {
+  const assets = assetsStub();
+  const env = mounted({ ASSETS: assets });
+  for (const path of [`${MOUNT}/`, `${MOUNT}/app.js`, `${MOUNT}/api/whoami`, `${MOUNT}/api/users`]) {
+    const response = await handle(get(path), env, { verify: refuse("no token") });
+    assert.equal(response.status, 403, path);
+  }
+  assert.equal(assets.calls.length, 0);
+  const bare = await handle(get(`${MOUNT}?x=1`), env, { verify: refuse("no token") });
+  assert.equal(bare.status, 308);
+  assert.equal(bare.headers.get("location"), `${MOUNT}/?x=1`);
+  assert.equal(bare.headers.get("cache-control"), "no-store");
+  assert.equal((await handle(get(MOUNT, { method: "POST" }), env, { verify: allow() })).status, 405);
+});
+
+test("a console mount that is not valid, or is the relay's own, leaves it unconfigured", async () => {
+  for (const value of ["/", "/relay", "/relay/", "/relay/a/b", "/admin", "relay/admin", "/relay/inbox", "/relay/Admin", 7]) {
+    const assets = assetsStub();
+    const response = await handle(get("/"), { ...ENV, MOUNT_PATH: value, ASSETS: assets }, { verify: allow() });
+    assert.equal(response.status, 503, String(value));
+    assert.equal(assets.calls.length, 0);
+  }
+  // Unset or empty is a hostname of its own, as before.
+  for (const value of [undefined, ""]) {
+    const response = await handle(get("/"), { ...ENV, MOUNT_PATH: value, ASSETS: assetsStub() }, { verify: allow() });
+    assert.equal(response.status, 200);
+  }
+});
+
+test("the console's page and its calls name no absolute path, so they work under any mount", () => {
+  const html = readFileSync(join(PUBLIC, "index.html"), "utf8");
+  assert.doesNotMatch(html, /(?:href|src|action)\s*=\s*"\//i);
+  for (const name of readdirSync(PUBLIC).filter((file) => file.endsWith(".js"))) {
+    const text = readFileSync(join(PUBLIC, name), "utf8");
+    if (name !== "api.js") assert.doesNotMatch(text, /\bfetch\s*\(/, `${name} fetches on its own`);
+    assert.doesNotMatch(text, /import\s*\(?\s*["']\//, `${name} imports an absolute path`);
+    assert.doesNotMatch(text, /(?:location|window\.open)[^;\n]*["']\/(?:api|app|style)/, `${name} navigates to an absolute path`);
+  }
+  const api = readFileSync(join(PUBLIC, "api.js"), "utf8");
+  assert.match(api, /fetch\(withQuery\(endpoint\(path\), query\)/);
 });

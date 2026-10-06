@@ -6,8 +6,9 @@
 // core in that object decides who may do what; this file only keeps everything
 // else out. Every response is `Cache-Control: no-store`.
 //
-// Everything is under the prefix `/relay` (policy.js, RELAY_PREFIX); a path
-// outside it is a 404, so the rest of the domain belongs to other things.
+// Everything is under the Worker's mount (mount.js: `/relay`, or `/relay/<name>`
+// for a staging relay on the same host); a path outside it is a 404, so the rest
+// of the domain belongs to other things.
 //
 // What it will not do: answer another website's browser (see
 // browser-isolation.js: the Lab and the portfolio are other sites, and the relay
@@ -17,6 +18,7 @@
 // that mints is not on this Worker), or keep a request waiting behind the
 // object (the object refuses past `MAX_IN_FLIGHT`).
 import { crossSiteRefusal } from "./browser-isolation.js";
+import { relayMount } from "./mount.js";
 import {
   MAX_REQUEST_BODY,
   baseHeaders,
@@ -65,8 +67,19 @@ export async function handle(request, env, log = console) {
     return jsonResponse(403, { error: "cross-site requests are not served" });
   }
 
-  const route = classify(request.method, url.pathname);
+  // Where this Worker is mounted (MOUNT_PATH, mount.js): a value that is not a
+  // valid mount leaves it unconfigured, so a typo serves nothing.
+  const mount = relayMount(env.MOUNT_PATH);
+  if (mount === null) return jsonResponse(503, { error: "relay not configured" });
+
+  const route = classify(request.method, url.pathname, mount);
   switch (route.kind) {
+    case "redirect":
+      // The page's links are relative, so it must be loaded with its slash.
+      return new Response(null, {
+        status: 308,
+        headers: baseHeaders({ location: `${route.to}${url.search}` }),
+      });
     case "not-found":
       return jsonResponse(404, { error: "not found" });
     case "method-not-allowed":

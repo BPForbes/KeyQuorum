@@ -1,5 +1,6 @@
 # The admin Worker: the provider's console, a static page and its one data
-# route, on its own hostname behind a Cloudflare Access application with MFA.
+# route, on its own path of the domain (MOUNT_PATH, src/mount.js) behind a
+# Cloudflare Access application with MFA.
 # Production is the top level, staging is [env.staging]
 # (keyquorum-relay-admin-staging).
 #
@@ -53,6 +54,12 @@ simple = { limit = 20, period = 60 }
 [vars]
 ACCESS_TEAM_DOMAIN = ""
 ACCESS_AUD = ""
+# Not secret: the path the console is mounted under on its host (src/mount.js),
+# `/relay/<name>`, or empty for a hostname of its own. The deploy job sets it
+# from the path of the environment's ADMIN_URL; it must be the path the Access
+# application and the route cover (deploy/cloudflare/terraform). A value that is
+# not valid leaves the console unconfigured.
+MOUNT_PATH = "/relay/admin"
 # Not secret: the address clients load their keys for, to pre-fill the issue
 # form (the deploy job fills it from the environment's RELAY_URL).
 RELAY_PUBLIC_URL = ""
@@ -84,4 +91,5 @@ simple = { limit = 20, period = 60 }
 [env.staging.vars]
 ACCESS_TEAM_DOMAIN = ""
 ACCESS_AUD = ""
+MOUNT_PATH = "/relay/staging-admin"
 RELAY_PUBLIC_URL = ""

@@ -21,6 +21,15 @@ export class NetworkError extends Error {
   }
 }
 
+// The console may be mounted under a path of its own on a shared host (for
+// example /relay/staging-admin/), so a call never names an absolute path: the
+// route's leading slash is dropped and the browser resolves it against the page.
+// (The page is served with its trailing slash; the Worker sends the mount
+// without one to the slash.)
+export function endpoint(path) {
+  return String(path).replace(/^\/+/, "");
+}
+
 function withQuery(path, query) {
   const params = new URLSearchParams();
   for (const [name, value] of Object.entries(query ?? {})) {
@@ -40,7 +49,7 @@ export async function api(method, path, { query, body, lock, operationId } = {})
   if (operationId) headers["idempotency-key"] = operationId;
   let response;
   try {
-    response = await fetch(withQuery(path, query), {
+    response = await fetch(withQuery(endpoint(path), query), {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),

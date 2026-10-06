@@ -425,27 +425,69 @@ test("nothing outside /relay is served, so the rest of the domain is not the rel
   }
 });
 
-test("the prefix itself is the status page, and the relay is given the path below it", async () => {
-  for (const path of ["/relay", "/relay/"]) {
-    const { env, forwarded } = fakeEnv();
-    const page = await callRaw(env, path);
-    assert.equal(page.status, 200, path);
-    assert.equal(await page.text(), STATUS_HTML, path);
-    assert.equal(forwarded.length, 0, path);
-  }
+test("the mount without its slash goes to the slash, and the relay is given the path below the mount", async () => {
   const { env, forwarded } = fakeEnv();
+  const bare = await callRaw(env, "/relay?x=1");
+  assert.equal(bare.status, 308);
+  assert.equal(bare.headers.get("location"), "/relay/?x=1");
+  assert.equal(bare.headers.get("cache-control"), "no-store");
+  assert.equal((await callRaw(env, "/relay", { method: "POST", body: "{}" })).status, 405);
+  const page = await callRaw(env, "/relay/");
+  assert.equal(page.status, 200);
+  assert.equal(await page.text(), STATUS_HTML);
+  assert.equal(forwarded.length, 0);
+
   const response = await call(env, "/inbox?after=3&limit=10", { method: "GET" });
   assert.equal(response.status, 200);
   assert.equal(forwarded.length, 1);
   const seen = new URL(forwarded[0].url);
   assert.equal(seen.pathname, "/inbox");
   assert.equal(seen.search, "?after=3&limit=10");
-  assert.equal(seen.pathname.includes("relay"), false);
 });
 
-test("the status page loads its files and reads its health from under /relay", () => {
-  assert.match(STATUS_HTML, /href="\/relay\/assets\/status\.css"/);
-  assert.match(STATUS_HTML, /src="\/relay\/assets\/status\.js"/);
-  assert.match(STATUS_JS, /check\("\/relay\/health"\)/);
-  assert.match(STATUS_JS, /check\("\/relay\/ready"\)/);
+test("the status page's links are relative, so it works under any mount", () => {
+  assert.match(STATUS_HTML, /href="assets\/status\.css"/);
+  assert.match(STATUS_HTML, /src="assets\/status\.js"/);
+  assert.match(STATUS_JS, /check\("health"\)/);
+  assert.match(STATUS_JS, /check\("ready"\)/);
+  for (const text of [STATUS_HTML, STATUS_JS]) assert.doesNotMatch(text, /["'`]\/(relay|health|ready|assets)/);
+});
+
+// A staging relay sits on the same host as production, under its own path.
+test("a staging relay is mounted at /relay/staging-user and answers nothing else, production's path included", async () => {
+  const STAGING = "/relay/staging-user";
+  const make = () => {
+    const made = fakeEnv();
+    made.env.MOUNT_PATH = STAGING;
+    return made;
+  };
+  const { env, forwarded } = make();
+  assert.equal((await callRaw(env, `${STAGING}/health`)).status, 200);
+  assert.equal((await callRaw(env, `${STAGING}/ready`)).status, 200);
+  assert.equal((await callRaw(env, `${STAGING}/`)).status, 200);
+  assert.equal((await callRaw(env, STAGING)).status, 308);
+  assert.equal((await callRaw(env, `${STAGING}/inbox`)).status, 200);
+  assert.equal(new URL(forwarded[0].url).pathname, "/inbox");
+  for (const path of ["/relay/health", "/relay/inbox", "/relay/", "/relay", "/relay/staging-userx/inbox", "/relay/staging/inbox", "/relay/staging-admin/inbox", "/inbox", "/"]) {
+    const other = make();
+    const response = await callRaw(other.env, path);
+    assert.equal(response.status, 404, path);
+    assert.equal(other.forwarded.length, 0, path);
+  }
+});
+
+test("a mount that is not valid leaves the relay unconfigured, never wider", async () => {
+  for (const value of ["/", "relay", "/relay/", "/relay/Staging", "/relay/a/b", "/other", "/relay/staging_user", "/relay/-x", 7, {}]) {
+    const { env, forwarded } = fakeEnv();
+    env.MOUNT_PATH = value;
+    const response = await callRaw(env, "/relay/health");
+    assert.equal(response.status, 503, String(value));
+    assert.equal(forwarded.length, 0);
+  }
+  // Unset or empty is the default, /relay.
+  for (const value of [undefined, ""]) {
+    const { env } = fakeEnv();
+    env.MOUNT_PATH = value;
+    assert.equal((await callRaw(env, "/relay/health")).status, 200);
+  }
 });

@@ -18,12 +18,12 @@ This runbook therefore does not describe a running production deployment. What i
 `workers/` (the Worker, the Durable Object, the guard and smoke scripts and
 their tests), the `workers` workflow (`.github/workflows/workers.yml`) and the
 Terraform in `deploy/cloudflare/terraform/`. The admin Worker (`workers/admin/`)
-serves the console on its own hostname, which sits behind a Cloudflare Access
+serves the console on its own path of the same domain, which sits behind a Cloudflare Access
 application with MFA (Terraform, `admin_environments`); no route bypasses
 Access, and the Worker verifies Access's token itself. It reaches the relay
 through a private Durable Object binding, and it has never been deployed or
 configured on a real account. The
-relay is mounted at `https://keyquorum.dev/relay` (the owner's domain; the console has its own hostname; see `relay-hosting.md`, "Domain and operator page"). CI's
+relay and the console are mounted under paths of `https://keyquorum.dev` (`/relay`, `/relay/staging-user`, `/relay/admin`, `/relay/staging-admin`; the owner's domain; see `relay-hosting.md`, "Domain and operator page", including the one-origin cost). CI's
 `terraform validate` accepts the Terraform, but the authors never planned or
 applied it against a real account, and the owner's GitHub and Cloudflare setup
 (environments, secrets, `RELAY_URL`, the `workers` required check, account,
@@ -194,8 +194,8 @@ so no official client trusts it. A Worker secret survives a deploy and cannot
 be read back, so rotating one means putting a new value. The relay's hostname
 is not a secret: it is the non-secret variable `ALLOWED_HOSTS`, which the
 deploy jobs set from the GitHub environment's `RELAY_URL` (the relay's URL,
-`https://<domain>/relay`); the Worker serves that host, only under `/relay`,
-and no other (`relay-hosting.md`, "Workers Builds and previews").
+`https://<domain>/relay`, or `/relay/staging-user` for the staging relay); the
+Worker serves that host, only below that path (its `MOUNT_PATH`), and no other (`relay-hosting.md`, "Workers Builds and previews").
 `provider.kqrl` is not read by the Worker, which takes no revocation list yet.
 
 ## State
@@ -312,7 +312,8 @@ hosting vendor supplies on its own.
 ## Verification
 
 - On the Cloudflare relay every path below is under `/relay` (`GET
-  /relay/health`, and a client's URL is `https://<domain>/relay`); on the native
+  /relay/health`, `/relay/staging-user/health` for the staging relay, and a
+  client's URL is that path on the domain); on the native
   host there is no prefix.
 - `GET /health` says the process is up. It proves nothing about the
   provider identity or the store.

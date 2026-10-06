@@ -9,20 +9,40 @@ variable "zone_id" {
 }
 
 variable "environments" {
-  description = "Each environment's hostname (the bare domain or a subdomain, with no path) and the Worker that serves it under /relay on that hostname (production is the top-level wrangler configuration, staging is [env.staging])."
+  description = "Each environment's hostname (the bare domain, no path), the path the relay Worker is mounted under (/relay, or /relay/<name> for a staging relay on the same host; a name that is not one of the relay's own routes) and the Worker that serves it (production is the top-level wrangler configuration, staging is [env.staging]). The path is also the path of RELAY_URL."
   type = map(object({
     hostname = string
+    path     = string
     worker   = string
   }))
+
+  validation {
+    condition = alltrue([
+      for environment in values(var.environments) :
+      can(regex("^/relay(/[a-z0-9]+(-[a-z0-9]+)*)?$", environment.path)) &&
+      !contains(["inbox", "keycheck", "provider-identity", "audit", "trees", "devices", "health", "ready", "assets"], try(regex("^/relay/(.+)$", environment.path)[0], ""))
+    ])
+    error_message = "Each relay path must be /relay or /relay/<name> (lowercase letters, digits and single hyphens), and the name must not be one of the relay's own routes."
+  }
 }
 
 variable "admin_environments" {
-  description = "Each environment's admin hostname and the admin Worker that serves it. Every hostname is placed behind an Access application. Leave empty to create none."
+  description = "Each environment's console: its hostname (no path), the path the admin Worker is mounted under (/relay/<name>, never /relay itself) and the Worker. Every one is placed behind an Access application. Leave empty to create none. The path is also the path of ADMIN_URL."
   type = map(object({
     hostname = string
+    path     = string
     worker   = string
   }))
   default = {}
+
+  validation {
+    condition = alltrue([
+      for environment in values(var.admin_environments) :
+      can(regex("^/relay/[a-z0-9]+(-[a-z0-9]+)*$", environment.path)) &&
+      !contains(["inbox", "keycheck", "provider-identity", "audit", "trees", "devices", "health", "ready", "assets"], try(regex("^/relay/(.+)$", environment.path)[0], ""))
+    ])
+    error_message = "Each console path must be /relay/<name> (lowercase letters, digits and single hyphens), not /relay itself and not one of the relay's own route names."
+  }
 }
 
 variable "idp_mfa_required" {

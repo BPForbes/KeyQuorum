@@ -63,6 +63,10 @@ binding = "CF_VERSION_METADATA"
 # Not secret: the hostname(s) this Worker answers, filled by the deploy job.
 [vars]
 ALLOWED_HOSTS = ""
+# Not secret: the path this Worker is mounted under on its host (src/mount.js).
+# The deploy job sets it from the path of the environment's RELAY_URL; a value
+# that is not `/relay` or `/relay/<name>` leaves the Worker unconfigured.
+MOUNT_PATH = "/relay"
 
 # What a Worker Preview starts with (it does not inherit the settings above).
 [previews.vars]
@@ -94,3 +98,5 @@ binding = "CF_VERSION_METADATA"
 
 [env.staging.vars]
 ALLOWED_HOSTS = ""
+# The staging relay shares the production hostname, under its own path.
+MOUNT_PATH = "/relay/staging-user"
