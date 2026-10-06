@@ -60,19 +60,19 @@ variable "operator_emails" {
 variable "rate_limit_requests" {
   description = "Requests allowed per client per period on the customer routes before the edge blocks."
   type        = number
-  default     = 600
+  default     = 100
 }
 
 variable "rate_limit_period" {
   description = "The counting period in seconds. Which periods are allowed depends on the Cloudflare plan."
   type        = number
-  default     = 60
+  default     = 10
 }
 
 variable "rate_limit_timeout" {
   description = "How long, in seconds, a client stays blocked once it exceeds the limit. Allowed values depend on the plan."
   type        = number
-  default     = 60
+  default     = 10
 }
 
 variable "archive_bucket_name" {

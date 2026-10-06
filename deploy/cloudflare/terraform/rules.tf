@@ -20,7 +20,9 @@ resource "cloudflare_ruleset" "relay_rate_limit" {
     action      = "block"
     description = "Every route under /relay except a health check"
     enabled     = true
-    expression  = "(${local.relay_match} and not ends_with(http.request.uri.path, \"/health\"))"
+    # Free plans allow Path, but not Host, in a rate-limit expression.
+    # This applies to /relay on every hostname in this dedicated zone.
+    expression  = "((http.request.uri.path eq \"/relay\" or starts_with(http.request.uri.path, \"/relay/\")) and not ends_with(http.request.uri.path, \"/health\"))"
     ratelimit = {
       characteristics     = ["cf.colo.id", "ip.src"]
       period              = var.rate_limit_period
