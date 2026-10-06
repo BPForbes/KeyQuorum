@@ -25,6 +25,8 @@ Status at the time of writing (2026-10-06):
 | Cloudflare Workers relay (Path B) | **Planned, not implemented.** Status: **Adopt** (decided 2026-10-06 on the stage 3 spike, with production-only checks before launch). The design is in [The Workers relay](#the-workers-relay-planned-not-implemented) and the measurements in [What the spike measured](#what-the-spike-measured-stage-3). |
 | Native `keyquorum host serve` | **Kept as the dev, test and reference host.** `SqliteRelayStore`, `src/relay/server.rs` and `host keys` stay in the code. It is not a production deployment path. |
 | Deployment pipeline and Cloudflare Terraform | **Stage 2, in this repository; not yet exercised against a Cloudflare account.** `workers/` (a health-only stub Worker), `.github/workflows/workers.yml` and `deploy/cloudflare/terraform/` exist and are described in [Provisioning and the deployment pipeline](#provisioning-and-the-deployment-pipeline-stage-2). Honest limits: the relay itself is still unimplemented, so the deployed Worker is the stub; the Terraform passes CI's `terraform validate` against the pinned provider (`.terraform.lock.hcl`, `cloudflare/cloudflare` 5.27.0) but the repository's authors have never planned or applied it against a real account; Cloudflare Notifications and the R2 retention lock are dashboard steps, not Terraform; there is no wasm32 build step yet; and the owner's GitHub and Cloudflare setup is still to be done. |
+| Admin Worker's front door (stage 4a) | **In this repository; never deployed, and Access has never been configured on an account.** `workers/admin/` holds the Worker `keyquorum-relay-admin` (`[env.staging]` is `keyquorum-relay-admin-staging`): it verifies Cloudflare Access's signed token itself and serves a static operator page that shows who is signed in and that the relay is not connected yet. Its Terraform (`admin_environments`: a custom domain and an Access application with an MFA policy per environment) and its workflow steps exist; CI's `terraform` job checks the whole directory on every push. **Not built:** the relay-backed pages (key list, revoke, audit trail, status), the `/api` routes behind them and the service binding to the Durable Object (stage 4). See [The admin Worker's front door](#the-admin-workers-front-door-stage-4a). |
+| Relay domain and operator page | **Decided 2026-10-06 (owner).** The relay uses its own domain on Cloudflare, not `bailey-forbes.com`; the operator page is static files served from the admin Worker behind Access. See [Domain and operator page](#domain-and-operator-page-owner-decisions-2026-10-06). |
 | Live deployment, restore test, overload test | **Not done.** There is nothing to deploy until the Workers relay exists; they need the operator's Cloudflare account and run against a real deployment. The [acceptance checklist](#acceptance-checklist) says which rows this document settles and which the deployment must. |
 
 Nothing here is deployment approval, and no SOC 2 mapping below claims
@@ -68,6 +70,7 @@ them), so each source below is marked by how it was read:
 | Cloudflare, Workers custom domains, `workers.dev` and preview URLs can be switched off per Worker; service bindings call another Worker without a public route. | https://developers.cloudflare.com/workers/ | not retrieved (from memory, verify) |
 | Cloudflare, Workers secrets (`wrangler secret put`): a secret is not readable back through the API and survives a deploy; Workers versions and `wrangler rollback`. | https://developers.cloudflare.com/workers/configuration/secrets/ | not retrieved (from memory, verify) |
 | Cloudflare Access, self-hosted applications and policies: a policy can require MFA in addition to the identity provider. | https://developers.cloudflare.com/cloudflare-one/access-controls/policies/common-policies/ | search summary |
+| Cloudflare Access, validating the signed token Access adds to a request: the `Cf-Access-Jwt-Assertion` header, the team's key set at `https://<team domain>/cdn-cgi/access/certs`, and the claims (`iss`, `aud`, `exp`, `nbf`, `email`). The admin Worker's check is written from this. | https://developers.cloudflare.com/cloudflare-one/ (the page's path is not recorded) | not retrieved (from memory, verify) |
 | Cloudflare Access audit logs, and Cloudflare account audit logs. | https://developers.cloudflare.com/cloudflare-one/insights/logs/ | not retrieved (from memory, verify) |
 | Cloudflare, scoped API tokens, Notifications (Worker and Durable Object error alerts), Workers Logs. | https://developers.cloudflare.com/fundamentals/api/get-started/create-token/ | not retrieved (from memory, verify) |
 | Cloudflare, R2 bucket lock (retention rules) | https://developers.cloudflare.com/r2/buckets/bucket-locks/ | not retrieved (from memory, verify) |
@@ -146,6 +149,22 @@ is not locked to the platform. The last is an intent of the design, not a
 tested exit path; the restore drill proves it for the export the operator
 actually takes.
 
+### Domain and operator page (owner decisions, 2026-10-06)
+
+Two decisions of the owner, recorded as decisions:
+
+1. **The relay has its own domain.** The relay uses a separate new domain on
+   Cloudflare, dedicated to the relay (for example bought through Cloudflare
+   Registrar). It does not live under `bailey-forbes.com`, so the portfolio's
+   DNS and hosting are untouched. The relay and admin hostnames come from
+   that domain's zone; the repository names neither, because the zone id and
+   the hostnames are Terraform inputs (`deploy/cloudflare/terraform/`).
+2. **The operator page is hosted the way the portfolio is hosted.** It is
+   static files served from the admin Worker on its own hostname, a Workers
+   custom domain, simply styled. The hostname is behind Cloudflare Access
+   (operator identity plus MFA), and the Worker verifies Access's token
+   itself rather than trusting the Access configuration alone.
+
 ## Gaps and limits, recorded
 
 - **No customer-managed key for Durable Object storage.** Cloudflare
@@ -176,16 +195,26 @@ actually takes.
 
 Stage 2 is in the repository: the Worker project, the workflow and the
 Terraform below exist. What they deploy is a health-only stub, not the
-relay, and none of it has yet run against a Cloudflare account. What is
-still missing is listed under "Not yet, and honest limits" at the end of
+relay, and none of it has yet run against a Cloudflare account. Stage 4a
+added the admin Worker's front door to the same directories (below). What
+is still missing is listed under "Not yet, and honest limits" at the end of
 this section.
 
 - **Infrastructure as code:** `deploy/cloudflare/terraform/`, with the
   `cloudflare/cloudflare` provider (`versions.tf`, `~> 5.0`). `main.tf` has
-  one `cloudflare_workers_custom_domain` per environment. `access.tf` has an
-  Access policy (the operator emails, with MFA required) and a self-hosted
-  Access application for the admin hostname, both created only when
-  `admin_hostname` is set. `rules.tf` has the zone rate-limit ruleset on
+  one `cloudflare_workers_custom_domain` per environment. `access.tf` is
+  empty until `admin_environments` is set (a map of `{hostname, worker}`,
+  default empty; it replaced the earlier single `admin_hostname`). Then it
+  has one shared Access allow policy (the operator emails, with MFA
+  required; a precondition requires at least one operator email) and, per
+  environment, a self-hosted Access application and a
+  `cloudflare_workers_custom_domain` for the admin Worker. The outputs
+  `admin_urls` and `admin_access_aud` give each admin URL and each
+  application's audience tag, which is set as the GitHub environment
+  variable `ACCESS_AUD`; Terraform does not output the Access team domain
+  (for `ACCESS_TEAM_DOMAIN`), which is read from the Zero Trust dashboard.
+  The hostnames, relay and admin, belong to the domain dedicated to the
+  relay (see the decisions above). `rules.tf` has the zone rate-limit ruleset on
   every route except `/health`, and a ruleset that bypasses
   the cache for the relay hostnames. `r2.tf` has an optional archive bucket
   (created only when `archive_bucket_name` is set). `variables.tf`,
@@ -193,6 +222,9 @@ this section.
   runs `terraform fmt -check`, `terraform init -backend=false -lockfile=readonly` and `terraform
   validate`, which need no credentials, and the committed
   `.terraform.lock.hcl` (checked to be tracked) pins the provider (`cloudflare/cloudflare` 5.27.0).
+  The `terraform` job checks the whole directory on every push and accepted
+  the admin resources and the `admin_access_aud` output against the same
+  provider (commit `86bbb8f`).
   The operator runs `terraform apply`
   locally with their own Cloudflare credentials; those never enter GitHub or
   an agent session.
@@ -201,7 +233,8 @@ this section.
   `keyquorum-relay-staging`; `workers_dev = false` and `preview_urls =
   false` at both levels; no routes, because the hostnames are the Terraform's
   custom domains; no `[vars]`), `src/index.js`, `package.json` and
-  `package-lock.json` with wrangler pinned to an exact version. `src/index.js`
+  `package-lock.json` with wrangler pinned to an exact version; the admin
+  Worker is in `workers/admin/` (below). `src/index.js`
   is a JavaScript stub: `GET` and `HEAD /health` answer `{"status":"ok"}`
   with `Cache-Control: no-store`, any other method on `/health` answers 405,
   and every other path answers 404. Two scripts, each with `node:test` tests
@@ -209,30 +242,41 @@ this section.
   guard (it fails on key-material patterns, on a secret-like `[vars]` name,
   on a `deleted_classes` or `renamed_classes` migration unless
   `ALLOW_DESTRUCTIVE_MIGRATION=1` is set, and on a missing `workers_dev` or
-  `preview_urls` = false at the top level or in any environment) and the
+  `preview_urls` = false at the top level or in any environment; `npm run
+  guard` runs it over `wrangler.toml`, `admin/wrangler.toml` and
+  `spike/wrangler.toml`) and the
   bundle guard (key material in the bundle's text files, and a gzip size
   bound of 3 MiB). `scripts/smoke.mjs` is the post-deploy check: `/health`
   must answer 200 with the expected body and `no-store`; the operator and
   mint routes (`/api-keys`, `/api-keys/<id>/revoke`, `/keys`, `/keys/create`,
   `/keys/rotate`) must answer 404 or 405; and an unauthenticated `GET /inbox`
-  must answer 401, or 404 before the relay exists.
+  must answer 401, or 404 before the relay exists. With `--admin <url>` it
+  also sends anonymous `GET /`, `/index.html`, `/app.js` and `/api/whoami`
+  and `POST /api/keys` to the admin hostname; each must be a redirect or a
+  refusal, never a success and never a 404.
 - **CI:** `.github/workflows/workers.yml` with the jobs `workers build`
   (pull requests, `main` and manual runs: `npm ci`, the script tests, the
-  configuration guard, `wrangler deploy --dry-run` for both environments, and
+  configuration guard, `wrangler deploy --dry-run` for four configurations
+  (the public and the admin Worker, each production and staging), and
   the bundle guard; no credentials), `terraform` (the lock file is tracked, `fmt -check`, `init
   -backend=false -lockfile=readonly` and `validate` in the pinned `hashicorp/terraform` Docker
   image, the way `security.yml` runs gitleaks, so no third-party action),
   `workers deploy staging` (a push to `main` only; GitHub environment
-  `cloudflare-staging`; `wrangler deploy --env staging`; then the smoke test
-  against the environment variable `RELAY_URL`), `workers deploy production`
+  `cloudflare-staging`; `wrangler deploy --env staging`; then the admin Worker, `wrangler deploy
+  -c admin/wrangler.toml --env staging`; then the smoke test
+  against the environment variable `RELAY_URL`, and against `ADMIN_URL` when
+  it is set), `workers deploy production`
   (a manual run on `main` with the `production` input; GitHub environment
   `cloudflare-production`, which is intended to have a required reviewer;
-  missing secrets are an error), and `workers`, the one stable required
+  the same two deploys, public Worker first; missing secrets are an error), and `workers`, the one stable required
   check: `workers build` and `terraform` must pass, and each deploy job must
   pass or be skipped on purpose. The staging job warns and passes when its
   environment lacks the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`
   secrets, and warns and skips the smoke test when `RELAY_URL` is unset, so a
   green `workers` check does not by itself show that anything was deployed.
+  Each deploy job passes `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` to the admin
+  Worker from GitHub environment variables; when either is empty it warns
+  and deploys the admin Worker unconfigured, which serves nothing.
   Actions are pinned by full SHA and the workflow runs with `contents:
   read`; wrangler comes from the lockfile, with no `cloudflare/wrangler-action`.
 - **Other checks and repository settings:** `security.yml` has a job
@@ -248,33 +292,110 @@ this section.
   operator lock and the provider-root private key are never on a Worker. The
   only Cloudflare credential in GitHub is the narrow Workers-deploy token
   (Workers Scripts edit only) and the account id, scoped to the two
-  environments.
+  environments. Three further values are GitHub environment **variables**,
+  not secrets: `ACCESS_TEAM_DOMAIN` (the Access team's domain) and
+  `ACCESS_AUD` (the admin application's audience tag) name the Access team
+  and application the admin Worker trusts, and are written into the Worker
+  as plain `[vars]`; `ADMIN_URL` (optional) is the admin hostname the smoke
+  test probes. None of them is a credential: a token still needs Access's
+  signature.
+
+### The admin Worker's front door (stage 4a)
+
+Stage 4a is in the repository and has never been deployed. It is the admin
+Worker's front door and a placeholder page, not the operator console.
+
+- **Configuration:** `workers/admin/wrangler.toml` is the Worker
+  `keyquorum-relay-admin`, with `[env.staging]` as
+  `keyquorum-relay-admin-staging`. `workers_dev = false` and `preview_urls =
+  false` at both levels; no routes (the hostname is the Terraform's custom
+  domain); `[assets]` serves `./public` through the binding `ASSETS` with
+  `run_worker_first = true`, so the Worker sees a request for a static file
+  before the asset layer does (observed under local workerd; that this is
+  how Cloudflare's asset routing works in production is from memory,
+  verify). Two non-secret `[vars]`, `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD`,
+  are empty in the file and filled by the deploy job.
+- **The token check:** `workers/admin/src/access.js` verifies the
+  `Cf-Access-Jwt-Assertion` token: RS256 only; the signature against the key
+  set fetched from `https://<team domain>/cdn-cgi/access/certs` and cached
+  for an hour; the issuer `https://<team domain>`; the audience equal to the
+  application's AUD tag; expiry and not-before with 60 seconds of skew. Any
+  failure, a missing configuration or an unreachable key set refuses. The
+  header name, the key-set URL and the claim layout are from memory, verify
+  them against Cloudflare's page on validating the Access token.
+- **The front door:** `workers/admin/src/index.js` (`handle`) answers a
+  request with no valid token 403 `{"error":"access required"}` and fetches
+  no asset; an unconfigured Worker answers 503 `{"error":"admin not
+  configured"}`. Only `GET` and `HEAD` are served; other methods get 405.
+  `/api/whoami` returns only the verified email and the token's expiry;
+  every other `/api` route answers 503 `{"error":"relay not connected"}`.
+  Everything else is the static asset, with the content security policy
+  `default-src 'none'; script-src 'self'; style-src 'self'; connect-src
+  'self'; img-src 'self'; base-uri 'none'; form-action 'none';
+  frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer`, `Cross-Origin-Opener-Policy: same-origin`
+  and `Cache-Control: no-store`. The refusal reason goes to the Worker's
+  log and never to the caller.
+- **The page:** `workers/admin/public/` (`index.html`, `app.js`,
+  `style.css`) shows who is signed in and that the relay is not connected
+  yet. It has no inline code, names no outside origin and sets all its text
+  with `textContent`.
+- **Tests:** 18 `node:test` tests run under `npm test`.
+  `src/access.test.mjs` covers a valid token, the wrong audience, the wrong
+  issuer, an expired and a not-yet-valid token, a forged signature, tampered
+  claims, an unknown key, HS256 and `alg: none`, a key set that is down or
+  malformed, and the cache; its keys and tokens are generated at run time.
+  `src/admin.test.mjs` covers nothing served without a token, failing
+  closed when unconfigured, the reason logged and never returned, the
+  headers, whoami, the 503 API routes, the 405 methods and a page-contract
+  test that scans `public/` for inline code, handlers, inline styles,
+  outside origins and `innerHTML`. Run once under local workerd (not
+  repeated in CI), the Worker with `run_worker_first` answered 503
+  unconfigured and 403 configured without a token, on `/`, `/index.html`,
+  `/app.js` and the API.
+- **Not built:** the relay-backed pages (key list, revoke, audit trail,
+  status), the `/api` routes behind them, and the service binding from the
+  admin Worker to the Durable Object; they belong to stage 4. The Worker has
+  never been deployed, and Access has never been configured on an account.
 
 **Not yet, and honest limits:**
 
-- The relay is unimplemented. The deployed Worker is the stub, and there is
-  no admin Worker, no Durable Object and no migration.
+- The deployed public Worker is the stub. The admin Worker is only its front
+  door (stage 4a, above): no relay-backed page, no `/api` route beyond
+  `/api/whoami`, no service binding. There is no Durable Object and no
+  migration. The admin Worker has never been deployed, and Access has never
+  been configured on an account.
 - The Terraform has been validated only by CI: the `terraform` job ran
   `fmt -check`, `init -backend=false` and `validate` on commit `f73223f` and
   reported "The configuration is valid" against provider 5.27.0. The
   repository's authors have never planned or applied it against a real
   account (none was available), so the first `terraform plan` is the
-  first check of its behaviour.
+  first check of its behaviour. The admin resources (`admin_environments`)
+  came after that commit; the `terraform` job accepted them too (commit
+  `86bbb8f`), which again proves syntax and schema only.
 - Cloudflare Notifications (Worker and Durable Object error alerts) and the
   R2 bucket's retention lock are not in Terraform; they are dashboard steps
   for now.
 - There is no wasm32 build step in `workers.yml`. The stub is plain
   JavaScript; the build step is added with the Rust Worker.
-- The admin Worker's own custom domain is not in `main.tf`; the Access
-  application for `admin_hostname` exists, but the admin Worker and its
-  hostname arrive with it.
+- The relay-backed admin pages, their `/api` routes and the service binding
+  to the Durable Object are not built (stage 4). The admin Worker's custom
+  domain and Access application are in `access.tf`, created only once
+  `admin_environments` is set, and have never been applied.
 - The owner must create the GitHub environments `cloudflare-staging` and
   `cloudflare-production` with their `CLOUDFLARE_API_TOKEN` and
   `CLOUDFLARE_ACCOUNT_ID` secrets and the `RELAY_URL` variable (and the
   production required reviewer), add `workers` to the required checks, and
-  have a Cloudflare account, a zone and a custom domain. The Worker must be
+  have a Cloudflare account, a zone for the domain dedicated to the relay
+  (which still has to be chosen and registered) and a custom domain. The
+  Worker must be
   deployed before `terraform apply`, because a custom domain names an
-  existing Worker.
+  existing Worker. For the admin Worker the order is: deploy it (it serves
+  nothing while unconfigured), `terraform apply`, read the application's
+  audience tag from the `admin_access_aud` output and the team domain from
+  the Zero Trust dashboard, set the variables `ACCESS_AUD`,
+  `ACCESS_TEAM_DOMAIN` and `ADMIN_URL` on the GitHub environment, and
+  deploy again.
 - `terraform apply` of the two rulesets replaces any rules already in the
   zone's `http_ratelimit` and `http_request_cache_settings` entry-point
   phases; import existing ones first.
@@ -284,7 +405,7 @@ this section.
 | Role | Who | Allowed | Not allowed |
 | --- | --- | --- | --- |
 | Deploy | the Workers-deploy API token (`CLOUDFLARE_API_TOKEN`, Workers Scripts edit only, with `CLOUDFLARE_ACCOUNT_ID`) held as secrets in the GitHub environments `cloudflare-staging` and `cloudflare-production` (production intended to have a required reviewer) | edit the Workers scripts | read Worker secrets or Durable Object data, change Access, DNS, WAF rules or the Terraform-managed zone settings |
-| Operate | the operator's day-to-day identity, through Cloudflare Access with MFA | reach the admin Worker (list, revoke, mint, rotate, events, checkpoint), read Access and account audit logs and the notifications | change Access policies, change the zone, delete Durable Object data |
+| Operate | the operator's day-to-day identity, through Cloudflare Access with MFA | reach the admin Worker (today its page shows who is signed in; list, revoke, mint, rotate, events and checkpoint arrive with stage 4), read Access and account audit logs and the notifications | change Access policies, change the zone, delete Durable Object data |
 | Backup | a write-only export credential (an R2 token limited to the archive bucket's write, if the optional bucket is used; otherwise none, and the operator pulls exports and checkpoints) | write an export object | read or delete other objects |
 | Restore | a separate identity used in the restore drill, in a test account or a test Worker | create and fill a test Durable Object from an export, run the verification | reach the production Workers, hold the production relay key |
 
@@ -339,17 +460,22 @@ can (below), and the store and adapter remain to be built.
 - **Clock.** The native host's time source uses `SystemTime`, which cannot
   run on wasm. A clock is injected and times are passed into the SQL that
   uses `'now'` today.
-- **Admin Worker `keyquorum-relay-admin`.** No route that bypasses
-  Cloudflare Access: its only hostname sits behind an Access self-hosted
-  application (operator identity plus MFA), `workers.dev` and preview URLs
-  are off (from memory, verify), and it is service-bound to the same Durable
-  Object (from memory, verify). As defence in depth it must also verify the
-  Access JWT itself (the `Cf-Access-Jwt-Assertion` request header, checked
-  against the Access team's published key set for its signature, and for
-  the application's audience tag, issuer and expiry; from memory, verify the
-  header and key-set details), so that a mistake in the Access application
-  does not expose it. That check is a PR 4 requirement; the admin Worker
-  does not exist yet. It exposes list, revoke, mint, rotate, events and checkpoint, and nothing
+- **Admin Worker `keyquorum-relay-admin`.** Its front door exists (stage
+  4a, `workers/admin/`, described under Provisioning); the relay-backed part
+  is planned. Its only hostname is a custom domain behind an Access
+  self-hosted application (operator identity plus MFA), no route bypasses
+  Access, and `workers.dev` and preview URLs are off (that this switches
+  them off is from memory, verify; `scripts/guard.mjs` fails CI if either
+  setting is missing). The Worker verifies the Access token itself (the
+  `Cf-Access-Jwt-Assertion` request header, checked against the Access
+  team's published key set for its signature, and for the application's
+  audience tag, issuer and expiry; from memory, verify the header and
+  key-set details), so that a mistake in the Access application does not
+  expose it; that check is implemented and tested (`src/access.js`), not
+  planned. Today the Worker serves a static page and `/api/whoami` and
+  answers every other `/api` route with 503. Planned (stage 4): it is
+  service-bound to the same Durable Object (from memory, verify) and exposes
+  list, revoke, mint, rotate, events and checkpoint, and nothing
   else. For a mint or rotation the Durable Object seals the `.kqkey` with
   the relay key and returns only sealed bytes; the native `host keys` CLI
   writes the file. A response lost after the commit can leave a key with no
@@ -359,12 +485,14 @@ can (below), and the store and adapter remain to be built.
 - **Which routes are public.** Customer routes (`/inbox`, `/keycheck`,
   `/provider-identity`, `/devices/*`, `/trees/*`, `GET /audit/api-keys`)
   are on the public Worker. The operator routes (`/api-keys*`, the full
-  `/audit/*`, anything that mints) are on the admin Worker only, and the
+  `/audit/*`, anything that mints) are planned for the admin Worker only (it
+  has none yet), and the
   public Worker serves no console and no `/swagger-ui/*`. Whether an admin
   API key may still revoke over the public Worker, as it can on the native
   router today, is a PR 4 decision; until it is made, the public Worker
-  does not route it. The admin Worker is reachable only through its
-  Access-protected hostname.
+  does not route it. The admin Worker's only hostname is a custom domain
+  behind an Access application; no route bypasses Access, and the Worker
+  verifies the token itself.
 - **Secrets on the Worker.** The relay private key, `provider.kqcert` and
   `provider.kqrl`, as Worker secrets (not readable back through the API,
   survive a deploy; from memory, verify), used by the same `signing` code,
@@ -556,7 +684,7 @@ Before launch and then on a schedule:
 | health and readiness | an external probe of `GET /health` and `GET /ready` over the public hostname | 3 failures in a row |
 | provider identity | a synthetic client that runs `keyquorum loadkey` with a throwaway store and key (only this proves the identity; `/ready` does not) | daily, any failure |
 | certificate expiry | the external probe's TLS check (the edge certificate's renewal is Cloudflare's), and the expiry date of `provider.kqcert` known from issuance and checked by the operator on a schedule | 30 days before either |
-| storage | the database size against the Durable Object's 10 GB limit, from the admin Worker or Cloudflare's Durable Object metrics (from memory, verify which is available) | 70 % warn, 85 % page |
+| storage | the database size against the Durable Object's 10 GB limit, from the admin Worker (once stage 4 connects it to the Durable Object) or Cloudflare's Durable Object metrics (from memory, verify which is available) | 70 % warn, 85 % page |
 | Worker and Durable Object errors | Cloudflare Notifications on error rate for both Workers and the object (from memory, verify); a dashboard step, not in the Terraform yet | a sustained rise |
 | audit verification | `host keys events --verify --checkpoint` on a schedule, output kept | any row not "ok" or "pending" |
 | denials and rate limits | Workers logs: the authentication-denied, scope-denied and rate-limit-exceeded lines (`src/relay/service.rs`, `src/relay/server.rs` write them through `tracing` today; the Workers relay must emit the same events to its log) | a sustained rise |
@@ -611,8 +739,8 @@ behavior and the zone's settings.
   staging Workers (that this switches the URLs off is from memory, verify),
   and `scripts/guard.mjs` fails CI if either is missing at the top level or
   in an environment, so there is one hostname that carries the relay's
-  identity. The admin Worker's configuration must set the same when it
-  arrives.
+  identity. The admin Worker's `workers/admin/wrangler.toml` sets the same,
+  and the guard checks it too.
 
 ### DNS and client identity
 
@@ -683,14 +811,19 @@ another.
 ### Private operator access
 
 The admin Worker has **no route that bypasses Access**. Its only hostname
-sits behind a **Cloudflare Access** self-hosted application whose policy
-requires the operators' identity **and MFA** (`access.tf`: the policy lists
-the operator emails and requires MFA, and is created only once
-`admin_hostname` is set), `workers.dev` and preview URLs are off, and it is
-service-bound to the Durable Object. The Worker must also verify the Access
-JWT (`Cf-Access-Jwt-Assertion`) itself, as defence in depth, so that a
-mistake in the Access application does not expose it (a PR 4 requirement;
-from memory, verify the header and key-set details). The public Worker has
+is a custom domain behind a **Cloudflare Access** self-hosted application
+whose policy requires the operators' identity **and MFA** (`access.tf`: the
+policy lists the operator emails and requires MFA, and is created only once
+`admin_environments` is set), and `workers.dev` and preview URLs are off.
+The Worker also verifies the Access token (`Cf-Access-Jwt-Assertion`)
+itself, as defence in depth, so that a mistake in the Access application
+does not expose it; this is implemented in `workers/admin/src/access.js`
+and tested, and a request without a valid token gets no page and no API
+answer (from memory, verify the header and key-set details). Planned, with
+stage 4: the service binding from the admin Worker to the Durable Object.
+Nothing of this has run against a live Access application. The operator
+page is static files served by the admin Worker itself, on that hostname,
+as decided on 2026-10-06; it needs no second origin. The public Worker has
 no route to any operator path, and no other hostname reaches them. Customer routes (`/inbox`, `/keycheck`,
 `/provider-identity`, `/devices/*`, `/trees/*`) stay outside Access: a
 `keyquorum` client cannot answer an Access login. Record the Access
@@ -730,7 +863,7 @@ are the record of operator sessions (from memory, verify).
 | Workers architecture maps atomicity (one Durable Object) and provider-only signing and minting (admin Worker, Worker secrets) to a runtime and a backend, with an adopt/defer decision | yes: adopt (stage 3) | record the production-only checks when they are run |
 | The feasibility spike answers each unknown with a measured value | yes for what a local run can measure; the production-only items are listed | run the production-only checks |
 | An unauthorized client cannot mint provider-issued keys or licences | design: no public mint route; native router test pinned; the smoke test asserts the operator and mint routes answer 404 or 405 on the deployed stub | re-run against the public Worker (staging smoke test, miniflare) |
-| The admin Worker cannot be reached without Access and MFA | design: its only hostname sits behind the Access application and MFA policy in `access.tf`, and the Worker verifies the Access JWT itself (a PR 4 requirement) | test it against the live Access application, with and without MFA, and with a forged or missing JWT |
+| The admin Worker cannot be reached without Access and MFA | design plus the token check and its tests: its only hostname is to sit behind the Access application and MFA policy in `access.tf`, and the Worker verifies the Access token itself (`workers/admin/src/access.js`, 18 `node:test` tests, stage 4a); the Access application has not been created | deploy the admin Worker, create the live Access application, and test it with and without MFA, and with a forged or missing token (`smoke.mjs --admin` covers the anonymous cases) |
 | Provider-root custody and operator credential separation documented and verified | documented | verify at the ceremony and record it |
 | Launch prerequisites revalidated and linked to fixes or scope decisions | yes (table above) | none |
 | HTTPS, readiness and health operate as documented | plan and probes | observe them |
@@ -739,6 +872,6 @@ are the record of operator sessions (from memory, verify).
 | Backup restoration meets the objectives and reconciles credential state | procedure | run the drill |
 | Upgrade, rollback, incident response demonstrated | procedures | demonstrate |
 | `DoRelayStore` passes `relay::store::conformance` | not applicable until it exists (PR 4) | PR 4 |
-| The pipeline builds, deploys to staging, and gates production | design and workflow (`.github/workflows/workers.yml`, stage 2) | prove with a run on staging once the owner's setup exists (environments, secrets, `RELAY_URL`, Cloudflare account, zone and custom domain) |
+| The pipeline builds, deploys to staging, and gates production | design and workflow (`.github/workflows/workers.yml`, stage 2) | prove with a run on staging once the owner's setup exists (environments, secrets, `RELAY_URL`, and for the admin Worker `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` and `ADMIN_URL`, Cloudflare account, zone and custom domain) |
 | Gaps (no customer-managed key, Cloudflare sees bearers in transit, one vendor) recorded | yes | the owner accepts them; `docs/soc2-controls.md` carries the subprocessor point |
 | Runbooks distinguish hosting-provider controls from relay authorization | yes (this document and `relay-deployment.md`) | none |
