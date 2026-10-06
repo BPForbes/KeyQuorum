@@ -22,7 +22,7 @@ Status at the time of writing (2026-10-06):
 | Item | State |
 | --- | --- |
 | Hosting decision | **Cloudflare only.** No other hosting provider. Reason: cost (owner decision, recorded in the #88 comment). |
-| Cloudflare Workers relay (Path B) | **Planned, not implemented.** Status: **Adopt, subject to the feasibility spike (PR 3).** The reasons and the unknowns the spike must settle are in [The Workers relay](#the-workers-relay-planned-not-implemented). |
+| Cloudflare Workers relay (Path B) | **Planned, not implemented.** Status: **Adopt** (decided 2026-10-06 on the stage 3 spike, with production-only checks before launch). The design is in [The Workers relay](#the-workers-relay-planned-not-implemented) and the measurements in [What the spike measured](#what-the-spike-measured-stage-3). |
 | Native `keyquorum host serve` | **Kept as the dev, test and reference host.** `SqliteRelayStore`, `src/relay/server.rs` and `host keys` stay in the code. It is not a production deployment path. |
 | Deployment pipeline and Cloudflare Terraform | **Stage 2, in this repository; not yet exercised against a Cloudflare account.** `workers/` (a health-only stub Worker), `.github/workflows/workers.yml` and `deploy/cloudflare/terraform/` exist and are described in [Provisioning and the deployment pipeline](#provisioning-and-the-deployment-pipeline-stage-2). Honest limits: the relay itself is still unimplemented, so the deployed Worker is the stub; the Terraform passes CI's `terraform validate` against the pinned provider (`.terraform.lock.hcl`, `cloudflare/cloudflare` 5.27.0) but the repository's authors have never planned or applied it against a real account; Cloudflare Notifications and the R2 retention lock are dashboard steps, not Terraform; there is no wasm32 build step yet; and the owner's GitHub and Cloudflare setup is still to be done. |
 | Live deployment, restore test, overload test | **Not done.** There is nothing to deploy until the Workers relay exists; they need the operator's Cloudflare account and run against a real deployment. The [acceptance checklist](#acceptance-checklist) says which rows this document settles and which the deployment must. |
@@ -49,7 +49,7 @@ them), so each source below is marked by how it was read:
   platform that the author believes but could not retrieve. Wherever the
   text below relies on one, it says "from memory, verify" next to the
   statement. Confirm each against the named page before the design depends
-  on it; the spike (PR 3) does so for the ones it measures.
+  on it; the stage 3 spike did so for the ones a local run can measure.
 
 | Source | URL | Read as |
 | --- | --- | --- |
@@ -83,9 +83,10 @@ was written in; the file and item are named each time.
 **Cloudflare is the only hosting provider for the relay, and the relay runs
 as a Cloudflare Worker over one Durable Object.** The decision is the
 owner's and rests on cost: one vendor, one bill, no virtual machine to
-patch, size or snapshot. It is adopted subject to the feasibility spike
-(PR 3), because the Workers relay does not exist yet and several platform
-facts it depends on are unverified here.
+patch, size or snapshot. It is adopted on the stage 3 feasibility spike
+(below), which settled what a local run can; the Workers relay does not
+exist yet, and the production-only checks that remain gate launch, not the
+build.
 
 What exists today is a Tokio and axum server
 (`src/bin/keyquorum/host.rs`, `serve`, starts it with `axum::serve`) over
@@ -102,9 +103,9 @@ and no document, chart or unit in this repository describes one.
 | Operational ownership | The operator: OS, reverse proxy, relay, backups, restores. | Same, plus a tunnel to keep alive. | Cloudflare runs the platform; the operator owns the Workers, the Durable Object data, secrets, backups and migrations. |
 | Vendors and bills | Two (the VM provider and Cloudflare, if the edge is wanted). | Two. | One. |
 | Limits that matter | Instance size and volume throughput; one process, one database. | The above, plus edge body and read-timeout limits. | 10 GB per Durable Object; 2 MB per row; isolate memory and CPU time per request; no tokio. |
-| Estimated monthly cost | A machine, a volume and snapshots, billed separately; rejected on cost. | The same plus the edge plan. | A Workers plan plus Durable Object storage and requests; not estimated until the spike measures them (PR 3 records the estimate and the plan required). |
+| Estimated monthly cost | A machine, a volume and snapshots, billed separately; rejected on cost. | The same plus the edge plan. | A Workers plan plus Durable Object storage and requests; not estimated: the plan, request and storage cost need the owner's account (a production-only check, above). |
 | Implementation effort | Days. | One or two days on top. | Weeks: adapter, store, conformance, custody, admin Worker; see the estimate below. |
-| Decision | **Dropped.** | **Not adopted.** It needs the machine, so it keeps the second vendor. | **Adopt, subject to the feasibility spike (PR 3).** |
+| Decision | **Dropped.** | **Not adopted.** It needs the machine, so it keeps the second vendor. | **Adopt** (stage 3 spike; production-only checks before launch). |
 
 ### MongoDB
 
@@ -299,7 +300,8 @@ What is portable is `relay::service::dispatch` (`src/relay/service.rs`), the
 synchronous, runtime-independent request router that the browser lab
 already runs in process on wasm32. The Workers relay is therefore a new
 store and a thin fetch adapter around it, not a rewrite. Everything in this
-section is a design, to be proven by the spike.
+section is a design: the stage 3 spike proved the platform parts a local run
+can (below), and the store and adapter remain to be built.
 
 ### Architecture
 
@@ -333,7 +335,7 @@ section is a design, to be proven by the spike.
   the existing modules' direct use of `rusqlite::Connection` is too wide to
   put behind `SqlExec`, the fallback is to reimplement key lifecycle,
   letter filing and ids over the Durable Object and reuse the pure
-  functions; the spike decides.
+  functions; stage 4 decides once it has tried the seam.
 - **Clock.** The native host's time source uses `SystemTime`, which cannot
   run on wasm. A clock is injected and times are passed into the SQL that
   uses `'now'` today.
@@ -383,33 +385,68 @@ section is a design, to be proven by the spike.
   database written by a newer `SCHEMA_VERSION`. Nothing is deployed
   anywhere today, so there is no data to migrate.
 
-### What the spike must measure (PR 3)
+### What the spike measured (stage 3)
 
-Each of these is unverified here, and each has a stated consequence:
+Run on 2026-10-06 with `workers/spike/` (a throwaway Durable Object probe;
+see its README) under local `wrangler dev --local`, wrangler 4.147.0 and
+workerd 1.20261001.1, plus a release build of the library for
+`wasm32-unknown-unknown` for size. Local workerd is the real SQLite and
+Durable Object API, but it is not Cloudflare's production limits or billing,
+and the table says where that matters.
 
-| Unknown | What to measure | If it fails |
+| Question | Measured | What follows |
 | --- | --- | --- |
-| Build and bundle | the `workers` feature builds for wasm32 with the SQLite-facing code and fits the Workers bundle size limit (from memory, verify). Stage 2's stub bundle is 0.49 KiB gzip; it is plain JavaScript with no SQLite code, so it says nothing about the relay's, which will be measured | reduce the dependency set, or reopen the design with the owner |
-| Durable Object SQLite behaviour | `transactionSync` replaces `BEGIN IMMEDIATE` for each unit of work; `strftime('now')` and the schema and migration statements (`ALTER TABLE` in `migrate`) work; `getrandom` works under the Workers Rust runtime; point-in-time recovery window and restore | pass times in explicitly; rewrite the migration statements; if recovery cannot meet the 1 h RPO, add a cron export |
-| Peak memory | a 16 MiB inbox page (`mailbox::MAX_INBOX_PAGE_BYTES`) against the isolate memory limit (from memory, 128 MB, verify), counting every copy | a smaller Workers-specific page budget through `mailbox::bound_page`, which `next_after` already tolerates |
-| Row size | whether public tree documents (one unbounded `TEXT` column, `org_tree_docs`) stay under the 2 MB row limit | chunk the document across rows inside the store, or cap its size at publish |
-| Cost and plan | the plan SQLite-backed Durable Objects require, request and storage cost for a pilot's traffic and retained letters, CPU time per request against the plan's limit | record the figure; if the Free plan's CPU limit is too small, the paid plan is the cost |
+| The relay's schema | `src/relay/schema.sql` applied verbatim as one multi-statement `exec` on an empty Durable Object and created every relay table; `PRAGMA foreign_keys = ON` was accepted and read back | Works. A new Durable Object needs only the current schema: `migrate` (`ALTER TABLE`, the `api_keys` rebuild) only upgrades old files and nothing is deployed. Its statements (`PRAGMA table_info`, `ADD COLUMN`, `RENAME`, `DROP`) also ran, should that change. |
+| Transactions | `BEGIN IMMEDIATE` is refused with an error that points to `transactionSync`; `transactionSync` commits and returns the callback's value, rolls back when the callback throws, and nests | Works, with a design consequence: `with_immediate_transaction` cannot be used. The `SqlExec` seam needs a `transaction` method (rusqlite: `BEGIN IMMEDIATE`; Durable Object: `transactionSync`). |
+| SQL time | `strftime('%Y-%m-%dT%H:%M:%fZ','now')` and `datetime('now')` returned the same instant as `Date.now()`, and a column `DEFAULT` that uses it filled in | The SQL-side `'now'` needs no change. Times the Rust code takes from `SystemTime` (anchor `signed_at`, certificate validity) still need an injected clock, because `SystemTime` cannot run on wasm. |
+| Row ids and errors | `RETURNING id`, `last_insert_rowid()` and `changes()` agree; a UNIQUE or CHECK violation is a thrown exception whose message carries `SQLITE_CONSTRAINT_UNIQUE` or `SQLITE_CONSTRAINT_CHECK` | Works. The store must map exceptions to the crate's errors by that text; idempotent letter push relies on the UNIQUE (recipient, content hash) key. |
+| Write amplification | `UPDATE api_keys SET last_used_at ...` wrote one row | Every authenticated request writes a row, and Durable Object SQLite bills rows written (from memory, verify). Stage 4 decides whether `last_used_at` may be stamped at most once per interval, which changes its precision. |
+| Storage size | `sql.databaseSize` is readable inside the object | The storage alert has a source, through the admin Worker. |
+| Scheduling and randomness | an alarm set 300 ms ahead fired; `crypto.getRandomValues` returned 32 bytes | The purge scan can be a Durable Object alarm, and the source the `getrandom` `wasm_js` backend calls exists. Not yet exercised from Rust under workerd. |
+| A 16 MiB inbox page | 16 letters of 1 MiB were read, base64 encoded and JSON encoded: a 22.4 MB body in about 1.15 s | Works locally. Memory was not measured: local workerd does not enforce the production isolate limit. |
+| Row size | a 4 MiB blob and a text value of 2 MiB plus one byte were accepted | Local workerd does not enforce production's 2 MB row limit (from memory, verify), so this run proves nothing about it. The design stays under it regardless: a letter is capped at 1 MiB, and tree documents must be capped or chunked. |
+| Bundle size | a release build of the library for wasm32 with the `lab` feature (the relay core, SQLite and the whole CLI) is 6.65 MiB raw and 2.02 MiB gzip, before `wasm-opt` | An upper bound for a relay-only Worker. It is under the compressed limits remembered for the Free and Paid plans (from memory, verify), so size is not the risk; confirm it at the first real deploy. |
 
-The spike's output is this document, revised with the measured values and a
-recorded adopt or defer decision, and a comment on issue #88. A failure
-that cannot be mitigated inside Cloudflare reopens the hosting decision with
-the owner; it does not default to another provider.
+Not settled by a local run, because each needs Cloudflare's production
+limits or the owner's account: row-size enforcement; peak memory against the
+isolate limit (from memory, 128 MB); the compressed bundle limit; the
+point-in-time recovery window; which plan SQLite-backed Durable Objects need,
+and the cost; and a first build of the relay as a Rust Worker, including
+`getrandom` from Rust under workerd.
+
+### Decision (2026-10-06): adopt
+
+**Adopt the Workers relay on one SQLite-backed Durable Object.** The local
+evidence removes the risks that could have ended the design: the relay's real
+schema, transactions through `transactionSync`, SQL time, constraint errors,
+alarms and a 16 MiB page all work, and the size upper bound sits well inside
+the limits as remembered. What remains are production-only checks. They gate
+launch, not the build, in this order:
+
+1. The owner's Cloudflare plan, the cost, and the point-in-time recovery
+   window (from memory, verify); if it cannot meet the 1 hour RPO, add the
+   cron export.
+2. Peak memory of a 16 MiB page on a real deployment; if it does not fit, a
+   smaller Workers-specific page budget through `mailbox::bound_page`, which
+   `next_after` already tolerates.
+3. Row size at the production limit; the design already stays under it.
+4. The first build of the relay as a Rust Worker, and `getrandom` from Rust
+   under workerd; if the Rust path fails, a thin JavaScript shim around the
+   wasm-bindgen output.
+
+A failure that cannot be mitigated inside Cloudflare reopens the hosting
+decision with the owner; it does not default to another provider.
 
 ### Estimate
 
 | Item | Effort |
 | --- | --- |
-| Feasibility spike (PR 3) | about 1 week |
+| Feasibility spike (stage 3) | done |
 | Workers adapter over `service::dispatch`, feature gating, build | 1 week |
 | `DoRelayStore` to conformance | 2 to 3 weeks |
 | Admin Worker: mint, rotate, events, checkpoint, export and restore commands | 1 to 2 weeks |
 | Load, limits and custody review; runbook | 1 week |
-| Cost | a Workers plan plus Durable Object storage and requests; measured by the spike |
+| Cost | a Workers plan plus Durable Object storage and requests; needs the owner's account to measure |
 
 These are the author's estimates, not measurements.
 
@@ -467,12 +504,12 @@ reference host or in a Worker alike:
 
 ### Backups
 
-- **Durable Object point-in-time recovery**, if the spike confirms that it
-  covers the 1 hour RPO (from memory, verify: the retention window and the
+- **Durable Object point-in-time recovery**, if the production check confirms
+  that it covers the 1 hour RPO (from memory, verify: the retention window and the
   restore procedure). If it cannot, a scheduled export of the database
   (a cron-triggered Worker writing to the optional R2 bucket, or the admin
   Worker's export pulled by the operator) is added, hourly, kept 7 days
-  (daily kept 90); the spike decides which. Either way the export is a SQLite file in the schema the native
+  (daily kept 90); the production check decides which. Either way the export is a SQLite file in the schema the native
   host reads, kept owner-only wherever the operator stores it, and taken
   under the Backup role.
 - **Audit checkpoints** (`host keys checkpoint --out FILE`, through the admin
@@ -544,7 +581,7 @@ Each concern from the PR #87 review, checked against the code now:
 | Concern | State in the code | Decision for launch |
 | --- | --- | --- |
 | Tree-level authorization and customer isolation | **Open.** Any `inbox.push` key may publish a public tree for a label and the relay merges it (`src/relay/service.rs`, `inbox_push`; `src/relay/org_tree.rs`, `merge_into_existing`); letters stay sealed to their recipient, but the public topology is shared. | **Scope decision:** one organization (or one group of mutually trusting organizations) per relay, as `relay-deployment.md`, "Before opening a relay to customers", states. Per-customer namespacing and an authenticated tree publisher are a separate design before a shared relay. |
-| Byte-bounded inbox responses | **Done in the library.** `MAX_INBOX_PAGE_BYTES` (16 MiB) in `src/relay/mailbox.rs`, `bound_page`, shared by every backend; at least one letter per page, `next_after` stateless. **Unverified on Workers:** whether a 16 MiB page fits the isolate memory. | Spike item (peak memory); a smaller Workers page budget through `bound_page` if it does not fit. |
+| Byte-bounded inbox responses | **Done in the library.** `MAX_INBOX_PAGE_BYTES` (16 MiB) in `src/relay/mailbox.rs`, `bound_page`, shared by every backend; at least one letter per page, `next_after` stateless. **Unverified on Workers:** whether a 16 MiB page fits the isolate memory. | Production-only check (peak memory); a smaller Workers page budget through `bound_page` if it does not fit. |
 | Bounded database admission | **Done for the native host.** `DEFAULT_STORE_CONCURRENCY` (64) and `STORE_ADMISSION_WAIT` (5 s, then 503) in `src/relay/server.rs`, two separate slots for `/ready`; the permit is held until the store call returns. **Not carried over:** the Durable Object serialises requests through its single writer, and what bounds the queue in front of it is unverified. | The Workers relay must name and test its own bound (a queue limit and a 503 answer); measure under the overload test. |
 | Provider-controlled retention and storage quotas | **Partly.** Letters expire when pushed with `--expires`, device letters after `DEVICE_PACKAGE_TTL_DAYS` (30, `src/relay/device_mail.rs`), and the native scan purges both; the Workers relay needs a Durable Object alarm for the scan (from memory, verify). Nothing caps a customer's stored bytes or count. | **Scope decision:** alert on database size (above) and revoke a key that fills it; a per-key quota is a follow-up. |
 | Trusted client-IP handling | **Changed by the platform.** There is no proxy chain to trust: the Worker reads `CF-Connecting-IP` for its rate limit and ignores `X-Forwarded-For` altogether. The native router's rule (the last `X-Forwarded-For` entry, only with `--behind-tls-proxy`; `src/relay/server.rs`, `RateLimiter::client`; test `behind_a_proxy_the_last_forwarded_address_is_the_client`) stays for the reference host. | Test forged headers at deployment (the edge section lists the commands). |
@@ -626,8 +663,8 @@ fingerprints must show `BYPASS`.
 | Limit | Cloudflare | Relay | Fit |
 | --- | --- | --- | --- |
 | request body | 100 MB (Free, Pro), 200 MB (Business), 500 MB (Enterprise) | 1 MiB per envelope, 2 MiB per request (`MAX_ENVELOPE_BYTES`), enforced by the Worker before it calls the Durable Object | fine on any plan |
-| response | not a plan limit for a non-cached response | an inbox page is at most 16 MiB of sealed bytes plus encoding | fits the edge; the isolate's memory is the open question (spike) |
-| CPU time | 10 ms per request on Free, 30 s by default on Paid | signature and certificate checks and SQL work per request | unmeasured; the spike decides the plan |
+| response | not a plan limit for a non-cached response | an inbox page is at most 16 MiB of sealed bytes plus encoding | fits the edge; the isolate's memory is the open question (a production-only check) |
+| CPU time | 10 ms per request on Free, 30 s by default on Paid | signature and certificate checks and SQL work per request | unmeasured; the production plan check decides |
 | time | the client gives up at 30 s (`http_agent_config`) | `REQUEST_TIMEOUT`, 30 s, on the native host | the Worker must answer, or fail with a 5xx, inside the client's 30 s |
 | WebSockets, HTTP/2 | not used by the relay | | |
 
@@ -681,16 +718,17 @@ are the record of operator sessions (from memory, verify).
 - Cloudflare API tokens and Worker secrets: rotate them when a person who
   could read them leaves. A Worker secret is not readable back, so rotation
   means putting a new value.
-- Cost: not estimated until the spike measures the plan and traffic
+- Cost: not estimated until the plan and traffic are measured on the owner's
+  account (a production-only check)
   (above); the Free plan's CPU limit is the first thing to check.
 
 ## Acceptance checklist
 
 | Criterion (issue #88) | Settled by this document | Needs the deployment |
 | --- | --- | --- |
-| Hosting decision records the provider, ownership, limits, cost basis, effort, and the disposition of AWS and MongoDB | yes (cost estimate comes from the spike) | none |
-| Workers architecture maps atomicity (one Durable Object) and provider-only signing and minting (admin Worker, Worker secrets) to a runtime and a backend, with an adopt/defer decision | yes: adopt, subject to the spike | record the decision after PR 3 |
-| The feasibility spike answers each unknown with a measured value | the unknowns and their consequences are listed | run the spike (PR 3) |
+| Hosting decision records the provider, ownership, limits, cost basis, effort, and the disposition of AWS and MongoDB | yes (the cost estimate needs the owner's account) | none |
+| Workers architecture maps atomicity (one Durable Object) and provider-only signing and minting (admin Worker, Worker secrets) to a runtime and a backend, with an adopt/defer decision | yes: adopt (stage 3) | record the production-only checks when they are run |
+| The feasibility spike answers each unknown with a measured value | yes for what a local run can measure; the production-only items are listed | run the production-only checks |
 | An unauthorized client cannot mint provider-issued keys or licences | design: no public mint route; native router test pinned; the smoke test asserts the operator and mint routes answer 404 or 405 on the deployed stub | re-run against the public Worker (staging smoke test, miniflare) |
 | The admin Worker cannot be reached without Access and MFA | design: its only hostname sits behind the Access application and MFA policy in `access.tf`, and the Worker verifies the Access JWT itself (a PR 4 requirement) | test it against the live Access application, with and without MFA, and with a forged or missing JWT |
 | Provider-root custody and operator credential separation documented and verified | documented | verify at the ceremony and record it |
