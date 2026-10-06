@@ -14,7 +14,13 @@ relay to Cloudflare yet, and this runbook does not describe a running
 production deployment. What exists (stage 2) is the pipeline around a
 health-only stub Worker: `workers/`, the `workers` workflow
 (`.github/workflows/workers.yml`) and the Terraform in
-`deploy/cloudflare/terraform/`. CI's `terraform validate` accepts the
+`deploy/cloudflare/terraform/`. Stage 4a adds the admin Worker's front door
+(`workers/admin/`): static operator page files on its own hostname, which sits
+behind a Cloudflare Access application with MFA (Terraform,
+`admin_environments`); no route bypasses Access, and the Worker verifies
+Access's token itself. It only shows who is signed in, it is not connected to a
+relay, and it has never been deployed or configured on a real account. The
+relay uses its own dedicated Cloudflare domain, not the portfolio's. CI's `terraform validate` accepts the
 Terraform, but the authors never planned or applied it against a real account,
 and the owner's GitHub and Cloudflare setup (environments, secrets,
 `RELAY_URL`, the `workers` required check, account, zone, domain) is not done.
@@ -358,7 +364,9 @@ Customers never see a bearer (issue #86):
 
 For the planned Cloudflare relay, minting and rotation are meant to go
 through an admin Worker behind Cloudflare Access, never over the public
-Worker and never by a customer (`relay-hosting.md`; not yet implemented).
+Worker and never by a customer (`relay-hosting.md`). The admin Worker's front
+door exists (it checks Access's token itself and answers every `/api` route but
+`/api/whoami` with 503); the minting and rotation routes are not implemented.
 
 Do not copy plaintext `kq_…` bearers between people. The unsealed path
 (`keys create` without `--recipient-key`, which prints the bearer once) is
