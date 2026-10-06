@@ -22,16 +22,20 @@
 //! `hex(SHA-256(raw))`), never unseals a letter, and never holds a wrapped
 //! share, a private key or the provider root.
 
+use super::activity::{self, Summary as ActivitySummary};
 use super::api_key::{
     self, ApiKeyEvent, ApiKeyInfo, ApiKeyScope, AuthedKey, CreatedApiKey, CreatedLicensee,
-    KeyCheck, NewApiKey, OldKey,
+    KeyCheck, NewApiKey, OldKey, ProviderAuthRecord,
 };
 use super::audit::{self, Checkpoint, TableReport};
 use super::device_directory::{self, DeviceDescriptor};
 use super::device_mail::{self, DeviceMailPage};
-use super::key_delivery::{self, Delivered, Recipient};
-use super::mailbox::{self, MailboxPage};
-use super::org_tree;
+use super::issuance::{self, Issuance, Issued, IssuedBundle, Voided};
+use super::key_delivery::{self, Delivered, DeliveryRecord, Recipient};
+use super::licence::{self, Licence};
+use super::mailbox::{self, LetterSummary, MailboxPage};
+use super::operator_log::{self, OperatorAction};
+use super::org_tree::{self, TreeSummary};
 use super::service::ProviderIdentity;
 use super::sql::{params, Sql};
 use crate::error::Result;
@@ -217,6 +221,61 @@ pub trait RelayStore: Send + Sync {
         recipient: Option<Recipient>,
         write: &mut dyn FnMut(&[u8]) -> Result<()>,
     ) -> Result<Delivered>;
+
+    // --- The provider's operator console ---------------------------------
+    //
+    // Each issuing method is one atomic unit of work: the licence, its keys,
+    // their delivery records and the links between them commit together or
+    // not at all, and the sealed bundles come back only once they have.
+
+    /// Whether the operator lock exists yet.
+    fn operator_lock_exists(&self) -> Result<bool>;
+    /// The ids of keys past their own expiry, by the store's clock.
+    fn expired_key_ids(&self) -> Result<HashSet<i64>>;
+    /// Replace the operator lock with a new one, shown once. The caller has
+    /// proven it holds the current lock; the old one stops working at once.
+    fn rotate_operator_lock(&self) -> Result<CreatedLicensee>;
+    /// Issue a licence's keys as sealed bundles (see [`issuance::issue`]).
+    fn issue_licensed_bundles(
+        &self,
+        identity: &ProviderIdentity,
+        request: &Issuance,
+    ) -> Result<Issued>;
+    /// Replace key `id` under its licence, revoking it at once, and return the
+    /// sealed replacement (see [`issuance::rotate`]).
+    fn rotate_licensed_key(&self, identity: &ProviderIdentity, id: i64) -> Result<IssuedBundle>;
+    /// Void licence `id` and revoke the keys issued under it.
+    fn void_licence(&self, id: i64, reason: Option<&str>) -> Result<Voided>;
+    /// Every licence, newest first.
+    fn list_licences(&self) -> Result<Vec<Licence>>;
+    /// Every (key id, licence id) pair.
+    fn licence_links(&self) -> Result<Vec<(i64, i64)>>;
+    /// Whom each issued key was sealed to (never the sealed bytes).
+    fn delivery_records(&self) -> Result<Vec<DeliveryRecord>>;
+    /// Count one request by the key `token` names, if it names a stored key.
+    fn record_access(&self, token: &str, path: &str, status: u16) -> Result<()>;
+    /// What known keys did over the last `hours`.
+    fn access_summary(&self, hours: i64) -> Result<ActivitySummary>;
+    /// Drop hourly counts past their retention; how many rows.
+    fn purge_old_activity(&self) -> Result<u64>;
+    /// Record what an operator did, by the identity Access verified.
+    fn record_operator_action(
+        &self,
+        operator: &str,
+        action: &str,
+        subject: Option<&str>,
+        success: bool,
+    ) -> Result<()>;
+    /// The newest `limit` operator actions, newest first.
+    fn operator_actions(&self, limit: i64) -> Result<Vec<OperatorAction>>;
+    /// The newest `limit` privileged-auth attempts, newest first.
+    fn provider_auth_events(&self, limit: i64) -> Result<Vec<ProviderAuthRecord>>;
+    /// The inbox's letters without opening them: count and newest `limit`.
+    fn inbox_letters(&self, limit: i64) -> Result<(i64, Vec<LetterSummary>)>;
+    /// The device mailbox's letters without opening them.
+    fn device_letters(&self, limit: i64) -> Result<(i64, Vec<LetterSummary>)>;
+    /// The stored public trees by label, generation and update time.
+    fn tree_summaries(&self) -> Result<Vec<TreeSummary>>;
 }
 
 /// The relay over any SQLite executor ([`Sql`]): one executor, serialized
@@ -498,6 +557,88 @@ impl<S: Sql + Send> RelayStore for SqlRelayStore<S> {
         self.with(|conn| {
             key_delivery::rotate_as_bundle(conn, identity, id, recipient, |bytes| write(bytes))
         })
+    }
+
+    fn operator_lock_exists(&self) -> Result<bool> {
+        self.with(|conn| api_key::licensee_exists(conn))
+    }
+
+    fn expired_key_ids(&self) -> Result<HashSet<i64>> {
+        self.with(|conn| api_key::expired_ids(conn))
+    }
+
+    fn rotate_operator_lock(&self) -> Result<CreatedLicensee> {
+        self.with(|conn| api_key::rotate_licensee(conn))
+    }
+
+    fn issue_licensed_bundles(
+        &self,
+        identity: &ProviderIdentity,
+        request: &Issuance,
+    ) -> Result<Issued> {
+        self.with(|conn| issuance::issue(conn, identity, request))
+    }
+
+    fn rotate_licensed_key(&self, identity: &ProviderIdentity, id: i64) -> Result<IssuedBundle> {
+        self.with(|conn| issuance::rotate(conn, identity, id))
+    }
+
+    fn void_licence(&self, id: i64, reason: Option<&str>) -> Result<Voided> {
+        self.with(|conn| issuance::void(conn, id, reason))
+    }
+
+    fn list_licences(&self) -> Result<Vec<Licence>> {
+        self.with(|conn| licence::list(conn))
+    }
+
+    fn licence_links(&self) -> Result<Vec<(i64, i64)>> {
+        self.with(|conn| licence::all_links(conn))
+    }
+
+    fn delivery_records(&self) -> Result<Vec<DeliveryRecord>> {
+        self.with(|conn| key_delivery::records(conn))
+    }
+
+    fn record_access(&self, token: &str, path: &str, status: u16) -> Result<()> {
+        self.with(|conn| activity::record(conn, token, path, status))
+    }
+
+    fn access_summary(&self, hours: i64) -> Result<ActivitySummary> {
+        self.with(|conn| activity::summary(conn, hours))
+    }
+
+    fn purge_old_activity(&self) -> Result<u64> {
+        self.with(|conn| activity::purge_old(conn))
+    }
+
+    fn record_operator_action(
+        &self,
+        operator: &str,
+        action: &str,
+        subject: Option<&str>,
+        success: bool,
+    ) -> Result<()> {
+        self.with(|conn| operator_log::record(conn, operator, action, subject, success))
+    }
+
+    fn operator_actions(&self, limit: i64) -> Result<Vec<OperatorAction>> {
+        self.with(|conn| operator_log::recent(conn, limit))
+    }
+
+    fn provider_auth_events(&self, limit: i64) -> Result<Vec<ProviderAuthRecord>> {
+        self.with(|conn| api_key::provider_auth_events(conn, limit))
+    }
+
+    fn inbox_letters(&self, limit: i64) -> Result<(i64, Vec<LetterSummary>)> {
+        self.with(|conn| mailbox::summaries(conn, limit))
+    }
+
+    fn device_letters(&self, limit: i64) -> Result<(i64, Vec<LetterSummary>)> {
+        self.with(|conn| super::device_mail::summaries(conn, limit))
+    }
+
+    fn tree_summaries(&self) -> Result<Vec<TreeSummary>> {
+        self.with(|conn| org_tree::summaries(conn))
     }
 }
 

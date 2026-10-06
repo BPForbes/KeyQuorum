@@ -668,3 +668,71 @@ pub fn record_provider_auth_event(
         )
     })
 }
+
+/// Whether the operator lock has been created.
+pub fn licensee_exists(conn: &dyn Sql) -> Result<bool> {
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM licensee_issuer", params![], |row| {
+        row.get(0)
+    })?;
+    Ok(n > 0)
+}
+
+/// One row of `provider_auth_events` as the console lists it. Never a key,
+/// bearer or challenge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderAuthRecord {
+    pub id: i64,
+    pub operation: String,
+    pub success: bool,
+    pub attempted_at: String,
+    pub entry_hash: String,
+}
+
+/// The newest `limit` (1 to 500) privileged-auth attempts, newest first.
+pub fn provider_auth_events(conn: &dyn Sql, limit: i64) -> Result<Vec<ProviderAuthRecord>> {
+    conn.query_map(
+        "SELECT id, operation, success, attempted_at, COALESCE(entry_hash, '')
+         FROM provider_auth_events ORDER BY id DESC LIMIT ?1",
+        params![limit.clamp(1, 500)],
+        |row| {
+            Ok(ProviderAuthRecord {
+                id: row.get(0)?,
+                operation: row.get(1)?,
+                success: row.get(2)?,
+                attempted_at: row.get(3)?,
+                entry_hash: row.get(4)?,
+            })
+        },
+    )
+}
+
+/// The ids of keys past their own expiry, by the store's clock. A revoked key
+/// can be in it too; the caller decides which state wins.
+pub fn expired_ids(conn: &dyn Sql) -> Result<std::collections::HashSet<i64>> {
+    let ids = conn.query_map(
+        "SELECT id FROM api_keys
+         WHERE expires_at IS NOT NULL AND datetime(expires_at) <= datetime('now')",
+        params![],
+        |row| row.get::<i64>(0),
+    )?;
+    Ok(ids.into_iter().collect())
+}
+
+/// Replaces the operator lock with a fresh one, shown once. The caller has
+/// already proven it holds the current lock (the console's gate); the old one
+/// stops working in the same statement. Errors when no lock exists yet.
+pub fn rotate_licensee(conn: &dyn Sql) -> Result<CreatedLicensee> {
+    conn.with_transaction(|| {
+        if !licensee_exists(conn)? {
+            return Err(Error::InvalidLicenseeKey);
+        }
+        let (token, token_hash) = generate_prefixed_bearer(LICENSEE_PREFIX);
+        conn.execute(
+            "UPDATE licensee_issuer
+             SET key_hash = ?1, created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = 1",
+            params![token_hash],
+        )?;
+        Ok(CreatedLicensee { token })
+    })
+}

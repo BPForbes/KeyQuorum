@@ -48,6 +48,9 @@ cases![
     a_rotation_by_bundle_revokes_the_old_key_at_once,
     the_operator_lock_bootstraps_once_and_never_over_a_supplied_key,
     provider_auth_events_are_recorded_without_secrets,
+    a_licence_is_issued_replaced_and_voided_as_one_unit_of_work,
+    known_keys_activity_is_counted_in_place_and_unknown_bearers_are_not,
+    the_console_views_hold_no_secret_and_name_only_what_the_relay_holds,
 ];
 
 fn new_key(scope: ApiKeyScope, fingerprint: Option<&str>) -> NewApiKey {
@@ -992,6 +995,167 @@ fn provider_auth_events_are_recorded_without_secrets(store: &dyn RelayStore) {
 /// letter is listed exactly once, the rotation events name the keys they
 /// replaced, and both audit chains verify end to end. For a shared backend
 /// this is what several relay replicas do to one store.
+fn issuance_request(public: [u8; 32], scopes: &[ApiKeyScope]) -> crate::relay::issuance::Issuance {
+    use crate::relay::issuance::{Issuance, LicenceRef};
+    use crate::relay::licence::NewLicence;
+    Issuance {
+        licence: LicenceRef::New(NewLicence {
+            client: "Conformance Client".into(),
+            terms: "Terms.".into(),
+            expires_at: Some("2999-01-01".into()),
+        }),
+        scopes: scopes.to_vec(),
+        recipient_public_key: public,
+        relay_url: "https://relay.example.test/".to_string(),
+        device_id: None,
+    }
+}
+
+fn a_licence_is_issued_replaced_and_voided_as_one_unit_of_work(store: &dyn RelayStore) {
+    let (identity, root) = identity();
+    let (secret, public) = keys::generate_encryption_keypair();
+    let issued = store
+        .issue_licensed_bundles(
+            &identity,
+            &issuance_request(public, &[ApiKeyScope::InboxPush, ApiKeyScope::InboxPull]),
+        )
+        .expect("issue");
+    assert_eq!(issued.bundles.len(), 2);
+    assert_eq!(store.list_licences().expect("licences").len(), 1);
+    assert_eq!(store.licence_links().expect("links").len(), 2);
+    let records = store.delivery_records().expect("deliveries");
+    assert_eq!(records.len(), 2);
+    assert!(records.iter().all(|r| r.recipient_fingerprint == keys::fingerprint(&public)));
+    let opened = api_key_delivery::open(
+        &issued.bundles[0].bundle,
+        &secret,
+        &root,
+        &now(),
+        &empty_revoked(),
+    )
+    .expect("opens");
+    store
+        .authenticate(&opened.issue.token, ApiKeyScope::InboxPush)
+        .expect("live");
+
+    // A replacement keeps the licence; the old key ends at once.
+    let replaced = store
+        .rotate_licensed_key(&identity, issued.bundles[0].info.id)
+        .expect("rotate");
+    assert!(store.authenticate(&opened.issue.token, ApiKeyScope::InboxPush).is_err());
+    assert_eq!(store.licence_links().expect("links").len(), 3);
+    assert!(store
+        .licence_links()
+        .expect("links")
+        .contains(&(replaced.info.id, issued.licence.id)));
+
+    // Voiding revokes everything issued under it, once.
+    let voided = store.void_licence(issued.licence.id, Some("test")).expect("void");
+    assert!(voided.newly_voided);
+    assert_eq!(voided.revoked_keys.len(), 2);
+    assert!(!store.void_licence(issued.licence.id, None).expect("again").newly_voided);
+    assert!(store.list_licences().expect("licences")[0].voided_at.is_some());
+    assert!(matches!(
+        store.issue_licensed_bundles(&identity, &{
+            let mut again = issuance_request(public, &[ApiKeyScope::DevicePush]);
+            again.licence = crate::relay::issuance::LicenceRef::Existing(issued.licence.id);
+            again
+        }),
+        Err(Error::LicenceNotActive)
+    ));
+    let live = store
+        .list_keys()
+        .expect("keys")
+        .iter()
+        .filter(|k| k.revoked_at.is_none())
+        .count();
+    assert_eq!(live, 0);
+}
+
+fn known_keys_activity_is_counted_in_place_and_unknown_bearers_are_not(store: &dyn RelayStore) {
+    let created = store
+        .mint_key(&new_key(ApiKeyScope::InboxPush, None))
+        .expect("create");
+    for _ in 0..3 {
+        store.record_access(&created.token, "/inbox", 200).expect("record");
+    }
+    store.record_access(&created.token, "/inbox", 403).expect("record");
+    store.record_access("kq_not-a-key", "/inbox", 401).expect("unknown");
+    let summary = store.access_summary(24).expect("summary");
+    assert_eq!(summary.by_key.iter().map(|a| a.count).sum::<i64>(), 4);
+    assert!(summary.by_key.iter().all(|a| a.api_key_id == created.info.id));
+    assert_eq!(store.purge_old_activity().expect("purge"), 0);
+    store.revoke_key_by(created.info.id, "host").expect("revoke");
+    store.record_access(&created.token, "/inbox", 401).expect("record");
+    let outcomes: Vec<_> = store
+        .access_summary(24)
+        .expect("summary")
+        .by_key
+        .into_iter()
+        .map(|a| a.outcome)
+        .collect();
+    assert!(outcomes.contains(&"revoked".to_string()));
+}
+
+fn the_console_views_hold_no_secret_and_name_only_what_the_relay_holds(store: &dyn RelayStore) {
+    assert!(!store.operator_lock_exists().expect("exists"));
+    let created = store
+        .authorize_licensee_or_bootstrap(None)
+        .expect("bootstrap")
+        .expect("minted");
+    assert!(store.operator_lock_exists().expect("exists"));
+    let replaced = store.rotate_operator_lock().expect("rotate");
+    assert!(store.authenticate_licensee(&created.token).is_err());
+    store.authenticate_licensee(&replaced.token).expect("the new lock");
+
+    store
+        .record_operator_action("ops@example.test", "issue", Some("Acme"), true)
+        .expect("action");
+    let actions = store.operator_actions(10).expect("actions");
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].operator, "ops@example.test");
+
+    store
+        .record_provider_auth_event(&ProviderAuthEvent {
+            operation: "console.issue",
+            provider_id: None,
+            network_id: None,
+            hardware_fingerprints: None,
+            success: false,
+        })
+        .expect("event");
+    let auth = store.provider_auth_events(10).expect("auth");
+    assert_eq!((auth[0].operation.as_str(), auth[0].success), ("console.issue", false));
+    assert_eq!(auth[0].entry_hash.len(), 64);
+
+    let (_, public) = keys::generate_encryption_keypair();
+    let letter = fake_letter(&public, 15, b"opaque");
+    store.inbox_push(&[], &letter, None).expect("push");
+    let (total, letters) = store.inbox_letters(10).expect("letters");
+    assert_eq!(total, 1);
+    assert_eq!(letters[0].kind, Some(15));
+    assert_eq!(letters[0].size, letter.len() as i64);
+    assert_eq!(letters[0].recipient_fingerprint, keys::fingerprint(&public));
+    store
+        .store_device_package(&fake_letter(&public, 9, b"d"))
+        .expect("device letter");
+    let (total, devices) = store.device_letters(10).expect("devices");
+    assert_eq!((total, devices[0].kind), (1, Some(9)));
+
+    store
+        .put_public_tree(&PublicTree {
+            label: "acme".into(),
+            generation: 1,
+            nodes: vec![split("acme", None)],
+            whitelist: Vec::<PublicEdge>::new(),
+            links: Vec::<PublicEdge>::new(),
+        })
+        .expect("tree");
+    let trees = store.tree_summaries().expect("trees");
+    assert_eq!((trees[0].label.as_str(), trees[0].generation), ("acme", 1));
+    assert!(store.expired_key_ids().expect("expired").is_empty());
+}
+
 pub(crate) fn concurrent_writers_keep_every_invariant(store: &(impl RelayStore + 'static)) {
     const WRITERS: usize = 6;
     const ROUNDS: usize = 12;

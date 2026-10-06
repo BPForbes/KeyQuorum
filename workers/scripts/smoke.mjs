@@ -136,7 +136,8 @@ export async function runAdminSmoke(baseUrl, { fetchImpl = fetch } = {}) {
     ["GET", "/index.html"],
     ["GET", "/app.js"],
     ["GET", "/api/whoami"],
-    ["POST", "/api/keys"],
+    ["GET", "/api/config"],
+    ["POST", "/api/operate"],
   ]) {
     let response;
     try {
@@ -144,6 +145,11 @@ export async function runAdminSmoke(baseUrl, { fetchImpl = fetch } = {}) {
         method,
         redirect: "manual",
         signal: AbortSignal.timeout(15_000),
+        // The console's one data route, asked for a read with no credential:
+        // it must not reach the relay.
+        ...(method === "POST"
+          ? { headers: { "content-type": "application/json" }, body: JSON.stringify({ op: "overview" }) }
+          : {}),
       });
     } catch (error) {
       problems.push(`admin ${method} ${path} did not answer: ${error?.name ?? "no response"}`);

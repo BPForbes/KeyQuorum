@@ -149,3 +149,59 @@ CREATE TABLE IF NOT EXISTS api_key_deliveries (
     bundle_sha256         TEXT,
     created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+
+-- The provider's own records of whom it licensed (the operator console,
+-- `relay::operator`). A licence is the provider's record of terms for one
+-- client; the signed statement each issued key carries is rendered from it
+-- (`licence::statement`). Voiding a licence revokes the keys linked to it. No
+-- bearer, key hash or sealed bytes here, and nothing a client ever reads.
+CREATE TABLE IF NOT EXISTS licences (
+    id           INTEGER PRIMARY KEY,
+    client       TEXT NOT NULL CHECK (length(client) BETWEEN 1 AND 200),
+    terms        TEXT NOT NULL CHECK (length(terms) <= 8192),
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    -- UTC `YYYY-MM-DD HH:MM:SS`, like `api_keys.expires_at`. NULL: no end.
+    expires_at   TEXT,
+    voided_at    TEXT,
+    void_reason  TEXT CHECK (void_reason IS NULL OR length(void_reason) <= 500)
+);
+
+-- Which licence a key was issued under. Additive: `api_keys` is unchanged.
+CREATE TABLE IF NOT EXISTS licence_keys (
+    api_key_id  INTEGER PRIMARY KEY REFERENCES api_keys(id),
+    licence_id  INTEGER NOT NULL REFERENCES licences(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_licence_keys_licence
+    ON licence_keys (licence_id);
+
+-- What the relay saw each known key do, by hour: requests it served and
+-- requests it refused because of the key itself (`revoked`, `expired`,
+-- `scope`). One row per key, hour, route and outcome, counted in place, so the
+-- rows are bounded by the keys the provider issued, not by traffic. Unknown
+-- bearers are never recorded (an anonymous caller could grow the table). The
+-- scan drops rows past `activity::RETENTION_DAYS`. Not part of the audit
+-- chain: it is a usage view, not evidence.
+CREATE TABLE IF NOT EXISTS access_activity (
+    api_key_id  INTEGER NOT NULL REFERENCES api_keys(id),
+    hour        TEXT NOT NULL,
+    route       TEXT NOT NULL CHECK (route IN (
+        'inbox', 'devices', 'trees', 'audit', 'other'
+    )),
+    outcome     TEXT NOT NULL CHECK (outcome IN ('ok', 'revoked', 'expired', 'scope')),
+    count       INTEGER NOT NULL CHECK (count > 0),
+    PRIMARY KEY (api_key_id, hour, route, outcome)
+);
+
+-- What each operator did in the console, by the identity Cloudflare Access
+-- verified. The key lifecycle itself is in the hash-chained `api_key_events`
+-- (whose actor is `host` for anyone holding the operator lock); this adds who.
+-- Never a lock, bearer, hash or sealed bytes. Not hash-chained.
+CREATE TABLE IF NOT EXISTS operator_actions (
+    id           INTEGER PRIMARY KEY,
+    operator     TEXT NOT NULL CHECK (length(operator) BETWEEN 1 AND 320),
+    action       TEXT NOT NULL CHECK (length(action) BETWEEN 1 AND 64),
+    subject      TEXT CHECK (subject IS NULL OR length(subject) <= 200),
+    success      INTEGER NOT NULL CHECK (success IN (0, 1)),
+    occurred_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);

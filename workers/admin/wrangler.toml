@@ -1,7 +1,16 @@
-# The admin Worker: a static operator page and, later, the relay's operator
-# routes, on its own hostname behind a Cloudflare Access application with MFA.
+# The admin Worker: the provider's console, a static page and its one data
+# route, on its own hostname behind a Cloudflare Access application with MFA.
 # Production is the top level, staging is [env.staging]
 # (keyquorum-relay-admin-staging).
+#
+# The console reaches the relay through a binding to the public Worker's
+# Durable Object (`script_name` names that Worker; the class and its data are
+# the public Worker's, so this file has no migration, and the guard refuses one).
+# Production binds the production relay and staging only the staging relay, so
+# a staging console cannot touch production's keys (the guard checks the names).
+# The public Worker must be deployed before this one, or the binding has nothing
+# to point at. The binding is how the console calls `RelayObject.operate`; no
+# route of the public Worker leads there.
 #
 # Nothing secret belongs here. The two [vars] are not secrets: they name the
 # Access team and this application's audience tag, and the deploy job fills them
@@ -22,9 +31,17 @@ directory = "./public"
 binding = "ASSETS"
 run_worker_first = true
 
+[[durable_objects.bindings]]
+name = "RELAY"
+class_name = "RelayObject"
+script_name = "keyquorum-relay"
+
 [vars]
 ACCESS_TEAM_DOMAIN = ""
 ACCESS_AUD = ""
+# Not secret: the address clients load their keys for, to pre-fill the issue
+# form (the deploy job fills it from the environment's RELAY_URL).
+RELAY_PUBLIC_URL = ""
 
 [env.staging]
 workers_dev = false
@@ -35,6 +52,12 @@ directory = "./public"
 binding = "ASSETS"
 run_worker_first = true
 
+[[env.staging.durable_objects.bindings]]
+name = "RELAY"
+class_name = "RelayObject"
+script_name = "keyquorum-relay-staging"
+
 [env.staging.vars]
 ACCESS_TEAM_DOMAIN = ""
 ACCESS_AUD = ""
+RELAY_PUBLIC_URL = ""

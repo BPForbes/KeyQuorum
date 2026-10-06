@@ -16,6 +16,10 @@ import { baseHeaders, bearerOf, jsonResponse, readLimited } from "./policy.js";
 // once with 503 and Retry-After, never left waiting.
 export const MAX_IN_FLIGHT = 32;
 
+// The largest console request the object takes (the Rust core holds the same
+// bound, `relay::operator::MAX_REQUEST_BYTES`).
+export const MAX_OPERATE_BODY = 64 * 1024;
+
 // How often the object's alarm purges expired letters and signs the audit
 // chain heads.
 export const SCAN_INTERVAL_MS = 60 * 60 * 1000;
@@ -121,6 +125,38 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
     }
   }
 
+  // The provider's console (relay::operator in the core). Only the admin
+  // Worker reaches this, through its binding to the object; nothing on the
+  // public route does. `body` is the JSON request text, `operator` the identity
+  // Cloudflare Access verified, `lock` the operator lock when the request
+  // changes something. The lock goes to the core and nowhere else: it is not
+  // logged, stored or echoed. Returns { status, body } as plain data.
+  function operate({ body, operator, lock } = {}) {
+    const refuse = (status, error) => ({ status, body: JSON.stringify({ error }) });
+    if (failure) return refuse(503, failure);
+    if (
+      typeof body !== "string" ||
+      typeof operator !== "string" ||
+      operator.trim() === "" ||
+      operator.length > 320 ||
+      !(lock === undefined || lock === null || (typeof lock === "string" && lock.length <= 256))
+    ) {
+      return refuse(400, "malformed console request");
+    }
+    const bytes = new TextEncoder().encode(body);
+    if (bytes.length > MAX_OPERATE_BODY) return refuse(413, "request too large");
+    let answer = null;
+    try {
+      answer = core.operate(bytes, operator, lock ?? undefined, relayTime(clock()));
+      return { status: answer.status, body: new TextDecoder().decode(answer.body) };
+    } catch (error) {
+      log.error("relay: a console request failed", error?.name);
+      return refuse(500, "internal error");
+    } finally {
+      answer?.free?.();
+    }
+  }
+
   // Whether the store answers (the readiness probe).
   function ready() {
     if (failure) return false;
@@ -150,5 +186,5 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
     }
   }
 
-  return { fetch, ready, start, alarm, inFlight: () => inFlight };
+  return { fetch, operate, ready, start, alarm, inFlight: () => inFlight };
 }

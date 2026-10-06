@@ -239,6 +239,7 @@ jobs:
           WRANGLER_SEND_METRICS: "false"
           ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
           ACCESS_AUD: ${{ vars.ACCESS_AUD }}
+          RELAY_URL: ${{ vars.RELAY_URL }}
         run: |
           # The two variables are not secrets: they name the Access team and the
           # application's audience tag. While either is empty the Worker is
@@ -249,6 +250,12 @@ jobs:
           else
             echo "::warning::cloudflare-staging has no ACCESS_TEAM_DOMAIN and ACCESS_AUD variables; the admin Worker was deployed unconfigured and serves nothing."
           fi
+          # Not a secret: the address the issue form pre-fills for clients.
+          if host="$(node scripts/relay-host.mjs "${RELAY_URL}")"; then
+            args+=(--var "RELAY_PUBLIC_URL:https://${host}")
+          fi
+          # The console binds the staging relay's Durable Object, so the public
+          # Worker above must exist first (it was deployed just before).
           npx wrangler deploy -c admin/wrangler.toml --env staging "${args[@]}"
       - name: Smoke test
         if: steps.credentials.outputs.configured == 'true'
@@ -336,6 +343,7 @@ jobs:
           WRANGLER_SEND_METRICS: "false"
           ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
           ACCESS_AUD: ${{ vars.ACCESS_AUD }}
+          RELAY_URL: ${{ vars.RELAY_URL }}
         run: |
           # The two variables are not secrets: they name the Access team and the
           # application's audience tag. While either is empty the Worker is
@@ -346,6 +354,11 @@ jobs:
           else
             echo "::warning::cloudflare-production has no ACCESS_TEAM_DOMAIN and ACCESS_AUD variables; the admin Worker was deployed unconfigured and serves nothing."
           fi
+          if host="$(node scripts/relay-host.mjs "${RELAY_URL}")"; then
+            args+=(--var "RELAY_PUBLIC_URL:https://${host}")
+          fi
+          # The console binds the production relay's Durable Object; the public
+          # Worker was deployed by the step above.
           npx wrangler deploy -c admin/wrangler.toml --env="" "${args[@]}"
       - name: Smoke test
         env:
