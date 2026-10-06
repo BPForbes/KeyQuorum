@@ -124,7 +124,7 @@ No container, chart or unit is shipped: production hosting is Cloudflare only
 the dev, test and reference host. `workers/` holds a health-only stub Worker
 (JavaScript), its `wrangler.toml` (production at the top level, `[env.staging]`,
 wrangler pinned by `package-lock.json`) and the `scripts/guard.mjs` and
-`scripts/smoke.mjs` scripts with their `node:test` tests. `workers/admin/` is
+`scripts/smoke.mjs` scripts with their `node:test` tests. Preview URLs are on for the public Worker only (Cloudflare Workers Builds previews beside the `workers` check; the guard's `--allow-preview-urls` is passed for that one file), and a preview must be refused by the Worker before it serves the relay, since a preview version shares the production bindings and secrets. `workers/admin/` is
 the admin Worker's front door: a static operator page (`public/`, no inline
 code, no outside origin) served by the Worker on its own hostname behind a
 Cloudflare Access application with MFA. `src/access.js` verifies Access's signed
@@ -832,7 +832,8 @@ Report a finding, with the rule as its Source, for any of these:
 - The Worker's deployment (`workers/`, `deploy/cloudflare/**`,
   `.github/workflows/workers.yml`) letting the admin Worker serve anything without a
   verified Access token, or gaining a route that bypasses Access to an operator
-  path, re-enabling `workers.dev` or preview URLs, a migration that deletes or renames a
+  path, re-enabling `workers.dev`, preview URLs on the admin Worker or on anything but the
+  public Worker (or a public Worker preview that reaches relay data or secrets), a migration that deletes or renames a
   Durable Object class without review, key material in `wrangler.toml` or the bundle, or a
   deploy credential broader than Workers Scripts edit.
 - A cache (`recent_params`, `relay_trust_cache`, `verified_cache`) used as an input to

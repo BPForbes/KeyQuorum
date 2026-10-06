@@ -165,6 +165,36 @@ Two decisions of the owner, recorded as decisions:
    (operator identity plus MFA), and the Worker verifies Access's token
    itself rather than trusting the Access configuration alone.
 
+### Workers Builds and previews (owner decisions, 2026-10-06)
+
+The portfolio site gets a "Workers Builds: <name>" check on its pull requests
+from Cloudflare's Git integration. The owner wants the same here, **in
+addition to** the `workers` check of `workers.yml`, which stays the stable
+required check and keeps the staging and production deploy jobs.
+
+- **Connected by the owner in the dashboard** (each Worker, Settings, Builds):
+  the repository cannot switch it on. One check appears per connected Worker.
+  Build command `cd workers && npm ci && npm run build` (the same dry-run
+  builds and guards as CI); the non-production deploy command only builds or
+  dry-runs. `main` is deployed by `workers.yml`; leave Workers Builds'
+  production deploy off, or the two would both deploy it. Add the new checks
+  to the required ones only after they have run once.
+- **Preview URLs are on for the public Worker only.** `workers/wrangler.toml`
+  sets `preview_urls = true`; `workers_dev` stays false. The admin Worker and
+  the spike keep both off, and the guard refuses `preview_urls = true`
+  anywhere but a file checked with `--allow-preview-urls`, which only
+  `npm run guard` passes, for `wrangler.toml`. Reason: a preview hostname is
+  outside the admin Worker's Access application, and outside the zone's
+  rate-limit and cache rules for the relay's hostname.
+- **Before the relay is real**, a preview of the public Worker would share the
+  production Durable Object namespace and secrets (a preview is another
+  version of the same Worker). Today the Worker is the health-only stub, which
+  holds neither. Before it serves the relay the Worker must answer 404 on any
+  host but the custom domain (tested in `workers/src`), or previews must bind
+  a throwaway namespace. Until then this is a recorded open item.
+- "Pages" is not used: static assets on the admin Worker already serve the
+  operator page, and a Pages project would be a second product and hostname.
+
 ## Gaps and limits, recorded
 
 - **No customer-managed key for Durable Object storage.** Cloudflare
@@ -230,8 +260,9 @@ this section.
   an agent session.
 - **Workers:** `workers/` holds `wrangler.toml` (the top level is the
   production Worker `keyquorum-relay`; `[env.staging]` is
-  `keyquorum-relay-staging`; `workers_dev = false` and `preview_urls =
-  false` at both levels; no routes, because the hostnames are the Terraform's
+  `keyquorum-relay-staging`; `workers_dev = false` at both levels and
+  `preview_urls = true` at both (public Worker only, see Workers Builds below);
+  no routes, because the hostnames are the Terraform's
   custom domains; no `[vars]`), `src/index.js`, `package.json` and
   `package-lock.json` with wrangler pinned to an exact version; the admin
   Worker is in `workers/admin/` (below). `src/index.js`
@@ -241,10 +272,11 @@ this section.
   (`npm test`), back the pipeline. `scripts/guard.mjs` is the configuration
   guard (it fails on key-material patterns, on a secret-like `[vars]` name,
   on a `deleted_classes` or `renamed_classes` migration unless
-  `ALLOW_DESTRUCTIVE_MIGRATION=1` is set, and on a missing `workers_dev` or
-  `preview_urls` = false at the top level or in any environment; `npm run
-  guard` runs it over `wrangler.toml`, `admin/wrangler.toml` and
-  `spike/wrangler.toml`) and the
+  `ALLOW_DESTRUCTIVE_MIGRATION=1` is set, on a missing `workers_dev = false`
+  at the top level or in any environment, and on `preview_urls` other than
+  `false` everywhere except a file checked with `--allow-preview-urls`, which
+  `npm run guard` passes for `wrangler.toml` only and never for
+  `admin/wrangler.toml` or `spike/wrangler.toml`) and the
   bundle guard (key material in the bundle's text files, and a gzip size
   bound of 3 MiB). `scripts/smoke.mjs` is the post-deploy check: `/health`
   must answer 200 with the expected body and `no-store`; the operator and
@@ -466,7 +498,8 @@ can (below), and the store and adapter remain to be built.
   self-hosted application (operator identity plus MFA), no route bypasses
   Access, and `workers.dev` and preview URLs are off (that this switches
   them off is from memory, verify; `scripts/guard.mjs` fails CI if either
-  setting is missing). The Worker verifies the Access token itself (the
+  setting is missing or `preview_urls` is on for this Worker). A preview
+  hostname is outside the Access application, so this Worker never gets one. The Worker verifies the Access token itself (the
   `Cf-Access-Jwt-Assertion` request header, checked against the Access
   team's published key set for its signature, and for the application's
   audience tag, issuer and expiry; from memory, verify the header and
@@ -735,12 +768,13 @@ behavior and the zone's settings.
   `authenticate_provider`), so a Cloudflare edge cannot impersonate a relay
   without its signing key.
 - The relay's URL is the custom domain. `workers/wrangler.toml` sets
-  `workers_dev = false` and `preview_urls = false` for the production and
-  staging Workers (that this switches the URLs off is from memory, verify),
-  and `scripts/guard.mjs` fails CI if either is missing at the top level or
+  `workers_dev = false` for the production and staging Workers and
+  `preview_urls = true` (owner decision 2026-10-06; that these switches behave
+  as described is from memory, verify), and `scripts/guard.mjs` fails CI if
+  `workers_dev = false` is missing at the top level or
   in an environment, so there is one hostname that carries the relay's
-  identity. The admin Worker's `workers/admin/wrangler.toml` sets the same,
-  and the guard checks it too.
+  identity. The admin Worker's `workers/admin/wrangler.toml` sets both off,
+  and the guard checks it without the allowance.
 
 ### DNS and client identity
 
@@ -764,8 +798,10 @@ The client identity is taken from one place only:
 # count these against the real client, so enough of them from one address
 # still end in a 429 (set the limit low for the test).
 curl -sS -H 'X-Forwarded-For: 203.0.113.9' -H 'CF-Connecting-IP: 203.0.113.9' https://relay.example.com/health
-# There is no second way in: the workers.dev and preview hostnames do not
-# answer, and the admin Worker has no route from the public hostname.
+# There is no second way in: the workers.dev hostname does not answer, the
+# admin Worker has no workers.dev or preview hostname and no route from the
+# public hostname, and the public Worker's preview hostnames (only while
+# Workers Builds previews are on) must answer /health or 404 and nothing else.
 curl -sS --connect-timeout 5 https://keyquorum-relay.<account>.workers.dev/health
 curl -sS -o /dev/null -w '%{http_code}\n' https://relay.example.com/api-keys
 # The provider challenge still passes through the edge.
@@ -814,7 +850,8 @@ The admin Worker has **no route that bypasses Access**. Its only hostname
 is a custom domain behind a **Cloudflare Access** self-hosted application
 whose policy requires the operators' identity **and MFA** (`access.tf`: the
 policy lists the operator emails and requires MFA, and is created only once
-`admin_environments` is set), and `workers.dev` and preview URLs are off.
+`admin_environments` is set), and `workers.dev` and preview URLs are off for
+the admin Worker.
 The Worker also verifies the Access token (`Cf-Access-Jwt-Assertion`)
 itself, as defence in depth, so that a mistake in the Access application
 does not expose it; this is implemented in `workers/admin/src/access.js`

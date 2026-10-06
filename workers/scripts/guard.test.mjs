@@ -127,3 +127,21 @@ test("an oversized or empty bundle is refused", () => {
     rmSync(empty, { recursive: true, force: true });
   }
 });
+
+test("preview URLs on are refused unless the public Worker's file is checked with the allowance", () => {
+  const on = CLEAN.replace(/preview_urls = false/g, "preview_urls = true");
+  assert.ok(checkConfig("admin/wrangler.toml", on).some((p) => p.includes("preview_urls = false")));
+  assert.deepEqual(checkConfig("wrangler.toml", on, { allowPreviewUrls: true }), []);
+});
+
+test("the allowance still requires preview_urls to be set and workers_dev off", () => {
+  const unset = CLEAN.replace(/^preview_urls = false$/m, "");
+  const problems = checkConfig("wrangler.toml", unset, { allowPreviewUrls: true });
+  assert.ok(problems.some((p) => p.includes("top level must set preview_urls explicitly")));
+  const devOn = CLEAN.replace(/^workers_dev = false$/m, "workers_dev = true");
+  assert.ok(
+    checkConfig("wrangler.toml", devOn, { allowPreviewUrls: true }).some((p) =>
+      p.includes("top level must set workers_dev"),
+    ),
+  );
+});

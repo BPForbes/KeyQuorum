@@ -8,8 +8,12 @@
 // secret-like [vars] name (the relay key, certificate and revocation list are
 // Worker secrets, never vars), a Durable Object migration that deletes or
 // renames a class (which destroys its data), and a Worker or environment that
-// does not switch workers.dev and preview URLs off (one hostname carries the
-// relay's identity). The bundle check scans every text file for key material
+// does not switch workers.dev off, or that leaves preview URLs on (one
+// hostname carries the relay's identity). Only the public Worker's file may be
+// checked with --allow-preview-urls, which accepts preview_urls = true there
+// (Cloudflare Workers Builds previews, owner decision 2026-10-06); the admin
+// Worker's hostname sits behind Access, which a preview hostname is outside of,
+// so its file never gets that flag. The bundle check scans every text file for key material
 // and bounds the gzip size. A problem names the file and the rule, never the
 // matched text.
 
@@ -58,7 +62,11 @@ function isVarsTable(name) {
   return name === "vars" || /^env\.[^.]+\.vars$/.test(name);
 }
 
-export function checkConfig(label, text, { allowDestructive = false } = {}) {
+export function checkConfig(
+  label,
+  text,
+  { allowDestructive = false, allowPreviewUrls = false } = {},
+) {
   const problems = scanForKeyMaterial(label, text);
   const lines = text.split(/\r?\n/).map(stripComment);
 
@@ -102,10 +110,16 @@ export function checkConfig(label, text, { allowDestructive = false } = {}) {
     if (name !== "" && !/^env\.[^.]+$/.test(name)) continue;
     const scope = name === "" ? "top level" : name;
     const joined = body.join("\n");
-    for (const setting of ["workers_dev", "preview_urls"]) {
-      if (!new RegExp(`^\\s*${setting}\\s*=\\s*false\\s*$`, "m").test(joined)) {
-        problems.push(`${label}: ${scope} must set ${setting} = false`);
-      }
+    if (!/^\s*workers_dev\s*=\s*false\s*$/m.test(joined)) {
+      problems.push(`${label}: ${scope} must set workers_dev = false`);
+    }
+    const previews = allowPreviewUrls ? "(?:false|true)" : "false";
+    if (!new RegExp(`^\\s*preview_urls\\s*=\\s*${previews}\\s*$`, "m").test(joined)) {
+      problems.push(
+        allowPreviewUrls
+          ? `${label}: ${scope} must set preview_urls explicitly (true or false)`
+          : `${label}: ${scope} must set preview_urls = false`,
+      );
     }
   }
   return problems;
@@ -151,11 +165,13 @@ function main(argv) {
     }
     problems = checkBundle(args[1], { maxGzipBytes });
   } else if (args[0]) {
-    problems = checkConfig(args[0], readFileSync(args[0], "utf8"), {
+    const file = args.find((arg) => !arg.startsWith("--"));
+    problems = checkConfig(file, readFileSync(file, "utf8"), {
       allowDestructive: process.env.ALLOW_DESTRUCTIVE_MIGRATION === "1",
+      allowPreviewUrls: args.includes("--allow-preview-urls"),
     });
   } else {
-    console.error("usage: guard.mjs FILE | --bundle DIR [--max-gzip-bytes N]");
+    console.error("usage: guard.mjs FILE [--allow-preview-urls] | --bundle DIR [--max-gzip-bytes N]");
     return 2;
   }
   for (const problem of problems) console.error(`error: ${problem}`);

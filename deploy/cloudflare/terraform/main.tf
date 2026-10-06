@@ -1,4 +1,4 @@
-# One custom domain per environment. workers.dev and preview URLs stay off in
+# One custom domain per environment. workers.dev stays off, and preview URLs are on only for the public Worker, in
 # workers/wrangler.toml, so each Worker answers on exactly this hostname. The
 # Worker must already be deployed (the `workers` workflow does it) before
 # `terraform apply`, because a custom domain names an existing Worker.

@@ -12,14 +12,20 @@
 # (which destroys its data).
 #
 # There is deliberately no route here: the hostname is a Worker custom
-# domain managed in deploy/cloudflare/terraform, and workers.dev and preview
-# URLs stay off so one hostname carries the relay's identity.
+# domain managed in deploy/cloudflare/terraform, and workers.dev stays off so
+# one hostname carries the relay's identity. Preview URLs are on for this
+# Worker only (Cloudflare Workers Builds previews, owner decision 2026-10-06):
+# the stub holds no secrets and no data, and the guard accepts it only for this
+# file. Before this Worker serves the relay, a preview must be refused (a host
+# check in src/index.js) or bind a throwaway Durable Object, because a preview
+# version shares the production bindings and secrets. The admin Worker never
+# gets previews: its hostname sits behind Access and a preview hostname does not.
 name = "keyquorum-relay"
 main = "src/index.js"
 compatibility_date = "2025-09-01"
 workers_dev = false
-preview_urls = false
+preview_urls = true
 
 [env.staging]
 workers_dev = false
-preview_urls = false
+preview_urls = true

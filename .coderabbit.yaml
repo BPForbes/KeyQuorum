@@ -106,7 +106,8 @@ reviews:
         state and terraform.tfvars are never committed. The relay key,
         certificate and revocation list reach a Worker only as Worker secrets,
         and the provider-root key and the kql_ operator lock never go on a
-        Worker. workers.dev and preview URLs stay off, and a Durable Object
+        Worker. workers.dev stays off, preview URLs are on for the public Worker only
+        (never the admin Worker, whose hostname sits behind Access), and a Durable Object
         migration that deletes or renames a class (which destroys its data)
         needs explicit review; scripts/guard.mjs enforces both and must not be
         weakened. The admin Worker (workers/admin/) must verify the Cloudflare
