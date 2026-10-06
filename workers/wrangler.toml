@@ -22,7 +22,11 @@
 # docs/operator/relay-hosting.md for the settings. A Preview takes nothing from
 # production: it has its own code, its own Durable Object namespace once one
 # exists, and only the secrets set for Previews (none), so it holds no relay
-# key and no letter. `previews` below is where a Preview's own settings would
+# key and no letter. `preview_urls` also makes the URL of every `wrangler deploy`
+# version public, and a version uses production's bindings and secrets: before
+# this Worker holds the relay key or a Durable Object binding it must refuse any
+# host but its custom domain, or those Version URLs must sit behind Access (an
+# open item in the plan). `previews` below is where a Preview's own settings would
 # go; it is empty on purpose, since the stub needs none, and wrangler requires
 # the block. The staging environment has none: Workers Builds is not connected
 # to it. The admin Worker never gets previews: its hostname sits behind Access

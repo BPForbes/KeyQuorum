@@ -90,6 +90,7 @@ them), so each source below is marked by how it was read:
 | Cloudflare, Worker Previews configuration: "The `previews` block is required, but it can be empty if your Preview does not need separate settings."; secrets reach a Preview only through `wrangler preview base-config secret put` (every new Preview) or `wrangler preview secret put --name <preview>` (one); an environment's Previews are configured under `env.<name>.previews` and run with `--env <name>`. | https://developers.cloudflare.com/workers/previews/configuration/ | docs search (2026-10-06) |
 | Cloudflare, Worker Previews custom domains: "Preview URLs can use a custom domain, `workers.dev`, or both. Enable at least one host to get a Preview URL."; `preview_urls = true` in the configuration turns on the workers.dev Preview host, separately from production's `workers_dev`; Cloudflare adds `X-Robots-Tag: noindex` to workers.dev Preview URLs. | https://developers.cloudflare.com/workers/previews/custom-domains/ | docs search (2026-10-06) |
 | Cloudflare changelog, one-click Access for Workers: every Preview URL of an account shares one "Cloudflare Workers Preview URLs" Access policy, enabled from the Worker's Settings, Domains & Routes. | https://developers.cloudflare.com/changelog/ (Workers, Access for workers.dev and Preview URLs) | docs search (2026-10-06) |
+| Cloudflare, Version URLs: "Version URLs, previously called preview URLs, let you access an uploaded version of your Worker before deploying it to production. A Version URL uses that Worker version's existing configuration and resources instead of creating a separate environment."; new versions are created by `wrangler deploy`, `wrangler versions upload` and dashboard code edits; "If Version URLs are enabled, the URL is public and available after version creation."; "The Wrangler configuration field is still named `preview_urls`."; "Access can protect Version URLs for one Worker or every Worker in an account." | https://developers.cloudflare.com/workers/versions-and-deployments/version-urls/ | docs search (2026-10-06) |
 | MongoDB, Atlas Data API and custom HTTPS endpoints: end of life and deprecation (end of life 30 Sep 2025). | https://mongodb.com/community/forums/t/mongodb-atlas-data-api-and-custom-https-endpoints-end-of-life-and-deprecation/296686 | search summary (2026-10-06) |
 | AICPA, 2017 Trust Services Criteria (2022 points of focus), A1.3: "The entity tests recovery plan procedures supporting system recovery to meet its objectives." | https://www.aicpa-cima.com/resources/download/2017-trust-services-criteria-with-revised-points-of-focus-2022 | verbatim (issue #88) |
 
@@ -284,18 +285,38 @@ procedure and the settings, so the connection is made once and the same way.
   Preview of the relay Worker holds no relay key, no certificate and no
   letter, now and once the relay is real; a Preview of the relay would answer
   the provider challenge with no certificate, so an official client
-  disconnects from it. This closes the item the earlier text recorded (a
-  preview sharing the production Durable Object namespace and secrets): that
-  is true of version preview URLs (`wrangler versions upload`) and is why that
-  command is never the Preview command.
-- What remains, recorded: a Preview hostname is outside the zone's rate-limit
-  and cache rules for the relay's hostname and outside the admin Worker's
-  Access application; it is public (Cloudflare adds `X-Robots-Tag: noindex`
-  to workers.dev Preview URLs). The operator can put Cloudflare Access in
-  front of every Preview URL of the account with one setting (the Worker,
-  Settings, Domains & Routes, Preview URLs, Enable Cloudflare Access; all
-  Preview URLs share one "Cloudflare Workers Preview URLs" policy). The
-  smoke test's expectations hold for a Preview of the stub: `/health` and 404.
+  disconnects from it. That isolation belongs to Previews. It does not make
+  `preview_urls = true` safe, because the same Wrangler field controls
+  Cloudflare's Version URLs ("previously called preview URLs"), which
+  `wrangler deploy` creates as well as `wrangler versions upload`, which use
+  "that Worker version's existing configuration and resources", and which are
+  public when enabled ("If Version URLs are enabled, the URL is public";
+  Cloudflare, Version URLs, read 2026-10-06). So the staging and production
+  `wrangler deploy` steps of `workers.yml` each publish a public workers.dev
+  hostname for the version they upload, outside the custom domain's zone
+  rules, and once the Worker holds the relay key or a Durable Object binding
+  that hostname reaches live resources.
+- **Open item: the Version URLs of the public Worker.** Today the Worker is
+  the health-only stub with no binding and no secret, so nothing is reachable
+  through them. Before it serves the relay, one of these must hold and be
+  tested: (a) the Worker answers 404 on any host but its custom domain (a host
+  check in `src/index.js`, tested in `workers/src`); (b) the Worker's Version
+  URLs sit behind Cloudflare Access ("Access can protect Version URLs for one
+  Worker or every Worker in an account", same page; the Worker, Settings,
+  Domains & Routes, Version URLs); or (c) `preview_urls = false`, with
+  Previews served from a custom domain instead (Cloudflare, Worker Previews
+  custom domains: "Preview URLs can use a custom domain, `workers.dev`, or
+  both"; from memory, verify the Wrangler fields before relying on this).
+  `wrangler versions upload` is still never the Preview command.
+- What else remains, recorded: a Preview or Version URL hostname is outside
+  the zone's rate-limit and cache rules for the relay's hostname and outside
+  the admin Worker's Access application, and is public (Cloudflare adds
+  `X-Robots-Tag: noindex` to workers.dev Preview URLs). The operator can put
+  Cloudflare Access in front of every Preview URL of the account with one
+  setting (the Worker, Settings, Domains & Routes, Preview URLs, Enable
+  Cloudflare Access; all Preview URLs share one "Cloudflare Workers Preview
+  URLs" policy). The smoke test's expectations hold for a Preview of the stub:
+  `/health` and 404.
 - "Pages" is not used: static assets on the admin Worker already serve the
   operator page, and a Pages project would be a second product and hostname.
 
@@ -861,6 +882,7 @@ Each concern from the PR #87 review, checked against the code now:
 | Trusted client-IP handling | **Changed by the platform.** There is no proxy chain to trust: the Worker reads `CF-Connecting-IP` for its rate limit and ignores `X-Forwarded-For` altogether. The native router's rule (the last `X-Forwarded-For` entry, only with `--behind-tls-proxy`; `src/relay/server.rs`, `RateLimiter::client`; test `behind_a_proxy_the_last_forwarded_address_is_the_client`) stays for the reference host. | Test forged headers at deployment (the edge section lists the commands). |
 | Recoverable key issuance when a transaction outcome is indeterminate | **The error exists, the Workers use does not.** `Error::StoreCommitUnknown` keeps the sealed `.kqkey` and tells the operator to check `keys list` and `keys events` before retrying (`src/bin/keyquorum/host.rs`). On Workers the same situation arises when the admin Worker's response is lost after the Durable Object commits. **SQLite native:** a bundle is written while the transaction is open; a crash between the write and the commit can leave an orphan that opens nothing (`src/relay/key_delivery.rs`). | The admin client must map a lost response to `StoreCommitUnknown` (PR 4); the runbook already says to remove an orphan bundle before retrying. |
 | SIGTERM handling | **Done for the native host** (`host.rs`, `shutdown_signal`). **Not applicable to Workers**, which have no process to stop; a deploy replaces the version and the platform handles in-flight requests (from memory, verify). | None for Workers. |
+| Public Version URLs of the Worker | **Open.** `preview_urls = true` (`workers/wrangler.toml`) also enables Version URLs, so each `wrangler deploy` of `workers.yml` publishes a public workers.dev hostname that uses the version's own bindings and secrets (Cloudflare, Version URLs). Harmless for the stub, which has none. | One of: the Worker refuses any host but its custom domain (tested in `workers/src`), Access in front of the Version URLs, or Previews on a custom domain with `preview_urls = false`. Decided and tested before the relay key or a Durable Object binding is added. |
 
 ## Edge behavior of the public Worker
 
