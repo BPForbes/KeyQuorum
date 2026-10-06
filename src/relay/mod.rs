@@ -13,6 +13,7 @@ pub mod activity;
 mod api_key;
 pub mod audit;
 mod client;
+pub mod customer;
 mod device_directory;
 mod device_mail;
 pub mod issuance;

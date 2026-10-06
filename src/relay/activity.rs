@@ -1,15 +1,19 @@
 //! What the relay saw each known key do, by hour, for the provider's console.
 //!
 //! One row per key, hour, route and outcome, counted in place: the table's
-//! size follows the keys the provider issued, not the traffic. Only a bearer
-//! that matches a stored key is recorded (an anonymous caller must not be able
-//! to grow the table), and a refusal is recorded only when the key itself was
-//! the reason (`revoked`, `expired`, a `scope` it does not hold). It is a usage
-//! view, not evidence: it is not in the audit chain, and the scan drops rows
-//! older than [`RETENTION_DAYS`].
+//! size follows the keys the provider issued, not the traffic. Each row sums
+//! the requests, the time they took and the bytes each way, so the console can
+//! show counts, errors, latency and volume. Only a bearer that matches a stored
+//! key is recorded (an anonymous caller must not be able to grow the table), and
+//! a refusal is recorded only when the key itself was the reason (`revoked`,
+//! `expired`, a `scope` it does not hold). It is a usage view, not evidence: it
+//! is not in the audit chain, the scan drops rows older than
+//! [`RETENTION_DAYS`], and the durations are coarse (a Durable Object's clock
+//! moves only when it waits). It never holds a bearer, a hash, a path past its
+//! first segment, a body or an address.
 //!
 //! This module owns the `access_activity` table. It reads `api_keys` only to
-//! learn a key's state; it never stores a bearer or a hash.
+//! learn a key's state.
 
 use super::api_key::hash_bearer;
 use super::sql::{params, Sql};
@@ -43,6 +47,12 @@ impl Route {
         }
     }
 
+    pub fn parse(text: &str) -> Option<Self> {
+        [Self::Inbox, Self::Devices, Self::Trees, Self::Audit, Self::Other]
+            .into_iter()
+            .find(|route| route.as_str() == text)
+    }
+
     pub fn of_path(path: &str) -> Self {
         match path.trim_matches('/').split('/').next().unwrap_or("") {
             "inbox" => Self::Inbox,
@@ -57,9 +67,15 @@ impl Route {
 /// What a request meant for the key that made it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
+    /// Answered below 400.
     Ok,
+    /// Answered 400 to 499 other than a refusal of the key.
+    ClientError,
+    /// Answered 500 or more.
+    ServerError,
     Revoked,
     Expired,
+    /// The key is live but lacks the scope (or recipient) the route needs.
     Scope,
 }
 
@@ -67,31 +83,63 @@ impl Outcome {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ok => "ok",
+            Self::ClientError => "client_error",
+            Self::ServerError => "server_error",
             Self::Revoked => "revoked",
             Self::Expired => "expired",
             Self::Scope => "scope",
         }
     }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        [
+            Self::Ok,
+            Self::ClientError,
+            Self::ServerError,
+            Self::Revoked,
+            Self::Expired,
+            Self::Scope,
+        ]
+        .into_iter()
+        .find(|outcome| outcome.as_str() == text)
+    }
+
+    /// Whether this is a refusal because of the key itself.
+    pub fn is_blocked(self) -> bool {
+        matches!(self, Self::Revoked | Self::Expired | Self::Scope)
+    }
 }
 
 /// The outcome for a key in the given state that was answered `status`, or
-/// `None` when the request says nothing about the key (a revoked key on a route
-/// that never asked for it, a server error).
+/// `None` when the request says nothing about the key (a revoked key on a
+/// route that never asked for it).
 pub(crate) fn classify(revoked: bool, expired: bool, status: u16) -> Option<Outcome> {
     let refused = matches!(status, 401 | 403);
     match (revoked, expired, refused) {
         (true, _, true) => Some(Outcome::Revoked),
         (false, true, true) => Some(Outcome::Expired),
         (false, false, true) => Some(Outcome::Scope),
-        (false, false, false) if status < 500 => Some(Outcome::Ok),
+        (false, false, false) => Some(match status {
+            0..=399 => Outcome::Ok,
+            400..=499 => Outcome::ClientError,
+            _ => Outcome::ServerError,
+        }),
         _ => None,
     }
+}
+
+/// What one request cost, as the object measured it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Cost {
+    pub millis: u32,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
 }
 
 /// Counts one request by the key `token` names, if it names one. `path` is the
 /// request path and `status` the answer. A token that is malformed or unknown
 /// records nothing.
-pub fn record(conn: &dyn Sql, token: &str, path: &str, status: u16) -> Result<()> {
+pub fn record(conn: &dyn Sql, token: &str, path: &str, status: u16, cost: Cost) -> Result<()> {
     let Ok(hash) = hash_bearer(token) else {
         return Ok(());
     };
@@ -108,13 +156,32 @@ pub fn record(conn: &dyn Sql, token: &str, path: &str, status: u16) -> Result<()
     let Some(outcome) = classify(revoked, expired, status) else {
         return Ok(());
     };
+    let millis = i64::from(cost.millis);
+    let bytes_in = i64::try_from(cost.bytes_in).unwrap_or(i64::MAX);
+    let bytes_out = i64::try_from(cost.bytes_out).unwrap_or(i64::MAX);
     conn.execute(
-        "INSERT INTO access_activity (api_key_id, hour, route, outcome, count)
-         VALUES (?1, strftime('%Y-%m-%dT%H:00:00Z', 'now'), ?2, ?3, 1)
-         ON CONFLICT (api_key_id, hour, route, outcome) DO UPDATE SET count = count + 1",
-        params![id, Route::of_path(path).as_str(), outcome.as_str()],
+        "INSERT INTO access_activity
+            (api_key_id, hour, route, outcome, count, ms_total, ms_max, bytes_in, bytes_out)
+         VALUES (?1, strftime('%Y-%m-%dT%H:00:00Z', 'now'), ?2, ?3, 1, ?4, ?4, ?5, ?6)
+         ON CONFLICT (api_key_id, hour, route, outcome) DO UPDATE SET
+            count = count + 1,
+            ms_total = ms_total + excluded.ms_total,
+            ms_max = MAX(ms_max, excluded.ms_max),
+            bytes_in = bytes_in + excluded.bytes_in,
+            bytes_out = bytes_out + excluded.bytes_out",
+        params![id, Route::of_path(path).as_str(), outcome.as_str(), millis, bytes_in, bytes_out],
     )?;
     Ok(())
+}
+
+/// What a summary covers. Every field narrows it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Filter {
+    pub hours: i64,
+    pub customer_id: Option<i64>,
+    pub key_id: Option<i64>,
+    pub route: Option<Route>,
+    pub outcome: Option<Outcome>,
 }
 
 /// One key's requests over a window, by route and outcome.
@@ -124,11 +191,15 @@ pub struct KeyActivity {
     pub route: String,
     pub outcome: String,
     pub count: i64,
+    pub ms_total: i64,
+    pub ms_max: i64,
+    pub bytes_in: i64,
+    pub bytes_out: i64,
     /// The newest hour (UTC, `YYYY-MM-DDTHH:00:00Z`) with such a request.
     pub last_hour: String,
 }
 
-/// All requests, by hour and outcome, across every key in the window.
+/// All requests, by hour and outcome, across the keys in the window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HourlyCount {
     pub hour: String,
@@ -136,7 +207,7 @@ pub struct HourlyCount {
     pub count: i64,
 }
 
-/// What the console shows: per key and per hour, over the last `hours`.
+/// What the console shows: per key and per hour, over the window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Summary {
     pub hours: i64,
@@ -144,34 +215,50 @@ pub struct Summary {
     pub by_hour: Vec<HourlyCount>,
 }
 
+const WHERE: &str = "hour >= strftime('%Y-%m-%dT%H:00:00Z', 'now', ?1)
+   AND (?2 IS NULL OR api_key_id = ?2)
+   AND (?3 IS NULL OR route = ?3)
+   AND (?4 IS NULL OR outcome = ?4)
+   AND (?5 IS NULL OR api_key_id IN (
+        SELECT lk.api_key_id FROM licence_keys lk
+        JOIN licences l ON l.id = lk.licence_id
+        WHERE l.customer_id = ?5))";
+
 /// The window is `1..=MAX_SUMMARY_HOURS` hours; anything else is clamped.
-pub fn summary(conn: &dyn Sql, hours: i64) -> Result<Summary> {
-    let hours = hours.clamp(1, MAX_SUMMARY_HOURS);
+pub fn summary(conn: &dyn Sql, filter: &Filter) -> Result<Summary> {
+    let hours = filter.hours.clamp(1, MAX_SUMMARY_HOURS);
     let since = format!("-{hours} hours");
+    let route = filter.route.map(Route::as_str);
+    let outcome = filter.outcome.map(Outcome::as_str);
     let by_key = conn.query_map(
-        "SELECT api_key_id, route, outcome, SUM(count), MAX(hour)
-         FROM access_activity
-         WHERE hour >= strftime('%Y-%m-%dT%H:00:00Z', 'now', ?1)
-         GROUP BY api_key_id, route, outcome
-         ORDER BY api_key_id, route, outcome",
-        params![&since],
+        &format!(
+            "SELECT api_key_id, route, outcome, SUM(count), SUM(ms_total), MAX(ms_max),
+                    SUM(bytes_in), SUM(bytes_out), MAX(hour)
+             FROM access_activity WHERE {WHERE}
+             GROUP BY api_key_id, route, outcome
+             ORDER BY api_key_id, route, outcome"
+        ),
+        params![&since, filter.key_id, route, outcome, filter.customer_id],
         |row| {
             Ok(KeyActivity {
                 api_key_id: row.get(0)?,
                 route: row.get(1)?,
                 outcome: row.get(2)?,
                 count: row.get(3)?,
-                last_hour: row.get(4)?,
+                ms_total: row.get(4)?,
+                ms_max: row.get(5)?,
+                bytes_in: row.get(6)?,
+                bytes_out: row.get(7)?,
+                last_hour: row.get(8)?,
             })
         },
     )?;
     let by_hour = conn.query_map(
-        "SELECT hour, outcome, SUM(count)
-         FROM access_activity
-         WHERE hour >= strftime('%Y-%m-%dT%H:00:00Z', 'now', ?1)
-         GROUP BY hour, outcome
-         ORDER BY hour, outcome",
-        params![&since],
+        &format!(
+            "SELECT hour, outcome, SUM(count) FROM access_activity WHERE {WHERE}
+             GROUP BY hour, outcome ORDER BY hour, outcome"
+        ),
+        params![&since, filter.key_id, route, outcome, filter.customer_id],
         |row| {
             Ok(HourlyCount {
                 hour: row.get(0)?,

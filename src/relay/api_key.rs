@@ -718,21 +718,69 @@ pub fn expired_ids(conn: &dyn Sql) -> Result<std::collections::HashSet<i64>> {
     Ok(ids.into_iter().collect())
 }
 
-/// Replaces the operator lock with a fresh one, shown once. The caller has
-/// already proven it holds the current lock (the console's gate); the old one
-/// stops working in the same statement. Errors when no lock exists yet.
-pub fn rotate_licensee(conn: &dyn Sql) -> Result<CreatedLicensee> {
+/// Stages a new operator lock: it is returned once and only its hash is kept,
+/// in `licensee_pending`, where it is not yet the lock. The current lock (if
+/// any) keeps working until [`confirm_licensee`] promotes the new one, so a
+/// response that is lost leaves the relay as it was and the ceremony can be
+/// run again (a second staging replaces the first).
+pub fn stage_licensee(conn: &dyn Sql) -> Result<CreatedLicensee> {
+    let (token, token_hash) = generate_prefixed_bearer(LICENSEE_PREFIX);
+    conn.execute(
+        "INSERT INTO licensee_pending (id, key_hash) VALUES (1, ?1)
+         ON CONFLICT (id) DO UPDATE SET
+            key_hash = excluded.key_hash,
+            created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+        params![token_hash],
+    )?;
+    Ok(CreatedLicensee { token })
+}
+
+/// Whether a staged lock is waiting to be confirmed.
+pub fn licensee_pending_exists(conn: &dyn Sql) -> Result<bool> {
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM licensee_pending", params![], |row| {
+        row.get(0)
+    })?;
+    Ok(n > 0)
+}
+
+/// Promotes the staged lock to the lock when `token` is it, and drops the old
+/// one in the same unit of work. `Error::InvalidLicenseeKey` when nothing is
+/// staged or the token is not the staged one.
+pub fn confirm_licensee(conn: &dyn Sql, token: &str) -> Result<()> {
+    let token_hash =
+        hash_prefixed(token, LICENSEE_PREFIX).map_err(|_| Error::InvalidLicenseeKey)?;
     conn.with_transaction(|| {
-        if !licensee_exists(conn)? {
+        let staged: Option<i64> = conn.query_opt(
+            "SELECT id FROM licensee_pending WHERE id = 1 AND key_hash = ?1",
+            params![&token_hash],
+            |row| row.get(0),
+        )?;
+        if staged.is_none() {
             return Err(Error::InvalidLicenseeKey);
         }
-        let (token, token_hash) = generate_prefixed_bearer(LICENSEE_PREFIX);
         conn.execute(
-            "UPDATE licensee_issuer
-             SET key_hash = ?1, created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-             WHERE id = 1",
-            params![token_hash],
+            "INSERT INTO licensee_issuer (id, key_hash) VALUES (1, ?1)
+             ON CONFLICT (id) DO UPDATE SET
+                key_hash = excluded.key_hash,
+                created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+            params![&token_hash],
         )?;
-        Ok(CreatedLicensee { token })
+        conn.execute("DELETE FROM licensee_pending WHERE id = 1", params![])?;
+        Ok(())
     })
+}
+
+/// Sets key `id`'s end to `expires_at` (UTC `YYYY-MM-DD HH:MM:SS`, or `None`
+/// for no end). For a replacement that takes its licence's current end; the
+/// caller records the change (a `rotated` event).
+pub(crate) fn set_expiry(conn: &dyn Sql, id: i64, expires_at: Option<&str>) -> Result<()> {
+    let changed = conn.execute(
+        "UPDATE api_keys SET expires_at = ?2 WHERE id = ?1",
+        params![id, expires_at],
+    )?;
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err(Error::ApiKeyNotFound)
+    }
 }

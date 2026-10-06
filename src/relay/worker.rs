@@ -22,6 +22,7 @@
 
 mod do_sql;
 
+use crate::relay::activity::Cost;
 use crate::relay::operator;
 use crate::relay::service::{self, ProviderIdentity};
 use crate::relay::sql::Sql;
@@ -169,13 +170,6 @@ impl RelayCore {
             }
         };
         let response = service::dispatch(&self.store, self.identity.as_ref(), &request);
-        if let Some(token) = &request.bearer {
-            // What a known key did, for the provider's console. A failure to
-            // count never changes the answer.
-            let _ = self
-                .store
-                .record_access(token, request.url.path(), response.status);
-        }
         if response.status == 204
             && request.method == "POST"
             && request.url.path().ends_with("/revoke")
@@ -220,6 +214,35 @@ impl RelayCore {
             status: reply.status,
             body: reply.body,
         }
+    }
+
+    /// Counts one request for the provider's console: what a known key did, how
+    /// long it took (as the object measured it, coarse) and the bytes each way.
+    /// The object calls this after it has the answer, with the bearer it read;
+    /// a bearer that names no stored key records nothing, and a failure to
+    /// count never changes the answer (the caller ignores it).
+    pub fn record_access(
+        &self,
+        token: &str,
+        url: &str,
+        status: u16,
+        millis: u32,
+        bytes_in: f64,
+        bytes_out: f64,
+    ) -> Result<(), JsError> {
+        let path = Url::parse(url).map_err(js_error)?.path().to_string();
+        self.store
+            .record_access(
+                token,
+                &path,
+                status,
+                Cost {
+                    millis,
+                    bytes_in: bytes_in as u64,
+                    bytes_out: bytes_out as u64,
+                },
+            )
+            .map_err(js_error)
     }
 
     /// Whether the store answers (the readiness probe).

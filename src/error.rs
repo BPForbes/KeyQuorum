@@ -153,6 +153,11 @@ pub enum Error {
     InvalidLicence,
     /// No licence with that id exists.
     LicenceNotFound,
+    /// No customer with that id exists.
+    CustomerNotFound,
+    /// A key is not assigned to any licence, so it has no customer to renew or
+    /// replace it for.
+    KeyNotAssigned,
     /// A key was to be issued under a licence that is voided or has ended.
     LicenceNotActive,
     /// The relay's store failed an operation; the text is the backend's own,
@@ -262,6 +267,11 @@ impl fmt::Display for Error {
                 "licence is malformed (client name, terms or end date)"
             ),
             Error::LicenceNotFound => write!(f, "no licence with that id exists"),
+            Error::CustomerNotFound => write!(f, "no customer with that id exists"),
+            Error::KeyNotAssigned => write!(
+                f,
+                "this key is not assigned to a licence; assign it to one first"
+            ),
             Error::LicenceNotActive => write!(f, "this licence is voided or has ended"),
             Error::Store(message) => write!(f, "relay store error: {message}"),
             Error::StoreCommitUnknown => write!(
