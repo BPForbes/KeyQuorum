@@ -415,8 +415,11 @@ procedure and the settings, so the connection is made once and the same way.
   setting (the Worker, Settings, Domains & Routes, Preview URLs, Enable
   Cloudflare Access; all Preview URLs share one "Cloudflare Workers Preview
   URLs" policy). A Preview answers `/relay/health`, `/relay/ready`, the status page at
-  `/relay/`, 401 for a customer route under `/relay` and 404 for the rest
-  (including `/`).
+  `/relay/`, 401 for a customer route under `/relay` and 404 for the rest; its
+  root (`/`) is sent on to `/relay/` (the non-secret `ROOT_REDIRECT = "1"` in
+  `[previews.vars]`, which `scripts/guard.mjs` refuses anywhere else, because on
+  a real domain the root belongs to other things and the relay never answers
+  it).
 - "Pages" is not used: static assets on the admin Worker already serve the
   operator page, and a Pages project would be a second product and hostname.
 

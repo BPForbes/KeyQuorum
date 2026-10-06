@@ -71,6 +71,9 @@ MOUNT_PATH = "/relay"
 # What a Worker Preview starts with (it does not inherit the settings above).
 [previews.vars]
 ALLOWED_HOSTS = "*"
+# A Preview's root path leads to the relay's status page (src/worker.js); on a
+# real domain the root is not the relay's, so this is set nowhere else.
+ROOT_REDIRECT = "1"
 
 [[previews.durable_objects.bindings]]
 name = "RELAY"

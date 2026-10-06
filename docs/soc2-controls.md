@@ -200,6 +200,10 @@ These are stated so an auditor need not discover them:
 
 ## Audit log
 
+### 2026-10-06 (thirteenth pass): a Worker Preview's root leads to the relay page
+
+A Preview URL opened at its root showed `{"error":"not found"}` after the relay moved under `/relay`. `ROOT_REDIRECT = "1"` in `[previews.vars]` now sends a GET or HEAD of the exact root to the mount (`workers/src/worker.js`). Anything else, a POST to the root included, stays a 404. The guard (`workers/scripts/guard.mjs`) fails CI if `ROOT_REDIRECT` is turned on in `[vars]` or an environment's `[vars]`, because on a real domain the root is not the relay's. Tests: `workers/test/worker.test.mjs`, `workers/scripts/guard.test.mjs`; run under local workerd. No SOC 2 weakening: a Preview has its own empty Durable Object and no secrets, and the redirect reveals nothing.
+
 ### 2026-10-06 (twelfth pass): review findings on the operator console, fixed after its merge (#100)
 
 Five findings posted on the console's pull request after it was merged, each checked against the code before the fix.

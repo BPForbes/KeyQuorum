@@ -491,3 +491,31 @@ test("a mount that is not valid leaves the relay unconfigured, never wider", asy
     assert.equal((await callRaw(env, "/relay/health")).status, 200);
   }
 });
+
+// A Worker Preview has a host to itself; there the root may lead to the relay.
+test("with ROOT_REDIRECT set, only a GET or HEAD of the exact root goes to the mount, and nothing else changes", async () => {
+  const { env, forwarded } = fakeEnv();
+  env.ROOT_REDIRECT = "1";
+  const root = await callRaw(env, "/?x=1");
+  assert.equal(root.status, 307);
+  assert.equal(root.headers.get("location"), "/relay/?x=1");
+  assert.equal(root.headers.get("cache-control"), "no-store");
+  assert.equal((await callRaw(env, "/", { method: "HEAD" })).status, 307);
+  assert.equal((await callRaw(env, "/", { method: "POST", body: "{}" })).status, 404);
+  for (const path of ["/health", "/inbox", "/relayx", "/other", "//", "/%2F"]) {
+    assert.equal((await callRaw(env, path)).status, 404, path);
+  }
+  assert.equal((await callRaw(env, "/relay/health")).status, 200);
+  assert.equal(forwarded.length, 0);
+  // A different mount is where it leads.
+  env.MOUNT_PATH = "/relay/staging-user";
+  assert.equal((await callRaw(env, "/")).headers.get("location"), "/relay/staging-user/");
+});
+
+test("without ROOT_REDIRECT, or with any value but 1, the root is a 404 as on a real domain", async () => {
+  for (const value of [undefined, "", "0", "true", "yes", 1]) {
+    const { env } = fakeEnv();
+    env.ROOT_REDIRECT = value;
+    assert.equal((await callRaw(env, "/")).status, 404, String(value));
+  }
+});

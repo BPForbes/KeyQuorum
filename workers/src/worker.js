@@ -72,6 +72,18 @@ export async function handle(request, env, log = console) {
   const mount = relayMount(env.MOUNT_PATH);
   if (mount === null) return jsonResponse(503, { error: "relay not configured" });
 
+  // A Worker Preview has a host to itself, so there its root may lead to the
+  // relay's page (`ROOT_REDIRECT`, set only in [previews.vars]; the guard refuses
+  // it anywhere else). On a real domain the root belongs to other things and is
+  // never the relay's, so the variable is unset there and the path is a 404.
+  if (
+    env.ROOT_REDIRECT === "1" &&
+    url.pathname === "/" &&
+    (request.method === "GET" || request.method === "HEAD")
+  ) {
+    return new Response(null, { status: 307, headers: baseHeaders({ location: `${mount}/${url.search}` }) });
+  }
+
   const route = classify(request.method, url.pathname, mount);
   switch (route.kind) {
     case "redirect":
