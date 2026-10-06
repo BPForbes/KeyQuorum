@@ -118,11 +118,23 @@ No container, chart or unit is shipped: production hosting is Cloudflare only
 the dev, test and reference host. `workers/` holds a health-only stub Worker
 (JavaScript), its `wrangler.toml` (production at the top level, `[env.staging]`,
 wrangler pinned by `package-lock.json`) and the `scripts/guard.mjs` and
-`scripts/smoke.mjs` scripts with their `node:test` tests.
+`scripts/smoke.mjs` scripts with their `node:test` tests. `workers/admin/` is
+the admin Worker's front door: a static operator page (`public/`, no inline
+code, no outside origin) served by the Worker on its own hostname behind a
+Cloudflare Access application with MFA. `src/access.js` verifies Access's signed
+token itself (RS256, the team's key set, issuer, audience, expiry), so a mistake
+in the Access application cannot expose it; without a valid token, or while its
+two non-secret variables `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are empty, it
+serves nothing. It shows only who is signed in, every other `/api` route
+answers 503 until the relay's store exists, there is no mint route and only GET
+and HEAD are allowed. The guard checks its config, `npm run build` dry-runs it,
+the smoke test (`--admin`) requires anonymous requests to its hostname to be
+refused, and `workers.yml` deploys it with the two variables taken from GitHub
+environment variables, not secrets.
 `deploy/cloudflare/terraform/` holds the Cloudflare infrastructure as code
-(custom domains, edge rate-limit and cache-bypass rulesets, an Access
-application with MFA for the admin hostname that exists only when
-`admin_hostname` is set, an optional R2 bucket); the operator runs `terraform
+(custom domains, edge rate-limit and cache-bypass rulesets, a custom domain and
+an Access application with MFA per admin environment (`admin_environments`), an
+optional R2 bucket); the operator runs `terraform
 apply` locally with their own credentials, and `.terraform.lock.hcl` pins the
 provider. `.github/workflows/workers.yml` builds and dry-runs the Worker,
 formats and validates the Terraform, deploys to the `cloudflare-staging`
@@ -131,8 +143,9 @@ environment from `main` (production is a manual run into
 `workers`; it uses no third-party deploy action, and the only Cloudflare
 credential in GitHub is the Workers-deploy token and account id per
 environment. The relay itself (a public Worker and one SQLite-backed Durable
-Object running `relay::service::dispatch`, an admin Worker behind Cloudflare
-Access for minting) is planned and not implemented. The relay key,
+Object running `relay::service::dispatch`, the relay-backed operator pages and
+routes behind the admin Worker's Access check, and minting) is planned and not
+implemented. The relay key,
 certificate and revocation list are Worker secrets the operator sets with
 `wrangler secret put`, never GitHub secrets; the `kql_` lock and the provider
 root key never go on a Worker. `docs/operator/relay-deployment.md` is the operator runbook
@@ -808,7 +821,8 @@ Report a finding, with the rule as its Source, for any of these:
   Terraform state or `terraform.tfvars`, a GitHub Actions secret or log, a unit file or an
   image layer; the provider root key or the operator lock given to a running relay.
 - The Worker's deployment (`workers/`, `deploy/cloudflare/**`,
-  `.github/workflows/workers.yml`) gaining a route that bypasses Access to an operator
+  `.github/workflows/workers.yml`) letting the admin Worker serve anything without a
+  verified Access token, or gaining a route that bypasses Access to an operator
   path, re-enabling `workers.dev` or preview URLs, a migration that deletes or renames a
   Durable Object class without review, key material in `wrangler.toml` or the bundle, or a
   deploy credential broader than Workers Scripts edit.

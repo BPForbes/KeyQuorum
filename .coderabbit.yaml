@@ -98,7 +98,8 @@ reviews:
       instructions: >
         Hosting assets, the Worker and the operator runbook (Cloudflare is the
         only production host; plan of record docs/operator/relay-hosting.md;
-        workers/ is a health-only stub and the relay itself is not built yet).
+        workers/ is a health-only stub plus the admin Worker's front door, and
+        the relay itself is not built yet).
         No credential, key, bearer or certificate, and no Terraform state, may
         be rendered, baked in or written into wrangler.toml [vars], a .dev.vars
         file, the built bundle, a workflow log or a GitHub secret; Terraform
@@ -108,7 +109,11 @@ reviews:
         Worker. workers.dev and preview URLs stay off, and a Durable Object
         migration that deletes or renames a class (which destroys its data)
         needs explicit review; scripts/guard.mjs enforces both and must not be
-        weakened. Commands, flags, paths and defaults quoted in the runbook
+        weakened. The admin Worker (workers/admin/) must verify the Cloudflare
+        Access token itself and fail closed when unconfigured; its public/ page
+        must keep to the strict CSP (no inline code, no outside origin, no
+        innerHTML); its two Access variables (ACCESS_TEAM_DOMAIN, ACCESS_AUD)
+        are not secrets. Commands, flags, paths and defaults quoted in the runbook
         must match `--help` and the code (CC6.7, CC6.8, C1.1, CC8.1).
     - path: "src/bin/keyquorum/host.rs"
       instructions: >
