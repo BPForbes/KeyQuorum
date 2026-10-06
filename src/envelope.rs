@@ -212,6 +212,17 @@ pub fn format_of(bytes: &[u8]) -> Option<Format> {
         .find(|format| magic == format.magic)
 }
 
+/// The kind byte of a [`PACKAGE`] letter, from its first six bytes alone
+/// (magic, version, kind), without unsealing or parsing the rest. For a carrier
+/// that lists what it holds. `None` when the prefix is not a [`PACKAGE`] header.
+pub fn kind_of_prefix(prefix: &[u8]) -> Option<u8> {
+    let magic = prefix.get(..4)?;
+    if magic != PACKAGE.magic || *prefix.get(4)? != PACKAGE.version {
+        return None;
+    }
+    prefix.get(5).copied()
+}
+
 /// The recipient X25519 public key the carrier routes on. Used by the
 /// relay, which never holds a private key and so never unseals anything.
 pub fn routing_public_key(bytes: &[u8]) -> Result<[u8; 32]> {

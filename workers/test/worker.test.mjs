@@ -40,7 +40,11 @@ function spyLog() {
   return { warn: record("warn"), error: record("error"), lines };
 }
 
+// Every route is under /relay (policy.js, RELAY_PREFIX): `call` adds it, so the
+// tests read as the routes do; `callRaw` sends a path exactly as given.
 const call = (env, path, init = {}, host = HOST, log = spyLog()) =>
+  handle(new Request(`https://${host}/relay${path}`, init), env, log);
+const callRaw = (env, path, init = {}, host = HOST, log = spyLog()) =>
   handle(new Request(`https://${host}${path}`, init), env, log);
 
 test("an unconfigured Worker serves nothing, whatever the path", async () => {
@@ -322,7 +326,7 @@ test("the status page contract: no inline script or style, no handler, no outsid
 
 test("the default export is the same handler", async () => {
   const { env } = fakeEnv();
-  const response = await worker.fetch(new Request(`https://${HOST}/health`), env);
+  const response = await worker.fetch(new Request(`https://${HOST}/relay/health`), env);
   assert.equal(response.status, 200);
 });
 
@@ -392,4 +396,98 @@ test("a preflight from another site is refused, not answered", async () => {
   assert.equal(response.status, 403);
   assert.equal(response.headers.get("access-control-allow-origin"), null);
   assert.equal(forwarded.length, 0);
+});
+
+test("nothing outside /relay is served, so the rest of the domain is not the relay's", async () => {
+  const outside = [
+    ["GET", "/"],
+    ["GET", "/health"],
+    ["GET", "/ready"],
+    ["GET", "/inbox"],
+    ["POST", "/keycheck"],
+    ["POST", "/provider-identity"],
+    ["GET", "/assets/status.js"],
+    ["GET", "/app"],
+    ["GET", "/relayx/inbox"],
+    ["GET", "/relay-admin/inbox"],
+    ["GET", "/%72elay/inbox"],
+    ["GET", "/relay%2Finbox"],
+    ["GET", "/other/relay/inbox"],
+    ["GET", "/RELAY/inbox"],
+  ];
+  for (const [method, path] of outside) {
+    const { env, forwarded } = fakeEnv();
+    const init = { method, headers: { authorization: `Bearer ${bearer()}` } };
+    if (method !== "GET") init.body = "{}";
+    const response = await callRaw(env, path, init);
+    assert.equal(response.status, 404, `${method} ${path}`);
+    assert.equal(forwarded.length, 0, `${method} ${path}`);
+  }
+});
+
+test("the mount without its slash goes to the slash, and the relay is given the path below the mount", async () => {
+  const { env, forwarded } = fakeEnv();
+  const bare = await callRaw(env, "/relay?x=1");
+  assert.equal(bare.status, 308);
+  assert.equal(bare.headers.get("location"), "/relay/?x=1");
+  assert.equal(bare.headers.get("cache-control"), "no-store");
+  assert.equal((await callRaw(env, "/relay", { method: "POST", body: "{}" })).status, 405);
+  const page = await callRaw(env, "/relay/");
+  assert.equal(page.status, 200);
+  assert.equal(await page.text(), STATUS_HTML);
+  assert.equal(forwarded.length, 0);
+
+  const response = await call(env, "/inbox?after=3&limit=10", { method: "GET" });
+  assert.equal(response.status, 200);
+  assert.equal(forwarded.length, 1);
+  const seen = new URL(forwarded[0].url);
+  assert.equal(seen.pathname, "/inbox");
+  assert.equal(seen.search, "?after=3&limit=10");
+});
+
+test("the status page's links are relative, so it works under any mount", () => {
+  assert.match(STATUS_HTML, /href="assets\/status\.css"/);
+  assert.match(STATUS_HTML, /src="assets\/status\.js"/);
+  assert.match(STATUS_JS, /check\("health"\)/);
+  assert.match(STATUS_JS, /check\("ready"\)/);
+  for (const text of [STATUS_HTML, STATUS_JS]) assert.doesNotMatch(text, /["'`]\/(relay|health|ready|assets)/);
+});
+
+// A staging relay sits on the same host as production, under its own path.
+test("a staging relay is mounted at /relay/staging-user and answers nothing else, production's path included", async () => {
+  const STAGING = "/relay/staging-user";
+  const make = () => {
+    const made = fakeEnv();
+    made.env.MOUNT_PATH = STAGING;
+    return made;
+  };
+  const { env, forwarded } = make();
+  assert.equal((await callRaw(env, `${STAGING}/health`)).status, 200);
+  assert.equal((await callRaw(env, `${STAGING}/ready`)).status, 200);
+  assert.equal((await callRaw(env, `${STAGING}/`)).status, 200);
+  assert.equal((await callRaw(env, STAGING)).status, 308);
+  assert.equal((await callRaw(env, `${STAGING}/inbox`)).status, 200);
+  assert.equal(new URL(forwarded[0].url).pathname, "/inbox");
+  for (const path of ["/relay/health", "/relay/inbox", "/relay/", "/relay", "/relay/staging-userx/inbox", "/relay/staging/inbox", "/relay/staging-admin/inbox", "/inbox", "/"]) {
+    const other = make();
+    const response = await callRaw(other.env, path);
+    assert.equal(response.status, 404, path);
+    assert.equal(other.forwarded.length, 0, path);
+  }
+});
+
+test("a mount that is not valid leaves the relay unconfigured, never wider", async () => {
+  for (const value of ["/", "relay", "/relay/", "/relay/Staging", "/relay/a/b", "/other", "/relay/staging_user", "/relay/-x", 7, {}]) {
+    const { env, forwarded } = fakeEnv();
+    env.MOUNT_PATH = value;
+    const response = await callRaw(env, "/relay/health");
+    assert.equal(response.status, 503, String(value));
+    assert.equal(forwarded.length, 0);
+  }
+  // Unset or empty is the default, /relay.
+  for (const value of [undefined, ""]) {
+    const { env } = fakeEnv();
+    env.MOUNT_PATH = value;
+    assert.equal((await callRaw(env, "/relay/health")).status, 200);
+  }
 });

@@ -129,7 +129,7 @@ then a prompt; both flags at once is refused) and the provider root key
 ending removed, zeroized, and named only by path in errors.
 No container, chart or unit is shipped: production hosting is Cloudflare only
 (plan of record `docs/operator/relay-hosting.md`), and native `host serve` is
-the dev, test and reference host. `workers/` holds the public Worker and its Durable Object (JavaScript around the WebAssembly relay core: `src/worker.js`, `policy.js`, `relay-service.js`, `relay-object.js`), its `wrangler.toml` (production at the top level, `[env.staging]`, wrangler pinned by `package-lock.json`, `sharp` overridden to a fixed version) and the `scripts/guard.mjs`, `scripts/smoke.mjs` and `scripts/relay-host.mjs` scripts with their `node:test` tests. Preview URLs are on for the public Worker only (the guard's `--allow-preview-urls` is passed for that one file) and serve Worker Previews: what Cloudflare Workers Builds runs for a branch (`npm run preview`, that is `wrangler preview`, with the `[previews]` tables a Preview starts with, since it inherits no production setting) once the owner connects the repository to the Worker, the way the portfolio site is connected (`docs/operator/relay-hosting.md`, "Workers Builds and previews": root directory `workers`, build command `npm run builds:build` (a pinned, hash-checked Rust toolchain, then the WebAssembly build), `main` deploy command `npm run check` so that `workers.yml` stays the only deployer, `.node-version` 22). A Preview inherits no production setting, secret or Durable Object namespace; `wrangler versions upload`, whose version would share them, is never the preview command; `preview_urls = true` also makes the URL of every `wrangler deploy` version public (Cloudflare Version URLs, which use the version's own bindings and secrets), so the Worker serves only the hosts in its non-secret `ALLOWED_HOSTS` (set at deploy from the environment's `RELAY_URL`) and answers 404 on any other, a Version URL included, and only `[previews.vars]` may set it to `*` (the guard enforces both); and the guard checks a `previews` block's vars like `[vars]`. The relay's sites are independent of the Lab and the portfolio: the Lab's relay is `relay::service::dispatch` in process at a name that is never served (`relay.keyquorum.lab`), no relay Worker sets a CORS header, and both refuse another website's browser request (`workers/src/browser-isolation.js`: `Sec-Fetch-Site` cross-site or same-site and a foreign or `null` `Origin` are 403, the admin Worker alone letting a top-level link through, which Access's sign-in redirect needs, to its token check), and every answer carries `Cross-Origin-Resource-Policy: same-origin`, `X-Frame-Options: DENY` and `Cross-Origin-Opener-Policy: same-origin`; neither the Lab nor the portfolio may name a relay host. `src/relay/worker.rs` (feature `workers`, built for wasm32 by
+the dev, test and reference host. `workers/` holds the public Worker and its Durable Object, which serves only below its mount (`src/mount.js`, the non-secret `MOUNT_PATH`: `/relay`, or `/relay/staging-user` for the staging relay on the same host; the core is given the path without it, every other path is 404, and a client's relay URL is that path on `keyquorum.dev`; the console is mounted the same way at `/relay/admin` or `/relay/staging-admin`, so all four share one origin, an accepted cost recorded in `relay-hosting.md`, and the routes are Workers routes in `deploy/cloudflare/terraform`, not custom domains) (JavaScript around the WebAssembly relay core: `src/worker.js`, `policy.js`, `relay-service.js`, `relay-object.js`), its `wrangler.toml` (production at the top level, `[env.staging]`, wrangler pinned by `package-lock.json`, `sharp` overridden to a fixed version) and the `scripts/guard.mjs`, `scripts/smoke.mjs` and `scripts/relay-host.mjs` scripts with their `node:test` tests. Preview URLs are on for the public Worker only (the guard's `--allow-preview-urls` is passed for that one file) and serve Worker Previews: what Cloudflare Workers Builds runs for a branch (`npm run preview`, that is `wrangler preview`, with the `[previews]` tables a Preview starts with, since it inherits no production setting) once the owner connects the repository to the Worker, the way the portfolio site is connected (`docs/operator/relay-hosting.md`, "Workers Builds and previews": root directory `workers`, build command `npm run builds:build` (a pinned, hash-checked Rust toolchain, then the WebAssembly build), `main` deploy command `npm run check` so that `workers.yml` stays the only deployer, `.node-version` 22). A Preview inherits no production setting, secret or Durable Object namespace; `wrangler versions upload`, whose version would share them, is never the preview command; `preview_urls = true` also makes the URL of every `wrangler deploy` version public (Cloudflare Version URLs, which use the version's own bindings and secrets), so the Worker serves only the hosts in its non-secret `ALLOWED_HOSTS` (set at deploy from the environment's `RELAY_URL`) and answers 404 on any other, a Version URL included, and only `[previews.vars]` may set it to `*` (the guard enforces both); and the guard checks a `previews` block's vars like `[vars]`. The relay's sites are independent of the Lab and the portfolio: the Lab's relay is `relay::service::dispatch` in process at a name that is never served (`relay.keyquorum.lab`), no relay Worker sets a CORS header, and both refuse another website's browser request (`workers/src/browser-isolation.js`: `Sec-Fetch-Site` cross-site or same-site and a foreign or `null` `Origin` are 403, the admin Worker alone letting a top-level link through, which Access's sign-in redirect needs, to its token check), and every answer carries `Cross-Origin-Resource-Policy: same-origin`, `X-Frame-Options: DENY` and `Cross-Origin-Opener-Policy: same-origin`; neither the Lab nor the portfolio may name a relay host. `src/relay/worker.rs` (feature `workers`, built for wasm32 by
 `workers/scripts/build-relay-wasm.mjs` into the git-ignored `workers/relay-wasm/`, and
 refused together with `provider` or `lab` by `build.rs` and `lib.rs`) is the relay core
 for a Durable Object: `RelayCore` is `SqlRelayStore` over `worker::do_sql::DoSql`, the
@@ -138,15 +138,15 @@ Durable Object's SQL reached through `workers/src/sql-adapter.js` (a cursor per 
 clock (the Worker passes the time in as text), has no mint or rotate route, and holds the
 relay key and certificate only as the bytes the Worker's secrets give it; the public Worker and the Durable Object class around it are built (`workers/src/`) and never deployed. `workers/test/` runs the built module over a Durable
 Object-shaped storage on Node's SQLite. `workers/admin/` is
-the admin Worker's front door: a static operator page (`public/`, no inline
-code, no outside origin) served by the Worker on its own hostname behind a
-Cloudflare Access application with MFA. `src/access.js` verifies Access's signed
+the admin Worker: the provider's console (`public/`, no inline
+code, no outside origin, no `innerHTML`) served by the Worker on its own path (`MOUNT_PATH`) behind a
+Cloudflare Access application with MFA, and the `/api` behind it; its page names no absolute path, so it works under any mount. `src/access.js` verifies Access's signed
 token itself (RS256, the team's key set, issuer, audience, expiry), so a mistake
 in the Access application cannot expose it; without a valid token, or while its
 two non-secret variables `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are empty, it
-serves nothing. It shows only who is signed in, every other `/api` route
-answers 503 until the relay's store exists, there is no mint route and only GET
-and HEAD are allowed. The guard checks its config, `npm run build` dry-runs it,
+serves nothing. Outside `/api` only GET and HEAD are allowed, and `/api` is the
+route table in `src/routes.js` (anything not in it is refused before the relay).
+The guard checks its config, `npm run build` dry-runs it,
 the smoke test (`--admin`) requires anonymous requests to its hostname to be
 refused, and `workers.yml` deploys it with the two variables taken from GitHub
 environment variables, not secrets.
@@ -161,11 +161,43 @@ environment from `main` (production is a manual run into
 `cloudflare-production`) and gates everything behind the one stable check
 `workers`; it uses no third-party deploy action, and the only Cloudflare
 credential in GitHub is the Workers-deploy token and account id per
-environment. The relay-backed operator pages and routes behind the admin Worker's Access check, and minting are planned and not implemented, so no customer key can yet be minted on the Cloudflare relay. The relay key and certificate (`RELAY_PRIVATE_KEY`, `RELAY_CERTIFICATE`) are Worker secrets the operator sets with `wrangler secret put`, never GitHub secrets; the `kql_` lock and the provider
+environment. Nothing has been deployed. The relay key and certificate (`RELAY_PRIVATE_KEY`, `RELAY_CERTIFICATE`) are Worker secrets the operator sets with `wrangler secret put`, never GitHub secrets; the `kql_` lock and the provider
 root key never go on a Worker. `docs/operator/relay-deployment.md` is the operator runbook
 (secrets, certificates, bootstrap, rotation, the dev host) and
 `docs/operator/relay-secrets.md` the secret classification; neither is
 customer-facing, and the README still does not document `host`.
+
+The operator console (issue #99, `docs/operator/relay-hosting.md`, "The operator
+console") is for the provider's own people only and never for customers. The
+admin Worker reaches the relay's Durable Object through the private binding
+`RELAY_ADMIN` (`script_name` names this environment's relay only, no migration
+in the admin file; `guard.mjs` checks both) and calls only `RelayObject.operate`
+and `status`; no public route leads there. The core side is `src/relay/operator.rs`
+(orchestration only), over `customer.rs` (customers), `licence.rs` (licences,
+**immutable** statement versions, key links and `replaces_key_id` lineage),
+`issuance.rs` (issue, replace, void a key, void a licence, each one unit of
+work), `activity.rs` (hourly per-known-key counts, latency and bytes; unknown
+bearers are never recorded; 90 days; no address, query or body; not in the audit
+chain) and `operator_log.rs` (`operator_actions`: the verified Access identity,
+the operation id, its result). Rules to keep: a licence is signed terms, an end
+date and revocation, enforcing nothing itself, and voiding it revokes its keys in
+the same transaction; renewal adds a version and never rewrites a delivered one,
+and keys already issued keep their end until replaced; a key's owner is an
+explicit link and a key with none is unassigned, never guessed from a label,
+fingerprint or address; every change needs the verified identity, a same-origin
+`Origin`, the operator lock in `x-operator-lock` (checked against the stored
+hash, never stored, logged or echoed) and an `Idempotency-Key` operation id that
+is recorded in the change's own transaction, so a repeat answers `already_done`
+with ids and changes nothing; a sealed bundle is never retained (a lost file is
+recovered by replacing the key) and no reply holds a bearer or key hash; the
+operator lock is made in two steps (`bootstrap` or `rotate_lock` stages it in
+`licensee_pending` and shows it once, `confirm_lock` promotes it), and an empty
+store cannot be claimed by an ordinary request; the `admin` scope is not issued
+from the console. There is one operator role (Access decides who is in), and the
+console cannot show letter contents or file histories, which are sealed. What has
+not been done and must not be claimed: a deploy to staging, the restore drill, a
+cost or storage measurement, any enforced licence limit, a second role, and a
+recovery path for a lost operator lock on the Cloudflare relay.
 
 The relay host's own operating controls: the relay database is owner-only
 (0600, journal sidecars too, like the personal store). It serves plain HTTP,
@@ -837,6 +869,17 @@ Report a finding, with the rule as its Source, for any of these:
   taken from a flag value, written into `wrangler.toml` `[vars]`, a `.dev.vars` file,
   Terraform state or `terraform.tfvars`, a GitHub Actions secret or log, a unit file or an
   image layer; the provider root key or the operator lock given to a running relay.
+- The operator console (`src/relay/{operator,issuance,customer,licence,activity,operator_log}.rs`,
+  `workers/admin/`): a change that skips the operator lock, the operation id, the
+  same-origin check or the verified identity; ownership of a key inferred from a
+  label, fingerprint or address; a licence statement version updated or deleted;
+  a licence void that leaves its keys usable; a sealed bundle or bearer retained
+  or returned in a reply; activity recorded for an unknown bearer or holding an
+  address, query or body; the operator lock stored, logged or put in a Worker
+  secret, browser storage or a URL; a lock bootstrap that an ordinary request on
+  an empty store can claim; the `admin` scope issued from the console; a public
+  route to a management operation; the console documented as enforcing licence
+  limits, as showing file contents, or as deployed.
 - The Worker's deployment (`workers/`, `deploy/cloudflare/**`,
   `.github/workflows/workers.yml`) letting the admin Worker serve anything without a
   verified Access token, or gaining a route that bypasses Access to an operator

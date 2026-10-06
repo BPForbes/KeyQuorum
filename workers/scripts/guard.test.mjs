@@ -196,3 +196,51 @@ test("the allowance still requires preview_urls to be set and workers_dev off", 
     ),
   );
 });
+
+const BINDING = (table, script) =>
+  `\n[[${table}]]\nname = "RELAY"\nclass_name = "RelayObject"\nscript_name = "${script}"\n`;
+
+test("a binding to another Worker's Durable Object may name only this environment's relay", () => {
+  assert.deepEqual(
+    checkConfig("wrangler.toml", `${CLEAN}${BINDING("durable_objects.bindings", "keyquorum-relay")}`),
+    [],
+  );
+  assert.deepEqual(
+    checkConfig("wrangler.toml", `${CLEAN}${BINDING("env.staging.durable_objects.bindings", "keyquorum-relay-staging")}`),
+    [],
+  );
+  // A staging console bound to production's relay, or production's to staging's,
+  // or either to some other Worker.
+  for (const [table, script] of [
+    ["env.staging.durable_objects.bindings", "keyquorum-relay"],
+    ["durable_objects.bindings", "keyquorum-relay-staging"],
+    ["durable_objects.bindings", "somebody-elses-worker"],
+    ["env.staging.durable_objects.bindings", "keyquorum-relay-production"],
+  ]) {
+    const problems = checkConfig("wrangler.toml", `${CLEAN}${BINDING(table, script)}`);
+    assert.equal(problems.length, 1, `${table} ${script}`);
+    assert.match(problems[0], new RegExp(script));
+  }
+});
+
+test("a file that binds another Worker's Durable Object may carry no migration", () => {
+  const text = `${CLEAN}${BINDING("durable_objects.bindings", "keyquorum-relay")}\n[[migrations]]\ntag = "v1"\nnew_sqlite_classes = ["X"]\n`;
+  const problems = checkConfig("wrangler.toml", text);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /no migration/);
+});
+
+test("the public Worker's own binding, which has no script_name, is not touched by that rule", async () => {
+  const { readFileSync } = await import("node:fs");
+  const text = readFileSync(new URL("../wrangler.toml", import.meta.url), "utf8");
+  assert.ok(!/script_name/.test(text));
+});
+
+test("the admin configuration passes the guard and binds the relay of its own environment", async () => {
+  const { readFileSync } = await import("node:fs");
+  const text = readFileSync(new URL("../admin/wrangler.toml", import.meta.url), "utf8");
+  assert.deepEqual(checkConfig("admin/wrangler.toml", text), []);
+  assert.match(text, /script_name = "keyquorum-relay"/);
+  assert.match(text, /script_name = "keyquorum-relay-staging"/);
+  assert.ok(!/migrations/.test(text.replace(/#.*$/gm, "")), "the admin Worker owns no class");
+});

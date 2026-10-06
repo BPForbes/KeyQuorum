@@ -226,6 +226,74 @@ pub fn purge_expired(conn: &dyn Sql) -> Result<u64> {
     conn.changes()
 }
 
+/// What the relay can say about a stored letter without opening it: where it
+/// is filed, which kind its outer header names, how big it is and when it was
+/// stored. Never the sealed bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LetterSummary {
+    pub id: i64,
+    pub recipient_fingerprint: String,
+    pub kind: Option<u8>,
+    pub size: i64,
+    pub created_at: String,
+    pub expires_at: Option<String>,
+}
+
+/// How many letters are held and the newest `limit` (1 to 500) of them,
+/// newest first. `table` is one of the two mailbox tables, never user input.
+pub(crate) fn summaries_in(
+    conn: &dyn Sql,
+    table: MailTable,
+    limit: i64,
+) -> Result<(i64, Vec<LetterSummary>)> {
+    let (name, column) = match table {
+        MailTable::Inbox => ("mailbox", "envelope"),
+        MailTable::Devices => ("device_mailbox", "package"),
+    };
+    let total: i64 = conn.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM {name}
+             WHERE expires_at IS NULL OR datetime(expires_at) > datetime('now')"
+        ),
+        params![],
+        |row| row.get(0),
+    )?;
+    let letters = conn.query_map(
+        &format!(
+            "SELECT id, recipient_fingerprint, substr({column}, 1, 6), length({column}),
+                    created_at, expires_at
+             FROM {name}
+             WHERE expires_at IS NULL OR datetime(expires_at) > datetime('now')
+             ORDER BY id DESC LIMIT ?1"
+        ),
+        params![limit.clamp(1, 500)],
+        |row| {
+            let prefix: Vec<u8> = row.get(2)?;
+            Ok(LetterSummary {
+                id: row.get(0)?,
+                recipient_fingerprint: row.get(1)?,
+                kind: crate::envelope::kind_of_prefix(&prefix),
+                size: row.get(3)?,
+                created_at: row.get(4)?,
+                expires_at: row.get(5)?,
+            })
+        },
+    )?;
+    Ok((total, letters))
+}
+
+/// The two mailbox tables [`summaries_in`] can list.
+#[derive(Clone, Copy)]
+pub(crate) enum MailTable {
+    Inbox,
+    Devices,
+}
+
+/// The inbox's letters, summarised. See [`summaries_in`].
+pub fn summaries(conn: &dyn Sql, limit: i64) -> Result<(i64, Vec<LetterSummary>)> {
+    summaries_in(conn, MailTable::Inbox, limit)
+}
+
 #[cfg(test)]
 #[path = "mailbox/tests.rs"]
 mod tests;

@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // Post-deploy smoke test for the public Worker:
 //
-//   node scripts/smoke.mjs https://relay.example.com
+//   node scripts/smoke.mjs https://relay.example.com/relay
+//
+// The URL is the relay's, as a client is given it: the Worker serves only under
+// its mount (src/mount.js), so every path below is relative to that.
 //
 // It proves what a deploy exposed: /health answers and is never cacheable, the
 // Durable Object answers readiness, the status page carries its locked-down
@@ -11,6 +14,7 @@
 // identity or says the relay has none yet. It reads nothing secret and sends
 // no credential.
 import { fileURLToPath } from "node:url";
+import { relayMountOf } from "./relay-host.mjs";
 
 const OPERATOR_ROUTES = [
   ["GET", "/api-keys"],
@@ -28,6 +32,11 @@ const OPERATOR_ROUTES = [
 export async function runSmoke(baseUrl, { fetchImpl = fetch, attempts = 1, delayMs = 0 } = {}) {
   const base = baseUrl.replace(/\/+$/, "");
   const problems = [];
+  // The Worker serves only under its mount (/relay, or /relay/<name> for a
+  // staging relay), so that is the URL a client is given.
+  if (relayMountOf(base) === null) {
+    return [`the relay URL must be https://<domain>/relay or https://<domain>/relay/<name>, the only paths a relay Worker serves; got ${base}`];
+  }
   const call = (method, path, init = {}) =>
     fetchImpl(`${base}${path}`, {
       method,
@@ -136,7 +145,10 @@ export async function runAdminSmoke(baseUrl, { fetchImpl = fetch } = {}) {
     ["GET", "/index.html"],
     ["GET", "/app.js"],
     ["GET", "/api/whoami"],
-    ["POST", "/api/keys"],
+    ["GET", "/api/config"],
+    ["GET", "/api/users"],
+    ["GET", "/api/status"],
+    ["POST", "/api/users"],
   ]) {
     let response;
     try {
@@ -144,6 +156,10 @@ export async function runAdminSmoke(baseUrl, { fetchImpl = fetch } = {}) {
         method,
         redirect: "manual",
         signal: AbortSignal.timeout(15_000),
+        // A change asked for with no credential: it must not reach the relay.
+        ...(method === "POST"
+          ? { headers: { "content-type": "application/json", "idempotency-key": "smoke-test-never-sent" }, body: JSON.stringify({ name: "smoke" }) }
+          : {}),
       });
     } catch (error) {
       problems.push(`admin ${method} ${path} did not answer: ${error?.name ?? "no response"}`);

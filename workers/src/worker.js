@@ -6,6 +6,10 @@
 // core in that object decides who may do what; this file only keeps everything
 // else out. Every response is `Cache-Control: no-store`.
 //
+// Everything is under the Worker's mount (mount.js: `/relay`, or `/relay/<name>`
+// for a staging relay on the same host); a path outside it is a 404, so the rest
+// of the domain belongs to other things.
+//
 // What it will not do: answer another website's browser (see
 // browser-isolation.js: the Lab and the portfolio are other sites, and the relay
 // shares no origin, hosting or code with either), serve a host other than the relay's own (a Version URL
@@ -14,6 +18,7 @@
 // that mints is not on this Worker), or keep a request waiting behind the
 // object (the object refuses past `MAX_IN_FLIGHT`).
 import { crossSiteRefusal } from "./browser-isolation.js";
+import { relayMount } from "./mount.js";
 import {
   MAX_REQUEST_BODY,
   baseHeaders,
@@ -62,8 +67,19 @@ export async function handle(request, env, log = console) {
     return jsonResponse(403, { error: "cross-site requests are not served" });
   }
 
-  const route = classify(request.method, url.pathname);
+  // Where this Worker is mounted (MOUNT_PATH, mount.js): a value that is not a
+  // valid mount leaves it unconfigured, so a typo serves nothing.
+  const mount = relayMount(env.MOUNT_PATH);
+  if (mount === null) return jsonResponse(503, { error: "relay not configured" });
+
+  const route = classify(request.method, url.pathname, mount);
   switch (route.kind) {
+    case "redirect":
+      // The page's links are relative, so it must be loaded with its slash.
+      return new Response(null, {
+        status: 308,
+        headers: baseHeaders({ location: `${route.to}${url.search}` }),
+      });
     case "not-found":
       return jsonResponse(404, { error: "not found" });
     case "method-not-allowed":
@@ -91,7 +107,7 @@ export async function handle(request, env, log = console) {
         }),
       });
     case "asset": {
-      const [type, body] = ASSETS.get(url.pathname);
+      const [type, body] = ASSETS.get(route.path);
       return new Response(body, { status: 200, headers: baseHeaders({ "content-type": type }) });
     }
   }
@@ -116,9 +132,14 @@ export async function handle(request, env, log = console) {
     if (!allowed) return jsonResponse(429, { error: "too many requests" }, { "retry-after": "60" });
   }
 
+  // The core is given the path below the prefix, as it has always had it.
+  const inner = new URL(request.url);
+  inner.pathname = route.path;
+  const forwarded = new Request(inner, request);
+
   let answer;
   try {
-    answer = await relayObject(env).fetch(request);
+    answer = await relayObject(env).fetch(forwarded);
   } catch (error) {
     log.error("relay: the relay object did not answer", error?.name);
     return unavailable();

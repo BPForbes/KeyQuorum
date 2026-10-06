@@ -9,13 +9,19 @@
 //! documents; pull returns a sliced copy for the recipient fingerprint
 //! that a personal SQLite store translates.
 
+pub mod activity;
 mod api_key;
 pub mod audit;
 mod client;
+pub mod customer;
 mod device_directory;
 mod device_mail;
+pub mod issuance;
 pub mod key_delivery;
+pub mod licence;
 mod mailbox;
+pub mod operator;
+pub mod operator_log;
 mod org_tree;
 #[cfg(feature = "provider")]
 mod server;
@@ -32,6 +38,7 @@ pub use api_key::{
     events_visible_to as api_key_events_visible_to, hash_bearer, list as list_api_keys,
     record_provider_auth_event, revoke as revoke_api_key, rotate as rotate_api_key, ApiKeyEvent,
     ApiKeyInfo, ApiKeyScope, AuthedKey, CreatedApiKey, CreatedLicensee, KeyCheck, NewApiKey,
+    ProviderAuthRecord,
 };
 pub use api_key::{info as api_key_info, rotate_with as rotate_api_key_with, OldKey, HOST_ACTOR};
 #[cfg(not(target_arch = "wasm32"))]
@@ -56,12 +63,12 @@ pub use device_mail::{
     store as store_device_package, DeviceMailPage, StoredDevicePackage, DEVICE_PACKAGE_TTL_DAYS,
 };
 pub use mailbox::{
-    list_after, purge_expired as purge_expired_envelopes, store, store_until, MailboxPage,
-    StoredEnvelope, DEFAULT_INBOX_PAGE, MAX_INBOX_PAGE, MAX_INBOX_PAGE_BYTES,
+    list_after, purge_expired as purge_expired_envelopes, store, store_until, LetterSummary,
+    MailboxPage, StoredEnvelope, DEFAULT_INBOX_PAGE, MAX_INBOX_PAGE, MAX_INBOX_PAGE_BYTES,
 };
 pub use org_tree::{
     context_for_fingerprint, contexts_for_fingerprint, get_public_tree, list_public_trees,
-    merge_public_tree, put_public_tree, slices_for_fingerprint,
+    merge_public_tree, put_public_tree, slices_for_fingerprint, TreeSummary,
 };
 #[cfg(feature = "provider")]
 pub use server::{

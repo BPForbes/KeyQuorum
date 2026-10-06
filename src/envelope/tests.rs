@@ -118,3 +118,19 @@ fn an_export_bundle_is_the_same_framing_under_its_own_magic() {
         Err(Error::InvalidBridgePackage)
     ));
 }
+
+#[test]
+fn a_package_kind_is_read_from_its_first_six_bytes_without_unsealing() {
+    let mut letter = Vec::new();
+    letter.extend_from_slice(b"KQPB");
+    letter.push(2);
+    letter.push(KIND_FILE_HISTORY);
+    letter.extend_from_slice(&[7u8; 32]);
+    assert_eq!(kind_of_prefix(&letter[..6]), Some(KIND_FILE_HISTORY));
+    assert_eq!(kind_of_prefix(&letter), Some(KIND_FILE_HISTORY));
+    // Not a package: another magic, another version, or too short.
+    assert_eq!(kind_of_prefix(b"KQXB\x01\x04"), None);
+    assert_eq!(kind_of_prefix(b"KQPB\x01\x04"), None);
+    assert_eq!(kind_of_prefix(b"KQPB\x02"), None);
+    assert_eq!(kind_of_prefix(b""), None);
+}

@@ -668,3 +668,119 @@ pub fn record_provider_auth_event(
         )
     })
 }
+
+/// Whether the operator lock has been created.
+pub fn licensee_exists(conn: &dyn Sql) -> Result<bool> {
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM licensee_issuer", params![], |row| {
+        row.get(0)
+    })?;
+    Ok(n > 0)
+}
+
+/// One row of `provider_auth_events` as the console lists it. Never a key,
+/// bearer or challenge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderAuthRecord {
+    pub id: i64,
+    pub operation: String,
+    pub success: bool,
+    pub attempted_at: String,
+    pub entry_hash: String,
+}
+
+/// The newest `limit` (1 to 500) privileged-auth attempts, newest first.
+pub fn provider_auth_events(conn: &dyn Sql, limit: i64) -> Result<Vec<ProviderAuthRecord>> {
+    conn.query_map(
+        "SELECT id, operation, success, attempted_at, COALESCE(entry_hash, '')
+         FROM provider_auth_events ORDER BY id DESC LIMIT ?1",
+        params![limit.clamp(1, 500)],
+        |row| {
+            Ok(ProviderAuthRecord {
+                id: row.get(0)?,
+                operation: row.get(1)?,
+                success: row.get(2)?,
+                attempted_at: row.get(3)?,
+                entry_hash: row.get(4)?,
+            })
+        },
+    )
+}
+
+/// The ids of keys past their own expiry, by the store's clock. A revoked key
+/// can be in it too; the caller decides which state wins.
+pub fn expired_ids(conn: &dyn Sql) -> Result<std::collections::HashSet<i64>> {
+    let ids = conn.query_map(
+        "SELECT id FROM api_keys
+         WHERE expires_at IS NOT NULL AND datetime(expires_at) <= datetime('now')",
+        params![],
+        |row| row.get::<i64>(0),
+    )?;
+    Ok(ids.into_iter().collect())
+}
+
+/// Stages a new operator lock: it is returned once and only its hash is kept,
+/// in `licensee_pending`, where it is not yet the lock. The current lock (if
+/// any) keeps working until [`confirm_licensee`] promotes the new one, so a
+/// response that is lost leaves the relay as it was and the ceremony can be
+/// run again (a second staging replaces the first).
+pub fn stage_licensee(conn: &dyn Sql) -> Result<CreatedLicensee> {
+    let (token, token_hash) = generate_prefixed_bearer(LICENSEE_PREFIX);
+    conn.execute(
+        "INSERT INTO licensee_pending (id, key_hash) VALUES (1, ?1)
+         ON CONFLICT (id) DO UPDATE SET
+            key_hash = excluded.key_hash,
+            created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+        params![token_hash],
+    )?;
+    Ok(CreatedLicensee { token })
+}
+
+/// Whether a staged lock is waiting to be confirmed.
+pub fn licensee_pending_exists(conn: &dyn Sql) -> Result<bool> {
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM licensee_pending", params![], |row| {
+        row.get(0)
+    })?;
+    Ok(n > 0)
+}
+
+/// Promotes the staged lock to the lock when `token` is it, and drops the old
+/// one in the same unit of work. `Error::InvalidLicenseeKey` when nothing is
+/// staged or the token is not the staged one.
+pub fn confirm_licensee(conn: &dyn Sql, token: &str) -> Result<()> {
+    let token_hash =
+        hash_prefixed(token, LICENSEE_PREFIX).map_err(|_| Error::InvalidLicenseeKey)?;
+    conn.with_transaction(|| {
+        let staged: Option<i64> = conn.query_opt(
+            "SELECT id FROM licensee_pending WHERE id = 1 AND key_hash = ?1",
+            params![&token_hash],
+            |row| row.get(0),
+        )?;
+        if staged.is_none() {
+            return Err(Error::InvalidLicenseeKey);
+        }
+        conn.execute(
+            "INSERT INTO licensee_issuer (id, key_hash) VALUES (1, ?1)
+             ON CONFLICT (id) DO UPDATE SET
+                key_hash = excluded.key_hash,
+                created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+            params![&token_hash],
+        )?;
+        conn.execute("DELETE FROM licensee_pending WHERE id = 1", params![])?;
+        Ok(())
+    })
+}
+
+/// Sets key `id`'s end to `expires_at` (UTC `YYYY-MM-DD HH:MM:SS`, or `None`
+/// for no end). For a replacement that takes its licence's current end; the
+/// caller records the change (a `rotated` event).
+pub(crate) fn set_expiry(conn: &dyn Sql, id: i64, expires_at: Option<&str>) -> Result<()> {
+    let changed = conn.execute(
+        "UPDATE api_keys SET expires_at = ?2 WHERE id = ?1",
+        params![id, expires_at],
+    )?;
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err(Error::ApiKeyNotFound)
+    }
+}

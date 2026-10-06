@@ -9,21 +9,21 @@ describes.
 the relay. The relay that runs on Cloudflare is a public Worker and one
 SQLite-backed Durable Object running `relay::service::dispatch`, with an admin
 Worker behind Cloudflare Access; the plan of record is `relay-hosting.md` next
-to this file. **The public Worker and its Durable Object are built and tested
-(`workers/`), and have never been deployed.** Nothing yet lets a customer use
-one: the relay has no route that mints a customer API key, by design, and the
-admin Worker's back end that would mint one (stage 4d) is not built, so a
-deployed relay answers every customer route with 401. This runbook therefore
-does not describe a running production deployment. What is in the repository:
+to this file. **The public Worker, its Durable Object and the provider's console are built
+and tested (`workers/`), and have never been deployed.** The relay has no route
+that mints a customer API key, by design; a key is issued from the console on
+the admin Worker ([Operator console](#operator-console) below), so a deployed
+relay answers every customer route with 401 until the operator has done that.
+This runbook therefore does not describe a running production deployment. What is in the repository:
 `workers/` (the Worker, the Durable Object, the guard and smoke scripts and
 their tests), the `workers` workflow (`.github/workflows/workers.yml`) and the
-Terraform in `deploy/cloudflare/terraform/`. Stage 4a adds the admin Worker's
-front door (`workers/admin/`): static operator page files on its own hostname,
-which sits behind a Cloudflare Access application with MFA (Terraform,
-`admin_environments`); no route bypasses Access, and the Worker verifies
-Access's token itself. It only shows who is signed in, it is not connected to a
-relay, and it has never been deployed or configured on a real account. The
-relay uses its own dedicated Cloudflare domain, not the portfolio's. CI's
+Terraform in `deploy/cloudflare/terraform/`. The admin Worker (`workers/admin/`)
+serves the console on its own path of the same domain, which sits behind a Cloudflare Access
+application with MFA (Terraform, `admin_environments`); no route bypasses
+Access, and the Worker verifies Access's token itself. It reaches the relay
+through a private Durable Object binding, and it has never been deployed or
+configured on a real account. The
+relay and the console are mounted under paths of `https://keyquorum.dev` (`/relay`, `/relay/staging-user`, `/relay/admin`, `/relay/staging-admin`; the owner's domain; see `relay-hosting.md`, "Domain and operator page", including the one-origin cost). CI's
 `terraform validate` accepts the Terraform, but the authors never planned or
 applied it against a real account, and the owner's GitHub and Cloudflare setup
 (environments, secrets, `RELAY_URL`, the `workers` required check, account,
@@ -193,8 +193,9 @@ value; with neither it answers its routes but refuses the provider challenge,
 so no official client trusts it. A Worker secret survives a deploy and cannot
 be read back, so rotating one means putting a new value. The relay's hostname
 is not a secret: it is the non-secret variable `ALLOWED_HOSTS`, which the
-deploy jobs set from the GitHub environment's `RELAY_URL`; the Worker serves
-that host and no other (`relay-hosting.md`, "Workers Builds and previews").
+deploy jobs set from the GitHub environment's `RELAY_URL` (the relay's URL,
+`https://<domain>/relay`, or `/relay/staging-user` for the staging relay); the
+Worker serves that host, only below that path (its `MOUNT_PATH`), and no other (`relay-hosting.md`, "Workers Builds and previews").
 `provider.kqrl` is not read by the Worker, which takes no revocation list yet.
 
 ## State
@@ -310,6 +311,10 @@ hosting vendor supplies on its own.
 
 ## Verification
 
+- On the Cloudflare relay every path below is under `/relay` (`GET
+  /relay/health`, `/relay/staging-user/health` for the staging relay, and a
+  client's URL is that path on the domain); on the native
+  host there is no prefix.
 - `GET /health` says the process is up. It proves nothing about the
   provider identity or the store.
 - `GET /ready` says the store answered too (`{"status":"ok","store":"sqlite"}`);
@@ -317,7 +322,7 @@ hosting vendor supplies on its own.
 - The provider identity is proved only by a real client:
 
   ```sh
-  keyquorum --db ./check.sqlite loadkey --url https://relay.example.com
+  keyquorum --db ./check.sqlite loadkey --url https://keyquorum.dev/relay
   ```
 
   (the bearer is prompted, so it stays out of shell history). `loadkey` challenges `POST /provider-identity`, checks the certificate
@@ -361,7 +366,7 @@ Customers never see a bearer (issue #86):
    ```sh
    keyquorum host --mailbox-db /var/lib/keyquorum/relay.sqlite keys create \
      --scope inbox.pull \
-     --recipient-key <hex public key> --relay-url https://relay.example.com \
+     --recipient-key <hex public key> --relay-url https://keyquorum.dev/relay \
      --out acme.kqkey --licensee-key-file /run/user/1000/kq-lock \
      --cert provider.kqcert --relay-key relay.key --krl provider.kqrl
    ```
@@ -373,7 +378,7 @@ Customers never see a bearer (issue #86):
    but a crash between the write and the commit can leave an orphan bundle
    that opens nothing (the key was never created); remove it before
    retrying. The long-running relay never carries the operator lock.
-3. The customer loads it: `keyquorum loadkey --url https://relay.example.com --bundle acme.kqkey --slot ./usb=M.S`.
+3. The customer loads it: `keyquorum loadkey --url https://keyquorum.dev/relay --bundle acme.kqkey --slot ./usb=M.S`.
    The issue's relay URL must be the one being loaded for, a device-bound
    issue loads only from that container, the full provider challenge runs,
    and the relay that answers must be the one whose key signed the issue.
@@ -385,18 +390,84 @@ Customers never see a bearer (issue #86):
    the old key at once. The customer's next `keyquorum inbox open` loads the
    letter.
 
-For the Cloudflare relay, minting and rotation are meant to go through an
-admin Worker behind Cloudflare Access, never over the public Worker and never
-by a customer (`relay-hosting.md`); the public Worker routes none of them (an
-allowlist, tested). The admin Worker's front door exists (it checks Access's
-token itself and answers every `/api` route but `/api/whoami` with 503); **the
-minting and rotation routes are not implemented, so on the Cloudflare relay
-there is as yet no way to issue a customer a key.** On the native host,
-`host keys create` and `rotate` below are the working path.
+For the Cloudflare relay, minting and rotation go through the admin Worker
+behind Cloudflare Access, never over the public Worker and never by a customer
+(`relay-hosting.md`); the public Worker routes none of them (an allowlist,
+tested). See [Operator console](#operator-console). On the native host,
+`host keys create` and `rotate` above are the working path; a key made there
+is "unassigned" in the console until the operator assigns it to a licence.
 
 Do not copy plaintext `kq_…` bearers between people. The unsealed path
 (`keys create` without `--recipient-key`, which prints the bearer once) is
 kept only for keys that were never sealed to anyone; treat it as legacy.
+
+## Operator console
+
+For the provider's own people only; customers never reach it. Nothing here has
+been run against a real Cloudflare account. Prerequisites: the public Worker
+deployed (the console binds its Durable Object), the relay key and certificate
+set as Worker secrets (see "Secret provisioning"), the admin Worker deployed,
+`terraform apply` done and `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` and `ADMIN_URL`
+set, and Access's independent MFA turned on with a security key enrolled (a
+dashboard step: `deploy/cloudflare/terraform/README.md`, "Operator login and
+MFA"), so that the operator can sign in through Access with MFA.
+
+1. **Check status.** Open the console's *Status* page: ready, the relay's
+   identity and certificate (and its expiry), the housekeeping alarm, storage
+   and the deployed version. Fix anything it shows as missing before issuing.
+2. **Create the operator lock** (once, on the *Overview* page, which offers it
+   while no lock exists). The console stages a `kql_…` lock and shows it
+   **once**: copy it into your password manager or a file only you can read. It
+   is not yet the lock. Paste it back and confirm; only then does it take
+   effect. If the response was lost, or you did not save the value, repeat the
+   step: a new pending lock replaces the old pending one, and nothing was
+   locked. The lock is never kept by the Worker or the browser; you paste it
+   for each change.
+3. **Add a user** (a customer: a name and, optionally, your own reference).
+4. **Record a licence** for the user: the terms text (kept as version 1), the
+   end date and, if it replaces an earlier licence, which one (that one is
+   voided and its keys revoked together).
+5. **Issue a key** under the licence: the customer's X25519 public key
+   (`keyquorum device list` prints it), a scope (`inbox.push`, `inbox.pull`,
+   `device.push`, `device.pull`; never `admin`), a label and an expiry. The
+   console downloads a sealed `.kqkey`; send it to the customer, who runs
+   `keyquorum loadkey --bundle` as in "Customer API-key bootstrap". Do not
+   reuse a `.kqkey` for anyone else: it opens only for the key it was sealed to.
+6. **If the download is lost or the response did not arrive,** do not issue
+   again. Press the same button once more: the console sends the same operation
+   id, and the relay answers "already done" with the key's id and makes nothing
+   new. The file is not kept, so then **replace** the key (below).
+7. **Renew a licence:** adds a statement version and may set a new end date. It
+   does not change keys already out: replace each key to give it the new end and
+   statement.
+8. **Replace a key:** by bundle (the old key is revoked at once) or, if the
+   customer can collect it (they hold a live `inbox.pull` key), by sealed letter
+   with a grace period for the old key (24 hours by default, bounded). The
+   page shows the old key's effective end.
+9. **Revoke:** a key (ends it now) or a licence (revokes all its keys). The
+   page names the user, key, scope and effect before it asks.
+10. **Assign an unassigned key** (made by the native `host keys`, or before the
+    console): the console never guesses an owner, so choose the licence.
+11. **Look at activity** per user and per key (counts, errors, latency, bytes,
+    last activity, by route category and outcome). It covers requests the core
+    admitted from a known key, for 90 days, and is a usage view, not evidence.
+12. **Take a checkpoint** from *Audit* regularly (`POST /api/checkpoints`
+    through the page) and keep the downloaded file **off** the relay, in
+    write-once storage you control: it is what lets `audit::verify` catch a
+    rewrite. The *Audit* page also lists key changes, lock checks and what
+    operators did (the verified Access identity is recorded for each change).
+
+**Lost operator lock.** On the Cloudflare relay there is no console or command
+that resets the lock when it is lost (replacing it needs the current one), and
+the console is not a way around that. Today the way out is to restore the
+Durable Object's storage from a backup or change it through a reviewed
+migration that clears the lock row, and then repeat step 2; **that procedure is
+not built or tested**, so keep the lock safe. After a suspected compromise of
+the lock, replace it at once, then replace the keys issued since.
+
+What the console cannot show: the contents of letters, file histories and user
+histories are sealed to their recipients and the relay cannot open them. It
+shows each letter's kind, size, time and recipient only.
 
 ## Rotation and revocation
 
@@ -423,10 +494,12 @@ kept only for keys that were never sealed to anyone; treat it as legacy.
   refused (`KeyIssueRelayMismatch`); reissue them. New anchors are signed by
   the new key; old anchors stay valid for their certificate's period unless
   its serial is revoked.
-- **Operator lock:** it has no rotation command; it is the hash in
-  `licensee_issuer` in the relay's SQLite file. To replace it, stop minting,
-  delete that one row, and run a host `keys` command: the empty issuer store
-  mints a fresh lock once and prints it once. Record the change.
+- **Operator lock:** on the native host it has no rotation command; it is the
+  hash in `licensee_issuer` in the relay's SQLite file. To replace it, stop
+  minting, delete that one row, and run a host `keys` command: the empty issuer
+  store mints a fresh lock once and prints it once. Record the change. On the
+  Cloudflare relay use the console's **Replace the lock** (it needs the current
+  lock; see below).
 
 ## Incident recovery
 

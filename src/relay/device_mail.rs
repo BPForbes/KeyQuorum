@@ -123,6 +123,12 @@ pub fn purge_expired(conn: &dyn Sql) -> Result<u64> {
     conn.changes()
 }
 
+/// The device mailbox's letters, summarised: the count and the newest
+/// `limit`, newest first. See [`super::mailbox::summaries_in`].
+pub fn summaries(conn: &dyn Sql, limit: i64) -> Result<(i64, Vec<super::mailbox::LetterSummary>)> {
+    super::mailbox::summaries_in(conn, super::mailbox::MailTable::Devices, limit)
+}
+
 /// Rows stored before device retention have no `expires_at`. Give them the
 /// same TTL, counted from when they were stored.
 pub(crate) fn backfill_expiry(conn: &dyn Sql) -> Result<()> {

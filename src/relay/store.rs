@@ -22,16 +22,21 @@
 //! `hex(SHA-256(raw))`), never unseals a letter, and never holds a wrapped
 //! share, a private key or the provider root.
 
+use super::activity::{self, Cost, Filter as ActivityFilter, Summary as ActivitySummary};
 use super::api_key::{
     self, ApiKeyEvent, ApiKeyInfo, ApiKeyScope, AuthedKey, CreatedApiKey, CreatedLicensee,
-    KeyCheck, NewApiKey, OldKey,
+    KeyCheck, NewApiKey, OldKey, ProviderAuthRecord,
 };
 use super::audit::{self, Checkpoint, TableReport};
+use super::customer::{self, Customer, LicenceFilter, NewCustomer, Page, UserRow};
 use super::device_directory::{self, DeviceDescriptor};
 use super::device_mail::{self, DeviceMailPage};
-use super::key_delivery::{self, Delivered, Recipient};
-use super::mailbox::{self, MailboxPage};
-use super::org_tree;
+use super::issuance::{self, Issuance, Issued, RotateVia, Rotated, Voided};
+use super::key_delivery::{self, Delivered, DeliveryRecord, Recipient};
+use super::licence::{self, KeyLink, Licence, Version};
+use super::mailbox::{self, LetterSummary, MailboxPage};
+use super::operator_log::{self, Note, OperatorAction};
+use super::org_tree::{self, TreeSummary};
 use super::service::ProviderIdentity;
 use super::sql::{params, Sql};
 use crate::error::Result;
@@ -217,6 +222,116 @@ pub trait RelayStore: Send + Sync {
         recipient: Option<Recipient>,
         write: &mut dyn FnMut(&[u8]) -> Result<()>,
     ) -> Result<Delivered>;
+
+    // --- The provider's operator console ---------------------------------
+    //
+    // Each changing method is one atomic unit of work: the records, the keys,
+    // their delivery records and links, and the operation record (`note`)
+    // commit together or not at all, and the sealed bundles come back only once
+    // they have.
+
+    /// Whether the operator lock exists yet.
+    fn operator_lock_exists(&self) -> Result<bool>;
+    /// The ids of keys past their own expiry, by the store's clock.
+    fn expired_key_ids(&self) -> Result<HashSet<i64>>;
+    /// Stage a new operator lock, shown once and not yet the lock (see
+    /// `api_key::stage_licensee`).
+    fn stage_operator_lock(&self) -> Result<CreatedLicensee>;
+    /// Whether a staged lock is waiting to be confirmed.
+    fn operator_lock_pending(&self) -> Result<bool>;
+    /// Promote the staged lock to the lock when `token` is it.
+    fn confirm_operator_lock(&self, token: &str) -> Result<()>;
+
+    /// Record a customer.
+    fn create_customer(&self, new: &NewCustomer, note: Option<&Note<'_>>) -> Result<Customer>;
+    fn get_customer(&self, id: i64) -> Result<Customer>;
+    /// A page of customers with their counts (see `customer::list`).
+    fn list_customers(
+        &self,
+        search: Option<&str>,
+        filter: LicenceFilter,
+        before: Option<i64>,
+        limit: Option<i64>,
+    ) -> Result<Page<UserRow>>;
+    fn customer_count(&self) -> Result<i64>;
+    fn get_licence(&self, id: i64) -> Result<Licence>;
+    /// A customer's licences, newest first.
+    fn licences_of(&self, customer_id: i64) -> Result<Vec<Licence>>;
+    /// The statements a licence has carried, oldest first.
+    fn licence_versions(&self, licence_id: i64) -> Result<Vec<Version>>;
+    /// How many licences are active, voided and ended.
+    fn licence_counts(&self) -> Result<licence::Counts>;
+    /// Every key link.
+    fn key_links(&self) -> Result<Vec<KeyLink>>;
+    /// Record a licence for an existing customer, with no keys.
+    fn create_licence(
+        &self,
+        customer_id: i64,
+        new: &licence::NewLicence,
+        note: Option<&Note<'_>>,
+    ) -> Result<(Licence, Option<Voided>)>;
+    /// Issue a licence's keys as sealed bundles (see [`issuance::issue`]).
+    fn issue_licensed_bundles(
+        &self,
+        identity: &ProviderIdentity,
+        request: &Issuance,
+        note: Option<&Note<'_>>,
+    ) -> Result<Issued>;
+    /// Replace key `id` under its licence (see [`issuance::rotate`]).
+    fn rotate_licensed_key(
+        &self,
+        identity: &ProviderIdentity,
+        id: i64,
+        via: RotateVia,
+        note: Option<&Note<'_>>,
+    ) -> Result<Rotated>;
+    /// Void licence `id` and revoke the keys issued under it.
+    fn void_licence(
+        &self,
+        id: i64,
+        reason: Option<&str>,
+        note: Option<&Note<'_>>,
+    ) -> Result<Voided>;
+    /// Add a statement version to an active licence.
+    fn renew_licence(
+        &self,
+        id: i64,
+        terms: Option<&str>,
+        expires_at: Option<&str>,
+        note: Option<&Note<'_>>,
+    ) -> Result<Licence>;
+    /// Revoke one key, with its operation record.
+    fn revoke_key_noted(&self, id: i64, note: Option<&Note<'_>>) -> Result<()>;
+    /// Assign an unassigned key to a licence.
+    fn assign_key(&self, key_id: i64, licence_id: i64, note: Option<&Note<'_>>) -> Result<()>;
+    /// Whom each issued key was sealed to (never the sealed bytes).
+    fn delivery_records(&self) -> Result<Vec<DeliveryRecord>>;
+    /// Count one request by the key `token` names, if it names a stored key.
+    fn record_access(&self, token: &str, path: &str, status: u16, cost: Cost) -> Result<()>;
+    /// What known keys did over a window, narrowed by the filter.
+    fn access_summary(&self, filter: &ActivityFilter) -> Result<ActivitySummary>;
+    /// Drop hourly counts past their retention; how many rows.
+    fn purge_old_activity(&self) -> Result<u64>;
+    /// Record an attempt that changed nothing, by the identity Access verified.
+    fn record_operator_action(
+        &self,
+        operator: &str,
+        action: &str,
+        subject: Option<&str>,
+        success: bool,
+    ) -> Result<()>;
+    /// The change recorded under an operation id, if it was made.
+    fn find_operation(&self, operation_id: &str) -> Result<Option<OperatorAction>>;
+    /// The newest `limit` operator actions, older than `before`, newest first.
+    fn operator_actions(&self, limit: i64, before: Option<i64>) -> Result<Vec<OperatorAction>>;
+    /// The newest `limit` privileged-auth attempts, newest first.
+    fn provider_auth_events(&self, limit: i64) -> Result<Vec<ProviderAuthRecord>>;
+    /// The inbox's letters without opening them: count and newest `limit`.
+    fn inbox_letters(&self, limit: i64) -> Result<(i64, Vec<LetterSummary>)>;
+    /// The device mailbox's letters without opening them.
+    fn device_letters(&self, limit: i64) -> Result<(i64, Vec<LetterSummary>)>;
+    /// The stored public trees by label, generation and update time.
+    fn tree_summaries(&self) -> Result<Vec<TreeSummary>>;
 }
 
 /// The relay over any SQLite executor ([`Sql`]): one executor, serialized
@@ -498,6 +613,173 @@ impl<S: Sql + Send> RelayStore for SqlRelayStore<S> {
         self.with(|conn| {
             key_delivery::rotate_as_bundle(conn, identity, id, recipient, |bytes| write(bytes))
         })
+    }
+
+    fn operator_lock_exists(&self) -> Result<bool> {
+        self.with(|conn| api_key::licensee_exists(conn))
+    }
+
+    fn expired_key_ids(&self) -> Result<HashSet<i64>> {
+        self.with(|conn| api_key::expired_ids(conn))
+    }
+
+    fn stage_operator_lock(&self) -> Result<CreatedLicensee> {
+        self.with(|conn| api_key::stage_licensee(conn))
+    }
+
+    fn operator_lock_pending(&self) -> Result<bool> {
+        self.with(|conn| api_key::licensee_pending_exists(conn))
+    }
+
+    fn confirm_operator_lock(&self, token: &str) -> Result<()> {
+        self.with(|conn| api_key::confirm_licensee(conn, token))
+    }
+
+    fn create_customer(&self, new: &NewCustomer, note: Option<&Note<'_>>) -> Result<Customer> {
+        self.with(|conn| issuance::create_customer(conn, new, note))
+    }
+
+    fn get_customer(&self, id: i64) -> Result<Customer> {
+        self.with(|conn| customer::get(conn, id))
+    }
+
+    fn list_customers(
+        &self,
+        search: Option<&str>,
+        filter: LicenceFilter,
+        before: Option<i64>,
+        limit: Option<i64>,
+    ) -> Result<Page<UserRow>> {
+        self.with(|conn| customer::list(conn, search, filter, before, limit))
+    }
+
+    fn customer_count(&self) -> Result<i64> {
+        self.with(|conn| customer::count(conn))
+    }
+
+    fn get_licence(&self, id: i64) -> Result<Licence> {
+        self.with(|conn| licence::get(conn, id))
+    }
+
+    fn licences_of(&self, customer_id: i64) -> Result<Vec<Licence>> {
+        self.with(|conn| licence::list_for_customer(conn, customer_id))
+    }
+
+    fn licence_versions(&self, licence_id: i64) -> Result<Vec<Version>> {
+        self.with(|conn| licence::versions(conn, licence_id))
+    }
+
+    fn licence_counts(&self) -> Result<licence::Counts> {
+        self.with(|conn| licence::counts(conn))
+    }
+
+    fn key_links(&self) -> Result<Vec<KeyLink>> {
+        self.with(|conn| licence::all_links(conn))
+    }
+
+    fn create_licence(
+        &self,
+        customer_id: i64,
+        new: &licence::NewLicence,
+        note: Option<&Note<'_>>,
+    ) -> Result<(Licence, Option<Voided>)> {
+        self.with(|conn| issuance::create_licence(conn, customer_id, new, note))
+    }
+
+    fn issue_licensed_bundles(
+        &self,
+        identity: &ProviderIdentity,
+        request: &Issuance,
+        note: Option<&Note<'_>>,
+    ) -> Result<Issued> {
+        self.with(|conn| issuance::issue(conn, identity, request, note))
+    }
+
+    fn rotate_licensed_key(
+        &self,
+        identity: &ProviderIdentity,
+        id: i64,
+        via: RotateVia,
+        note: Option<&Note<'_>>,
+    ) -> Result<Rotated> {
+        self.with(|conn| issuance::rotate(conn, identity, id, via, note))
+    }
+
+    fn void_licence(
+        &self,
+        id: i64,
+        reason: Option<&str>,
+        note: Option<&Note<'_>>,
+    ) -> Result<Voided> {
+        self.with(|conn| issuance::void_licence(conn, id, reason, note))
+    }
+
+    fn renew_licence(
+        &self,
+        id: i64,
+        terms: Option<&str>,
+        expires_at: Option<&str>,
+        note: Option<&Note<'_>>,
+    ) -> Result<Licence> {
+        self.with(|conn| issuance::renew_licence(conn, id, terms, expires_at, note))
+    }
+
+    fn revoke_key_noted(&self, id: i64, note: Option<&Note<'_>>) -> Result<()> {
+        self.with(|conn| issuance::revoke_key(conn, id, note))
+    }
+
+    fn assign_key(&self, key_id: i64, licence_id: i64, note: Option<&Note<'_>>) -> Result<()> {
+        self.with(|conn| issuance::assign_key(conn, key_id, licence_id, note))
+    }
+
+    fn delivery_records(&self) -> Result<Vec<DeliveryRecord>> {
+        self.with(|conn| key_delivery::records(conn))
+    }
+
+    fn record_access(&self, token: &str, path: &str, status: u16, cost: Cost) -> Result<()> {
+        self.with(|conn| activity::record(conn, token, path, status, cost))
+    }
+
+    fn access_summary(&self, filter: &ActivityFilter) -> Result<ActivitySummary> {
+        self.with(|conn| activity::summary(conn, filter))
+    }
+
+    fn purge_old_activity(&self) -> Result<u64> {
+        self.with(|conn| activity::purge_old(conn))
+    }
+
+    fn record_operator_action(
+        &self,
+        operator: &str,
+        action: &str,
+        subject: Option<&str>,
+        success: bool,
+    ) -> Result<()> {
+        self.with(|conn| operator_log::record(conn, operator, action, subject, success))
+    }
+
+    fn find_operation(&self, operation_id: &str) -> Result<Option<OperatorAction>> {
+        self.with(|conn| operator_log::find_operation(conn, operation_id))
+    }
+
+    fn operator_actions(&self, limit: i64, before: Option<i64>) -> Result<Vec<OperatorAction>> {
+        self.with(|conn| operator_log::recent(conn, limit, before))
+    }
+
+    fn provider_auth_events(&self, limit: i64) -> Result<Vec<ProviderAuthRecord>> {
+        self.with(|conn| api_key::provider_auth_events(conn, limit))
+    }
+
+    fn inbox_letters(&self, limit: i64) -> Result<(i64, Vec<LetterSummary>)> {
+        self.with(|conn| mailbox::summaries(conn, limit))
+    }
+
+    fn device_letters(&self, limit: i64) -> Result<(i64, Vec<LetterSummary>)> {
+        self.with(|conn| super::device_mail::summaries(conn, limit))
+    }
+
+    fn tree_summaries(&self) -> Result<Vec<TreeSummary>> {
+        self.with(|conn| org_tree::summaries(conn))
     }
 }
 

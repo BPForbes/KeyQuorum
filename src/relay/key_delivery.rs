@@ -103,6 +103,41 @@ pub fn recipient_for(conn: &dyn Sql, id: i64) -> Result<Option<Recipient>> {
     .transpose()
 }
 
+/// Whom a key was sealed to and how it travelled, as the console lists it:
+/// the recipient's fingerprint (never the sealed bytes), the relay URL the
+/// issue names, whether it is bound to a device and when it was issued.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeliveryRecord {
+    pub api_key_id: i64,
+    pub recipient_fingerprint: String,
+    pub relay_url: String,
+    pub device_bound: bool,
+    pub via: String,
+    pub created_at: String,
+}
+
+pub fn records(conn: &dyn Sql) -> Result<Vec<DeliveryRecord>> {
+    conn.query_map(
+        "SELECT api_key_id, recipient_public_key, relay_url, device_id IS NOT NULL,
+                via, created_at
+         FROM api_key_deliveries ORDER BY api_key_id",
+        params![],
+        |row| {
+            let public_key: Vec<u8> = row.get(1)?;
+            let public_key: [u8; 32] =
+                public_key.try_into().map_err(|_| Error::InvalidPublicKey)?;
+            Ok(DeliveryRecord {
+                api_key_id: row.get(0)?,
+                recipient_fingerprint: keys::fingerprint(&public_key),
+                relay_url: row.get(2)?,
+                device_bound: row.get(3)?,
+                via: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        },
+    )
+}
+
 /// What a sealed issue needs from the store it runs in, inside the one unit
 /// of work that mints or rotates the key. The SQLite store implements it
 /// over its open transaction ([`SqlOps`]) and any other backend over its

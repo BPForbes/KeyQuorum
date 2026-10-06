@@ -16,6 +16,10 @@ import { baseHeaders, bearerOf, jsonResponse, readLimited } from "./policy.js";
 // once with 503 and Retry-After, never left waiting.
 export const MAX_IN_FLIGHT = 32;
 
+// The largest console request the object takes (the Rust core holds the same
+// bound, `relay::operator::MAX_REQUEST_BYTES`).
+export const MAX_OPERATE_BODY = 64 * 1024;
+
 // How often the object's alarm purges expired letters and signs the audit
 // chain heads.
 export const SCAN_INTERVAL_MS = 60 * 60 * 1000;
@@ -67,6 +71,16 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
   let core = null;
   let failure = null;
   let inFlight = 0;
+  // What this object has seen since it started, for the operator's status page.
+  // In memory only: it is not a record, and a restart begins it again.
+  const stats = {
+    startedAt: clock().toISOString(),
+    admitted: 0,
+    busyRefusals: 0,
+    errors: 0,
+    alarmLastRunAt: null,
+    alarmLastFailure: null,
+  };
 
   const identity = readIdentity(env);
   if (identity.error) {
@@ -88,22 +102,47 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
 
   async function fetch(request) {
     if (failure) return jsonResponse(503, { error: failure });
-    if (inFlight >= MAX_IN_FLIGHT) return jsonResponse(503, { error: "busy" }, { "retry-after": "1" });
+    if (inFlight >= MAX_IN_FLIGHT) {
+      stats.busyRefusals += 1;
+      return jsonResponse(503, { error: "busy" }, { "retry-after": "1" });
+    }
     inFlight += 1;
+    stats.admitted += 1;
+    const started = clock().getTime();
     let answer = null;
     try {
       const body = await readLimited(request);
       if (body === null) return jsonResponse(413, { error: "request too large" });
+      const bearer = bearerOf(request.headers);
       answer = core.handle(
         request.method,
         request.url,
-        bearerOf(request.headers),
+        bearer,
         request.headers.get("content-type") ?? undefined,
         body,
         relayTime(clock()),
       );
       const status = answer.status;
       const bytes = answer.body;
+      // What a known key did, for the provider's console: the key, the coarse
+      // part of the API, the answer, how long it took (this clock moves only
+      // when the object waits, so it is coarse) and the bytes each way. Never
+      // the path past its first segment, a body or an address. A failure to
+      // count never changes the answer.
+      if (bearer) {
+        try {
+          core.record_access(
+            bearer,
+            request.url,
+            status,
+            Math.max(0, Math.min(clock().getTime() - started, 0xffffffff)),
+            body.length,
+            bytes.length,
+          );
+        } catch (error) {
+          log.error("relay: the request could not be counted", error?.name);
+        }
+      }
       if (status === 204 || (bytes.length === 0 && status < 400)) {
         return new Response(null, { status, headers: baseHeaders() });
       }
@@ -113,12 +152,109 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
         headers: baseHeaders({ "content-type": "application/json; charset=utf-8" }),
       });
     } catch (error) {
+      stats.errors += 1;
       log.error("relay: a request failed", error?.name);
       return jsonResponse(500, { error: "internal error" });
     } finally {
       answer?.free?.();
       inFlight -= 1;
     }
+  }
+
+  // The provider's console (relay::operator in the core). Only the admin
+  // Worker reaches this, through its binding to the object; nothing on the
+  // public route does. `body` is the JSON request text, `operator` the identity
+  // Cloudflare Access verified, `lock` the operator lock when the request
+  // changes something. The lock goes to the core and nowhere else: it is not
+  // logged, stored or echoed. Returns { status, body } as plain data.
+  function operate({ body, operator, lock } = {}) {
+    const refuse = (status, error) => ({ status, body: JSON.stringify({ error }) });
+    if (failure) return refuse(503, failure);
+    if (
+      typeof body !== "string" ||
+      typeof operator !== "string" ||
+      operator.trim() === "" ||
+      operator.length > 320 ||
+      !(lock === undefined || lock === null || (typeof lock === "string" && lock.length <= 256))
+    ) {
+      return refuse(400, "malformed console request");
+    }
+    const bytes = new TextEncoder().encode(body);
+    if (bytes.length > MAX_OPERATE_BODY) return refuse(413, "request too large");
+    let answer = null;
+    try {
+      answer = core.operate(bytes, operator, lock ?? undefined, relayTime(clock()));
+      return { status: answer.status, body: new TextDecoder().decode(answer.body) };
+    } catch (error) {
+      log.error("relay: a console request failed", error?.name);
+      return refuse(500, "internal error");
+    } finally {
+      answer?.free?.();
+    }
+  }
+
+  // The operator's status page: what the core knows of itself (identity,
+  // certificate dates, the operator lock's state, counts) joined with what only
+  // this object can see (storage use, the housekeeping alarm, overload, the
+  // deployment). Observed since the object last started, and not an audit
+  // record. Returns plain data.
+  async function status() {
+    let runtime = null;
+    try {
+      runtime = {
+        started_at: stats.startedAt,
+        requests_admitted: stats.admitted,
+        busy_refusals: stats.busyRefusals,
+        request_errors: stats.errors,
+        in_flight: inFlight,
+        max_in_flight: MAX_IN_FLIGHT,
+        alarm: {
+          next_at: await alarmAt(),
+          last_run_at: stats.alarmLastRunAt,
+          last_failure: stats.alarmLastFailure,
+          interval_ms: SCAN_INTERVAL_MS,
+        },
+        storage_bytes: storageBytes(),
+        deployment: deployment(),
+      };
+    } catch (error) {
+      log.error("relay: the status could not be read", error?.name);
+    }
+    let known = null;
+    if (!failure) {
+      const answer = operate({ body: JSON.stringify({ op: "status" }), operator: "status" });
+      if (answer.status === 200) known = JSON.parse(answer.body);
+    }
+    return {
+      ready: ready(),
+      failure: failure ?? null,
+      runtime,
+      relay: known,
+      note: "Observed by the relay object since it last started. Requests the public Worker refused before the relay (wrong host or route, too large, rate limited) are not counted here.",
+    };
+  }
+
+  async function alarmAt() {
+    const at = await storage.getAlarm();
+    return at === null || at === undefined ? null : new Date(at).toISOString();
+  }
+
+  // The size of the object's SQLite database in bytes, where the platform tells.
+  function storageBytes() {
+    const size = storage.sql?.databaseSize;
+    return Number.isFinite(size) ? size : null;
+  }
+
+  // Which version of the Worker this is, from the version-metadata binding when
+  // it is bound. Nothing secret.
+  function deployment() {
+    const meta = env.CF_VERSION_METADATA;
+    if (!meta || typeof meta !== "object") return null;
+    return {
+      id: typeof meta.id === "string" ? meta.id : null,
+      tag: typeof meta.tag === "string" && meta.tag !== "" ? meta.tag : null,
+      timestamp: typeof meta.timestamp === "string" ? meta.timestamp : null,
+    };
   }
 
   // Whether the store answers (the readiness probe).
@@ -143,12 +279,16 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
   async function alarm() {
     try {
       if (core) core.scan(relayTime(clock()));
+      stats.alarmLastRunAt = clock().toISOString();
+      stats.alarmLastFailure = null;
     } catch (error) {
+      stats.alarmLastRunAt = clock().toISOString();
+      stats.alarmLastFailure = error?.name ?? "Error";
       log.error("relay: the scheduled scan failed", error?.name);
     } finally {
       await storage.setAlarm(clock().getTime() + SCAN_INTERVAL_MS);
     }
   }
 
-  return { fetch, ready, start, alarm, inFlight: () => inFlight };
+  return { fetch, operate, status, ready, start, alarm, inFlight: () => inFlight };
 }

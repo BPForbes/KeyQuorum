@@ -32,6 +32,19 @@ export class RelayObject extends DurableObject {
     return this.service.fetch(request);
   }
 
+  // The provider's console, called only by the admin Worker through its binding
+  // to this object. The public Worker never calls it, and no fetch route leads
+  // here.
+  operate(request) {
+    return this.service.operate(request);
+  }
+
+  // The operator's status page, called only by the admin Worker through its
+  // binding.
+  status() {
+    return this.service.status();
+  }
+
   ready() {
     return this.service.ready();
   }

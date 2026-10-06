@@ -4,29 +4,55 @@ variable "account_id" {
 }
 
 variable "zone_id" {
-  description = "The zone that carries the relay's hostnames."
+  description = "The zone that carries the relay's and the console's hostnames (the zone of the domain, for example keyquorum.dev)."
   type        = string
 }
 
 variable "environments" {
-  description = "Each environment's public hostname and the Worker that serves it (production is the top-level wrangler configuration, staging is [env.staging])."
+  description = "Each environment's hostname (the bare domain, no path), the path the relay Worker is mounted under (/relay, or /relay/<name> for a staging relay on the same host; a name that is not one of the relay's own routes) and the Worker that serves it (production is the top-level wrangler configuration, staging is [env.staging]). The path is also the path of RELAY_URL."
   type = map(object({
     hostname = string
+    path     = string
     worker   = string
   }))
+
+  validation {
+    condition = alltrue([
+      for environment in values(var.environments) :
+      can(regex("^/relay(/[a-z0-9]+(-[a-z0-9]+)*)?$", environment.path)) &&
+      !contains(["inbox", "keycheck", "provider-identity", "audit", "trees", "devices", "health", "ready", "assets"], try(regex("^/relay/(.+)$", environment.path)[0], ""))
+    ])
+    error_message = "Each relay path must be /relay or /relay/<name> (lowercase letters, digits and single hyphens), and the name must not be one of the relay's own routes."
+  }
 }
 
 variable "admin_environments" {
-  description = "Each environment's admin hostname and the admin Worker that serves it. Every hostname is placed behind an Access application with MFA. Leave empty to create none."
+  description = "Each environment's console: its hostname (no path), the path the admin Worker is mounted under (/relay/<name>, never /relay itself) and the Worker. Every one is placed behind an Access application. Leave empty to create none. The path is also the path of ADMIN_URL."
   type = map(object({
     hostname = string
+    path     = string
     worker   = string
   }))
   default = {}
+
+  validation {
+    condition = alltrue([
+      for environment in values(var.admin_environments) :
+      can(regex("^/relay/[a-z0-9]+(-[a-z0-9]+)*$", environment.path)) &&
+      !contains(["inbox", "keycheck", "provider-identity", "audit", "trees", "devices", "health", "ready", "assets"], try(regex("^/relay/(.+)$", environment.path)[0], ""))
+    ])
+    error_message = "Each console path must be /relay/<name> (lowercase letters, digits and single hyphens), not /relay itself and not one of the relay's own route names."
+  }
+}
+
+variable "idp_mfa_required" {
+  description = "Require that the identity provider reports MFA (auth_method = mfa). Only for Okta, Entra ID, generic OIDC or generic SAML; with one-time PIN, the Cloudflare identity provider or Sign in with Apple leave it false and turn on Access's independent MFA with a security key instead."
+  type        = bool
+  default     = false
 }
 
 variable "operator_emails" {
-  description = "Operators allowed through the admin Access application (and still required to pass MFA)."
+  description = "Operators allowed through the admin Access application. The second factor is Access's independent MFA (a Zero Trust setting), or idp_mfa_required for an IdP that reports it."
   type        = list(string)
   default     = []
 }

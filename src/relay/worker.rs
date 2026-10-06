@@ -14,11 +14,16 @@
 //! passes the current UTC time in as text.
 //!
 //! The relay's private key and `provider.kqcert` arrive as bytes from Worker
-//! secrets. The provider-root key and the `kql_` operator lock never do; no
-//! route here mints or rotates a key.
+//! secrets. The provider-root key and the `kql_` operator lock never do: no
+//! route of [`RelayCore::handle`] mints or rotates a key. The provider's own
+//! console reaches [`RelayCore::operate`] only through the admin Worker's
+//! binding to the Durable Object, and the operator lock arrives with each
+//! request that changes something and is never kept.
 
 mod do_sql;
 
+use crate::relay::activity::Cost;
+use crate::relay::operator;
 use crate::relay::service::{self, ProviderIdentity};
 use crate::relay::sql::Sql;
 use crate::relay::store::{RelayStore, SqlRelayStore};
@@ -180,6 +185,66 @@ impl RelayCore {
         }
     }
 
+    /// Answers one request of the provider's console (`relay::operator`). Only
+    /// the admin Worker calls this, through its binding to the Durable Object;
+    /// the public Worker never does. `operator` is the identity Cloudflare
+    /// Access verified. `lock` is the operator lock when this request changes
+    /// something; it is checked against its stored hash and dropped, never
+    /// kept. `now` is the current UTC time as `YYYY-MM-DD HH:MM:SS.mmm`.
+    pub fn operate(
+        &self,
+        request: Vec<u8>,
+        operator: &str,
+        lock: Option<String>,
+        now: &str,
+    ) -> RelayResponse {
+        let lock = lock.map(Zeroizing::new);
+        let context = operator::Context {
+            operator,
+            lock: lock.as_deref().map(String::as_str),
+        };
+        let reply = operator::operate(&self.store, self.identity.as_ref(), &request, &context, now);
+        if reply.changed {
+            // Vouch for the change at once, as the native host does.
+            if let Some(identity) = &self.identity {
+                let _ = self.store.anchor_audit(identity, now);
+            }
+        }
+        RelayResponse {
+            status: reply.status,
+            body: reply.body,
+        }
+    }
+
+    /// Counts one request for the provider's console: what a known key did, how
+    /// long it took (as the object measured it, coarse) and the bytes each way.
+    /// The object calls this after it has the answer, with the bearer it read;
+    /// a bearer that names no stored key records nothing, and a failure to
+    /// count never changes the answer (the caller ignores it).
+    pub fn record_access(
+        &self,
+        token: &str,
+        url: &str,
+        status: u16,
+        millis: u32,
+        bytes_in: f64,
+        bytes_out: f64,
+    ) -> Result<(), JsError> {
+        let path = Url::parse(url).map_err(js_error)?.path().to_string();
+        self.store
+            .record_access(
+                token,
+                &path,
+                status,
+                Cost {
+                    millis,
+                    bytes_in: bytes_in as u64,
+                    bytes_out: bytes_out as u64,
+                },
+            )
+            .map_err(js_error)
+    }
+
     /// Whether the store answers (the readiness probe).
     pub fn ready(&self) -> bool {
         self.store.ping().is_ok()
@@ -193,6 +258,7 @@ impl RelayCore {
                 .store
                 .purge_expired_device_packages()
                 .map_err(js_error)?;
+        let purged = purged + self.store.purge_old_activity().map_err(js_error)?;
         if let Some(identity) = &self.identity {
             self.store.anchor_audit(identity, now).map_err(js_error)?;
         }

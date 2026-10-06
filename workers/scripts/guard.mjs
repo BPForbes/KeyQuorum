@@ -10,7 +10,12 @@
 // anywhere but [previews.vars] (the public Worker serves only the hosts that
 // variable names, so a Version URL of a deploy, which shares production's
 // bindings and secrets, is refused; a Preview has its own empty Durable Object
-// and no secrets, so only there may it be "*"), a Durable Object migration that
+// and no secrets, so only there may it be "*"), a Durable Object binding to
+// another Worker (the admin Worker's, to the relay's object) that names any Worker
+// but this environment's relay (production binds `keyquorum-relay`, an
+// environment `keyquorum-relay-<env>`, so a staging console cannot reach
+// production's keys) or that sits in a file with a migration (the class is the
+// public Worker's, not the admin Worker's), a Durable Object migration that
 // deletes or renames a class (which destroys its data), and a Worker or environment that
 // does not switch workers.dev off, or that leaves preview URLs on (one
 // hostname carries the relay's identity). Only the public Worker's file may be
@@ -117,6 +122,28 @@ export function checkConfig(
           problems.push(`${label}: vars name "${key[1]}" looks like a secret; use a Worker secret`);
         }
       }
+    }
+  }
+
+  // A binding that names another Worker's Durable Object (script_name) must
+  // name this environment's relay, and its file owns no class.
+  const hasMigration = [...tables.keys()].some((name) => /(^|\.)migrations$/.test(name));
+  for (const [name, body] of tables) {
+    const match = /^(?:env\.([^.]+)\.)?durable_objects\.bindings$/.exec(name);
+    if (!match) continue;
+    const script = /^\s*script_name\s*=\s*"([^"]*)"\s*$/m.exec(body.join("\n"));
+    if (!script) continue;
+    const expected = match[1] ? `keyquorum-relay-${match[1]}` : "keyquorum-relay";
+    if (script[1] !== expected) {
+      problems.push(
+        `${label}: [${name}] binds the Durable Object of "${script[1]}"; ` +
+          `${match[1] ? `environment ${match[1]}` : "production"} may bind only "${expected}"`,
+      );
+    }
+    if (hasMigration) {
+      problems.push(
+        `${label}: [${name}] binds another Worker's Durable Object, so this file must carry no migration`,
+      );
     }
   }
 

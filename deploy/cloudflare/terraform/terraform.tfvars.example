@@ -3,16 +3,17 @@ account_id = "00000000000000000000000000000000"
 zone_id    = "00000000000000000000000000000000"
 
 environments = {
-  production = { hostname = "relay.example.com", worker = "keyquorum-relay" }
-  staging    = { hostname = "relay-staging.example.com", worker = "keyquorum-relay-staging" }
+  # Each relay answers at https://<hostname><path> and nowhere else on the hostname.
+  production = { hostname = "example.com", path = "/relay", worker = "keyquorum-relay" }
+  staging    = { hostname = "example.com", path = "/relay/staging-user", worker = "keyquorum-relay-staging" }
 }
 
 # The admin Worker's hostnames, each behind Access with MFA. Leave empty to
 # create none. operator_emails must name someone when this is set.
 admin_environments = {}
 # admin_environments = {
-#   production = { hostname = "relay-admin.example.com", worker = "keyquorum-relay-admin" }
-#   staging    = { hostname = "relay-admin-staging.example.com", worker = "keyquorum-relay-admin-staging" }
+#   production = { hostname = "example.com", path = "/relay/admin", worker = "keyquorum-relay-admin" }
+#   staging    = { hostname = "example.com", path = "/relay/staging-admin", worker = "keyquorum-relay-admin-staging" }
 # }
 operator_emails = []
 

@@ -1,4 +1,5 @@
 import { ISOLATION_HEADERS } from "./browser-isolation.js";
+import { stripMount } from "./mount.js";
 
 // What the public Worker lets through, as pure functions with no I/O: which
 // host may be served, which routes the relay exposes, how a bearer is read and
@@ -58,7 +59,16 @@ const RELAY_ROUTES = [
   ["GET", ["devices", "*"]],
 ];
 
-// The Worker's own answers.
+// Every route of this Worker lives under its mount (mount.js: `/relay`, or
+// `/relay/<name>` for a staging relay on the same host), so that one domain can
+// carry the relay beside other things (the customer app, later) and a path says
+// what it is: `https://<domain>/relay/inbox`. The mount is the Worker's own
+// mount point only: the relay core is unchanged and sees the path without it,
+// and a client is given the mount's URL as the relay's URL and adds the rest.
+// Nothing outside the mount is served, `/health` and `/` included, so the
+// domain's other paths are never answered by the relay.
+
+// The Worker's own answers, as paths below the prefix.
 const OWN_ROUTES = new Map([
   ["/health", "health"],
   ["/ready", "ready"],
@@ -80,21 +90,32 @@ function matches(pattern, segments) {
   );
 }
 
-// -> { kind: "health" | "ready" | "status" | "asset" | "relay" }
+// `pathname` is the full request path, mount included.
+// -> { kind: "health" | "ready" | "status" | "asset" | "relay", path }
+//    | { kind: "redirect", to }   the mount without its slash
 //    | { kind: "not-found" }
 //    | { kind: "method-not-allowed", allow: "GET, HEAD" }
-export function classify(method, pathname) {
-  const own = OWN_ROUTES.get(pathname);
-  if (own) {
+// `path` is the path below the mount, which is what the relay core is given.
+export function classify(method, pathname, mount = "/relay") {
+  const below = stripMount(pathname, mount);
+  if (below === null) return { kind: "not-found" };
+  if (below.redirect !== undefined) {
     return method === "GET" || method === "HEAD"
-      ? { kind: own }
+      ? { kind: "redirect", to: below.redirect }
       : { kind: "method-not-allowed", allow: "GET, HEAD" };
   }
-  const segments = segmentsOf(pathname);
+  const { path } = below;
+  const own = OWN_ROUTES.get(path);
+  if (own) {
+    return method === "GET" || method === "HEAD"
+      ? { kind: own, path }
+      : { kind: "method-not-allowed", allow: "GET, HEAD" };
+  }
+  const segments = segmentsOf(path);
   const methods = new Set();
   for (const [routeMethod, pattern] of RELAY_ROUTES) {
     if (!matches(pattern, segments)) continue;
-    if (routeMethod === method) return { kind: "relay" };
+    if (routeMethod === method) return { kind: "relay", path };
     methods.add(routeMethod);
   }
   if (methods.size > 0) return { kind: "method-not-allowed", allow: [...methods].join(", ") };

@@ -25,11 +25,14 @@
 #   - Environments `cloudflare-staging` and `cloudflare-production` (production
 #     with a required reviewer), each with the secrets CLOUDFLARE_API_TOKEN
 #     (Workers Scripts edit only) and CLOUDFLARE_ACCOUNT_ID, and the variable
-#     RELAY_URL (the Worker's custom domain, https://...; set it before the
-#     first deploy, because its host is the only one the Worker serves), used for
-#     the environment link and the smoke test; optionally ADMIN_URL (the admin
-#     Worker's hostname, which the smoke test expects to refuse an anonymous
-#     caller), and ACCESS_TEAM_DOMAIN and ACCESS_AUD (not secrets: the Access
+#     RELAY_URL (the relay's URL as a client is given it: https://<domain>/relay,
+#     or https://<domain>/relay/<name> for a staging relay on the same host, for
+#     example https://keyquorum.dev/relay/staging-user; the Worker serves only
+#     that host and that path, so set it before the first deploy), used for
+#     the environment link and the smoke test; optionally ADMIN_URL (the
+#     console's URL, https://<domain>/relay/<name> or a hostname of its own,
+#     whose path the admin Worker is mounted under and which the smoke test
+#     expects to refuse an anonymous caller), and ACCESS_TEAM_DOMAIN and ACCESS_AUD (not secrets: the Access
 #     team's domain and the admin application's audience tag), which the admin
 #     Worker needs before it will serve anything.
 #   - `workers` added to the required checks.
@@ -226,7 +229,10 @@ jobs:
           # unconfigured and serves nothing, which is the safe state.
           args=()
           if host="$(node scripts/relay-host.mjs "${RELAY_URL}")"; then
-            args+=(--var "ALLOWED_HOSTS:${host}")
+            # The path the Worker is mounted under (src/mount.js) comes from the
+            # same URL, so a client's URL and the Worker cannot disagree.
+            mount="$(node scripts/relay-host.mjs --mount "${RELAY_URL}")" || exit 1
+            args+=(--var "ALLOWED_HOSTS:${host}" --var "MOUNT_PATH:${mount}")
           else
             echo "::warning::cloudflare-staging has no usable RELAY_URL variable (an https URL); the Worker was deployed unconfigured and serves nothing."
           fi
@@ -239,6 +245,8 @@ jobs:
           WRANGLER_SEND_METRICS: "false"
           ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
           ACCESS_AUD: ${{ vars.ACCESS_AUD }}
+          RELAY_URL: ${{ vars.RELAY_URL }}
+          ADMIN_URL: ${{ vars.ADMIN_URL }}
         run: |
           # The two variables are not secrets: they name the Access team and the
           # application's audience tag. While either is empty the Worker is
@@ -249,6 +257,21 @@ jobs:
           else
             echo "::warning::cloudflare-staging has no ACCESS_TEAM_DOMAIN and ACCESS_AUD variables; the admin Worker was deployed unconfigured and serves nothing."
           fi
+          # Not a secret: the address the issue form pre-fills for clients, which
+          # is the relay's URL as it is (its host and mount, checked together).
+          if node scripts/relay-host.mjs "${RELAY_URL}" > /dev/null; then
+            args+=(--var "RELAY_PUBLIC_URL:${RELAY_URL%/}")
+          fi
+          # The path the console is mounted under (src/mount.js), from ADMIN_URL;
+          # it must be the path the route and the Access application cover.
+          if [ -n "${ADMIN_URL}" ]; then
+            # An ADMIN_URL that is not a valid console URL stops the deploy here:
+            # an empty mount would be a console mounted somewhere nothing routes to.
+            admin_mount="$(node scripts/relay-host.mjs --admin-mount "${ADMIN_URL}")" || exit 1
+            args+=(--var "MOUNT_PATH:${admin_mount}")
+          fi
+          # The console binds the staging relay's Durable Object, so the public
+          # Worker above must exist first (it was deployed just before).
           npx wrangler deploy -c admin/wrangler.toml --env staging "${args[@]}"
       - name: Smoke test
         if: steps.credentials.outputs.configured == 'true'
@@ -328,7 +351,8 @@ jobs:
           # As for staging, but production never deploys unconfigured: without a
           # usable RELAY_URL this step fails before anything is uploaded.
           host="$(node scripts/relay-host.mjs "${RELAY_URL}")"
-          npx wrangler deploy --env="" --var "ALLOWED_HOSTS:${host}"
+          mount="$(node scripts/relay-host.mjs --mount "${RELAY_URL}")"
+          npx wrangler deploy --env="" --var "ALLOWED_HOSTS:${host}" --var "MOUNT_PATH:${mount}"
       - name: Deploy the production admin Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -336,6 +360,8 @@ jobs:
           WRANGLER_SEND_METRICS: "false"
           ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
           ACCESS_AUD: ${{ vars.ACCESS_AUD }}
+          RELAY_URL: ${{ vars.RELAY_URL }}
+          ADMIN_URL: ${{ vars.ADMIN_URL }}
         run: |
           # The two variables are not secrets: they name the Access team and the
           # application's audience tag. While either is empty the Worker is
@@ -346,6 +372,17 @@ jobs:
           else
             echo "::warning::cloudflare-production has no ACCESS_TEAM_DOMAIN and ACCESS_AUD variables; the admin Worker was deployed unconfigured and serves nothing."
           fi
+          if node scripts/relay-host.mjs "${RELAY_URL}" > /dev/null; then
+            args+=(--var "RELAY_PUBLIC_URL:${RELAY_URL%/}")
+          fi
+          if [ -n "${ADMIN_URL}" ]; then
+            # An ADMIN_URL that is not a valid console URL stops the deploy here:
+            # an empty mount would be a console mounted somewhere nothing routes to.
+            admin_mount="$(node scripts/relay-host.mjs --admin-mount "${ADMIN_URL}")" || exit 1
+            args+=(--var "MOUNT_PATH:${admin_mount}")
+          fi
+          # The console binds the production relay's Durable Object; the public
+          # Worker was deployed by the step above.
           npx wrangler deploy -c admin/wrangler.toml --env="" "${args[@]}"
       - name: Smoke test
         env:

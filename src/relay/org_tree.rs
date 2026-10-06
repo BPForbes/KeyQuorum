@@ -130,6 +130,29 @@ pub fn list_public_trees(conn: &dyn Sql) -> Result<Vec<PublicTree>> {
         .collect()
 }
 
+/// A stored public tree as the console lists it: its label, the generation
+/// last published and when. No node, key or fingerprint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TreeSummary {
+    pub label: String,
+    pub generation: i64,
+    pub updated_at: String,
+}
+
+pub fn summaries(conn: &dyn Sql) -> Result<Vec<TreeSummary>> {
+    conn.query_map(
+        "SELECT label, generation, updated_at FROM org_tree_docs ORDER BY updated_at DESC",
+        params![],
+        |row| {
+            Ok(TreeSummary {
+                label: row.get(0)?,
+                generation: row.get(1)?,
+                updated_at: row.get(2)?,
+            })
+        },
+    )
+}
+
 /// Slice every stored tree that contains this encryption fingerprint.
 /// Trees that do not mention the fingerprint are omitted, not an error.
 pub fn slices_for_fingerprint(conn: &dyn Sql, fingerprint: &str) -> Result<Vec<PublicTree>> {

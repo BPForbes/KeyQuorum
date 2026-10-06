@@ -149,3 +149,125 @@ CREATE TABLE IF NOT EXISTS api_key_deliveries (
     bundle_sha256         TEXT,
     created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+
+-- The provider's customers and what each was licensed (the operator console,
+-- `relay::operator`). A customer is a stable id the provider assigns; a key is
+-- never owned by a label, an address or a fingerprint (a push key has no
+-- recipient), only by a `licence_keys` link. Nothing here is a bearer, a key
+-- hash or sealed bytes, and no client ever reads any of it.
+CREATE TABLE IF NOT EXISTS customers (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 200),
+    -- The provider's own reference for this customer (a contract or account
+    -- number). Optional, unique when given.
+    reference   TEXT CHECK (reference IS NULL OR length(reference) BETWEEN 1 AND 100),
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_customers_name ON customers (name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_reference
+    ON customers (reference) WHERE reference IS NOT NULL;
+
+-- One customer may hold several licences over time. A licence ends by its own
+-- `expires_at` or by being voided; `replaces_licence_id` records the licence a
+-- new one superseded. Its statement lives in `licence_versions`.
+CREATE TABLE IF NOT EXISTS licences (
+    id                   INTEGER PRIMARY KEY,
+    customer_id          INTEGER NOT NULL REFERENCES customers(id),
+    created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    -- UTC `YYYY-MM-DD HH:MM:SS`, like `api_keys.expires_at`. NULL: no end. This
+    -- is the end of the latest version; each version keeps its own.
+    expires_at           TEXT,
+    voided_at            TEXT,
+    void_reason          TEXT CHECK (void_reason IS NULL OR length(void_reason) <= 500),
+    replaces_licence_id  INTEGER REFERENCES licences(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_licences_customer ON licences (customer_id, id);
+
+-- The statements a licence has carried, immutable: a renewal adds a version, it
+-- never rewrites one that was signed into a delivered key.
+CREATE TABLE IF NOT EXISTS licence_versions (
+    licence_id  INTEGER NOT NULL REFERENCES licences(id),
+    version     INTEGER NOT NULL CHECK (version >= 1),
+    terms       TEXT NOT NULL CHECK (length(terms) <= 8192),
+    expires_at  TEXT,
+    issued_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (licence_id, version)
+);
+
+CREATE TRIGGER IF NOT EXISTS licence_versions_no_update
+    BEFORE UPDATE ON licence_versions
+    BEGIN SELECT RAISE(ABORT, 'licence statements are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS licence_versions_no_delete
+    BEFORE DELETE ON licence_versions
+    BEGIN SELECT RAISE(ABORT, 'licence statements are immutable'); END;
+
+-- Which licence (and which statement version) a key was issued under, and the
+-- key it replaced, so ownership survives a rotation. Additive: `api_keys` is
+-- unchanged. A key with no row here is unassigned (issued before the console, or
+-- by the host CLI) and is never guessed into a customer.
+CREATE TABLE IF NOT EXISTS licence_keys (
+    api_key_id        INTEGER PRIMARY KEY REFERENCES api_keys(id),
+    licence_id        INTEGER NOT NULL REFERENCES licences(id),
+    licence_version   INTEGER,
+    replaces_key_id   INTEGER REFERENCES api_keys(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_licence_keys_licence ON licence_keys (licence_id);
+
+-- What the relay saw each known key do, by hour: requests it served and
+-- requests it refused, with a sum of the time each took and the bytes each
+-- way. One row per key, hour, route and outcome, counted in place, so the rows
+-- are bounded by the keys the provider issued, not by traffic. Unknown bearers
+-- are never recorded (an anonymous caller could grow the table). The scan
+-- drops rows past `activity::RETENTION_DAYS`. Not part of the audit chain: it
+-- is a usage view, not evidence, and the durations are coarse (a Durable
+-- Object's clock moves only when it waits).
+CREATE TABLE IF NOT EXISTS access_activity (
+    api_key_id  INTEGER NOT NULL REFERENCES api_keys(id),
+    hour        TEXT NOT NULL,
+    route       TEXT NOT NULL CHECK (route IN (
+        'inbox', 'devices', 'trees', 'audit', 'other'
+    )),
+    outcome     TEXT NOT NULL CHECK (outcome IN (
+        'ok', 'client_error', 'server_error', 'revoked', 'expired', 'scope'
+    )),
+    count       INTEGER NOT NULL CHECK (count > 0),
+    ms_total    INTEGER NOT NULL DEFAULT 0,
+    ms_max      INTEGER NOT NULL DEFAULT 0,
+    bytes_in    INTEGER NOT NULL DEFAULT 0,
+    bytes_out   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (api_key_id, hour, route, outcome)
+);
+
+-- What each operator did in the console, by the identity Cloudflare Access
+-- verified. The key lifecycle itself is in the hash-chained `api_key_events`
+-- (whose actor is `host` for anyone holding the operator lock); this adds who.
+-- A change that went through carries the operation id the console sent, written
+-- in the same unit of work as the change: sending the same id again is told
+-- the change is done, never done twice, and `result` names only ids. Never a
+-- lock, bearer, hash or sealed bytes. Not hash-chained.
+CREATE TABLE IF NOT EXISTS operator_actions (
+    id            INTEGER PRIMARY KEY,
+    operator      TEXT NOT NULL CHECK (length(operator) BETWEEN 1 AND 320),
+    action        TEXT NOT NULL CHECK (length(action) BETWEEN 1 AND 64),
+    subject       TEXT CHECK (subject IS NULL OR length(subject) <= 200),
+    success       INTEGER NOT NULL CHECK (success IN (0, 1)),
+    occurred_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    operation_id  TEXT CHECK (operation_id IS NULL OR length(operation_id) BETWEEN 8 AND 64),
+    result        TEXT CHECK (result IS NULL OR length(result) <= 1000)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_operator_actions_operation
+    ON operator_actions (operation_id) WHERE operation_id IS NOT NULL;
+
+-- A new operator lock that has been shown once and not yet confirmed. It is
+-- not the lock until the operator presents it back (`confirm_lock`), so a lost
+-- response leaves the old lock (or none) in place and the ceremony can be run
+-- again. Only a hash, like `licensee_issuer`.
+CREATE TABLE IF NOT EXISTS licensee_pending (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    key_hash    TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);

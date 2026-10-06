@@ -1,7 +1,7 @@
 # Cloudflare infrastructure for the relay
 
 Infrastructure as code for the parts of the relay's hosting that live in
-Cloudflare outside the Worker code: custom domains, the edge rate limit, the
+Cloudflare outside the Worker code: the relay's routes, the edge rate limit, the
 cache bypass, the Access application for the admin Worker and an optional R2
 archive bucket. The plan of record is `docs/operator/relay-hosting.md`; this
 directory is an operator document, not customer-facing.
@@ -15,10 +15,36 @@ Access that only shows who is signed in). CI runs `terraform fmt -check` and
 `.github/workflows/workers.yml`); nothing here has been applied to a real
 account by the repository's authors.
 
-The relay uses a separate Cloudflare domain dedicated to it (owner decision,
-2026-10-06), not bailey-forbes.com: `zone_id` and every hostname below belong to
-that zone, and the portfolio's DNS and hosting are not touched by anything in
-this directory.
+The relay uses the owner's domain `keyquorum.dev` (owner decision, 2026-10-06,
+replacing the earlier `bailey-forbes.com` plan: that domain's DNS is not on
+Cloudflare, and a Worker can only be served on a zone that is). `zone_id` is
+`keyquorum.dev`'s zone, so the domain must be a zone on the owner's Cloudflare
+account: add it in the dashboard and change its nameservers at the registrar to
+the two Cloudflare gives, or register or transfer it to Cloudflare. The domain
+is meant to carry more than the relay (a customer app, later), so everything
+here is mounted under paths of that one hostname, through Workers routes
+(`main.tf`, `access.tf`), not custom domains (a custom domain takes a whole
+hostname):
+
+| Path on `keyquorum.dev` | What | Worker |
+| --- | --- | --- |
+| `/relay` | the production relay | `keyquorum-relay` |
+| `/relay/staging-user` | the staging relay | `keyquorum-relay-staging` |
+| `/relay/admin` | the production console (behind Access) | `keyquorum-relay-admin` |
+| `/relay/staging-admin` | the staging console (behind Access) | `keyquorum-relay-admin-staging` |
+
+Each Worker serves only below its own path (`workers/src/mount.js`, set by its
+`MOUNT_PATH`, which the deploy takes from the path of `RELAY_URL` or
+`ADMIN_URL`) and answers 404 to anything else, and where two routes overlap
+Cloudflare uses the more specific one (from memory, verify at the first apply).
+The two rulesets in `rules.tf` match only paths under `/relay`.
+**One origin carries all four**, the console and the customer app (later)
+included, which the earlier plan of a hostname of its own for the console
+avoided: see "One origin" below. `rules.tf` manages
+the zone's rate-limit and cache-settings entry-point rulesets and **replaces any
+rules already in those two phases**, which matters only if the zone already has
+some: look in the dashboard first (Security, WAF, Rate limiting rules; Caching,
+Cache Rules) and import what exists before `terraform apply`.
 
 ## Who runs it, and with what
 
@@ -35,18 +61,26 @@ a variable file in this directory, or an agent session.
 - `terraform.tfvars`, copied from `terraform.tfvars.example`. It is ignored by
   git. It holds identifiers, hostnames and the operators' email addresses, not
   secrets. Its variables:
-  - `account_id`, `zone_id`: the account and the dedicated relay zone.
-  - `environments`: a map of `{hostname, worker}`, the public relay Worker's
-    custom domain per environment.
-  - `admin_environments`: a map of `{hostname, worker}` for the admin Worker
-    (`keyquorum-relay-admin`, `keyquorum-relay-admin-staging`), empty by
-    default. It replaces the earlier single `admin_hostname`. For each entry
-    Terraform creates a custom domain for the admin Worker and a self-hosted
-    Access application (1 hour session) for that hostname; all of them share
-    one allow policy.
-  - `operator_emails`: the operators the policy allows. MFA is required of
-    them as well (`auth_method = "mfa"`). Setting `admin_environments` with no
-    operator email fails the plan (a precondition).
+  - `account_id`, `zone_id`: the account and the domain's zone.
+  - `environments`: a map of `{hostname, path, worker}`: the hostname (the bare
+    domain, no path), the path the public relay Worker is mounted under
+    (`/relay`, or `/relay/<name>`; the name may not be one of the relay's own
+    routes, which a validation checks) and the Worker. It is also the path of
+    `RELAY_URL`.
+  - `admin_environments`: a map of `{hostname, path, worker}` for the admin
+    Worker (`keyquorum-relay-admin`, `keyquorum-relay-admin-staging`), empty by
+    default. The path is `/relay/<name>`, never `/relay` itself, and is also the
+    path of `ADMIN_URL`. For each entry Terraform creates routes for the admin
+    Worker and a self-hosted Access application (1 hour session) for that
+    hostname and path; all of them share one allow policy.
+  - `operator_emails`: the operators the policy allows (the email the login
+    asserts must match exactly). Setting `admin_environments` with no operator
+    email fails the plan (a precondition).
+  - `idp_mfa_required` (default `false`): also require that the identity
+    provider reports MFA. Only Okta, Entra ID, generic OIDC and generic SAML can
+    report it; with one-time PIN, the Cloudflare identity provider or Sign in
+    with Apple it would lock the operator out. The second factor for those is
+    independent MFA, below.
   - `rate_limit_requests`, `rate_limit_period`, `rate_limit_timeout`,
     `archive_bucket_name`: see the variable descriptions.
 - Outputs: `relay_urls`, `admin_urls` (the Access-protected URL per admin
@@ -64,9 +98,13 @@ a variable file in this directory, or an agent session.
 
 1. Create the Zero Trust organisation in the dashboard (once), and note its team
    domain.
-2. Choose the hostnames: the relay's, per environment, in `terraform.tfvars`
-   (`environments`). Set the GitHub environment variable `RELAY_URL` in each
-   environment to `https://<that hostname>` **before the first deploy**. The
+2. Choose the hostname and paths in `terraform.tfvars` (`environments`, and
+   `admin_environments` later). Add a proxied (orange-clouded) DNS record for the
+   hostname, which Terraform does not create (for a hostname with no site yet, an
+   A record to the placeholder address 192.0.2.1). Set the GitHub environment
+   variable `RELAY_URL` in each environment to `https://<hostname><path>` (for
+   staging `https://keyquorum.dev/relay/staging-user`: the URL a client is
+   given; the scripts refuse any other path) **before the first deploy**. The
    deploy passes its host to the Worker as `ALLOWED_HOSTS`, and the Worker
    serves that host and no other, so a Worker deployed without it serves
    nothing (staging warns and deploys that way; production refuses to deploy).
@@ -74,7 +112,7 @@ a variable file in this directory, or an agent session.
    admin Worker on a push to `main` (or, from `workers/`, `npm run
    build:relay-wasm` and then `npx wrangler deploy --env staging --var
    ALLOWED_HOSTS:<host>`, and `npx wrangler deploy -c admin/wrangler.toml --env
-   staging`). A custom domain names an existing Worker, so `apply` fails before
+   staging`). A route names an existing Worker, so `apply` fails before
    this. Until the Access variables below are set the admin Worker is deployed
    unconfigured and serves nothing (503), which is the safe state. Once the
    public Worker exists it can be connected to Cloudflare Workers Builds for the
@@ -83,7 +121,7 @@ a variable file in this directory, or an agent session.
    connection deploys nothing on `main` and needs nothing from this directory.
 4. Set `operator_emails` and `admin_environments` in `terraform.tfvars`, then
    `terraform init`, `terraform plan`, review, `terraform apply`. Check that
-   `terraform output relay_urls` shows the same hostnames as `RELAY_URL`; if
+   `terraform output relay_urls` shows the same URLs as `RELAY_URL`; if
    they differ, fix `RELAY_URL` and deploy again.
 5. Set the admin Worker's Access settings as GitHub environment variables (not
    secrets) in each environment: `ACCESS_AUD` from `terraform output
@@ -105,11 +143,42 @@ a variable file in this directory, or an agent session.
 - The rate-limit counting periods and block timeouts that are allowed depend on
   the Cloudflare plan; the defaults are meant to suit the lowest plan (from
   memory, verify). Tune them in `terraform.tfvars`.
-- `auth_method = "mfa"` in the Access policy relies on the identity provider
-  reporting that MFA was used (from memory, verify for your provider). Test the
-  admin Access application with an operator who has no MFA before relying on it.
-- The admin custom domains and Access applications are created only when
-  `admin_environments` is set. No route bypasses Access: the hostname sits
+- **Operator login and MFA.** Terraform creates the Access application and an
+  allow policy for `operator_emails`; it does **not** create or verify the
+  second factor. The recommended setup (a decision of the owner, 2026-10-06) is
+  login by the Cloudflare identity provider or a one-time PIN to the operator's
+  own address, plus Access's **independent MFA** with a hardware security key:
+  in Zero Trust, Access controls, Access settings, under "Allow multi-factor
+  authentication (MFA)" allow **Security key** (and, if you accept it, nothing
+  weaker), set an authentication duration, and turn on "Apply global MFA
+  settings by default" (or set the admin application's or policy's MFA to
+  custom, security key only); then enrol the key at
+  `<team>.cloudflareaccess.com/AddMfaDevice` and enrol a second, spare key. This
+  is Cloudflare's feature of 2026 and is described from its documentation (MFA
+  requirements; Independent MFA), not from a run; whether the pinned provider
+  (5.27.0) can manage it is not established, so it is a dashboard step. Test it
+  with the operator signed out before relying on it, and keep the spare key
+  elsewhere: losing every enrolled key locks the operator out of the console.
+  Sign in with Apple is not a built-in identity provider, would need the generic
+  OIDC connector (an Apple client secret is a signed token that expires), and
+  can assert a private-relay address instead of the real one that the policy
+  matches; it is not recommended.
+- **One origin.** The console shares an origin (`https://keyquorum.dev`) with
+  the relay and, later, the customer app. Access's session cookie is scoped to
+  the host, not the path, so the browser sends it to every path of the host: the
+  relay Workers and a customer app would receive the operator's Access cookie
+  (it is `HttpOnly`, so a script cannot read it, but a server on that origin
+  can), and a script flaw in anything else served from `keyquorum.dev` runs on
+  the same origin as the console and could call its API as the signed-in
+  operator, though a change still needs the operator lock and cannot be made
+  without it. The staging and production consoles and relays share the origin
+  too. The admin Worker's own checks (the Access token, the lock, same-origin
+  `Origin`) still apply, and the relay Workers ignore cookies; but the isolation
+  of a hostname of its own is given up. If the customer app is built, a
+  hostname of its own for the console (set `path` to a `/relay/<name>` on a
+  different hostname, or return to a custom domain) restores it.
+- The admin routes and Access applications are created only when
+  `admin_environments` is set. No route bypasses Access: the path sits
   behind the application, and the admin Worker also verifies Access's token
   itself (`workers/admin/src/access.js`), so a mistake in the policy does not
   serve the page. Today the page only shows who is signed in; the relay-backed

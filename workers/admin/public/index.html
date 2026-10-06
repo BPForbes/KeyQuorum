@@ -3,25 +3,29 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
     <title>KeyQuorum relay operator</title>
-    <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <main>
-      <h1>KeyQuorum relay operator</h1>
-      <section aria-labelledby="who-heading">
-        <h2 id="who-heading">Signed in</h2>
-        <p id="who">Checking your Cloudflare Access session.</p>
-      </section>
-      <section aria-labelledby="relay-heading">
-        <h2 id="relay-heading">Relay</h2>
-        <p id="relay">Checking the relay.</p>
-        <p class="note">
-          Key lists, revocation and the audit trail appear here once the relay's store is connected.
-          Until then this page only confirms who you are.
-        </p>
-      </section>
+    <a class="skip" href="#view">Skip to the page</a>
+    <header>
+      <div class="bar-top">
+        <strong>KeyQuorum relay operator</strong>
+        <span id="who" class="who" role="status">Checking your Cloudflare Access session.</span>
+      </div>
+      <nav id="nav" aria-label="Console sections"></nav>
+    </header>
+    <main id="view" tabindex="-1" aria-live="polite">
+      <p class="empty">Loading.</p>
     </main>
-    <script src="/app.js" type="module"></script>
+    <footer>
+      <p>
+        This console is for the service provider only. Clients never see it. Keys and licences are issued
+        here and delivered to clients as sealed files.
+      </p>
+    </footer>
+    <noscript><p class="empty">This console needs JavaScript.</p></noscript>
+    <script src="app.js" type="module"></script>
   </body>
 </html>

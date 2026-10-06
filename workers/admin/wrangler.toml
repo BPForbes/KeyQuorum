@@ -1,7 +1,17 @@
-# The admin Worker: a static operator page and, later, the relay's operator
-# routes, on its own hostname behind a Cloudflare Access application with MFA.
+# The admin Worker: the provider's console, a static page and its one data
+# route, on its own path of the domain (MOUNT_PATH, src/mount.js) behind a
+# Cloudflare Access application with MFA.
 # Production is the top level, staging is [env.staging]
 # (keyquorum-relay-admin-staging).
+#
+# The console reaches the relay through a binding to the public Worker's
+# Durable Object (`script_name` names that Worker; the class and its data are
+# the public Worker's, so this file has no migration, and the guard refuses one).
+# Production binds the production relay and staging only the staging relay, so
+# a staging console cannot touch production's keys (the guard checks the names).
+# The public Worker must be deployed before this one, or the binding has nothing
+# to point at. The binding is how the console calls `RelayObject.operate`; no
+# route of the public Worker leads there.
 #
 # Nothing secret belongs here. The two [vars] are not secrets: they name the
 # Access team and this application's audience tag, and the deploy job fills them
@@ -22,9 +32,37 @@ directory = "./public"
 binding = "ASSETS"
 run_worker_first = true
 
+[[durable_objects.bindings]]
+name = "RELAY_ADMIN"
+class_name = "RelayObject"
+script_name = "keyquorum-relay"
+
+# Per-operator limits, keyed on the verified operator's email: reads, and the
+# much lower one for anything that changes the relay. A namespace_id is
+# account-wide, so each environment's is its own number (the public Worker
+# uses 4701 and 4702).
+[[ratelimits]]
+name = "READ_LIMITER"
+namespace_id = "4801"
+simple = { limit = 120, period = 60 }
+
+[[ratelimits]]
+name = "WRITE_LIMITER"
+namespace_id = "4802"
+simple = { limit = 20, period = 60 }
+
 [vars]
 ACCESS_TEAM_DOMAIN = ""
 ACCESS_AUD = ""
+# Not secret: the path the console is mounted under on its host (src/mount.js),
+# `/relay/<name>`, or empty for a hostname of its own. The deploy job sets it
+# from the path of the environment's ADMIN_URL; it must be the path the Access
+# application and the route cover (deploy/cloudflare/terraform). A value that is
+# not valid leaves the console unconfigured.
+MOUNT_PATH = "/relay/admin"
+# Not secret: the address clients load their keys for, to pre-fill the issue
+# form (the deploy job fills it from the environment's RELAY_URL).
+RELAY_PUBLIC_URL = ""
 
 [env.staging]
 workers_dev = false
@@ -35,6 +73,23 @@ directory = "./public"
 binding = "ASSETS"
 run_worker_first = true
 
+[[env.staging.durable_objects.bindings]]
+name = "RELAY_ADMIN"
+class_name = "RelayObject"
+script_name = "keyquorum-relay-staging"
+
+[[env.staging.ratelimits]]
+name = "READ_LIMITER"
+namespace_id = "4803"
+simple = { limit = 120, period = 60 }
+
+[[env.staging.ratelimits]]
+name = "WRITE_LIMITER"
+namespace_id = "4804"
+simple = { limit = 20, period = 60 }
+
 [env.staging.vars]
 ACCESS_TEAM_DOMAIN = ""
 ACCESS_AUD = ""
+MOUNT_PATH = "/relay/staging-admin"
+RELAY_PUBLIC_URL = ""
