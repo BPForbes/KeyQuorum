@@ -217,13 +217,23 @@ procedure and the settings, so the connection is made once and the same way.
   Node, Go, Python and Ruby but no Rust, and the relay core must be compiled to
   WebAssembly first, so `scripts/builds-toolchain.sh` installs a pinned Rust
   toolchain with the wasm32 target (`rustup-init` 1.28.2, Rust 1.97.0) and the
-  prebuilt `wasm-bindgen` CLI at the version `Cargo.lock` pins (0.2.127), each
-  download checked against a SHA-256 written in the script, then `npm run
-  build:relay-wasm` runs. The script refuses to run when `Cargo.lock` pins a
+  prebuilt `wasm-bindgen` CLI at the version `Cargo.lock` pins (0.2.127), and
+  clang, which the image also lacks and which `sqlite-wasm-rs` (the crate's
+  bundled SQLite, compiled from C for wasm32 by its build script) needs: it
+  comes from the wasi-sdk 25.0 release, of which only the compiler, its shared
+  libraries, `llvm-ar` and clang's headers are kept. `ensure-relay-wasm.mjs`
+  points `CC_wasm32_unknown_unknown` and `AR_wasm32_unknown_unknown` at it. A
+  first Workers Builds run failed with `failed to find tool "clang"` before
+  this was added. Each
+  download is checked against a SHA-256 written in the script, then `npm run
+  build:relay-wasm` runs. (Follow-up: gate rusqlite out of the Worker build,
+  since the Durable Object supplies the SQL, which would drop the C build and
+  shrink the module.) The script refuses to run when `Cargo.lock` pins a
   different `wasm-bindgen` than the one it has a hash for, so a lockfile bump
-  forces the pin to be raised on purpose. Measured in a clean container (not on
-  Cloudflare's image, where it has never run): the toolchain installs in about
-  26 seconds and a cold build of the core takes about 56. GitHub's workflow
+  forces the pin to be raised on purpose. Measured in a clean container with no clang (not on
+  Cloudflare's image, where the corrected script has not yet been seen to
+  pass): toolchain, clang and a cold build of the core take about 95 seconds
+  together. GitHub's workflow
   installs the same things with its own SHA-pinned actions and never runs this
   script.
 - `npm run check` is the `main` deploy command: the configuration guard, the
@@ -775,6 +785,45 @@ architecture below says which parts are built.
   from memory, verify); the existing schema-version guard refuses a
   database written by a newer `SCHEMA_VERSION`. Nothing is deployed
   anywhere today, so there is no data to migrate.
+
+### Front ends, and independence from the Lab and the portfolio
+
+The relay has its own front ends and shares nothing with the Lab
+(`lab/`, published to GitHub Pages) or the portfolio
+(`bailey-forbes.com`), which embeds the Lab.
+
+- **Public site (built).** The public Worker's own pages, `/` (a status page
+  with a policy that allows no inline code and no outside origin) and `/health`
+  and `/ready`, on the relay's custom domain only. Customers do not use a web
+  page to send letters: `keyquorum` does, with a `kq_…` bearer, and a browser
+  client would need the sealing and signing done in the page, which is not built.
+- **Operator console (front door built, back end not).** The admin Worker, on
+  its own hostname behind a Cloudflare Access application with MFA, which
+  verifies Access's token itself (`workers/admin/`). Nothing it serves is
+  reachable without that token.
+- **No path from the Lab or the portfolio to either.** The Lab's relay is
+  `relay::service::dispatch` running in the visitor's browser tab at
+  `https://relay.keyquorum.lab`, a name no network request ever leaves for
+  (`src/lab/vm.rs`); the Lab bundle and the portfolio name no relay host
+  (`workers/test/independence.test.mjs` reads `lab/` and `src/lab/`). Neither
+  Worker sets a CORS header, so a page on another origin cannot read an answer.
+  Both refuse a browser request that comes from another site before routing it,
+  by Fetch Metadata and `Origin` (`workers/src/browser-isolation.js`): a fetch,
+  frame, script, image or form post from the Lab or the portfolio is 403, and
+  every answer carries `Cross-Origin-Resource-Policy: same-origin`,
+  `X-Frame-Options: DENY` and `Cross-Origin-Opener-Policy: same-origin`, so
+  neither site can embed or script them. Typing the address, a bookmark, the
+  site's own page and a command-line client (which sends none of those headers)
+  are served. A plain link from another site is refused on the public Worker.
+  On the admin Worker alone a top-level link is let through to the token check,
+  because Cloudflare Access sends the operator back through a redirect that
+  starts on Access's own domain and a refusal would lock the operator out; the
+  Worker still serves nothing without a valid token.
+- **What this is not.** It is a browser-side control, not authentication: a
+  person or script outside a browser can set any header, and who may use the
+  relay is decided by the bearer (public Worker) or the Access token (admin
+  Worker). Separate DNS names, Access and the zone's own rules are the operator's
+  to keep (the custom domain is not a subdomain of the portfolio's).
 
 ### What the spike measured (stage 3)
 

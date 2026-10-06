@@ -325,3 +325,71 @@ test("the default export is the same handler", async () => {
   const response = await worker.fetch(new Request(`https://${HOST}/health`), env);
   assert.equal(response.status, 200);
 });
+
+test("another website's browser request is refused with 403 before routing, limiting or the relay", async () => {
+  const limited = [];
+  const { env, forwarded } = fakeEnv({ limiter: { limit: async (k) => (limited.push(k), { success: true }) } });
+  const cases = [
+    { "sec-fetch-site": "cross-site", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" },
+    { "sec-fetch-site": "same-site", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" },
+    { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" },
+    { origin: "https://bailey-forbes.com" },
+    { origin: "null" },
+  ];
+  for (const headers of cases) {
+    for (const path of ["/", "/health", "/ready", "/assets/status.js", "/inbox", "/nowhere"]) {
+      const log = spyLog();
+      const response = await call(env, path, { headers: { ...headers, authorization: `Bearer ${bearer()}` } }, HOST, log);
+      assert.equal(response.status, 403, `${JSON.stringify(headers)} ${path}`);
+      assert.deepEqual(await response.json(), { error: "cross-site requests are not served" });
+      assert.equal(log.lines.length, 1);
+      assert.equal(log.lines[0][0], "warn");
+    }
+  }
+  assert.equal(forwarded.length, 0);
+  assert.equal(limited.length, 0);
+});
+
+test("the site's own page, a typed address and a command-line client are served", async () => {
+  const { env, forwarded } = fakeEnv();
+  for (const headers of [
+    {},
+    { "sec-fetch-site": "none", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" },
+    { "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty", origin: `https://${HOST}` },
+  ]) {
+    assert.equal((await call(env, "/health", { headers })).status, 200, JSON.stringify(headers));
+  }
+  assert.equal((await call(env, "/inbox", { headers: { "sec-fetch-site": "same-origin" } })).status, 200);
+  assert.equal(forwarded.length, 1);
+});
+
+test("a refused host is answered as not found before the browser check says anything", async () => {
+  const { env } = fakeEnv();
+  const response = await call(env, "/health", { headers: { "sec-fetch-site": "cross-site" } }, "other.example");
+  assert.equal(response.status, 404);
+});
+
+test("every answer forbids embedding and framing, and none carries a CORS header", async () => {
+  const { env } = fakeEnv();
+  for (const path of ["/", "/health", "/ready", "/assets/status.js", "/assets/status.css", "/inbox", "/nowhere"]) {
+    const response = await call(env, path);
+    assert.equal(response.headers.get("cross-origin-resource-policy"), "same-origin", path);
+    assert.equal(response.headers.get("x-frame-options"), "DENY", path);
+    assert.equal(response.headers.get("cross-origin-opener-policy"), "same-origin", path);
+    for (const [name] of response.headers) assert.ok(!name.startsWith("access-control-"), `${path} ${name}`);
+  }
+  const refused = await call(env, "/inbox", { headers: { origin: "https://bailey-forbes.com" } });
+  assert.equal(refused.headers.get("access-control-allow-origin"), null);
+  assert.equal(refused.headers.get("x-frame-options"), "DENY");
+});
+
+test("a preflight from another site is refused, not answered", async () => {
+  const { env, forwarded } = fakeEnv();
+  const response = await call(env, "/inbox", {
+    method: "OPTIONS",
+    headers: { origin: "https://bailey-forbes.com", "access-control-request-method": "POST", "sec-fetch-site": "cross-site", "sec-fetch-mode": "cors" },
+  });
+  assert.equal(response.status, 403);
+  assert.equal(response.headers.get("access-control-allow-origin"), null);
+  assert.equal(forwarded.length, 0);
+});

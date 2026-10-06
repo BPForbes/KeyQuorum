@@ -5,6 +5,7 @@
 // hosted; the relay-backed routes arrive with the relay's store, and until then
 // every /api route except /api/whoami answers 503.
 import { verifyAccessToken } from "./access.js";
+import { ISOLATION_HEADERS, crossSiteRefusal } from "../../src/browser-isolation.js";
 
 const SECURITY_HEADERS = {
   "content-security-policy":
@@ -12,8 +13,9 @@ const SECURITY_HEADERS = {
     "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
   "x-content-type-options": "nosniff",
   "referrer-policy": "no-referrer",
-  "cross-origin-opener-policy": "same-origin",
   "cache-control": "no-store",
+  // Never loadable or framable by another site; no CORS header is ever sent.
+  ...ISOLATION_HEADERS,
 };
 
 function json(status, body, extra = {}) {
@@ -30,6 +32,15 @@ function withSecurityHeaders(response) {
 }
 
 export async function handle(request, env, { verify = verifyAccessToken } = {}) {
+  // Another website, the Lab and the portfolio included, may not fetch, embed
+  // or frame this console. A top-level page load is let through to the token
+  // check below, because Access's sign-in redirect lands here marked cross-site;
+  // it still needs a valid Access token.
+  const refusal = crossSiteRefusal(request, { allowNavigation: true });
+  if (refusal) {
+    console.warn(`admin: refused ${refusal}`);
+    return json(403, { error: "cross-site requests are not served" });
+  }
   const outcome = await verify(request.headers.get("cf-access-jwt-assertion"), {
     teamDomain: env.ACCESS_TEAM_DOMAIN,
     audience: env.ACCESS_AUD,

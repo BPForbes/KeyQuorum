@@ -6,11 +6,14 @@
 // core in that object decides who may do what; this file only keeps everything
 // else out. Every response is `Cache-Control: no-store`.
 //
-// What it will not do: serve a host other than the relay's own (a Version URL
+// What it will not do: answer another website's browser (see
+// browser-isolation.js: the Lab and the portfolio are other sites, and the relay
+// shares no origin, hosting or code with either), serve a host other than the relay's own (a Version URL
 // of a deploy shares production's bindings and secrets, so it is refused, not
 // served), route an operator path (`/api-keys*`, the full `/audit/*`, anything
 // that mints is not on this Worker), or keep a request waiting behind the
 // object (the object refuses past `MAX_IN_FLIGHT`).
+import { crossSiteRefusal } from "./browser-isolation.js";
 import {
   MAX_REQUEST_BODY,
   baseHeaders,
@@ -46,6 +49,17 @@ export async function handle(request, env, log = console) {
     // the log (the host is not a secret; no header or body is logged).
     log.warn("relay: refused a request for a host that is not the relay's");
     return jsonResponse(404, { error: "not found" });
+  }
+
+  // Another website, the Lab and the portfolio included, may not reach this
+  // site from a browser: no fetch, frame, script, image or form from it, and no
+  // link either (the relay has no sign-in redirect that would need one). A
+  // person who types the address, or the site's own page, passes; so does a
+  // command-line client, which sends none of these headers.
+  const refusal = crossSiteRefusal(request);
+  if (refusal) {
+    log.warn(`relay: refused ${refusal}`);
+    return jsonResponse(403, { error: "cross-site requests are not served" });
   }
 
   const route = classify(request.method, url.pathname);

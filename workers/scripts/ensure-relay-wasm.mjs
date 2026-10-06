@@ -42,9 +42,17 @@ function main() {
   console.log("relay-wasm/ is not built; building it on Workers Builds");
   execFileSync("bash", [join(workersDir, "scripts", "builds-toolchain.sh")], { stdio: "inherit" });
   const path = `${join(homedir(), ".cargo", "bin")}${delimiter}${process.env.PATH ?? ""}`;
+  // The crate's bundled SQLite is C, compiled for wasm32 by the clang the
+  // toolchain script installed; the build image has none of its own.
+  const wasiSdk = process.env.WASI_SDK_DIR ?? join(homedir(), ".wasi-sdk");
   execFileSync("node", [join(workersDir, "scripts", "build-relay-wasm.mjs")], {
     stdio: "inherit",
-    env: { ...process.env, PATH: path },
+    env: {
+      ...process.env,
+      PATH: path,
+      CC_wasm32_unknown_unknown: join(wasiSdk, "bin", "clang"),
+      AR_wasm32_unknown_unknown: join(wasiSdk, "bin", "llvm-ar"),
+    },
   });
   return 0;
 }

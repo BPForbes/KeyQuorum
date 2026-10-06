@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Installs what `npm run build:relay-wasm` needs on Cloudflare's Workers Builds
-# image, which has Node, Go, Python and Ruby but no Rust: a pinned Rust
-# toolchain with the wasm32 target, and the wasm-bindgen CLI at the version
-# Cargo.lock pins. Run by `npm run builds:build` (docs/operator/relay-hosting.md,
+# image, which has Node, Go, Python and Ruby but no Rust and no clang: a pinned
+# Rust toolchain with the wasm32 target, the wasm-bindgen CLI at the version
+# Cargo.lock pins, and clang from the wasi-sdk release, which the crate's
+# bundled SQLite (compiled from C for wasm32 by the `sqlite-wasm-rs` build
+# script) needs. ensure-relay-wasm.mjs points `CC_wasm32_unknown_unknown` and
+# `AR_wasm32_unknown_unknown` at it. Run by `npm run builds:build` (docs/operator/relay-hosting.md,
 # "Workers Builds and previews"); the GitHub workflow installs the same things
 # with its own, SHA-pinned actions and never runs this.
 #
-# Both downloads are checked against a SHA-256 written here, so a changed
+# Each download is checked against a SHA-256 written here, so a changed
 # download fails the build instead of running. Nothing here reads a secret, and
 # the build token Cloudflare holds for the build is not given to anything this
 # script downloads. Raising a version means raising its hash in the same commit.
@@ -17,6 +20,8 @@ RUSTUP_SHA256="20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c"
 RUST_TOOLCHAIN="1.97.0"
 WASM_BINDGEN_VERSION="0.2.127"
 WASM_BINDGEN_SHA256="61d4a7dc85acfa0d2354ccc0b8361928c7e52a746d17f28ebaa795ed3dc1614a"
+WASI_SDK_VERSION="25.0"
+WASI_SDK_SHA256="52640dde13599bf127a95499e61d6d640256119456d1af8897ab6725bcf3d89c"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "${here}/../.." && pwd)"
@@ -30,6 +35,7 @@ fi
 
 export CARGO_HOME="${CARGO_HOME:-${HOME}/.cargo}"
 export RUSTUP_HOME="${RUSTUP_HOME:-${HOME}/.rustup}"
+WASI_SDK_DIR="${WASI_SDK_DIR:-${HOME}/.wasi-sdk}"
 export PATH="${CARGO_HOME}/bin:${PATH}"
 
 work="$(mktemp -d)"
@@ -62,4 +68,15 @@ if ! wasm-bindgen --version 2>/dev/null | grep -q " ${WASM_BINDGEN_VERSION}\$"; 
   install -m 0755 "${work}/${archive}/wasm-bindgen" "${CARGO_HOME}/bin/wasm-bindgen"
 fi
 
-echo "rust: $(rustc --version); $(wasm-bindgen --version)"
+# Only the compiler, its two shared libraries, its archiver and clang's own
+# headers are kept: the whole SDK is 360 MB and the crate needs none of the rest.
+if [ ! -x "${WASI_SDK_DIR}/bin/clang" ] || [ ! -x "${WASI_SDK_DIR}/bin/llvm-ar" ]; then
+  archive="wasi-sdk-${WASI_SDK_VERSION}-x86_64-linux"
+  fetch "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK_VERSION%%.*}/${archive}.tar.gz" \
+    "${work}/wasi-sdk.tar.gz" "${WASI_SDK_SHA256}"
+  mkdir -p "${WASI_SDK_DIR}"
+  tar -xzf "${work}/wasi-sdk.tar.gz" -C "${WASI_SDK_DIR}" --strip-components=1 --wildcards \
+    '*/bin/clang' '*/bin/clang-[0-9]*' '*/bin/llvm-ar' '*/lib/lib*.so*' '*/lib/clang/*'
+fi
+
+echo "rust: $(rustc --version); $(wasm-bindgen --version); $("${WASI_SDK_DIR}/bin/clang" --version | head -1)"

@@ -1,3 +1,5 @@
+import { ISOLATION_HEADERS } from "./browser-isolation.js";
+
 // What the public Worker lets through, as pure functions with no I/O: which
 // host may be served, which routes the relay exposes, how a bearer is read and
 // how a body is bounded. Nothing here decides who may use the relay: the relay
@@ -140,12 +142,15 @@ export async function readLimited(request, limit = MAX_REQUEST_BODY) {
   return bytes;
 }
 
-// The answer headers every response carries: never cached, never sniffed.
+// The answer headers every response carries: never cached, never sniffed, and
+// never loadable or framable by another site (browser-isolation.js). No CORS
+// header is ever added, so a page on another origin cannot read an answer.
 export function baseHeaders(extra = {}) {
   return {
     "cache-control": "no-store",
     "x-content-type-options": "nosniff",
     "referrer-policy": "no-referrer",
+    ...ISOLATION_HEADERS,
     ...extra,
   };
 }
