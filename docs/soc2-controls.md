@@ -200,6 +200,20 @@ These are stated so an auditor need not discover them:
 
 ## Audit log
 
+### 2026-10-06 (twelfth pass): review findings on the operator console, fixed after its merge (#100)
+
+Five findings posted on the console's pull request after it was merged, each checked against the code before the fix.
+
+| Severity | Criterion | Finding | Fix |
+| --- | --- | --- | --- |
+| high | CC6.3, PI1.2 | `assign_key` linked an unassigned, live key to a licence that was already voided or ended; the void had already run, so nothing revoked the key and the console showed a working credential under a revoked licence. | `issuance::assign_key` refuses an inactive licence (`Error::LicenceNotActive`) and leaves the key unassigned. Test: `a_key_is_not_assigned_to_a_voided_licence_and_stays_unassigned_and_live`. |
+| major | CC7.2 | The operator-lock check feed took the newest `limit` rows and then applied the cursor, and always returned a null cursor, so older attempts were unreachable once the feed outgrew one page. | `provider_auth_events` takes the cursor in the query; the feed fetches `limit + 1` and returns `next_before` like the other feeds. Test: `the_lock_check_feed_pages_back_through_every_row_without_skipping`. |
+| major | CC6.1 | Two customers can hold keys sealed to one recipient key, and the letters view named whichever was inserted last, inferring an owner from a fingerprint. | Every matching customer is kept; the owner is named only when there is exactly one, and otherwise the page says more than one customer holds a key for it. Test: `a_letter_for_a_recipient_two_customers_hold_keys_for_names_neither`. |
+| minor | CC8.1 | An activity link to a customer older than the newest 100 fell back to "Everyone". | The page fetches that customer by id. Checked in a browser with 105 customers; no unit test (the page has none for views). |
+| minor | CC8.1 | An unused import in `view-overview.js`. | Removed. |
+
+Not covered: a unit test for the activity link, and the full `provider`-feature build (it cannot be built where this was made).
+
 ### 2026-10-06 (eleventh pass): staging and the console under paths of one domain, through Workers routes
 
 At the owner's request the staging relay (`/relay/staging-user`) and both consoles (`/relay/admin`, `/relay/staging-admin`) sit under paths of `keyquorum.dev`, beside the production relay (`/relay`), and Workers routes replace custom domains. Each Worker reads its mount from the non-secret `MOUNT_PATH` and serves only below it. Nothing is deployed.

@@ -1,4 +1,4 @@
-import { api, errorText, get } from "./api.js";
+import { api, get } from "./api.js";
 import { commit, operation } from "./confirm.js";
 import { plural } from "./format.js";
 import { card, clear, h, lockField, notice, section } from "./ui.js";

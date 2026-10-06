@@ -762,6 +762,35 @@ fn an_unassigned_key_is_assigned_once_by_choice_and_only_a_client_key() {
 }
 
 #[test]
+fn a_key_is_not_assigned_to_a_voided_licence_and_stays_unassigned_and_live() {
+    let s = setup();
+    let (_, public) = client();
+    let issued = issue_one(&s, public, &[ApiKeyScope::InboxPush]);
+    let stray = relay::create_api_key(
+        &s.conn,
+        &NewApiKey {
+            scope: ApiKeyScope::InboxPush,
+            recipient_fingerprint: None,
+            label: None,
+            ttl_seconds: None,
+        },
+    )
+    .expect("key");
+    void_licence(&s.conn, issued.licence.id, Some("ended"), None).expect("void");
+
+    // The void already ran, so nothing would revoke the key if it were linked
+    // now: the assignment is refused and the key is left as it was.
+    assert!(matches!(
+        assign_key(&s.conn, stray.info.id, issued.licence.id, None),
+        Err(Error::LicenceNotActive)
+    ));
+    assert!(licence::link_of_key(&s.conn, stray.info.id)
+        .expect("link")
+        .is_none());
+    assert!(relay::authenticate(&s.conn, stray.token.as_str(), ApiKeyScope::InboxPush).is_ok());
+}
+
+#[test]
 fn a_customer_is_recorded_with_its_operation_and_a_revoke_with_its_own() {
     let s = setup();
     let note = Note {

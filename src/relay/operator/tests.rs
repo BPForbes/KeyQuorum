@@ -187,7 +187,7 @@ fn the_operator_lock_is_staged_shown_once_and_only_a_confirmed_lock_authorises_a
         "nothing is waiting"
     );
     // Every step is in the audit chain and under the operator's name.
-    let auth = c.store.provider_auth_events(20).expect("auth");
+    let auth = c.store.provider_auth_events(20, None).expect("auth");
     for (operation, success) in [
         ("console.bootstrap", true),
         ("console.confirm_lock", true),
@@ -298,7 +298,7 @@ fn a_change_needs_the_lock_and_an_operation_id_and_a_wrong_lock_is_recorded_and_
     assert!(c.store.list_keys().expect("keys").is_empty());
     assert_eq!(c.store.customer_count().expect("count"), 0);
 
-    let auth = c.store.provider_auth_events(10).expect("auth");
+    let auth = c.store.provider_auth_events(10, None).expect("auth");
     assert!(auth
         .iter()
         .any(|e| e.operation == "console.issue" && !e.success));
@@ -355,7 +355,7 @@ fn issuing_returns_bundles_sealed_to_the_client_and_never_a_bearer() {
     assert!(done.operation_id.is_some());
     assert!(c
         .store
-        .provider_auth_events(10)
+        .provider_auth_events(10, None)
         .expect("auth")
         .iter()
         .any(|e| e.operation == "console.issue" && e.success));
@@ -997,6 +997,78 @@ fn the_letter_view_shows_kind_size_and_customer_but_never_the_letters_contents()
     assert_eq!(row["size"], letter.len());
     assert_eq!(view["devices"]["newest"][0]["kind_name"], "device transfer");
     assert!(!view.to_string().contains("sealed-contents"));
+}
+
+#[test]
+fn the_lock_check_feed_pages_back_through_every_row_without_skipping() {
+    let c = console();
+    let lock = c.lock();
+    let (_, public) = client();
+    for _ in 0..3 {
+        c.issue(&lock, &public, &["inbox.push"]);
+    }
+    c.issue("kql_wrong", &public, &["inbox.push"]);
+    c.issue("kql_wrong_too", &public, &["inbox.push"]);
+    let all: Vec<i64> = c
+        .store
+        .provider_auth_events(500, None)
+        .expect("auth")
+        .iter()
+        .map(|e| e.id)
+        .collect();
+    assert!(all.len() > 4, "enough rows for several pages");
+
+    let mut seen_ids = Vec::new();
+    let mut before = None;
+    for _ in 0..all.len() {
+        let mut request = json!({ "op": "audit", "feed": "auth", "limit": 2 });
+        if let Some(cursor) = before {
+            request["before"] = json!(cursor);
+        }
+        let (status, page) = c.ask(request, None);
+        assert_eq!(status, 200);
+        let rows = page["rows"].as_array().expect("rows");
+        assert!(rows.len() <= 2);
+        seen_ids.extend(rows.iter().map(|r| r["id"].as_i64().expect("id")));
+        match page["next_before"].as_i64() {
+            Some(next) => before = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(seen_ids, all, "every attempt is reachable, newest first");
+}
+
+#[test]
+fn a_letter_for_a_recipient_two_customers_hold_keys_for_names_neither() {
+    let c = console();
+    let lock = c.lock();
+    let (_, public) = client();
+    for name in ["Acme Ltd", "Beta Ltd"] {
+        let (status, _) = c.change(
+            json!({
+                "op": "issue", "name": name, "terms": "Five seats.",
+                "expires_at": "2999-01-01", "scopes": ["inbox.pull"],
+                "recipient_public_key": hex::encode(public),
+                "relay_url": "https://relay.example.test",
+            }),
+            &lock,
+        );
+        assert_eq!(status, 200);
+    }
+    let letter = fake_letter(&public, crate::envelope::KIND_FILE_HISTORY, b"x");
+    c.store.inbox_push(&[], &letter, None).expect("push");
+
+    let (_, view) = c.ask(json!({ "op": "letters" }), None);
+    let row = &view["inbox"]["newest"][0];
+    assert!(row["customer"].is_null(), "no owner is picked");
+    let mut names: Vec<&str> = row["customers"]
+        .as_array()
+        .expect("customers")
+        .iter()
+        .filter_map(|n| n.as_str())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(names, ["Acme Ltd", "Beta Ltd"]);
 }
 
 #[test]

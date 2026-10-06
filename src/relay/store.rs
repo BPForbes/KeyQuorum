@@ -324,8 +324,12 @@ pub trait RelayStore: Send + Sync {
     fn find_operation(&self, operation_id: &str) -> Result<Option<OperatorAction>>;
     /// The newest `limit` operator actions, older than `before`, newest first.
     fn operator_actions(&self, limit: i64, before: Option<i64>) -> Result<Vec<OperatorAction>>;
-    /// The newest `limit` privileged-auth attempts, newest first.
-    fn provider_auth_events(&self, limit: i64) -> Result<Vec<ProviderAuthRecord>>;
+    /// The newest `limit` privileged-auth attempts below the id `before`, newest first.
+    fn provider_auth_events(
+        &self,
+        limit: i64,
+        before: Option<i64>,
+    ) -> Result<Vec<ProviderAuthRecord>>;
     /// The inbox's letters without opening them: count and newest `limit`.
     fn inbox_letters(&self, limit: i64) -> Result<(i64, Vec<LetterSummary>)>;
     /// The device mailbox's letters without opening them.
@@ -766,8 +770,12 @@ impl<S: Sql + Send> RelayStore for SqlRelayStore<S> {
         self.with(|conn| operator_log::recent(conn, limit, before))
     }
 
-    fn provider_auth_events(&self, limit: i64) -> Result<Vec<ProviderAuthRecord>> {
-        self.with(|conn| api_key::provider_auth_events(conn, limit))
+    fn provider_auth_events(
+        &self,
+        limit: i64,
+        before: Option<i64>,
+    ) -> Result<Vec<ProviderAuthRecord>> {
+        self.with(|conn| api_key::provider_auth_events(conn, limit, before))
     }
 
     fn inbox_letters(&self, limit: i64) -> Result<(i64, Vec<LetterSummary>)> {

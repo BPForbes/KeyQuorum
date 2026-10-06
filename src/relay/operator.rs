@@ -1322,15 +1322,21 @@ fn audit(store: &dyn RelayStore, feed: &str, before: Option<i64>, limit: Option<
             ok(json!({ "feed": "actions", "rows": actions, "next_before": next_before }))
         }
         "auth" => {
-            let rows: Vec<Value> = seen(store.provider_auth_events(limit))?
+            let mut rows = seen(store.provider_auth_events(limit + 1, before))?;
+            let next_before = if rows.len() as i64 > limit {
+                rows.truncate(limit as usize);
+                rows.last().map(|a| a.id)
+            } else {
+                None
+            };
+            let rows: Vec<Value> = rows
                 .iter()
-                .filter(|a| before.is_none_or(|b| a.id < b))
                 .map(|a| {
                     json!({ "id": a.id, "operation": a.operation, "success": a.success,
                             "attempted_at": a.attempted_at, "entry_hash": a.entry_hash })
                 })
                 .collect();
-            ok(json!({ "feed": "auth", "rows": rows, "next_before": null }))
+            ok(json!({ "feed": "auth", "rows": rows, "next_before": next_before }))
         }
         _ => Err(failure(&Error::InvalidApiKeyRequest)),
     }
@@ -1365,22 +1371,37 @@ fn kind_name(kind: Option<u8>) -> &'static str {
 fn letters(store: &dyn RelayStore) -> Outcome2 {
     // Name the customer a letter is for, by the key bound to its recipient.
     let directory = seen(directory(store))?;
-    let mut owners: HashMap<String, String> = HashMap::new();
+    // Two customers can hold keys sealed to one recipient key, and the letter
+    // does not say which it is for: every matching customer is kept, and the
+    // owner is named only when there is exactly one.
+    let mut owners: HashMap<String, Vec<(i64, String)>> = HashMap::new();
     for info in &directory.infos {
         if let (Some(fp), Some(customer)) =
             (&info.recipient_fingerprint, directory.customer_of(info.id))
         {
-            owners.insert(fp.clone(), customer.name.clone());
+            let entry = owners.entry(fp.clone()).or_default();
+            if !entry.iter().any(|(id, _)| *id == customer.id) {
+                entry.push((customer.id, customer.name.clone()));
+            }
         }
     }
     let view = |letters: Vec<super::LetterSummary>| -> Vec<Value> {
         letters
             .into_iter()
             .map(|l| {
+                let matching = owners.get(&l.recipient_fingerprint);
+                let customer = match matching {
+                    Some(list) if list.len() == 1 => Some(list[0].1.clone()),
+                    _ => None,
+                };
+                let customers: Vec<&String> = matching
+                    .map(|list| list.iter().map(|(_, name)| name).collect())
+                    .unwrap_or_default();
                 json!({
                     "id": l.id,
                     "recipient_fingerprint": l.recipient_fingerprint,
-                    "customer": owners.get(&l.recipient_fingerprint),
+                    "customer": customer,
+                    "customers": customers,
                     "kind": l.kind, "kind_name": kind_name(l.kind), "size": l.size,
                     "stored_at": l.created_at, "expires_at": l.expires_at,
                 })
