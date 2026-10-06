@@ -1,0 +1,32 @@
+# Terraform state and lock files
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+.terraform/
+
+# Operator configuration (NEVER COMMIT)
+terraform.tfvars
+terraform.tfvars.json
+
+# Temporary files
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+
+# Local SSH keys (if generated)
+*.pem
+*.pub
+
+# Checkpoints and binaries (if copied locally)
+checkpoints/
+*.checkpoint
+keyquorum
+
+# Crash log files
+crash.log
+crash.*.log
+
+# Build files
+*.zip

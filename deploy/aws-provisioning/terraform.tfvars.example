@@ -1,0 +1,42 @@
+# AWS Region
+aws_region = "us-east-1"
+
+# Instance type: t4g.small (~$12/mo) for pilot, m7g.medium (~$30/mo) for production
+instance_type = "t4g.small"
+
+# Volume sizes (in GiB)
+root_volume_size = 20
+data_volume_size = 20
+
+# Domain name for the relay
+relay_domain = "relay.example.com"
+
+# Operator email for CloudWatch alarms
+operator_email = "ops@example.com"
+
+# Environment tag
+environment_tag = "prod"
+
+# Enable termination protection (recommended for production)
+enable_termination_protection = true
+
+# Snapshot retention
+snapshot_retention_days_hourly = 7
+snapshot_retention_days_daily  = 90
+
+# Monitoring and alarms
+enable_monitoring              = true
+kms_key_rotation_enabled       = true
+alarm_disk_usage_threshold     = 80
+alarm_actions_enabled          = true
+
+# Allowed CIDR blocks for HTTPS (default: anywhere)
+# For production, consider restricting to your office IP or Cloudflare ranges
+inbound_cidrs = ["0.0.0.0/0"]
+
+# Additional tags for all resources
+tags = {
+  Project     = "KeyQuorum"
+  CostCenter  = "Engineering"
+  Owner       = "ops@example.com"
+}
