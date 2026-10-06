@@ -20,6 +20,7 @@ mod org_tree;
 #[cfg(feature = "provider")]
 mod server;
 pub mod service;
+pub mod sql;
 pub mod store;
 
 pub use api_key::{

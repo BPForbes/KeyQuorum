@@ -235,7 +235,7 @@ impl MemoryEnv {
     pub fn relay_key(&self, scope: relay::ApiKeyScope, fingerprint: Option<String>) -> String {
         let relay = self.relay.as_ref().expect("a relay");
         relay::create_api_key(
-            &relay.store.connection(),
+            &*relay.store.connection(),
             &relay::NewApiKey {
                 scope,
                 recipient_fingerprint: fingerprint,

@@ -84,7 +84,7 @@ fn issue_bundle(env: &mut MemoryEnv, recipient: &Recipient, path: &str) -> i64 {
     let relay = env.relay.as_ref().expect("a relay");
     let fs = &mut env.fs;
     key_delivery::create_as_bundle(
-        &relay.store.connection(),
+        &*relay.store.connection(),
         &relay.identity,
         &pull_key(),
         recipient,
@@ -122,7 +122,7 @@ fn a_first_key_loads_from_a_sealed_bundle_and_a_rotated_one_from_the_inbox() {
     // The host rotates the key: the replacement waits in alice's mailbox.
     let relay = env.relay.as_ref().expect("a relay");
     let rotated = key_delivery::rotate_as_letter(
-        &relay.store.connection(),
+        &*relay.store.connection(),
         &relay.identity,
         first,
         None,
@@ -148,7 +148,7 @@ fn a_first_key_loads_from_a_sealed_bundle_and_a_rotated_one_from_the_inbox() {
 
     // Only the new key is stored: with the old one revoked, pulls still work.
     let relay = env.relay.as_ref().expect("a relay");
-    relay::revoke_api_key(&relay.store.connection(), first).expect("revoke");
+    relay::revoke_api_key(&*relay.store.connection(), first).expect("revoke");
     run(&mut env, &format!("{ALICE} inbox"));
     let again = run(&mut env, &format!("{ALICE} inbox open"));
     assert!(
@@ -203,7 +203,7 @@ fn a_bundle_signed_by_another_authorized_relay_is_refused_before_any_bearer_is_s
     let relay = env.relay.as_ref().expect("a relay");
     let fs = &mut env.fs;
     key_delivery::create_as_bundle(
-        &relay.store.connection(),
+        &*relay.store.connection(),
         &other,
         &pull_key(),
         &hers,
@@ -254,7 +254,7 @@ fn a_bundle_sealed_to_a_key_file_loads_without_a_device_when_it_is_not_bound() {
     let relay = env.relay.as_ref().expect("a relay");
     let fs = &mut env.fs;
     let id = key_delivery::create_as_bundle(
-        &relay.store.connection(),
+        &*relay.store.connection(),
         &relay.identity,
         &NewApiKey {
             scope: ApiKeyScope::InboxPush,

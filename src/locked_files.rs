@@ -171,10 +171,13 @@ pub fn parse_expires_utc(value: &str) -> Result<String> {
 }
 
 /// Rejects a parsed UTC expiry that is not strictly after SQLite `now`.
-pub fn require_future_expires_utc(conn: &Connection, expires_at: &str) -> Result<()> {
+pub fn require_future_expires_utc(
+    conn: &dyn crate::relay::sql::Sql,
+    expires_at: &str,
+) -> Result<()> {
     let future: bool = conn.query_row(
         "SELECT datetime(?1) > datetime('now')",
-        params![expires_at],
+        crate::relay::sql::params![expires_at],
         |row| row.get(0),
     )?;
     if future {

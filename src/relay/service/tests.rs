@@ -68,7 +68,7 @@ fn scopes_and_bearers_are_enforced_in_process_too() {
     }
     // A device.pull key only sees its own fingerprint's letters.
     let device_pull = relay::create_api_key(
-        &store.connection(),
+        &*store.connection(),
         &NewApiKey {
             scope: ApiKeyScope::DevicePull,
             recipient_fingerprint: Some(fingerprint),

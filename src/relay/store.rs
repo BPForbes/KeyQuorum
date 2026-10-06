@@ -33,6 +33,7 @@ use super::key_delivery::{self, Delivered, Recipient};
 use super::mailbox::{self, MailboxPage};
 use super::org_tree;
 use super::service::ProviderIdentity;
+use super::sql::{params, Sql};
 use crate::error::Result;
 use crate::key_tree::PublicTree;
 use rusqlite::Connection;
@@ -218,16 +219,51 @@ pub trait RelayStore: Send + Sync {
     ) -> Result<Delivered>;
 }
 
-/// The relay's original backend: one owner-only SQLite file, one connection,
-/// serialized behind a mutex. Every method delegates to the module that
-/// owns the table, so this store is exactly the relay as it was before the
-/// boundary existed; it remains the reference backend and the one the
-/// tests, the browser lab and a single-node deployment use.
-pub struct SqliteRelayStore {
-    conn: Mutex<Connection>,
+/// The relay over any SQLite executor ([`Sql`]): one executor, serialized
+/// behind a mutex, every method delegating to the module that owns the table
+/// (all of them take `&dyn Sql`, none a connection). It is the one
+/// implementation of [`RelayStore`], so a backend that is SQLite underneath
+/// re-rolls no rule: it supplies an executor, and `relay::store::conformance`
+/// runs over it.
+///
+/// [`SqliteRelayStore`] is this over a `rusqlite` connection, the original
+/// owner-only SQLite file, and stays the reference backend and the one the
+/// tests, the browser lab and the native host use. The Cloudflare backend
+/// (planned) is this over a Durable Object's SQL API, whose executor opens
+/// no `BEGIN` of its own (a transaction is `transactionSync`).
+pub struct SqlRelayStore<S> {
+    sql: Mutex<S>,
+    backend: &'static str,
 }
 
-impl SqliteRelayStore {
+/// The relay's original backend: [`SqlRelayStore`] over a SQLite file or an
+/// in-memory database.
+pub type SqliteRelayStore = SqlRelayStore<Connection>;
+
+impl<S: Sql> SqlRelayStore<S> {
+    /// A store over `sql`, reporting itself as `backend`.
+    pub fn new(sql: S, backend: &'static str) -> Self {
+        Self {
+            sql: Mutex::new(sql),
+            backend,
+        }
+    }
+
+    /// The executor, under the store's lock. A poisoned lock is taken over:
+    /// the data is SQLite's, not the panicking thread's.
+    fn executor(&self) -> MutexGuard<'_, S> {
+        self.sql
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn with<T>(&self, f: impl FnOnce(&dyn Sql) -> Result<T>) -> Result<T> {
+        let sql = self.executor();
+        f(&*sql)
+    }
+}
+
+impl SqlRelayStore<Connection> {
     /// Open (creating if needed) the relay database at `path`; see
     /// [`super::open`] for what it refuses.
     pub fn open(path: &str) -> Result<Self> {
@@ -241,34 +277,24 @@ impl SqliteRelayStore {
 
     /// Wrap an already opened relay connection.
     pub fn from_connection(conn: Connection) -> Self {
-        Self {
-            conn: Mutex::new(conn),
-        }
+        Self::new(conn, "sqlite")
     }
 
     /// The connection itself, for callers that still speak SQL to the relay
-    /// database (the lab's clock, tests that inspect rows). A poisoned lock
-    /// is taken over: the data is SQLite's, not the panicking thread's.
+    /// database (the lab's clock, tests that inspect rows).
     pub fn connection(&self) -> MutexGuard<'_, Connection> {
-        self.conn
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    fn with<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-        let conn = self.connection();
-        f(&conn)
+        self.executor()
     }
 }
 
-impl RelayStore for SqliteRelayStore {
+impl<S: Sql + Send> RelayStore for SqlRelayStore<S> {
     fn backend(&self) -> &'static str {
-        "sqlite"
+        self.backend
     }
 
     fn ping(&self) -> Result<()> {
         self.with(|conn| {
-            conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?;
+            conn.query_row("SELECT 1", params![], |row| row.get::<i64>(0))?;
             Ok(())
         })
     }
@@ -278,7 +304,7 @@ impl RelayStore for SqliteRelayStore {
     }
 
     fn list_keys(&self) -> Result<Vec<ApiKeyInfo>> {
-        self.with(api_key::list)
+        self.with(|conn| api_key::list(conn))
     }
 
     fn key_info(&self, id: i64) -> Result<ApiKeyInfo> {
@@ -351,7 +377,7 @@ impl RelayStore for SqliteRelayStore {
         expires_at: Option<&str>,
     ) -> Result<StoredLetter> {
         self.with(|conn| {
-            crate::db::with_immediate_transaction(conn, || {
+            conn.with_transaction(|| {
                 if let Some(expires_at) = expires_at {
                     crate::locked_files::require_future_expires_utc(conn, expires_at)?;
                 }
@@ -373,7 +399,7 @@ impl RelayStore for SqliteRelayStore {
     }
 
     fn purge_expired_envelopes(&self) -> Result<u64> {
-        self.with(mailbox::purge_expired)
+        self.with(|conn| mailbox::purge_expired(conn))
     }
 
     fn put_public_tree(&self, tree: &PublicTree) -> Result<PublicTree> {
@@ -389,7 +415,7 @@ impl RelayStore for SqliteRelayStore {
     }
 
     fn list_public_trees(&self) -> Result<Vec<PublicTree>> {
-        self.with(org_tree::list_public_trees)
+        self.with(|conn| org_tree::list_public_trees(conn))
     }
 
     fn store_device_package(&self, package: &[u8]) -> Result<StoredLetter> {
@@ -406,7 +432,7 @@ impl RelayStore for SqliteRelayStore {
     }
 
     fn purge_expired_device_packages(&self) -> Result<u64> {
-        self.with(device_mail::purge_expired)
+        self.with(|conn| device_mail::purge_expired(conn))
     }
 
     fn put_device_descriptor(&self, descriptor: &DeviceDescriptor) -> Result<DeviceDescriptor> {

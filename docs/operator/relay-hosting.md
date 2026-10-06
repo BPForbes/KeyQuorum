@@ -475,23 +475,28 @@ can (below), and the store and adapter remain to be built.
   and the key-delivery letters need because they are written together
   (`src/relay/audit.rs`); the synchronous `RelayStore` trait fits only
   inside it, where SQL execution is synchronous.
-- **`DoRelayStore`.** A new `RelayStore` backend in `src/relay/`, generic
-  over a small `SqlExec` seam: rusqlite implements it for native tests, and
-  the Durable Object SQL API for Workers. It reuses `schema.sql` and the
-  rules every backend already shares: `audit::{entry_hash, verify_table,
-  sign_anchor, sign_checkpoint}`, `mailbox::{routing_of, bound_page}`,
-  `device_mail::check_package`, `org_tree::merge_into_existing`,
-  `device_directory`, the API-key hashing, and the `key_delivery::*_with`
-  flows through `DeliveryOps`. It re-rolls no rule. It must pass
-  `relay::store::conformance` (run against `DoRelayStore` over rusqlite in
-  `cargo test`, as `SqliteRelayStore` does today) before it is trusted. If
-  the existing modules' direct use of `rusqlite::Connection` is too wide to
-  put behind `SqlExec`, the fallback is to reimplement key lifecycle,
-  letter filing and ids over the Durable Object and reuse the pure
-  functions; stage 4 decides once it has tried the seam.
-- **Clock.** The native host's time source uses `SystemTime`, which cannot
-  run on wasm. A clock is injected and times are passed into the SQL that
-  uses `'now'` today.
+- **`DoRelayStore`.** `SqlRelayStore<S>` (`src/relay/store.rs`) over the
+  Durable Object's SQL API. The seam is built (stage 4b): every relay table
+  module (`api_key`, `audit`, `mailbox`, `device_mail`, `device_directory`,
+  `org_tree`, `key_delivery`) takes `&dyn relay::sql::Sql` and never a
+  `rusqlite::Connection`, and none opens `BEGIN` or `COMMIT` itself; a unit of
+  work is `Sql::transaction`, which nests (rusqlite: `BEGIN IMMEDIATE`; a
+  Durable Object: `transactionSync`). `Sql` carries no rule. It binds values,
+  runs a statement, streams rows (a 16 MiB inbox page is decided as rows are
+  read, by `mailbox::PageBuilder`, never collected first), reports
+  `last_insert_rowid` and `changes`, and nests a transaction; the SQL stays
+  SQLite's own. `SqliteRelayStore` is `SqlRelayStore<rusqlite::Connection>`.
+  The remaining work is the Durable Object's executor (a JavaScript-backed
+  `Sql` for wasm32, where a `Mutex` is uncontended) and the Worker around it.
+  The store re-rolls no rule, and it passes `relay::store::conformance` and
+  the concurrent-writers test twice in `cargo test`: over a `rusqlite`
+  connection, and over an executor that refuses transaction statements as a
+  Durable Object does (`store/tests.rs`, `HostTransactions`).
+- **Clock.** Times that SQL takes from `'now'` and from column defaults need
+  no change: the spike measured them to agree with `Date.now()` in a Durable
+  Object. Only times Rust takes from `SystemTime` (`provider::system_now_utc`:
+  the audit anchor's `signed_at`, which `anchor_audit` already takes as a
+  parameter, and certificate validity) need an injected clock on wasm.
 - **Admin Worker `keyquorum-relay-admin`.** Its front door exists (stage
   4a, `workers/admin/`, described under Provisioning); the relay-backed part
   is planned. Its only hostname is a custom domain behind an Access
@@ -558,7 +563,7 @@ and the table says where that matters.
 | Question | Measured | What follows |
 | --- | --- | --- |
 | The relay's schema | `src/relay/schema.sql` applied verbatim as one multi-statement `exec` on an empty Durable Object and created every relay table; `PRAGMA foreign_keys = ON` was accepted and read back | Works. A new Durable Object needs only the current schema: `migrate` (`ALTER TABLE`, the `api_keys` rebuild) only upgrades old files and nothing is deployed. Its statements (`PRAGMA table_info`, `ADD COLUMN`, `RENAME`, `DROP`) also ran, should that change. |
-| Transactions | `BEGIN IMMEDIATE` is refused with an error that points to `transactionSync`; `transactionSync` commits and returns the callback's value, rolls back when the callback throws, and nests | Works, with a design consequence: `with_immediate_transaction` cannot be used. The `SqlExec` seam needs a `transaction` method (rusqlite: `BEGIN IMMEDIATE`; Durable Object: `transactionSync`). |
+| Transactions | `BEGIN IMMEDIATE` is refused with an error that points to `transactionSync`; `transactionSync` commits and returns the callback's value, rolls back when the callback throws, and nests | Works, with a design consequence: `with_immediate_transaction` cannot be used. The `Sql` seam has a `transaction` method (rusqlite: `BEGIN IMMEDIATE`; Durable Object: `transactionSync`), built in stage 4b. |
 | SQL time | `strftime('%Y-%m-%dT%H:%M:%fZ','now')` and `datetime('now')` returned the same instant as `Date.now()`, and a column `DEFAULT` that uses it filled in | The SQL-side `'now'` needs no change. Times the Rust code takes from `SystemTime` (anchor `signed_at`, certificate validity) still need an injected clock, because `SystemTime` cannot run on wasm. |
 | Row ids and errors | `RETURNING id`, `last_insert_rowid()` and `changes()` agree; a UNIQUE or CHECK violation is a thrown exception whose message carries `SQLITE_CONSTRAINT_UNIQUE` or `SQLITE_CONSTRAINT_CHECK` | Works. The store must map exceptions to the crate's errors by that text; idempotent letter push relies on the UNIQUE (recipient, content hash) key. |
 | Write amplification | `UPDATE api_keys SET last_used_at ...` wrote one row | Every authenticated request writes a row, and Durable Object SQLite bills rows written (from memory, verify). Stage 4 decides whether `last_used_at` may be stamped at most once per interval, which changes its precision. |

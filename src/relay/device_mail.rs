@@ -5,10 +5,10 @@
 //! kind are refused here so this table never becomes a second bridge inbox
 //! and never holds an unsealed transfer package.
 
+use super::sql::{params, Sql};
 use crate::envelope::{self, routing_public_key};
 use crate::error::{Error, Result};
 use crate::keys;
-use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 
 /// Same cap as the bridge inbox. A device letter is one sealed envelope.
@@ -52,7 +52,7 @@ pub(crate) fn check_package(package: &[u8]) -> Result<(String, String)> {
     Ok((fingerprint, content_hash))
 }
 
-pub fn store(conn: &Connection, package: &[u8]) -> Result<(i64, String, bool)> {
+pub fn store(conn: &dyn Sql, package: &[u8]) -> Result<(i64, String, bool)> {
     let (fingerprint, content_hash) = check_package(package)?;
 
     purge_expired(conn)?;
@@ -60,7 +60,7 @@ pub fn store(conn: &Connection, package: &[u8]) -> Result<(i64, String, bool)> {
         "INSERT OR IGNORE INTO device_mailbox
             (recipient_fingerprint, package, content_hash, expires_at)
          VALUES (?1, ?2, ?3, datetime('now', ?4))",
-        params![fingerprint, package, content_hash, ttl_modifier()],
+        params![&fingerprint, package, &content_hash, ttl_modifier()],
     )?;
 
     if conn.changes() == 1 {
@@ -69,7 +69,7 @@ pub fn store(conn: &Connection, package: &[u8]) -> Result<(i64, String, bool)> {
         let id: i64 = conn.query_row(
             "SELECT id FROM device_mailbox
              WHERE recipient_fingerprint = ?1 AND content_hash = ?2",
-            params![fingerprint, content_hash],
+            params![&fingerprint, &content_hash],
             |row| row.get(0),
         )?;
         Ok((id, fingerprint, true))
@@ -77,7 +77,7 @@ pub fn store(conn: &Connection, package: &[u8]) -> Result<(i64, String, bool)> {
 }
 
 pub fn list_after(
-    conn: &Connection,
+    conn: &dyn Sql,
     fingerprint: &str,
     after: Option<i64>,
     limit: Option<i64>,
@@ -86,23 +86,26 @@ pub fn list_after(
     let after = after.unwrap_or(0);
     let fetch = page.saturating_add(1);
     purge_expired(conn)?;
-    let mut stmt = conn.prepare(
+    let (packages, next_after) = super::mailbox::read_page(
+        conn,
         "SELECT id, recipient_fingerprint, package
          FROM device_mailbox
          WHERE recipient_fingerprint = ?1 AND id > ?2
            AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
          ORDER BY id ASC
          LIMIT ?3",
+        params![fingerprint, after, fetch],
+        page,
+        |row| {
+            Ok(StoredDevicePackage {
+                id: row.get(0)?,
+                recipient_fingerprint: row.get(1)?,
+                bytes: row.get(2)?,
+            })
+        },
+        |item| item.id,
+        |item| item.bytes.len(),
     )?;
-    let rows = stmt.query_map(params![fingerprint, after, fetch], |row| {
-        Ok(StoredDevicePackage {
-            id: row.get(0)?,
-            recipient_fingerprint: row.get(1)?,
-            bytes: row.get(2)?,
-        })
-    })?;
-    let (packages, next_after) =
-        super::mailbox::bound_page(rows, page, |item| item.id, |item| item.bytes.len())?;
     Ok(DeviceMailPage {
         packages,
         next_after,
@@ -111,18 +114,18 @@ pub fn list_after(
 
 /// Deletes device letters whose TTL has passed. The sealed bytes live in
 /// this table, so the DELETE is what removes them from the relay database.
-pub fn purge_expired(conn: &Connection) -> Result<u64> {
+pub fn purge_expired(conn: &dyn Sql) -> Result<u64> {
     conn.execute(
         "DELETE FROM device_mailbox
          WHERE expires_at IS NOT NULL AND datetime(expires_at) <= datetime('now')",
-        [],
+        params![],
     )?;
     Ok(conn.changes())
 }
 
 /// Rows stored before device retention have no `expires_at`. Give them the
 /// same TTL, counted from when they were stored.
-pub(crate) fn backfill_expiry(conn: &Connection) -> Result<()> {
+pub(crate) fn backfill_expiry(conn: &dyn Sql) -> Result<()> {
     conn.execute(
         "UPDATE device_mailbox
          SET expires_at = datetime(created_at, ?1)

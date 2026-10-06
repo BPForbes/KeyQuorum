@@ -28,11 +28,11 @@
 //! Nothing here records or signs a bearer, a key hash or a challenge.
 
 use super::service::ProviderIdentity;
+use super::sql::{params, Sql};
 use crate::envelope::hash_len_prefixed;
 use crate::error::{Error, Result};
 use crate::provider::{self, Certificate};
 use crate::signing;
-use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -103,14 +103,13 @@ pub(crate) struct AnchorRow {
     pub signature: Vec<u8>,
 }
 
-fn read_rows(conn: &Connection, table: AuditTable, filter: &str) -> Result<Vec<Row>> {
+fn read_rows(conn: &dyn Sql, table: AuditTable, filter: &str) -> Result<Vec<Row>> {
     let n = table.field_count();
     let sql = format!("{} {filter} ORDER BY id", table.fields_sql());
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([], |row| {
+    conn.query_map(&sql, params![], |row| {
         let mut fields = Vec::with_capacity(n);
         for i in 0..n {
-            fields.push(row.get::<_, Option<String>>(i + 1)?);
+            fields.push(row.get::<Option<String>>(i + 1)?);
         }
         Ok(Row {
             id: row.get(0)?,
@@ -118,8 +117,7 @@ fn read_rows(conn: &Connection, table: AuditTable, filter: &str) -> Result<Vec<R
             prev_hash: row.get(n + 1)?,
             entry_hash: row.get(n + 2)?,
         })
-    })?;
-    rows.collect::<rusqlite::Result<_>>().map_err(Error::from)
+    })
 }
 
 /// The chain hash of one row: domain, table, the previous row's hash, then
@@ -152,17 +150,15 @@ pub(crate) fn decode_hash(hex_hash: &str) -> Option<[u8; 32]> {
 
 /// Chain the row `id` onto the row before it. Called in the same
 /// transaction as the insert, so a row is never left unchained.
-pub(crate) fn seal_row(conn: &Connection, table: AuditTable, id: i64) -> Result<()> {
-    let prev: Option<Option<String>> = conn
-        .query_row(
-            &format!(
-                "SELECT entry_hash FROM {} WHERE id < ?1 ORDER BY id DESC LIMIT 1",
-                table.name()
-            ),
-            params![id],
-            |row| row.get(0),
-        )
-        .optional()?;
+pub(crate) fn seal_row(conn: &dyn Sql, table: AuditTable, id: i64) -> Result<()> {
+    let prev: Option<Option<String>> = conn.query_opt(
+        &format!(
+            "SELECT entry_hash FROM {} WHERE id < ?1 ORDER BY id DESC LIMIT 1",
+            table.name()
+        ),
+        params![id],
+        |row| row.get(0),
+    )?;
     let prev = match prev {
         None => GENESIS,
         Some(hash) => hash
@@ -187,7 +183,7 @@ pub(crate) fn seal_row(conn: &Connection, table: AuditTable, id: i64) -> Result<
 /// Chain rows written before the chain existed, oldest first. Run by the
 /// schema migration; those rows are vouched for only from the first anchor
 /// signed after it.
-pub(crate) fn backfill(conn: &Connection) -> Result<()> {
+pub(crate) fn backfill(conn: &dyn Sql) -> Result<()> {
     for table in AuditTable::ALL {
         let exists: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -208,17 +204,15 @@ pub(crate) fn backfill(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn head(conn: &Connection, table: AuditTable) -> Result<Option<(u64, [u8; 32])>> {
-    let row: Option<(i64, Option<String>)> = conn
-        .query_row(
-            &format!(
-                "SELECT (SELECT COUNT(*) FROM {t}), entry_hash FROM {t} ORDER BY id DESC LIMIT 1",
-                t = table.name()
-            ),
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
+fn head(conn: &dyn Sql, table: AuditTable) -> Result<Option<(u64, [u8; 32])>> {
+    let row: Option<(i64, Option<String>)> = conn.query_opt(
+        &format!(
+            "SELECT (SELECT COUNT(*) FROM {t}), entry_hash FROM {t} ORDER BY id DESC LIMIT 1",
+            t = table.name()
+        ),
+        params![],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
     match row {
         None => Ok(None),
         Some((count, hash)) => {
@@ -233,21 +227,19 @@ fn head(conn: &Connection, table: AuditTable) -> Result<Option<(u64, [u8; 32])>>
 
 /// Sign each table's current chain head with the relay key, unless the
 /// newest anchor already covers it. Returns how many anchors were written.
-pub fn anchor(conn: &Connection, identity: &ProviderIdentity, signed_at: &str) -> Result<usize> {
-    crate::db::with_immediate_transaction(conn, || {
+pub fn anchor(conn: &dyn Sql, identity: &ProviderIdentity, signed_at: &str) -> Result<usize> {
+    conn.with_transaction(|| {
         let mut written = 0;
         for table in AuditTable::ALL {
             let Some((count, head_hash)) = head(conn, table)? else {
                 continue;
             };
-            let covered: Option<i64> = conn
-                .query_row(
-                    "SELECT row_count FROM audit_anchors WHERE table_name = ?1
-                     ORDER BY id DESC LIMIT 1",
-                    params![table.name()],
-                    |row| row.get(0),
-                )
-                .optional()?;
+            let covered: Option<i64> = conn.query_opt(
+                "SELECT row_count FROM audit_anchors WHERE table_name = ?1
+                 ORDER BY id DESC LIMIT 1",
+                params![table.name()],
+                |row| row.get(0),
+            )?;
             if covered == Some(count as i64) {
                 continue;
             }
@@ -261,7 +253,7 @@ pub fn anchor(conn: &Connection, identity: &ProviderIdentity, signed_at: &str) -
                     count as i64,
                     hex::encode(head_hash),
                     signed_at,
-                    identity.certificate,
+                    &identity.certificate,
                     signature.to_vec()
                 ],
             )?;
@@ -375,7 +367,7 @@ impl Checkpoint {
 /// Take a [`Checkpoint`] of every audit table now (`taken_at`), signed with
 /// the relay key, for the operator to store off the relay.
 pub fn checkpoint(
-    conn: &Connection,
+    conn: &dyn Sql,
     identity: &ProviderIdentity,
     taken_at: &str,
 ) -> Result<Checkpoint> {
@@ -497,7 +489,7 @@ fn certificate_at(
 /// it and refuse anchors that predate it but cover rows past it. A
 /// checkpoint that does not verify is an error, never ignored.
 pub fn verify(
-    conn: &Connection,
+    conn: &dyn Sql,
     root_public_key: &[u8; 32],
     revoked: &HashSet<String>,
     checkpoint: Option<&Checkpoint>,
@@ -508,12 +500,11 @@ pub fn verify(
     let mut reports = Vec::new();
     for table in AuditTable::ALL {
         let rows = read_rows(conn, table, "")?;
-        let mut stmt = conn.prepare(
+        let anchors = conn.query_map(
             "SELECT row_count, head_hash, signed_at, certificate, signature
              FROM audit_anchors WHERE table_name = ?1 ORDER BY id",
-        )?;
-        let anchors = stmt
-            .query_map(params![table.name()], |row| {
+            params![table.name()],
+            |row| {
                 Ok(AnchorRow {
                     row_count: row.get(0)?,
                     head_hash: row.get(1)?,
@@ -521,8 +512,8 @@ pub fn verify(
                     certificate: row.get(3)?,
                     signature: row.get(4)?,
                 })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+            },
+        )?;
         reports.push(verify_table(
             table,
             &rows,

@@ -1,11 +1,11 @@
 //! Public device descriptor. The relay checks the device signature and
 //! stores the document. It never stores a slot secret.
 
+use super::sql::{params, Sql};
 use crate::device;
 use crate::envelope::{self, push_len_prefixed};
 use crate::error::{Error, Result};
 use crate::signing;
-use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -58,7 +58,7 @@ pub fn verify_descriptor(descriptor: &DeviceDescriptor) -> Result<()> {
     signing::verify_signature(&verify_key, &message, &signature)
 }
 
-pub fn put(conn: &Connection, descriptor: &DeviceDescriptor) -> Result<DeviceDescriptor> {
+pub fn put(conn: &dyn Sql, descriptor: &DeviceDescriptor) -> Result<DeviceDescriptor> {
     let mut stored = descriptor.clone();
     normalize_fields(&mut stored)?;
     verify_descriptor(&stored)?;
@@ -74,20 +74,18 @@ pub fn put(conn: &Connection, descriptor: &DeviceDescriptor) -> Result<DeviceDes
          ON CONFLICT(device_id) DO UPDATE SET
             document = excluded.document,
             updated_at = excluded.updated_at",
-        params![stored.device_id, document],
+        params![&stored.device_id, &document],
     )?;
     Ok(stored)
 }
 
-pub fn get(conn: &Connection, device_id: &str) -> Result<Option<DeviceDescriptor>> {
+pub fn get(conn: &dyn Sql, device_id: &str) -> Result<Option<DeviceDescriptor>> {
     let device_id = normalize_device_id(device_id)?;
-    let document: Option<String> = conn
-        .query_row(
-            "SELECT document FROM device_directory WHERE device_id = ?1",
-            params![device_id],
-            |row| row.get(0),
-        )
-        .optional()?;
+    let document: Option<String> = conn.query_opt(
+        "SELECT document FROM device_directory WHERE device_id = ?1",
+        params![&device_id],
+        |row| row.get(0),
+    )?;
     let Some(document) = document else {
         return Ok(None);
     };
@@ -98,7 +96,7 @@ pub fn get(conn: &Connection, device_id: &str) -> Result<Option<DeviceDescriptor
 }
 
 #[cfg(test)]
-pub(crate) fn require(conn: &Connection, device_id: &str) -> Result<DeviceDescriptor> {
+pub(crate) fn require(conn: &dyn Sql, device_id: &str) -> Result<DeviceDescriptor> {
     get(conn, device_id)?.ok_or(Error::DeviceNotFound)
 }
 

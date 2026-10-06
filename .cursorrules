@@ -87,9 +87,15 @@ persistence boundary every route handler (`relay::service`), the HTTP server,
 the host `keys` commands and the browser lab speak to, drawn at the relay's
 units of work (push a letter with its trees, rotate a key with its sealed
 replacement, grace period, delivery record and audit event), never at rows.
-`SqliteRelayStore` is the original owner-only SQLite file, one connection
-behind a mutex, delegating to the modules that own each table unchanged; it
-stays the reference backend and the one tests, the lab and the native host
+`SqlRelayStore<S>` is the one `RelayStore` implementation: one `relay::sql::Sql`
+executor behind a mutex, delegating to the modules that own each table, all of
+which take `&dyn Sql` and never a `rusqlite::Connection`. `Sql` carries no
+rule (bind values, run a statement, stream rows, `transaction`, which nests);
+SQL stays SQLite's own (`'now'`, `INSERT OR IGNORE`, `ON CONFLICT`), and a
+table module never opens `BEGIN` or `COMMIT` itself, because a Durable Object
+refuses them and runs a unit of work as `transactionSync`. `SqliteRelayStore`
+is `SqlRelayStore<rusqlite::Connection>`, the original owner-only SQLite file;
+it stays the reference backend and the one tests, the lab and the native host
 use. A backend reimplements no rule: audit hashing and verification
 (`audit::entry_hash`, `verify_table`, `sign_anchor`, `sign_checkpoint`),
 letter routing (`mailbox::routing_of`, `device_mail::check_package`), tree
@@ -99,10 +105,12 @@ key-delivery flow (`key_delivery::DeliveryOps` over `create_as_bundle_with`,
 backend calls. A store refuses a personal store's tables
 (`OrganizationDatabase`) and a database written by a newer `SCHEMA_VERSION`.
 Every backend passes `relay::store::conformance` (the SQLite store on every
-`cargo test`). The planned Cloudflare backend (not implemented: a
-`DoRelayStore` behind a Durable Object, per `docs/operator/relay-hosting.md`)
-must pass the same suite and re-roll no rule that lives in `audit`, `mailbox`,
-`device_mail`, `org_tree`, `device_directory` or `key_delivery`.
+`cargo test`, and again over an executor that refuses transaction statements,
+as a Durable Object's does). The planned Cloudflare backend (not implemented:
+`SqlRelayStore` over a Durable Object's SQL API, `DoRelayStore` in
+`docs/operator/relay-hosting.md`) must pass the same suite and re-roll no rule
+that lives in `audit`, `mailbox`, `device_mail`, `org_tree`,
+`device_directory` or `key_delivery`.
 `GET /ready` answers only when the store answers (the readiness probe);
 `GET /health` is the process alone. The personal and organization SQLite
 stores never pass through `RelayStore`.
