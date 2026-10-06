@@ -6,13 +6,14 @@ cache bypass, the Access application for the admin Worker and an optional R2
 archive bucket. The plan of record is `docs/operator/relay-hosting.md`; this
 directory is an operator document, not customer-facing.
 
-Status: the Workers relay is not built yet. Stage 2 deploys a health-only stub
-(`workers/`), so this directory can be applied and checked before the relay
-exists, and stage 4a adds the admin Worker's front door (`workers/admin/`, a
-static page behind Access that only shows who is signed in). CI runs
-`terraform fmt -check` and `terraform validate` on every pull request (the
-`terraform` job of `.github/workflows/workers.yml`); nothing here has been
-applied to a real account by the repository's authors.
+Status: the public Worker and its Durable Object (`workers/`) are built and
+tested but have never been deployed, and the admin Worker's back end that would
+mint customer keys is not built, so no customer can use the relay yet. Stage 4a
+adds the admin Worker's front door (`workers/admin/`, a static page behind
+Access that only shows who is signed in). CI runs `terraform fmt -check` and
+`terraform validate` on every pull request (the `terraform` job of
+`.github/workflows/workers.yml`); nothing here has been applied to a real
+account by the repository's authors.
 
 The relay uses a separate Cloudflare domain dedicated to it (owner decision,
 2026-10-06), not bailey-forbes.com: `zone_id` and every hostname below belong to
@@ -63,16 +64,27 @@ a variable file in this directory, or an agent session.
 
 1. Create the Zero Trust organisation in the dashboard (once), and note its team
    domain.
-2. Deploy the Workers first: the `workers` workflow deploys the public Worker
-   and the admin Worker on a push to `main` (or `npx wrangler deploy --env
-   staging` from `workers/`, and `npx wrangler deploy -c admin/wrangler.toml
-   --env staging`). A custom domain names an existing Worker, so `apply` fails
-   before this. Until the Access variables below are set the admin Worker is
-   deployed unconfigured and serves nothing (503), which is the safe state.
-3. Set `operator_emails` and `admin_environments` in `terraform.tfvars`, then
-   `terraform init`, `terraform plan`, review, `terraform apply`.
-4. Set the GitHub environment variable `RELAY_URL` for each environment to the
-   hostname the plan created, so the smoke test and the environment link work.
+2. Choose the hostnames: the relay's, per environment, in `terraform.tfvars`
+   (`environments`). Set the GitHub environment variable `RELAY_URL` in each
+   environment to `https://<that hostname>` **before the first deploy**. The
+   deploy passes its host to the Worker as `ALLOWED_HOSTS`, and the Worker
+   serves that host and no other, so a Worker deployed without it serves
+   nothing (staging warns and deploys that way; production refuses to deploy).
+3. Deploy the Workers: the `workers` workflow deploys the public Worker and the
+   admin Worker on a push to `main` (or, from `workers/`, `npm run
+   build:relay-wasm` and then `npx wrangler deploy --env staging --var
+   ALLOWED_HOSTS:<host>`, and `npx wrangler deploy -c admin/wrangler.toml --env
+   staging`). A custom domain names an existing Worker, so `apply` fails before
+   this. Until the Access variables below are set the admin Worker is deployed
+   unconfigured and serves nothing (503), which is the safe state. Once the
+   public Worker exists it can be connected to Cloudflare Workers Builds for the
+   pull-request check and Previews, the way the portfolio site is
+   (`docs/operator/relay-hosting.md`, "Workers Builds and previews"); that
+   connection deploys nothing on `main` and needs nothing from this directory.
+4. Set `operator_emails` and `admin_environments` in `terraform.tfvars`, then
+   `terraform init`, `terraform plan`, review, `terraform apply`. Check that
+   `terraform output relay_urls` shows the same hostnames as `RELAY_URL`; if
+   they differ, fix `RELAY_URL` and deploy again.
 5. Set the admin Worker's Access settings as GitHub environment variables (not
    secrets) in each environment: `ACCESS_AUD` from `terraform output
    admin_access_aud` (the entry for that environment), `ACCESS_TEAM_DOMAIN`
@@ -80,8 +92,9 @@ a variable file in this directory, or an agent session.
    admin_urls` (the smoke test then requires an anonymous request to it to be a
    redirect or a refusal). Run the `workers` workflow again so the admin Worker
    is deployed with them.
-6. Set the Worker secrets (relay key, certificate, revocation list) locally with
-   `wrangler secret put`. Terraform never sees them.
+6. Set the Worker secrets (relay key and certificate) locally with `wrangler
+   secret put`, as `docs/operator/relay-deployment.md` shows. Terraform never
+   sees them.
 
 ## Things to know before applying
 

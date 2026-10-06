@@ -123,18 +123,14 @@ then a prompt; both flags at once is refused) and the provider root key
 ending removed, zeroized, and named only by path in errors.
 No container, chart or unit is shipped: production hosting is Cloudflare only
 (plan of record `docs/operator/relay-hosting.md`), and native `host serve` is
-the dev, test and reference host. `workers/` holds a health-only stub Worker
-(JavaScript), its `wrangler.toml` (production at the top level, `[env.staging]`,
-wrangler pinned by `package-lock.json`) and the `scripts/guard.mjs` and
-`scripts/smoke.mjs` scripts with their `node:test` tests. Preview URLs are on for the public Worker only (Cloudflare Workers Builds previews beside the `workers` check; the guard's `--allow-preview-urls` is passed for that one file), and a preview must be refused by the Worker before it serves the relay, since a preview version shares the production bindings and secrets. `src/relay/worker.rs` (feature `workers`, built for wasm32 by
+the dev, test and reference host. `workers/` holds the public Worker and its Durable Object (JavaScript around the WebAssembly relay core: `src/worker.js`, `policy.js`, `relay-service.js`, `relay-object.js`), its `wrangler.toml` (production at the top level, `[env.staging]`, wrangler pinned by `package-lock.json`, `sharp` overridden to a fixed version) and the `scripts/guard.mjs`, `scripts/smoke.mjs` and `scripts/relay-host.mjs` scripts with their `node:test` tests. Preview URLs are on for the public Worker only (the guard's `--allow-preview-urls` is passed for that one file) and serve Worker Previews: what Cloudflare Workers Builds runs for a branch (`npm run preview`, that is `wrangler preview`, with the `[previews]` tables a Preview starts with, since it inherits no production setting) once the owner connects the repository to the Worker, the way the portfolio site is connected (`docs/operator/relay-hosting.md`, "Workers Builds and previews": root directory `workers`, build command `npm run builds:build` (a pinned, hash-checked Rust toolchain, then the WebAssembly build), `main` deploy command `npm run check` so that `workers.yml` stays the only deployer, `.node-version` 22). A Preview inherits no production setting, secret or Durable Object namespace; `wrangler versions upload`, whose version would share them, is never the preview command; `preview_urls = true` also makes the URL of every `wrangler deploy` version public (Cloudflare Version URLs, which use the version's own bindings and secrets), so the Worker serves only the hosts in its non-secret `ALLOWED_HOSTS` (set at deploy from the environment's `RELAY_URL`) and answers 404 on any other, a Version URL included, and only `[previews.vars]` may set it to `*` (the guard enforces both); and the guard checks a `previews` block's vars like `[vars]`. The relay's sites are independent of the Lab and the portfolio: the Lab's relay is `relay::service::dispatch` in process at a name that is never served (`relay.keyquorum.lab`), no relay Worker sets a CORS header, and both refuse another website's browser request (`workers/src/browser-isolation.js`: `Sec-Fetch-Site` cross-site or same-site and a foreign or `null` `Origin` are 403, the admin Worker alone letting a top-level link through, which Access's sign-in redirect needs, to its token check), and every answer carries `Cross-Origin-Resource-Policy: same-origin`, `X-Frame-Options: DENY` and `Cross-Origin-Opener-Policy: same-origin`; neither the Lab nor the portfolio may name a relay host. `src/relay/worker.rs` (feature `workers`, built for wasm32 by
 `workers/scripts/build-relay-wasm.mjs` into the git-ignored `workers/relay-wasm/`, and
 refused together with `provider` or `lab` by `build.rs` and `lib.rs`) is the relay core
 for a Durable Object: `RelayCore` is `SqlRelayStore` over `worker::do_sql::DoSql`, the
 Durable Object's SQL reached through `workers/src/sql-adapter.js` (a cursor per query,
 `transactionSync` per unit of work), running `relay::service::dispatch`. It reads no
 clock (the Worker passes the time in as text), has no mint or rotate route, and holds the
-relay key and certificate only as the bytes the Worker's secrets give it; the Worker
-around it is not built yet. `workers/test/` runs the built module over a Durable
+relay key and certificate only as the bytes the Worker's secrets give it; the public Worker and the Durable Object class around it are built (`workers/src/`) and never deployed. `workers/test/` runs the built module over a Durable
 Object-shaped storage on Node's SQLite. `workers/admin/` is
 the admin Worker's front door: a static operator page (`public/`, no inline
 code, no outside origin) served by the Worker on its own hostname behind a
@@ -159,12 +155,7 @@ environment from `main` (production is a manual run into
 `cloudflare-production`) and gates everything behind the one stable check
 `workers`; it uses no third-party deploy action, and the only Cloudflare
 credential in GitHub is the Workers-deploy token and account id per
-environment. The relay itself (a public Worker and one SQLite-backed Durable
-Object running `relay::service::dispatch`, the relay-backed operator pages and
-routes behind the admin Worker's Access check, and minting) is planned and not
-implemented. The relay key,
-certificate and revocation list are Worker secrets the operator sets with
-`wrangler secret put`, never GitHub secrets; the `kql_` lock and the provider
+environment. The relay-backed operator pages and routes behind the admin Worker's Access check, and minting are planned and not implemented, so no customer key can yet be minted on the Cloudflare relay. The relay key and certificate (`RELAY_PRIVATE_KEY`, `RELAY_CERTIFICATE`) are Worker secrets the operator sets with `wrangler secret put`, never GitHub secrets; the `kql_` lock and the provider
 root key never go on a Worker. `docs/operator/relay-deployment.md` is the operator runbook
 (secrets, certificates, bootstrap, rotation, the dev host) and
 `docs/operator/relay-secrets.md` the secret classification; neither is

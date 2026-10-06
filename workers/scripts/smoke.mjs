@@ -3,17 +3,23 @@
 //
 //   node scripts/smoke.mjs https://relay.example.com
 //
-// It proves three things about what a deploy exposed: /health answers and is
-// never cacheable, the public hostname has no operator or mint route (those
-// belong to the Access-protected admin Worker only), and an unauthenticated
-// customer route does not answer with success. It reads nothing secret and
-// sends no credential.
+// It proves what a deploy exposed: /health answers and is never cacheable, the
+// Durable Object answers readiness, the status page carries its locked-down
+// policy, the public hostname has no operator, documentation or mint route
+// (those belong to the Access-protected admin Worker only), an unauthenticated
+// customer route is 401, and the provider challenge either answers with an
+// identity or says the relay has none yet. It reads nothing secret and sends
+// no credential.
 import { fileURLToPath } from "node:url";
 
 const OPERATOR_ROUTES = [
   ["GET", "/api-keys"],
   ["POST", "/api-keys"],
   ["POST", "/api-keys/smoke-check/revoke"],
+  ["GET", "/audit"],
+  ["GET", "/audit/keys"],
+  ["GET", "/swagger-ui/"],
+  ["GET", "/api-docs/openapi.json"],
   ["POST", "/keys"],
   ["POST", "/keys/create"],
   ["POST", "/keys/rotate"],
@@ -22,34 +28,65 @@ const OPERATOR_ROUTES = [
 export async function runSmoke(baseUrl, { fetchImpl = fetch, attempts = 1, delayMs = 0 } = {}) {
   const base = baseUrl.replace(/\/+$/, "");
   const problems = [];
-  const call = (method, path) =>
+  const call = (method, path, init = {}) =>
     fetchImpl(`${base}${path}`, {
       method,
       redirect: "manual",
       signal: AbortSignal.timeout(15_000),
+      ...init,
     });
 
-  let health = null;
-  let healthError = null;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      health = await call("GET", "/health");
-      if (health.status === 200) break;
-    } catch (error) {
-      healthError = error;
+  // A fresh deploy takes a moment to answer; retry until it does.
+  async function until(path, accept) {
+    let response = null;
+    let failure = null;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        response = await call("GET", path);
+        if (accept(response)) break;
+      } catch (error) {
+        failure = error;
+      }
+      if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
-    if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    return { response, failure };
   }
-  if (!health) {
-    return [`GET /health did not answer: ${healthError?.name ?? "no response"}`];
+
+  const health = await until("/health", (response) => response.status === 200);
+  if (!health.response) {
+    return [`GET /health did not answer: ${health.failure?.name ?? "no response"}`];
   }
-  if (health.status !== 200) {
-    problems.push(`GET /health answered ${health.status}, expected 200`);
+  if (health.response.status !== 200) {
+    problems.push(`GET /health answered ${health.response.status}, expected 200`);
   } else {
-    const body = await health.json().catch(() => null);
+    const body = await health.response.json().catch(() => null);
     if (body?.status !== "ok") problems.push('GET /health body is not {"status":"ok"}');
-    if (!(health.headers.get("cache-control") ?? "").includes("no-store")) {
+    if (!(health.response.headers.get("cache-control") ?? "").includes("no-store")) {
       problems.push("GET /health is missing Cache-Control: no-store");
+    }
+  }
+
+  // The Durable Object: readiness is the relay's store answering.
+  const ready = await until("/ready", (response) => response.status === 200);
+  if (!ready.response) {
+    problems.push(`GET /ready did not answer: ${ready.failure?.name ?? "no response"}`);
+  } else if (ready.response.status !== 200) {
+    problems.push(`GET /ready answered ${ready.response.status}, expected 200 (the relay's store is not answering)`);
+  } else {
+    const body = await ready.response.json().catch(() => null);
+    if (body?.status !== "ready") problems.push('GET /ready body is not {"status":"ready"}');
+  }
+
+  const page = await call("GET", "/");
+  if (page.status !== 200 || !(page.headers.get("content-type") ?? "").includes("text/html")) {
+    problems.push(`GET / answered ${page.status}, expected the status page`);
+  } else {
+    const policy = page.headers.get("content-security-policy") ?? "";
+    if (!policy.includes("default-src 'none'") || /unsafe-|\*/.test(policy)) {
+      problems.push("GET / is missing its locked-down content security policy");
+    }
+    if (!(page.headers.get("cache-control") ?? "").includes("no-store")) {
+      problems.push("GET / is missing Cache-Control: no-store");
     }
   }
 
@@ -61,8 +98,28 @@ export async function runSmoke(baseUrl, { fetchImpl = fetch, attempts = 1, delay
   }
 
   const inbox = await call("GET", "/inbox");
-  if (inbox.status !== 401 && inbox.status !== 404) {
-    problems.push(`unauthenticated GET /inbox answered ${inbox.status}, expected 401 (or 404 before the relay exists)`);
+  if (inbox.status !== 401) {
+    problems.push(`unauthenticated GET /inbox answered ${inbox.status}, expected 401`);
+  }
+  if (!(inbox.headers.get("cache-control") ?? "").includes("no-store")) {
+    problems.push("GET /inbox is missing Cache-Control: no-store");
+  }
+
+  // The provider challenge: a relay with its identity answers 200 with a
+  // certificate and signature; one without says so with 503. Anything else is
+  // a relay that is broken, not merely unconfigured.
+  const challenge = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
+  const identity = await call("POST", "/provider-identity", {
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ challenge }),
+  });
+  if (identity.status === 200) {
+    const body = await identity.json().catch(() => null);
+    if (typeof body?.certificate !== "string" || typeof body?.signature !== "string") {
+      problems.push("POST /provider-identity answered 200 without a certificate and signature");
+    }
+  } else if (identity.status !== 503) {
+    problems.push(`POST /provider-identity answered ${identity.status}, expected 200 or 503`);
   }
   return problems;
 }

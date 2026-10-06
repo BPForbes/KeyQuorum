@@ -130,3 +130,35 @@ test("the static page keeps to the CSP: no inline code, no outside origin, no in
     }
   }
 });
+
+test("a fetch, frame or form from another site is refused before the token is looked at", async () => {
+  const assets = assetsStub();
+  let verified = 0;
+  const verify = async () => (verified++, { ok: true, claims: { email: "operator@example.com", exp: 1_900_000_000 } });
+  const env = { ...ENV, ASSETS: assets };
+  for (const headers of [
+    { "sec-fetch-site": "cross-site", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" },
+    { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe" },
+    { origin: "https://bailey-forbes.com" },
+  ]) {
+    const response = await handle(get("/api/whoami", { headers }), env, { verify });
+    assert.equal(response.status, 403, JSON.stringify(headers));
+    assert.deepEqual(await response.json(), { error: "cross-site requests are not served" });
+    assert.equal(response.headers.get("x-frame-options"), "DENY");
+    assert.equal(response.headers.get("access-control-allow-origin"), null);
+  }
+  assert.equal(verified, 0);
+  assert.equal(assets.calls.length, 0);
+});
+
+test("a top-level link (the Access sign-in redirect) reaches the token check, which still decides", async () => {
+  const link = { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
+  const env = { ...ENV, ASSETS: assetsStub() };
+  const signedIn = await handle(get("/", { headers: link }), env, { verify: allow() });
+  assert.equal(signedIn.status, 200);
+  assert.equal(signedIn.headers.get("x-frame-options"), "DENY");
+  assert.equal(signedIn.headers.get("cross-origin-opener-policy"), "same-origin");
+  assert.equal(signedIn.headers.get("cross-origin-resource-policy"), "same-origin");
+  const anonymous = await handle(get("/", { headers: link }), env, { verify: refuse("no token") });
+  assert.equal(anonymous.status, 403);
+});

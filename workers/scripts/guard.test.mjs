@@ -40,6 +40,57 @@ test("a secret-like name in an environment's vars or an inline table is refused"
   assert.match(problems[0], /API_TOKEN/);
 });
 
+test("a secret-like name in a previews block is refused, at the top level and in an environment", () => {
+  for (const table of ["previews.vars", "env.staging.previews.vars"]) {
+    const problems = checkConfig("wrangler.toml", `${CLEAN}\n[${table}]\nRELAY_KEY = "x"\nREGION = "eu"\n`);
+    assert.equal(problems.length, 1);
+    assert.match(problems[0], /RELAY_KEY/);
+  }
+  const inline = `${CLEAN}\npreviews = { vars = { PROVIDER_CERT = "x" } }\n`;
+  const problems = checkConfig("wrangler.toml", inline);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /PROVIDER_CERT/);
+});
+
+test("an empty previews block and harmless previews vars are allowed", () => {
+  assert.deepEqual(checkConfig("wrangler.toml", `${CLEAN}\npreviews = { }\n`), []);
+  assert.deepEqual(checkConfig("wrangler.toml", `${CLEAN}\n[previews.vars]\nREGION = "eu"\n`), []);
+});
+
+test("a wildcard ALLOWED_HOSTS is refused everywhere but [previews.vars]", () => {
+  for (const table of ["vars", "env.staging.vars", "env.staging.previews.vars"]) {
+    const problems = checkConfig("wrangler.toml", `${CLEAN}\n[${table}]\nALLOWED_HOSTS = "*"\n`);
+    assert.equal(problems.length, 1, table);
+    assert.match(problems[0], /ALLOWED_HOSTS/);
+    assert.ok(problems[0].includes(`[${table}]`), "the problem names the table");
+  }
+  for (const value of ["relay.example.com,*", "*.example.com", "'*'"]) {
+    const quoted = value.startsWith("'") ? value : `"${value}"`;
+    assert.equal(checkConfig("wrangler.toml", `${CLEAN}\n[vars]\nALLOWED_HOSTS = ${quoted}\n`).length, 1, value);
+  }
+  const inline = checkConfig("wrangler.toml", `${CLEAN}\nvars = { ALLOWED_HOSTS = "*" }\n`);
+  assert.equal(inline.length, 1);
+  assert.match(inline[0], /inline vars table/);
+});
+
+test("ALLOWED_HOSTS may be a wildcard in [previews.vars] and a hostname or empty anywhere", () => {
+  assert.deepEqual(checkConfig("wrangler.toml", `${CLEAN}\n[previews.vars]\nALLOWED_HOSTS = "*"\n`), []);
+  for (const table of ["vars", "env.staging.vars", "previews.vars"]) {
+    for (const value of ["", "relay.example.com", "relay.example.com,relay-staging.example.com"]) {
+      assert.deepEqual(checkConfig("wrangler.toml", `${CLEAN}\n[${table}]\nALLOWED_HOSTS = "${value}"\n`), [], `${table} ${value}`);
+    }
+  }
+});
+
+test("the real configuration passes, and its production Worker serves no wildcard", async () => {
+  const { readFileSync } = await import("node:fs");
+  const text = readFileSync(new URL("../wrangler.toml", import.meta.url), "utf8");
+  assert.deepEqual(checkConfig("wrangler.toml", text, { allowPreviewUrls: true }), []);
+  assert.match(text, /\[previews\.vars\]\s*\nALLOWED_HOSTS = "\*"/);
+  assert.match(text, /\n\[vars\]\s*\nALLOWED_HOSTS = ""/);
+  assert.match(text, /\[env\.staging\.vars\]\s*\nALLOWED_HOSTS = ""/);
+});
+
 test("a harmless [vars] name is allowed", () => {
   assert.deepEqual(checkConfig("wrangler.toml", `${CLEAN}\n[vars]\nREGION = "eu"\n`), []);
 });

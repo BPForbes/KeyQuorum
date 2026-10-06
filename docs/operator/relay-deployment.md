@@ -6,25 +6,28 @@ whoever runs the relay, not for customers; customers get a URL and a sealed
 describes.
 
 **Hosting status.** Cloudflare is the sole production hosting provider for
-the relay. The relay that runs on Cloudflare (a Worker plus one SQLite-backed
-Durable Object running `relay::service::dispatch`, with an admin Worker behind
-Cloudflare Access) is **planned and not yet implemented**; the plan of record
-is `relay-hosting.md` next to this file. Nothing in this repository deploys a
-relay to Cloudflare yet, and this runbook does not describe a running
-production deployment. What exists (stage 2) is the pipeline around a
-health-only stub Worker: `workers/`, the `workers` workflow
-(`.github/workflows/workers.yml`) and the Terraform in
-`deploy/cloudflare/terraform/`. Stage 4a adds the admin Worker's front door
-(`workers/admin/`): static operator page files on its own hostname, which sits
-behind a Cloudflare Access application with MFA (Terraform,
+the relay. The relay that runs on Cloudflare is a public Worker and one
+SQLite-backed Durable Object running `relay::service::dispatch`, with an admin
+Worker behind Cloudflare Access; the plan of record is `relay-hosting.md` next
+to this file. **The public Worker and its Durable Object are built and tested
+(`workers/`), and have never been deployed.** Nothing yet lets a customer use
+one: the relay has no route that mints a customer API key, by design, and the
+admin Worker's back end that would mint one (stage 4d) is not built, so a
+deployed relay answers every customer route with 401. This runbook therefore
+does not describe a running production deployment. What is in the repository:
+`workers/` (the Worker, the Durable Object, the guard and smoke scripts and
+their tests), the `workers` workflow (`.github/workflows/workers.yml`) and the
+Terraform in `deploy/cloudflare/terraform/`. Stage 4a adds the admin Worker's
+front door (`workers/admin/`): static operator page files on its own hostname,
+which sits behind a Cloudflare Access application with MFA (Terraform,
 `admin_environments`); no route bypasses Access, and the Worker verifies
 Access's token itself. It only shows who is signed in, it is not connected to a
 relay, and it has never been deployed or configured on a real account. The
-relay uses its own dedicated Cloudflare domain, not the portfolio's. CI's `terraform validate` accepts the
-Terraform, but the authors never planned or applied it against a real account,
-and the owner's GitHub and Cloudflare setup (environments, secrets,
-`RELAY_URL`, the `workers` required check, account, zone, domain) is not done.
-No deployment has run.
+relay uses its own dedicated Cloudflare domain, not the portfolio's. CI's
+`terraform validate` accepts the Terraform, but the authors never planned or
+applied it against a real account, and the owner's GitHub and Cloudflare setup
+(environments, secrets, `RELAY_URL`, the `workers` required check, account,
+zone, domain) is not done. No deployment has run.
 
 What exists today is the native host, `keyquorum host serve` (feature
 `provider`), backed by `SqliteRelayStore`, the relay's own owner-only SQLite
@@ -33,7 +36,7 @@ or behind a TLS proxy you run yourself. It is not a supported production
 deployment path, and this repository ships no unit file, container image,
 chart or proxy configuration for it. The certificate ceremony, the host
 `keys` commands, rotation, revocation, audit verification, checkpoints and
-incident recovery below apply to it, and are the same controls the planned
+incident recovery below apply to it, and are the same controls the
 Cloudflare relay is meant to keep.
 
 Read `relay-secrets.md` next to this file first: it says which artifact is
@@ -59,7 +62,7 @@ KeyQuorum keeps two kinds of state, and this runbook never mixes them:
 
 Sealed KeyQuorum artifacts (`KQPB` letters, `KQXB` bundles such as
 `.kqkey`) are how secrets move between principals; a credential file (for the
-native host) or a Worker secret (planned, see `relay-hosting.md`) is how the
+native host) or a Worker secret (see "Secret provisioning" below) is how the
 relay process gets its own key; and the provider root never leaves the
 offline machine. Keep those three mechanisms apart.
 
@@ -170,11 +173,29 @@ only), customer bearers (the relay stores hashes; bearers travel sealed),
 and the `kql_…` operator lock (only host `keys create|rotate` need it, run
 by an operator, not by the service).
 
-**Planned Cloudflare relay (not yet implemented).** The plan of record
-(`relay-hosting.md`) has the operator set the relay key, `provider.kqcert`
-and `provider.kqrl` as Worker secrets with `wrangler secret put`, never as
-GitHub secrets, and keeps the `kql_` operator lock and the provider-root
-private key off any Worker. Treat that as a plan until the code exists.
+**Cloudflare relay (built, not deployed).** The relay key and
+`provider.kqcert` are Worker secrets, never GitHub secrets, set by the
+operator on the machine that holds them; the `kql_` operator lock and the
+provider-root private key stay off any Worker. In `workers/`:
+
+```sh
+# the relay key, exactly as `host identity generate --private-key-out` wrote it
+# (a hex dump of 32 bytes; its base64 is accepted too)
+npx wrangler secret put RELAY_PRIVATE_KEY < relay.key
+# the certificate the offline root issued for that key (binary, so base64)
+base64 < provider.kqcert | tr -d '\n' | npx wrangler secret put RELAY_CERTIFICATE
+# add --env staging for the staging Worker; each environment has its own secrets
+```
+
+Both are needed together: with only one, or an unreadable value, the relay
+fails closed with 503 `relay identity misconfigured` and never repeats the
+value; with neither it answers its routes but refuses the provider challenge,
+so no official client trusts it. A Worker secret survives a deploy and cannot
+be read back, so rotating one means putting a new value. The relay's hostname
+is not a secret: it is the non-secret variable `ALLOWED_HOSTS`, which the
+deploy jobs set from the GitHub environment's `RELAY_URL`; the Worker serves
+that host and no other (`relay-hosting.md`, "Workers Builds and previews").
+`provider.kqrl` is not read by the Worker, which takes no revocation list yet.
 
 ## State
 
@@ -203,10 +224,10 @@ but cannot forge anchors without the relay key, so keep the newest checkpoint
 off the relay (below).
 
 The `RelayStore` boundary is deliberately narrow, so that another backend can
-be added without touching a rule. The planned Cloudflare relay is meant to be
+be added without touching a rule. The Cloudflare relay is meant to be
 such a backend (a SQLite-backed Durable Object) behind the same
-`relay::service::dispatch`; it is described in `relay-hosting.md` and is not
-implemented here.
+`relay::service::dispatch`; it is built (`workers/`, `src/relay/worker.rs`) and
+described in `relay-hosting.md`, and has never run on a Cloudflare account.
 
 ## TLS
 
@@ -244,7 +265,7 @@ challenge. `host serve` ends gracefully on SIGINT or SIGTERM.
 
 ## Before opening a relay to customers
 
-These apply to any host, native or the planned Cloudflare relay. What an
+These apply to any host, native or the Cloudflare relay. What an
 operator must settle for the deployment is below. None of it is a feature a
 hosting vendor supplies on its own.
 
@@ -271,8 +292,10 @@ hosting vendor supplies on its own.
   that. The relay admits `DEFAULT_STORE_CONCURRENCY` (64) store calls at once.
   Size the host's memory for concurrent readers and their response
   serialization, and watch actual memory use under load to confirm capacity.
-  The planned Cloudflare relay runs under the platform's own memory limits;
-  size it against `relay-hosting.md` once it exists.
+  The Cloudflare relay runs under the platform's own memory limits and bounds
+  what its Durable Object takes at once (`MAX_IN_FLIGHT`, 32, refused past that
+  with 503); a 16 MiB page against the isolate's memory is a production-only
+  check (`relay-hosting.md`).
 - **Licence statements are signed text.** `KeyIssue.licence` is carried and
   signed; the relay does not meter seats, suspend by subscription or
   enforce features. Revoking or letting a key expire is the control.
@@ -362,11 +385,14 @@ Customers never see a bearer (issue #86):
    the old key at once. The customer's next `keyquorum inbox open` loads the
    letter.
 
-For the planned Cloudflare relay, minting and rotation are meant to go
-through an admin Worker behind Cloudflare Access, never over the public
-Worker and never by a customer (`relay-hosting.md`). The admin Worker's front
-door exists (it checks Access's token itself and answers every `/api` route but
-`/api/whoami` with 503); the minting and rotation routes are not implemented.
+For the Cloudflare relay, minting and rotation are meant to go through an
+admin Worker behind Cloudflare Access, never over the public Worker and never
+by a customer (`relay-hosting.md`); the public Worker routes none of them (an
+allowlist, tested). The admin Worker's front door exists (it checks Access's
+token itself and answers every `/api` route but `/api/whoami` with 503); **the
+minting and rotation routes are not implemented, so on the Cloudflare relay
+there is as yet no way to issue a customer a key.** On the native host,
+`host keys create` and `rotate` below are the working path.
 
 Do not copy plaintext `kq_…` bearers between people. The unsealed path
 (`keys create` without `--recipient-key`, which prints the bearer once) is

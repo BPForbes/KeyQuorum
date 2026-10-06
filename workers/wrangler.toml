@@ -1,31 +1,88 @@
 # Cloudflare Worker for the KeyQuorum relay (production is the top level,
-# staging is [env.staging], deployed as keyquorum-relay-staging).
+# staging is [env.staging], deployed as keyquorum-relay-staging): the public
+# Worker in src/worker.js and the one SQLite-backed Durable Object in
+# src/relay-object.js that runs the relay core (relay-wasm/, built from the
+# crate's `workers` feature by `npm run build:relay-wasm`; see
+# docs/operator/relay-hosting.md).
 #
-# Stage 2 ships a health-only stub so the deployment check can be proven
-# before the relay exists; see docs/operator/relay-hosting.md.
-#
-# Nothing secret belongs in this file. The relay key, provider.kqcert and
-# provider.kqrl are Worker secrets the operator sets with `wrangler secret
-# put`, never a [vars] entry and never a GitHub secret. scripts/guard.mjs
-# fails CI if this file or the built bundle holds key material, a secret-like
-# [vars] name, or a Durable Object migration that deletes or renames a class
-# (which destroys its data).
+# Nothing secret belongs in this file. The relay key (RELAY_PRIVATE_KEY, the file
+# `host identity generate` writes) and provider.kqcert (RELAY_CERTIFICATE,
+# base64) are Worker secrets the operator sets with `wrangler secret put` (see
+# docs/operator/relay-deployment.md), never a [vars] entry and never a GitHub
+# secret. scripts/guard.mjs fails CI if this file or the built bundle holds key
+# material, a secret-like [vars] or [previews.vars] name, a wildcard
+# ALLOWED_HOSTS outside [previews.vars], or a Durable Object migration that
+# deletes or renames a class (which destroys its data).
 #
 # There is deliberately no route here: the hostname is a Worker custom
 # domain managed in deploy/cloudflare/terraform, and workers.dev stays off so
 # one hostname carries the relay's identity. Preview URLs are on for this
-# Worker only (Cloudflare Workers Builds previews, owner decision 2026-10-06):
-# the stub holds no secrets and no data, and the guard accepts it only for this
-# file. Before this Worker serves the relay, a preview must be refused (a host
-# check in src/index.js) or bind a throwaway Durable Object, because a preview
-# version shares the production bindings and secrets. The admin Worker never
-# gets previews: its hostname sits behind Access and a preview hostname does not.
+# Worker only (owner decision 2026-10-06), and the guard accepts that only for
+# this file. `preview_urls` also makes the URL of every `wrangler deploy`
+# version public, and such a version shares this Worker's bindings and secrets,
+# so the Worker serves only the hosts in ALLOWED_HOSTS (the deploy job sets it
+# to the custom domain, from the GitHub environment's RELAY_URL) and answers 404
+# on any other, a Version URL included. Empty, it is unconfigured and serves
+# nothing (503). A Worker Preview (what Cloudflare Workers Builds runs for a
+# branch, `npm run preview`) takes nothing from production: it has its own code,
+# its own empty Durable Object namespace and only the secrets set for Previews
+# (none), so [previews.vars] may serve any host ("*"), and only there. The admin
+# Worker never gets previews: its hostname sits behind Access and a preview
+# hostname does not.
 name = "keyquorum-relay"
 main = "src/index.js"
 compatibility_date = "2025-09-01"
 workers_dev = false
 preview_urls = true
 
+# The relay: one Durable Object holds all of it, because the audit hash chain,
+# the key tables and the key-delivery letters are written together.
+[[durable_objects.bindings]]
+name = "RELAY"
+class_name = "RelayObject"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RelayObject"]
+
+# Per-client limit on customer routes, keyed on CF-Connecting-IP in the Worker,
+# beside the zone's rate-limit rule (deploy/cloudflare/terraform/rules.tf). Not
+# inherited by an environment, so staging repeats it. A namespace_id is an
+# account-wide number: use one no other Worker in the account uses. The Worker
+# runs without the binding if it is missing.
+[[ratelimits]]
+name = "RATE_LIMITER"
+namespace_id = "4701"
+simple = { limit = 300, period = 60 }
+
+# Not secret: the hostname(s) this Worker answers, filled by the deploy job.
+[vars]
+ALLOWED_HOSTS = ""
+
+# What a Worker Preview starts with (it does not inherit the settings above).
+[previews.vars]
+ALLOWED_HOSTS = "*"
+
+[[previews.durable_objects.bindings]]
+name = "RELAY"
+class_name = "RelayObject"
+
 [env.staging]
 workers_dev = false
 preview_urls = true
+
+[[env.staging.durable_objects.bindings]]
+name = "RELAY"
+class_name = "RelayObject"
+
+[[env.staging.migrations]]
+tag = "v1"
+new_sqlite_classes = ["RelayObject"]
+
+[[env.staging.ratelimits]]
+name = "RATE_LIMITER"
+namespace_id = "4702"
+simple = { limit = 300, period = 60 }
+
+[env.staging.vars]
+ALLOWED_HOSTS = ""
