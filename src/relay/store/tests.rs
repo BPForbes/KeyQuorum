@@ -90,11 +90,11 @@ impl Sql for HostTransactions {
         Sql::query_each(&self.conn, sql, params, each)
     }
 
-    fn last_insert_rowid(&self) -> i64 {
+    fn last_insert_rowid(&self) -> Result<i64> {
         Sql::last_insert_rowid(&self.conn)
     }
 
-    fn changes(&self) -> u64 {
+    fn changes(&self) -> Result<u64> {
         Sql::changes(&self.conn)
     }
 

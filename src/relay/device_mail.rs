@@ -63,8 +63,8 @@ pub fn store(conn: &dyn Sql, package: &[u8]) -> Result<(i64, String, bool)> {
         params![&fingerprint, package, &content_hash, ttl_modifier()],
     )?;
 
-    if conn.changes() == 1 {
-        Ok((conn.last_insert_rowid(), fingerprint, false))
+    if conn.changes()? == 1 {
+        Ok((conn.last_insert_rowid()?, fingerprint, false))
     } else {
         let id: i64 = conn.query_row(
             "SELECT id FROM device_mailbox
@@ -120,7 +120,7 @@ pub fn purge_expired(conn: &dyn Sql) -> Result<u64> {
          WHERE expires_at IS NOT NULL AND datetime(expires_at) <= datetime('now')",
         params![],
     )?;
-    Ok(conn.changes())
+    conn.changes()
 }
 
 /// Rows stored before device retention have no `expires_at`. Give them the

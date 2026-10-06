@@ -1295,6 +1295,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "hmac",
+ "js-sys",
  "libc",
  "rand 0.10.3",
  "rand_core 0.6.4",

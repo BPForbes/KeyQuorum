@@ -181,6 +181,21 @@ These are stated so an auditor need not discover them:
 
 ## Audit log
 
+### 2026-10-06 (sixth pass): the relay core as WebAssembly for a Durable Object, stage 4c part 1 (#88)
+
+`src/relay/worker.rs` (feature `workers`) builds the relay core for wasm32: `RelayCore` is `SqlRelayStore` over `DoSql`, the Durable Object's SQL API reached through `workers/src/sql-adapter.js`, running `relay::service::dispatch`. Nothing is deployed and no Worker serves it yet (the public Worker and the Durable Object class are the next step).
+
+| Severity | Criterion | Finding | Fix |
+| --- | --- | --- | --- |
+| high | CC6.1, CC6.8 | A wasm32 relay build that also carried `provider` (the mailbox host) or `lab` would put host code in the public Worker. | `build.rs` and `lib.rs` refuse `workers` with either on wasm32; `workers.yml` (`workers build`) builds both combinations and fails unless the refusal's text appears. A native `--all-features` build still combines them, as it does for `lab`. |
+| high | PI1.2 | A Durable Object's `transactionSync` commits when its callback returns, so a unit of work that failed after writing could commit. | `DoSql::transaction` runs the unit inside the adapter's `transaction`, which throws to roll back when the unit reports failure and rethrows any other error; nested units join the outer one. `test/sql-adapter.test.mjs` (rollback of two writes, rethrow, refusal of a caller's own `BEGIN`) and `test/relay-core.test.mjs` (a revocation commits its audit row and chains it in the same transaction) run the built module over real SQLite. |
+| major | PI1.2 | `changes()` and `last_insert_rowid()` decide whether a letter is new or a repeat; a failed read must not read as 0. | Both now return `Result` on the `Sql` trait; `DoSql` asks SQLite (`SELECT changes()`), because a Durable Object's cursor reports rows written, indexes included. |
+| major | CC6.6 | The core could be handed any method, URL or body. | `map_request` accepts `GET`, `POST`, `PUT` and `DELETE`, parses the URL, caps the body at 2 MiB and maps content types to the router's literals; tested natively (`relay/worker/tests.rs`) and through the module. |
+| minor | CC6.7 | The core takes the relay key and certificate as bytes. | They arrive only from Worker secrets, are rejected unless 32 bytes, and are held in `Zeroizing`; no route mints or rotates a key. The anchor after a revocation uses a time the Worker passes in, since wasm has no `SystemTime`. |
+| minor | CC8.1 | `unsafe impl Send for DoSql`. | One isolate runs one request at a time inside a Durable Object and wasm32 has one thread; the reason is recorded at the impl. |
+
+Evidence that exists: `workers/test/*.test.mjs` and `src/relay/worker/tests.rs` (run by `npm test` and `cargo test`), `src/relay/sql/tests.rs`. Release wasm of the core is 2.1 MB raw, 0.8 MB gzipped, inside the 3 MiB bound. Not covered: workerd, a real Durable Object, and the public Worker.
+
 ### 2026-10-06 (fifth pass): the relay's SQL seam, stage 4b (#88)
 
 The relay's table modules were written against `rusqlite::Connection` (about 45 functions and 100 statements), so the same rules could not run over a Durable Object's SQL API, where `BEGIN` is refused. They now take `&dyn relay::sql::Sql`, and `SqlRelayStore<S>` is the one `RelayStore` implementation over any such executor (`SqliteRelayStore` is it over `rusqlite`). No SQL changed. Owner decision: no hashmap-style store; one SQL implementation, so there is no second set of rules to keep in step.

@@ -59,7 +59,7 @@ jobs:
   build:
     name: workers build
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: workers
@@ -67,6 +67,34 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - name: Refuse a workers build that carries provider or lab
+        # build.rs names the refusal; --keep-going lets cargo reach it past
+        # provider dependencies that do not compile for wasm32 at all.
+        working-directory: .
+        run: |
+          set -uo pipefail
+          for other in provider lab; do
+            if cargo check --keep-going --locked --lib --target wasm32-unknown-unknown --features "workers,${other}" > guard.log 2>&1; then
+              echo "::error::a wasm32 build with workers and ${other} compiled"
+              exit 1
+            fi
+            grep -q "the workers feature excludes provider and lab" guard.log
+          done
+      - name: Read the pinned wasm-bindgen version
+        id: bindgen
+        working-directory: .
+        run: |
+          set -euo pipefail
+          version="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)"
+          test -n "${version}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        with:
+          tool: wasm-bindgen@${{ steps.bindgen.outputs.version }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
@@ -74,7 +102,9 @@ jobs:
           cache-dependency-path: workers/package-lock.json
       - name: Install (wrangler is pinned by the lockfile)
         run: npm ci
-      - name: Guard and smoke-test script tests
+      - name: Build the relay core (workers feature only) to WebAssembly
+        run: npm run build:relay-wasm
+      - name: Guard, smoke-test and relay-core tests
         run: npm test
       - name: Configuration guard (no key material, no secret-like vars, no destructive migration)
         run: npm run guard

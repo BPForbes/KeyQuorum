@@ -108,3 +108,4 @@ scratch/
 /lab/test-results/
 /lab/playwright-report/
 /lab/public/project-metadata.json
+/workers/relay-wasm/

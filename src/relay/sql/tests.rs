@@ -22,8 +22,8 @@ fn values_round_trip_through_a_row() {
         params!["alpha", &[1u8, 2, 3][..], true],
     )
     .expect("insert");
-    assert_eq!(s.changes(), 1);
-    assert_eq!(s.last_insert_rowid(), 1);
+    assert_eq!(s.changes().expect("changes"), 1);
+    assert_eq!(s.last_insert_rowid().expect("rowid"), 1);
     let (name, data, n): (String, Vec<u8>, bool) = s
         .query_row(
             "SELECT name, data, n FROM t WHERE id = ?1",

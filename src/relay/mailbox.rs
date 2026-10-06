@@ -51,8 +51,8 @@ pub fn store_until(
         params![&fingerprint, envelope, &content_hash, expires_at],
     )?;
 
-    if conn.changes() == 1 {
-        Ok((conn.last_insert_rowid(), fingerprint, false))
+    if conn.changes()? == 1 {
+        Ok((conn.last_insert_rowid()?, fingerprint, false))
     } else {
         let id: i64 = conn.query_row(
             "SELECT id FROM mailbox
@@ -223,7 +223,7 @@ pub fn purge_expired(conn: &dyn Sql) -> Result<u64> {
          WHERE expires_at IS NOT NULL AND datetime(expires_at) <= datetime('now')",
         params![],
     )?;
-    Ok(conn.changes())
+    conn.changes()
 }
 
 #[cfg(test)]

@@ -248,11 +248,13 @@ pub trait Sql {
         each: &mut dyn FnMut(&Row) -> Result<bool>,
     ) -> Result<()>;
 
-    /// The rowid of the last successful insert on this executor.
-    fn last_insert_rowid(&self) -> i64;
+    /// The rowid of the last successful insert on this executor. Fallible
+    /// because an executor that is not in this process (a Durable Object's) asks
+    /// SQLite for it, and a failed answer must never read as 0.
+    fn last_insert_rowid(&self) -> Result<i64>;
 
     /// The rows the last statement changed.
-    fn changes(&self) -> u64;
+    fn changes(&self) -> Result<u64>;
 
     /// Runs `f` as one atomic write: committed when it returns `Ok`, rolled
     /// back when it returns `Err`. A call made while a transaction is already
@@ -381,12 +383,12 @@ impl Sql for rusqlite::Connection {
         Ok(())
     }
 
-    fn last_insert_rowid(&self) -> i64 {
-        rusqlite::Connection::last_insert_rowid(self)
+    fn last_insert_rowid(&self) -> Result<i64> {
+        Ok(rusqlite::Connection::last_insert_rowid(self))
     }
 
-    fn changes(&self) -> u64 {
-        rusqlite::Connection::changes(self)
+    fn changes(&self) -> Result<u64> {
+        Ok(rusqlite::Connection::changes(self))
     }
 
     fn transaction(&self, f: &mut dyn FnMut() -> Result<()>) -> Result<()> {

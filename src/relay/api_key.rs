@@ -235,7 +235,7 @@ fn record_event(
     super::audit::seal_row(
         conn,
         super::audit::AuditTable::ApiKeyEvents,
-        conn.last_insert_rowid(),
+        conn.last_insert_rowid()?,
     )
 }
 
@@ -323,7 +323,7 @@ fn insert(conn: &dyn Sql, new: &NewApiKey) -> Result<CreatedApiKey> {
         ],
     )?;
 
-    let id = conn.last_insert_rowid();
+    let id = conn.last_insert_rowid()?;
     Ok(CreatedApiKey {
         info: load_info(conn, id)?,
         token,
@@ -664,7 +664,7 @@ pub fn record_provider_auth_event(
         super::audit::seal_row(
             conn,
             super::audit::AuditTable::ProviderAuthEvents,
-            conn.last_insert_rowid(),
+            conn.last_insert_rowid()?,
         )
     })
 }

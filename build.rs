@@ -11,8 +11,12 @@ fn main() {
     let provider = std::env::var_os("CARGO_FEATURE_PROVIDER").is_some();
     let wasm = std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("wasm32");
     let tui = std::env::var_os("CARGO_FEATURE_TUI").is_some();
+    let workers = std::env::var_os("CARGO_FEATURE_WORKERS").is_some();
     if tui && wasm {
         panic!("the tui feature is native-only: the browser lab has no terminal");
+    }
+    if workers && wasm && (lab || provider) {
+        panic!("the workers feature excludes provider and lab on wasm32: the public Worker must not carry mailbox-host code or the browser lab");
     }
     if lab && provider && wasm {
         panic!("provider and lab builds are mutually exclusive: the lab WASM must not carry mailbox-host code");

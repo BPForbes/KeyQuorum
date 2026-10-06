@@ -22,6 +22,8 @@ mod server;
 pub mod service;
 pub mod sql;
 pub mod store;
+#[cfg(feature = "workers")]
+pub mod worker;
 
 pub use api_key::{
     authenticate, authenticate_any, authenticate_licensee, authorize_licensee_or_bootstrap,
@@ -74,7 +76,7 @@ use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
 use std::time::Duration;
 
-const SCHEMA: &str = include_str!("schema.sql");
+pub(crate) const SCHEMA: &str = include_str!("schema.sql");
 
 const ORGANIZATION_TABLES: [&str; 4] = [
     "hardware_keys",
