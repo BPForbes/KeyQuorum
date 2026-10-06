@@ -1,0 +1,16 @@
+{
+  "name": "keyquorum-relay-worker",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker for the KeyQuorum relay. Stage 2 ships a health-only stub so the deployment check can be proven before the relay exists.",
+  "scripts": {
+    "test": "node --test \"scripts/*.test.mjs\"",
+    "guard": "node scripts/guard.mjs wrangler.toml",
+    "build": "wrangler deploy --dry-run --outdir dist --env=\"\" && wrangler deploy --dry-run --outdir dist/staging --env staging",
+    "guard:bundle": "node scripts/guard.mjs --bundle dist --max-gzip-bytes 3145728",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "4.147.0"
+  }
+}

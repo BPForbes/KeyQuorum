@@ -1,5 +1,5 @@
 # Security scanning: known-vulnerable dependencies, licence and source policy,
-# committed secrets, the Lab's npm dependencies, and CodeQL static analysis of
+# committed secrets, the Lab's and the Worker's npm dependencies, and CodeQL static analysis of
 # the crate, the Lab and the workflows.
 #
 # Runs on every pull request and push to main, and weekly, because new
@@ -76,6 +76,24 @@ jobs:
       - name: npm audit (production dependencies)
         working-directory: lab
         run: npm audit --omit=dev --audit-level=high
+
+  workers-dependencies:
+    name: workers dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: workers/package-lock.json
+      # wrangler is the only dependency and is installed in CI, so audit it with
+      # its development dependencies: the production-only audit would find none.
+      - name: npm audit (all dependencies, wrangler is a development dependency)
+        working-directory: workers
+        run: npm audit --audit-level=high
 
   codeql:
     name: codeql (${{ matrix.language }})

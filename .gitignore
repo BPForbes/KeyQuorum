@@ -68,6 +68,18 @@ provider-secrets/
 *.cred
 /deploy/**/*.local.*
 
+# Cloudflare Worker and Terraform: local secrets, build output and state. The
+# provider lock file (.terraform.lock.hcl) is committed on purpose.
+.dev.vars
+.dev.vars.*
+.wrangler/
+*.tfstate
+*.tfstate.*
+.terraform/
+terraform.tfvars
+*.auto.tfvars
+crash.log
+
 # Local encrypted/decrypted test files
 tmp/
 temp/

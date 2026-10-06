@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars (ignored by git) and fill in.
+account_id = "00000000000000000000000000000000"
+zone_id    = "00000000000000000000000000000000"
+
+environments = {
+  production = { hostname = "relay.example.com", worker = "keyquorum-relay" }
+  staging    = { hostname = "relay-staging.example.com", worker = "keyquorum-relay-staging" }
+}
+
+# Leave empty until the admin Worker exists.
+admin_hostname  = ""
+operator_emails = []
+
+# Free-plan-safe values; see the variable descriptions.
+rate_limit_requests = 600
+rate_limit_period   = 60
+rate_limit_timeout  = 60
+
+archive_bucket_name = ""

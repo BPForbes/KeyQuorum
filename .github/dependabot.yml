@@ -2,11 +2,11 @@
 # steps and reusable-workflow calls like notify-portfolio.yml's `uses:`
 # reference to BPForbes/Bailey-Forbes-Portfolio-Site.github.io -- see that
 # workflow for why it is pinned to a commit rather than a branch), Rust crates,
-# and the Lab's npm packages.
+# the Lab's and the Worker's npm packages, and the Cloudflare Terraform provider.
 #
 # Only the github-actions updates are merged automatically
-# (dependabot-auto-merge.yml). Cargo and npm updates, which include the
-# cryptographic crates, always wait for a person.
+# (dependabot-auto-merge.yml). Cargo, npm and Terraform updates, which include
+# the cryptographic crates and the deploy tooling, always wait for a person.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
@@ -41,3 +41,20 @@ updates:
         update-types:
           - "minor"
           - "patch"
+  - package-ecosystem: "npm"
+    directory: "/workers"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      npm-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+  - package-ecosystem: "terraform"
+    directory: "/deploy/cloudflare/terraform"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
