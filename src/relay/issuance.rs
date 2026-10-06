@@ -268,10 +268,11 @@ pub fn issue(
                 ttl_seconds: ttl,
             };
             let mut sealed = None;
-            let delivered = key_delivery::create_as_bundle(conn, identity, &new, &recipient, |b| {
-                sealed = Some(b.to_vec());
-                Ok(())
-            })?;
+            let delivered =
+                key_delivery::create_as_bundle(conn, identity, &new, &recipient, |b| {
+                    sealed = Some(b.to_vec());
+                    Ok(())
+                })?;
             licence::link_key(
                 conn,
                 &KeyLink {
@@ -339,7 +340,8 @@ pub fn rotate(
         licence::seconds_remaining(conn, &licence)?;
         let info = api_key::info(conn, id)?;
         // The recorded recipient, with the licence's current statement.
-        let recorded = key_delivery::recipient_for(conn, id)?.ok_or(Error::DeliveryRecipientMissing)?;
+        let recorded =
+            key_delivery::recipient_for(conn, id)?.ok_or(Error::DeliveryRecipientMissing)?;
         let recipient = Recipient {
             licence: Some(statement_for(conn, &customer, &licence, &info.scope)?),
             ..recorded
@@ -347,10 +349,12 @@ pub fn rotate(
 
         let mut sealed = None;
         let delivered = match via {
-            RotateVia::Bundle => key_delivery::rotate_as_bundle(conn, identity, id, Some(recipient), |b| {
-                sealed = Some(b.to_vec());
-                Ok(())
-            })?,
+            RotateVia::Bundle => {
+                key_delivery::rotate_as_bundle(conn, identity, id, Some(recipient), |b| {
+                    sealed = Some(b.to_vec());
+                    Ok(())
+                })?
+            }
             RotateVia::Letter { grace_seconds } => {
                 key_delivery::rotate_as_letter(conn, identity, id, Some(recipient), grace_seconds)?
             }

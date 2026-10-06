@@ -132,15 +132,15 @@ Durable Object's SQL reached through `workers/src/sql-adapter.js` (a cursor per 
 clock (the Worker passes the time in as text), has no mint or rotate route, and holds the
 relay key and certificate only as the bytes the Worker's secrets give it; the public Worker and the Durable Object class around it are built (`workers/src/`) and never deployed. `workers/test/` runs the built module over a Durable
 Object-shaped storage on Node's SQLite. `workers/admin/` is
-the admin Worker's front door: a static operator page (`public/`, no inline
-code, no outside origin) served by the Worker on its own hostname behind a
-Cloudflare Access application with MFA. `src/access.js` verifies Access's signed
+the admin Worker: the provider's console (`public/`, no inline
+code, no outside origin, no `innerHTML`) served by the Worker on its own hostname behind a
+Cloudflare Access application with MFA, and the `/api` behind it. `src/access.js` verifies Access's signed
 token itself (RS256, the team's key set, issuer, audience, expiry), so a mistake
 in the Access application cannot expose it; without a valid token, or while its
 two non-secret variables `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are empty, it
-serves nothing. It shows only who is signed in, every other `/api` route
-answers 503 until the relay's store exists, there is no mint route and only GET
-and HEAD are allowed. The guard checks its config, `npm run build` dry-runs it,
+serves nothing. Outside `/api` only GET and HEAD are allowed, and `/api` is the
+route table in `src/routes.js` (anything not in it is refused before the relay).
+The guard checks its config, `npm run build` dry-runs it,
 the smoke test (`--admin`) requires anonymous requests to its hostname to be
 refused, and `workers.yml` deploys it with the two variables taken from GitHub
 environment variables, not secrets.
@@ -155,11 +155,43 @@ environment from `main` (production is a manual run into
 `cloudflare-production`) and gates everything behind the one stable check
 `workers`; it uses no third-party deploy action, and the only Cloudflare
 credential in GitHub is the Workers-deploy token and account id per
-environment. The relay-backed operator pages and routes behind the admin Worker's Access check, and minting are planned and not implemented, so no customer key can yet be minted on the Cloudflare relay. The relay key and certificate (`RELAY_PRIVATE_KEY`, `RELAY_CERTIFICATE`) are Worker secrets the operator sets with `wrangler secret put`, never GitHub secrets; the `kql_` lock and the provider
+environment. Nothing has been deployed. The relay key and certificate (`RELAY_PRIVATE_KEY`, `RELAY_CERTIFICATE`) are Worker secrets the operator sets with `wrangler secret put`, never GitHub secrets; the `kql_` lock and the provider
 root key never go on a Worker. `docs/operator/relay-deployment.md` is the operator runbook
 (secrets, certificates, bootstrap, rotation, the dev host) and
 `docs/operator/relay-secrets.md` the secret classification; neither is
 customer-facing, and the README still does not document `host`.
+
+The operator console (issue #99, `docs/operator/relay-hosting.md`, "The operator
+console") is for the provider's own people only and never for customers. The
+admin Worker reaches the relay's Durable Object through the private binding
+`RELAY_ADMIN` (`script_name` names this environment's relay only, no migration
+in the admin file; `guard.mjs` checks both) and calls only `RelayObject.operate`
+and `status`; no public route leads there. The core side is `src/relay/operator.rs`
+(orchestration only), over `customer.rs` (customers), `licence.rs` (licences,
+**immutable** statement versions, key links and `replaces_key_id` lineage),
+`issuance.rs` (issue, replace, void a key, void a licence, each one unit of
+work), `activity.rs` (hourly per-known-key counts, latency and bytes; unknown
+bearers are never recorded; 90 days; no address, query or body; not in the audit
+chain) and `operator_log.rs` (`operator_actions`: the verified Access identity,
+the operation id, its result). Rules to keep: a licence is signed terms, an end
+date and revocation, enforcing nothing itself, and voiding it revokes its keys in
+the same transaction; renewal adds a version and never rewrites a delivered one,
+and keys already issued keep their end until replaced; a key's owner is an
+explicit link and a key with none is unassigned, never guessed from a label,
+fingerprint or address; every change needs the verified identity, a same-origin
+`Origin`, the operator lock in `x-operator-lock` (checked against the stored
+hash, never stored, logged or echoed) and an `Idempotency-Key` operation id that
+is recorded in the change's own transaction, so a repeat answers `already_done`
+with ids and changes nothing; a sealed bundle is never retained (a lost file is
+recovered by replacing the key) and no reply holds a bearer or key hash; the
+operator lock is made in two steps (`bootstrap` or `rotate_lock` stages it in
+`licensee_pending` and shows it once, `confirm_lock` promotes it), and an empty
+store cannot be claimed by an ordinary request; the `admin` scope is not issued
+from the console. There is one operator role (Access decides who is in), and the
+console cannot show letter contents or file histories, which are sealed. What has
+not been done and must not be claimed: a deploy to staging, the restore drill, a
+cost or storage measurement, any enforced licence limit, a second role, and a
+recovery path for a lost operator lock on the Cloudflare relay.
 
 The relay host's own operating controls: the relay database is owner-only
 (0600, journal sidecars too, like the personal store). It serves plain HTTP,
@@ -828,6 +860,17 @@ Report a finding, with the rule as its Source, for any of these:
   taken from a flag value, written into `wrangler.toml` `[vars]`, a `.dev.vars` file,
   Terraform state or `terraform.tfvars`, a GitHub Actions secret or log, a unit file or an
   image layer; the provider root key or the operator lock given to a running relay.
+- The operator console (`src/relay/{operator,issuance,customer,licence,activity,operator_log}.rs`,
+  `workers/admin/`): a change that skips the operator lock, the operation id, the
+  same-origin check or the verified identity; ownership of a key inferred from a
+  label, fingerprint or address; a licence statement version updated or deleted;
+  a licence void that leaves its keys usable; a sealed bundle or bearer retained
+  or returned in a reply; activity recorded for an unknown bearer or holding an
+  address, query or body; the operator lock stored, logged or put in a Worker
+  secret, browser storage or a URL; a lock bootstrap that an ordinary request on
+  an empty store can claim; the `admin` scope issued from the console; a public
+  route to a management operation; the console documented as enforcing licence
+  limits, as showing file contents, or as deployed.
 - The Worker's deployment (`workers/`, `deploy/cloudflare/**`,
   `.github/workflows/workers.yml`) letting the admin Worker serve anything without a
   verified Access token, or gaining a route that bypasses Access to an operator

@@ -474,9 +474,14 @@ fn run(
             reference,
         } => {
             let new = NewCustomer { name, reference };
-            let made = change(store, ctx, "create_customer", &new.name.clone(), operation_id.as_deref(), |note| {
-                store.create_customer(&new, Some(note))
-            })?;
+            let made = change(
+                store,
+                ctx,
+                "create_customer",
+                &new.name.clone(),
+                operation_id.as_deref(),
+                |note| store.create_customer(&new, Some(note)),
+            )?;
             changed(json!({ "customer": customer_view(&made) }))
         }
         Request::Issue {
@@ -513,13 +518,25 @@ fn run(
                 device_id.as_deref(),
             )
             .map_err(|e| failure(&e))?;
-            let issued = change(store, ctx, "issue", &subject, operation_id.as_deref(), |note| {
-                store.issue_licensed_bundles(identity, &request, Some(note))
-            })?;
+            let issued = change(
+                store,
+                ctx,
+                "issue",
+                &subject,
+                operation_id.as_deref(),
+                |note| store.issue_licensed_bundles(identity, &request, Some(note)),
+            )?;
             let bundles: Vec<Value> = issued
                 .bundles
                 .iter()
-                .map(|b| bundle_view(&issued.customer, &b.info, &b.recipient_fingerprint, &b.bundle))
+                .map(|b| {
+                    bundle_view(
+                        &issued.customer,
+                        &b.info,
+                        &b.recipient_fingerprint,
+                        &b.bundle,
+                    )
+                })
                 .collect();
             changed(json!({
                 "customer": customer_view(&issued.customer),
@@ -541,9 +558,14 @@ fn run(
                 expires_at,
                 replaces: replaces_licence_id,
             };
-            let (made, voided) = change(store, ctx, "create_licence", &subject, operation_id.as_deref(), |note| {
-                store.create_licence(customer_id, &new, Some(note))
-            })?;
+            let (made, voided) = change(
+                store,
+                ctx,
+                "create_licence",
+                &subject,
+                operation_id.as_deref(),
+                |note| store.create_licence(customer_id, &new, Some(note)),
+            )?;
             changed(json!({
                 "licence": licence_summary(&made),
                 "voided_licence_id": voided.as_ref().map(|v| v.licence_id),
@@ -556,9 +578,21 @@ fn run(
             expires_at,
         } => {
             let subject = format!("licence {licence_id}");
-            let renewed = change(store, ctx, "renew_licence", &subject, operation_id.as_deref(), |note| {
-                store.renew_licence(licence_id, terms.as_deref(), expires_at.as_deref(), Some(note))
-            })?;
+            let renewed = change(
+                store,
+                ctx,
+                "renew_licence",
+                &subject,
+                operation_id.as_deref(),
+                |note| {
+                    store.renew_licence(
+                        licence_id,
+                        terms.as_deref(),
+                        expires_at.as_deref(),
+                        Some(note),
+                    )
+                },
+            )?;
             changed(json!({
                 "licence": licence_summary(&renewed),
                 "note": "Keys already issued keep the end they were issued with. Replace them to give each the new end and the new statement.",
@@ -570,9 +604,14 @@ fn run(
             reason,
         } => {
             let subject = format!("licence {licence_id}");
-            let voided = change(store, ctx, "void_licence", &subject, operation_id.as_deref(), |note| {
-                store.void_licence(licence_id, reason.as_deref(), Some(note))
-            })?;
+            let voided = change(
+                store,
+                ctx,
+                "void_licence",
+                &subject,
+                operation_id.as_deref(),
+                |note| store.void_licence(licence_id, reason.as_deref(), Some(note)),
+            )?;
             changed(json!({
                 "licence_id": licence_id,
                 "newly_voided": voided.newly_voided,
@@ -594,9 +633,14 @@ fn run(
                 _ => return Err(failure(&Error::InvalidApiKeyRequest)),
             };
             let subject = format!("key {key_id}");
-            let rotated = change(store, ctx, "rotate", &subject, operation_id.as_deref(), |note| {
-                store.rotate_licensed_key(identity, key_id, via, Some(note))
-            })?;
+            let rotated = change(
+                store,
+                ctx,
+                "rotate",
+                &subject,
+                operation_id.as_deref(),
+                |note| store.rotate_licensed_key(identity, key_id, via, Some(note)),
+            )?;
             let customer = licence_customer(store, rotated.licence_id);
             let mut out = json!({
                 "replaced_key_id": key_id,
@@ -606,9 +650,12 @@ fn run(
             });
             if let Some(bundle) = &rotated.bundle {
                 out["bundle"] = match &customer {
-                    Some(customer) => {
-                        bundle_view(customer, &rotated.info, &rotated.recipient_fingerprint, bundle)
-                    }
+                    Some(customer) => bundle_view(
+                        customer,
+                        &rotated.info,
+                        &rotated.recipient_fingerprint,
+                        bundle,
+                    ),
                     None => json!({ "key_id": rotated.info.id }),
                 };
             }
@@ -621,11 +668,19 @@ fn run(
             }
             changed(out)
         }
-        Request::VoidKey { operation_id, key_id } => {
+        Request::VoidKey {
+            operation_id,
+            key_id,
+        } => {
             let subject = format!("key {key_id}");
-            change(store, ctx, "void_key", &subject, operation_id.as_deref(), |note| {
-                store.revoke_key_noted(key_id, Some(note))
-            })?;
+            change(
+                store,
+                ctx,
+                "void_key",
+                &subject,
+                operation_id.as_deref(),
+                |note| store.revoke_key_noted(key_id, Some(note)),
+            )?;
             changed(json!({ "key_id": key_id, "revoked": true }))
         }
         Request::AssignKey {
@@ -634,9 +689,14 @@ fn run(
             licence_id,
         } => {
             let subject = format!("key {key_id}");
-            change(store, ctx, "assign_key", &subject, operation_id.as_deref(), |note| {
-                store.assign_key(key_id, licence_id, Some(note))
-            })?;
+            change(
+                store,
+                ctx,
+                "assign_key",
+                &subject,
+                operation_id.as_deref(),
+                |note| store.assign_key(key_id, licence_id, Some(note)),
+            )?;
             changed(json!({ "key_id": key_id, "licence_id": licence_id }))
         }
     }
@@ -841,7 +901,9 @@ fn directory(store: &dyn RelayStore) -> crate::error::Result<Directory> {
     for link in links.values() {
         if let std::collections::hash_map::Entry::Vacant(slot) = licences.entry(link.licence_id) {
             let licence = store.get_licence(link.licence_id)?;
-            if let std::collections::hash_map::Entry::Vacant(c) = customers.entry(licence.customer_id) {
+            if let std::collections::hash_map::Entry::Vacant(c) =
+                customers.entry(licence.customer_id)
+            {
                 c.insert(store.get_customer(licence.customer_id)?);
             }
             slot.insert(licence);
@@ -1098,11 +1160,15 @@ fn activity_view(
 ) -> Outcome2 {
     let route = match route {
         None | Some("") => None,
-        Some(text) => Some(Route::parse(text).ok_or_else(|| failure(&Error::InvalidApiKeyRequest))?),
+        Some(text) => {
+            Some(Route::parse(text).ok_or_else(|| failure(&Error::InvalidApiKeyRequest))?)
+        }
     };
     let outcome = match outcome {
         None | Some("") => None,
-        Some(text) => Some(Outcome::parse(text).ok_or_else(|| failure(&Error::InvalidApiKeyRequest))?),
+        Some(text) => {
+            Some(Outcome::parse(text).ok_or_else(|| failure(&Error::InvalidApiKeyRequest))?)
+        }
     };
     let summary = seen(store.access_summary(&Filter {
         hours: hours.clamp(1, MAX_SUMMARY_HOURS),
@@ -1129,14 +1195,12 @@ fn activity_view(
         .map(|a| {
             let customer = directory.customer_of(a.api_key_id);
             total.add(a);
-            let slot = by_user
-                .entry(customer.map(|c| c.id))
-                .or_insert_with(|| {
-                    (
-                        customer.map_or_else(|| "(unassigned keys)".to_string(), |c| c.name.clone()),
-                        Totals::default(),
-                    )
-                });
+            let slot = by_user.entry(customer.map(|c| c.id)).or_insert_with(|| {
+                (
+                    customer.map_or_else(|| "(unassigned keys)".to_string(), |c| c.name.clone()),
+                    Totals::default(),
+                )
+            });
             slot.1.add(a);
             let key = directory.infos.iter().find(|i| i.id == a.api_key_id);
             json!({
@@ -1303,7 +1367,9 @@ fn letters(store: &dyn RelayStore) -> Outcome2 {
     let directory = seen(directory(store))?;
     let mut owners: HashMap<String, String> = HashMap::new();
     for info in &directory.infos {
-        if let (Some(fp), Some(customer)) = (&info.recipient_fingerprint, directory.customer_of(info.id)) {
+        if let (Some(fp), Some(customer)) =
+            (&info.recipient_fingerprint, directory.customer_of(info.id))
+        {
             owners.insert(fp.clone(), customer.name.clone());
         }
     }

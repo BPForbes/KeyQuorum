@@ -72,7 +72,8 @@ fn row_to_action(row: &Row) -> Result<OperatorAction> {
     })
 }
 
-const SELECT: &str = "SELECT id, operator, action, subject, success, occurred_at, operation_id, result
+const SELECT: &str =
+    "SELECT id, operator, action, subject, success, occurred_at, operation_id, result
  FROM operator_actions";
 
 /// Records that `operator` tried `action` on `subject` (an id or a short
@@ -116,7 +117,13 @@ impl Note<'_> {
             "INSERT INTO operator_actions
                 (operator, action, subject, success, operation_id, result)
              VALUES (?1, ?2, ?3, 1, ?4, ?5)",
-            params![operator, action, clip(self.subject, 200), self.operation_id, result],
+            params![
+                operator,
+                action,
+                clip(self.subject, 200),
+                self.operation_id,
+                result
+            ],
         )?;
         Ok(())
     }

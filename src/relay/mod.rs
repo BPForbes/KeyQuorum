@@ -63,14 +63,12 @@ pub use device_mail::{
     store as store_device_package, DeviceMailPage, StoredDevicePackage, DEVICE_PACKAGE_TTL_DAYS,
 };
 pub use mailbox::{
-    LetterSummary,
-    list_after, purge_expired as purge_expired_envelopes, store, store_until, MailboxPage,
-    StoredEnvelope, DEFAULT_INBOX_PAGE, MAX_INBOX_PAGE, MAX_INBOX_PAGE_BYTES,
+    list_after, purge_expired as purge_expired_envelopes, store, store_until, LetterSummary,
+    MailboxPage, StoredEnvelope, DEFAULT_INBOX_PAGE, MAX_INBOX_PAGE, MAX_INBOX_PAGE_BYTES,
 };
 pub use org_tree::{
-    TreeSummary,
     context_for_fingerprint, contexts_for_fingerprint, get_public_tree, list_public_trees,
-    merge_public_tree, put_public_tree, slices_for_fingerprint,
+    merge_public_tree, put_public_tree, slices_for_fingerprint, TreeSummary,
 };
 #[cfg(feature = "provider")]
 pub use server::{

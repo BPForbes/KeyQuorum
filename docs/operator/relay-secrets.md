@@ -12,13 +12,14 @@ credential mechanism.
 
 Hosting status: Cloudflare is the sole production hosting provider. The
 public Worker and its Durable Object (`workers/`) are built and tested and have
-never been deployed; no customer API key can yet be minted on them, because the
-admin Worker's back end that would mint one (stage 4d) is not built. Rows marked
+never been deployed. A customer API key is minted from the provider's console on
+the admin Worker, through a private binding to the same Durable Object, with the
+operator lock presented per change. Rows marked
 "(built, not deployed)" below describe code the repository now contains, rows
 marked "(code exists, nothing deployed)" the admin Worker's front door
-(`workers/admin/`: a static page that only shows who is signed in, behind
-Cloudflare Access with MFA, the Worker verifying Access's token itself; it holds
-no secret and is not connected to a relay), and rows marked "(planned)" the plan
+(`workers/admin/`: the provider's console and its API, behind Cloudflare Access
+with MFA, the Worker verifying Access's token itself; it holds no secret, and
+reaches the relay only through the binding `RELAY_ADMIN`), and rows marked "(planned)" the plan
 of record in `relay-hosting.md`. No deployment has run, and the owner's GitHub
 and Cloudflare setup is not done. The native `keyquorum host serve` is the
 development, test and reference host.
@@ -33,8 +34,11 @@ development, test and reference host.
 | `provider.kqrl` (`KQRL`) | no (signed) | yes, read-only | file; the Cloudflare relay's core takes no revocation list yet, so the Worker does not read it | offline root (`host krl`) | the same |
 | `provider-policy.kqpolicy` (`KQPL`) | no (signed; it authorizes) | only where the hardware-authority policy is checked | file | offline root (`host policy issue`) | a relay that does not need it; the environment |
 | relay SQLite database (`relay.sqlite`) | sensitive (key hashes, audit trail, every stored letter) | yes | `/var/lib/keyquorum`, 0600 with its journal sidecars | the relay | a personal store's path; a shared or world-readable location; the repository (`*.sqlite` is ignored) |
-| `kql_…` operator lock | **yes** | operator only, for `host keys create\|rotate` | a file on the operator's session (`--licensee-key-file`, `KEYQUORUM_LICENSEE_KEY_FILE`), or a file that exists only for that session | minted once by the first host `keys` command on an empty issuer store | the long-running relay service; any Worker; a unit file; the environment of the service; a log |
+| `kql_…` operator lock | **yes** | operator only: for `host keys create\|rotate` on the native host, and presented with each change from the console (hash held by the relay, value never) | a file on the operator's session (`--licensee-key-file`, `KEYQUORUM_LICENSEE_KEY_FILE`), or a file that exists only for that session; for the console, the operator's password manager, pasted into the form for each change | native: minted once by the first host `keys` command on an empty issuer store. Console: staged by *Create/Replace the lock* (`licensee_pending`, shown once) and made the lock only when presented back (`confirm_lock`) | the long-running relay service; any Worker (not a Worker secret or `[vars]`); the browser's storage, cookies or URL; a unit file; the environment of the service; a log; the activity or operator tables |
 | customer `kq_…` bearer | **yes** | never raw at rest (only `hex(SHA-256(raw))`) | the customer's own store, sealed (`relay_credentials`) | minted by `host keys create\|rotate` | a log, an audit row, a database document, a ticket or chat; the environment |
+| Console data: customers, licence terms, key links, activity (built, not deployed) | sensitive customer metadata (names, references, terms, which key did what); no secret | the Durable Object's tables `customers`, `licences`, `licence_versions`, `licence_keys`, `access_activity`, `operator_actions` | the relay's database (activity is dropped after 90 days; the rest stays until the operator removes it) | the operator, through the console | a bearer, a key hash, a sealed bundle, an address, a query, a request or response body, the operator lock or an Access token in any of them |
+| `.kqkey` produced by the console | sealed secret carrier | **not retained**: sealed in the request and returned once | the operator's download, then the customer | the console's issue and replace | being stored on the relay or the Worker (a lost download is replaced, not recovered) |
+| Worker binding `RELAY_ADMIN` (built, not deployed) | no (a capability, not a secret) | the admin Worker's configuration | `workers/admin/wrangler.toml` (production binds `keyquorum-relay`, staging `keyquorum-relay-staging`; `guard.mjs` refuses any other name and any migration in that file) | the operator | a public route, a preview of the admin Worker, a binding to another environment |
 | `.kqkey` bootstrap bundle (`KQXB` type 4) | sealed secret carrier | handoff only | temporary, owner-only, never overwritten; deleted once loaded | `host keys create --recipient-key --out` (#86) | the repository (`*.kqkey` is ignored); being left on the relay; being opened by anyone but the recipient key |
 | `.kqpb` key-rotation letter (`KQPB` kind 20) | sealed secret carrier | opaque, in the mailbox until collected or expired | the mailbox, with the old key's grace period as its TTL | `host keys rotate` (#86) | being unsealed by the relay |
 | audit checkpoint file | not secret, but the evidence | **no** (that is its point) | write-once storage the operator controls | `host keys checkpoint --out` | the relay host or database |
@@ -55,6 +59,7 @@ development, test and reference host.
 | `keyquorum host keys list\|events\|revoke\|checkpoint` | relay key only for `checkpoint` and to sign a revocation at once | `--relay-key PATH` |
 | `keyquorum host certify\|krl\|policy issue` (offline) | provider-root private key | `--root-key PATH` / `KEYQUORUM_PROVIDER_ROOT_KEY_FILE` (then the raw `KEYQUORUM_PROVIDER_ROOT_KEY`) |
 | a customer's `keyquorum loadkey --bundle` | their slot passphrase | a prompt, zeroized |
+| the admin Worker (built, not deployed) | nothing secret: its Access settings are variables; it receives the operator's lock only as a request header it forwards to the Durable Object and never stores or logs | the console form's header `x-operator-lock`, one request at a time |
 | the Cloudflare relay's Durable Object (built, not deployed) | relay key, certificate | Worker secrets `RELAY_PRIVATE_KEY` and `RELAY_CERTIFICATE`, set with `wrangler secret put` (`relay-deployment.md`, "Secret provisioning") |
 | `workers deploy staging` / `workers deploy production` (`workers.yml`; exist, environments not configured) | Cloudflare API token (Workers Scripts edit only) and account id | GitHub environment secrets, injected into that job only; the Terraform token never enters GitHub. The admin Worker's two Access settings are not secrets and travel as GitHub environment variables |
 

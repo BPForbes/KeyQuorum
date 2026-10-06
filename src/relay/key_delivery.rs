@@ -124,7 +124,8 @@ pub fn records(conn: &dyn Sql) -> Result<Vec<DeliveryRecord>> {
         params![],
         |row| {
             let public_key: Vec<u8> = row.get(1)?;
-            let public_key: [u8; 32] = public_key.try_into().map_err(|_| Error::InvalidPublicKey)?;
+            let public_key: [u8; 32] =
+                public_key.try_into().map_err(|_| Error::InvalidPublicKey)?;
             Ok(DeliveryRecord {
                 api_key_id: row.get(0)?,
                 recipient_fingerprint: keys::fingerprint(&public_key),

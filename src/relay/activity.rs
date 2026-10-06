@@ -48,9 +48,15 @@ impl Route {
     }
 
     pub fn parse(text: &str) -> Option<Self> {
-        [Self::Inbox, Self::Devices, Self::Trees, Self::Audit, Self::Other]
-            .into_iter()
-            .find(|route| route.as_str() == text)
+        [
+            Self::Inbox,
+            Self::Devices,
+            Self::Trees,
+            Self::Audit,
+            Self::Other,
+        ]
+        .into_iter()
+        .find(|route| route.as_str() == text)
     }
 
     pub fn of_path(path: &str) -> Self {
@@ -169,7 +175,14 @@ pub fn record(conn: &dyn Sql, token: &str, path: &str, status: u16, cost: Cost) 
             ms_max = MAX(ms_max, excluded.ms_max),
             bytes_in = bytes_in + excluded.bytes_in,
             bytes_out = bytes_out + excluded.bytes_out",
-        params![id, Route::of_path(path).as_str(), outcome.as_str(), millis, bytes_in, bytes_out],
+        params![
+            id,
+            Route::of_path(path).as_str(),
+            outcome.as_str(),
+            millis,
+            bytes_in,
+            bytes_out
+        ],
     )?;
     Ok(())
 }

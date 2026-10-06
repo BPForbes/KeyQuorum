@@ -125,10 +125,7 @@ pub fn purge_expired(conn: &dyn Sql) -> Result<u64> {
 
 /// The device mailbox's letters, summarised: the count and the newest
 /// `limit`, newest first. See [`super::mailbox::summaries_in`].
-pub fn summaries(
-    conn: &dyn Sql,
-    limit: i64,
-) -> Result<(i64, Vec<super::mailbox::LetterSummary>)> {
+pub fn summaries(conn: &dyn Sql, limit: i64) -> Result<(i64, Vec<super::mailbox::LetterSummary>)> {
     super::mailbox::summaries_in(conn, super::mailbox::MailTable::Devices, limit)
 }
 

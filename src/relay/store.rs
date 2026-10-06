@@ -28,10 +28,10 @@ use super::api_key::{
     KeyCheck, NewApiKey, OldKey, ProviderAuthRecord,
 };
 use super::audit::{self, Checkpoint, TableReport};
+use super::customer::{self, Customer, LicenceFilter, NewCustomer, Page, UserRow};
 use super::device_directory::{self, DeviceDescriptor};
 use super::device_mail::{self, DeviceMailPage};
-use super::customer::{self, Customer, LicenceFilter, NewCustomer, Page, UserRow};
-use super::issuance::{self, Issuance, Issued, Rotated, RotateVia, Voided};
+use super::issuance::{self, Issuance, Issued, RotateVia, Rotated, Voided};
 use super::key_delivery::{self, Delivered, DeliveryRecord, Recipient};
 use super::licence::{self, KeyLink, Licence, Version};
 use super::mailbox::{self, LetterSummary, MailboxPage};

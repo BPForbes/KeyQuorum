@@ -143,7 +143,9 @@ pub fn get(conn: &dyn Sql, id: i64) -> Result<Customer> {
 
 /// How many customers are recorded.
 pub fn count(conn: &dyn Sql) -> Result<i64> {
-    conn.query_row("SELECT COUNT(*) FROM customers", params![], |row| row.get(0))
+    conn.query_row("SELECT COUNT(*) FROM customers", params![], |row| {
+        row.get(0)
+    })
 }
 
 /// A `LIKE` pattern matching `term` anywhere, with the pattern characters in

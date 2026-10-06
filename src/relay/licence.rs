@@ -196,7 +196,12 @@ pub fn renew(
     conn.execute(
         "INSERT INTO licence_versions (licence_id, version, terms, expires_at)
          VALUES (?1, ?2, ?3, ?4)",
-        params![id, current.version + 1, terms.as_str(), expires_at.as_deref()],
+        params![
+            id,
+            current.version + 1,
+            terms.as_str(),
+            expires_at.as_deref()
+        ],
     )?;
     conn.execute(
         "UPDATE licences SET expires_at = ?2 WHERE id = ?1",

@@ -1037,13 +1037,24 @@ fn a_licence_is_issued_replaced_and_voided_as_one_unit_of_work(store: &dyn Relay
         .expect("issue");
     assert_eq!(issued.bundles.len(), 2);
     assert_eq!(store.customer_count().expect("count"), 1);
-    assert_eq!(store.licences_of(issued.customer.id).expect("licences").len(), 1);
+    assert_eq!(
+        store
+            .licences_of(issued.customer.id)
+            .expect("licences")
+            .len(),
+        1
+    );
     assert_eq!(store.key_links().expect("links").len(), 2);
     let records = store.delivery_records().expect("deliveries");
     assert_eq!(records.len(), 2);
-    assert!(records.iter().all(|r| r.recipient_fingerprint == keys::fingerprint(&public)));
+    assert!(records
+        .iter()
+        .all(|r| r.recipient_fingerprint == keys::fingerprint(&public)));
     // The operation is recorded with the change, and found again by its id.
-    let recorded = store.find_operation("op-conformance-1").expect("find").expect("recorded");
+    let recorded = store
+        .find_operation("op-conformance-1")
+        .expect("find")
+        .expect("recorded");
     assert_eq!(recorded.action, "issue");
     assert!(store
         .issue_licensed_bundles(
@@ -1052,19 +1063,36 @@ fn a_licence_is_issued_replaced_and_voided_as_one_unit_of_work(store: &dyn Relay
             Some(&note),
         )
         .is_err());
-    assert_eq!(store.customer_count().expect("count"), 1, "the repeat made nothing");
+    assert_eq!(
+        store.customer_count().expect("count"),
+        1,
+        "the repeat made nothing"
+    );
 
-    let opened = api_key_delivery::open(&issued.bundles[0].bundle, &secret, &root, &now(), &empty_revoked())
-        .expect("opens");
+    let opened = api_key_delivery::open(
+        &issued.bundles[0].bundle,
+        &secret,
+        &root,
+        &now(),
+        &empty_revoked(),
+    )
+    .expect("opens");
     store
         .authenticate(&opened.issue.token, ApiKeyScope::InboxPush)
         .expect("live");
 
     // A replacement keeps the licence; the old key ends at once.
     let replaced = store
-        .rotate_licensed_key(&identity, issued.bundles[0].info.id, RotateVia::Bundle, None)
+        .rotate_licensed_key(
+            &identity,
+            issued.bundles[0].info.id,
+            RotateVia::Bundle,
+            None,
+        )
         .expect("rotate");
-    assert!(store.authenticate(&opened.issue.token, ApiKeyScope::InboxPush).is_err());
+    assert!(store
+        .authenticate(&opened.issue.token, ApiKeyScope::InboxPush)
+        .is_err());
     assert!(store.key_links().expect("links").iter().any(|l| {
         l.api_key_id == replaced.info.id
             && l.licence_id == issued.licence.id
@@ -1080,18 +1108,33 @@ fn a_licence_is_issued_replaced_and_voided_as_one_unit_of_work(store: &dyn Relay
     assert_eq!((versions.len(), versions[0].terms.as_str()), (2, "Terms."));
 
     // Voiding revokes everything issued under it, once.
-    let voided = store.void_licence(issued.licence.id, Some("test"), None).expect("void");
+    let voided = store
+        .void_licence(issued.licence.id, Some("test"), None)
+        .expect("void");
     assert!(voided.newly_voided);
     assert_eq!(voided.revoked_keys.len(), 2);
-    assert!(!store.void_licence(issued.licence.id, None, None).expect("again").newly_voided);
-    assert!(store.get_licence(issued.licence.id).expect("licence").voided_at.is_some());
+    assert!(
+        !store
+            .void_licence(issued.licence.id, None, None)
+            .expect("again")
+            .newly_voided
+    );
+    assert!(store
+        .get_licence(issued.licence.id)
+        .expect("licence")
+        .voided_at
+        .is_some());
     assert!(matches!(
-        store.issue_licensed_bundles(&identity, &{
-            let mut again = issuance_request(public, &[ApiKeyScope::DevicePush]);
-            again.customer = CustomerRef::Existing(issued.customer.id);
-            again.licence = LicenceRef::Existing(issued.licence.id);
-            again
-        }, None),
+        store.issue_licensed_bundles(
+            &identity,
+            &{
+                let mut again = issuance_request(public, &[ApiKeyScope::DevicePush]);
+                again.customer = CustomerRef::Existing(issued.customer.id);
+                again.licence = LicenceRef::Existing(issued.licence.id);
+                again
+            },
+            None
+        ),
         Err(Error::LicenceNotActive)
     ));
     let live = store
@@ -1109,21 +1152,45 @@ fn known_keys_activity_is_counted_in_place_and_unknown_bearers_are_not(store: &d
     let created = store
         .mint_key(&new_key(ApiKeyScope::InboxPush, None))
         .expect("create");
-    let cost = Cost { millis: 5, bytes_in: 10, bytes_out: 20 };
+    let cost = Cost {
+        millis: 5,
+        bytes_in: 10,
+        bytes_out: 20,
+    };
     for _ in 0..3 {
-        store.record_access(&created.token, "/inbox", 200, cost).expect("record");
+        store
+            .record_access(&created.token, "/inbox", 200, cost)
+            .expect("record");
     }
-    store.record_access(&created.token, "/inbox", 403, cost).expect("record");
-    store.record_access("kq_not-a-key", "/inbox", 401, cost).expect("unknown");
-    let window = Filter { hours: 24, ..Filter::default() };
+    store
+        .record_access(&created.token, "/inbox", 403, cost)
+        .expect("record");
+    store
+        .record_access("kq_not-a-key", "/inbox", 401, cost)
+        .expect("unknown");
+    let window = Filter {
+        hours: 24,
+        ..Filter::default()
+    };
     let summary = store.access_summary(&window).expect("summary");
     assert_eq!(summary.by_key.iter().map(|a| a.count).sum::<i64>(), 4);
-    assert!(summary.by_key.iter().all(|a| a.api_key_id == created.info.id));
-    let ok = summary.by_key.iter().find(|a| a.outcome == "ok").expect("ok row");
+    assert!(summary
+        .by_key
+        .iter()
+        .all(|a| a.api_key_id == created.info.id));
+    let ok = summary
+        .by_key
+        .iter()
+        .find(|a| a.outcome == "ok")
+        .expect("ok row");
     assert_eq!((ok.ms_total, ok.bytes_in, ok.bytes_out), (15, 30, 60));
     assert_eq!(store.purge_old_activity().expect("purge"), 0);
-    store.revoke_key_by(created.info.id, "host").expect("revoke");
-    store.record_access(&created.token, "/inbox", 401, cost).expect("record");
+    store
+        .revoke_key_by(created.info.id, "host")
+        .expect("revoke");
+    store
+        .record_access(&created.token, "/inbox", 401, cost)
+        .expect("record");
     let outcomes: Vec<_> = store
         .access_summary(&window)
         .expect("summary")
@@ -1134,7 +1201,9 @@ fn known_keys_activity_is_counted_in_place_and_unknown_bearers_are_not(store: &d
     assert!(outcomes.contains(&"revoked".to_string()));
 }
 
-fn the_operator_lock_is_staged_then_confirmed_and_the_old_one_stands_until_then(store: &dyn RelayStore) {
+fn the_operator_lock_is_staged_then_confirmed_and_the_old_one_stands_until_then(
+    store: &dyn RelayStore,
+) {
     assert!(!store.operator_lock_exists().expect("exists"));
     assert!(!store.operator_lock_pending().expect("pending"));
     let first = store.stage_operator_lock().expect("stage");
@@ -1144,21 +1213,33 @@ fn the_operator_lock_is_staged_then_confirmed_and_the_old_one_stands_until_then(
     assert!(store.authenticate_licensee(&first.token).is_err());
     // Staging again replaces the first, so a lost response is recoverable.
     let second = store.stage_operator_lock().expect("stage again");
-    assert!(store.confirm_operator_lock(&first.token).is_err(), "the replaced one is gone");
+    assert!(
+        store.confirm_operator_lock(&first.token).is_err(),
+        "the replaced one is gone"
+    );
     store.confirm_operator_lock(&second.token).expect("confirm");
     assert!(store.operator_lock_exists().expect("exists"));
     assert!(!store.operator_lock_pending().expect("pending"));
-    store.authenticate_licensee(&second.token).expect("the lock");
-    assert!(store.confirm_operator_lock(&second.token).is_err(), "nothing is staged now");
+    store
+        .authenticate_licensee(&second.token)
+        .expect("the lock");
+    assert!(
+        store.confirm_operator_lock(&second.token).is_err(),
+        "nothing is staged now"
+    );
 
     // A replacement is staged while the current lock keeps working, and takes
     // over only when it is confirmed.
     let next = store.stage_operator_lock().expect("stage a replacement");
-    store.authenticate_licensee(&second.token).expect("the current lock still stands");
+    store
+        .authenticate_licensee(&second.token)
+        .expect("the current lock still stands");
     assert!(store.authenticate_licensee(&next.token).is_err());
     store.confirm_operator_lock(&next.token).expect("confirm");
     assert!(store.authenticate_licensee(&second.token).is_err());
-    store.authenticate_licensee(&next.token).expect("the new lock");
+    store
+        .authenticate_licensee(&next.token)
+        .expect("the new lock");
 }
 
 fn the_console_views_hold_no_secret_and_name_only_what_the_relay_holds(store: &dyn RelayStore) {
@@ -1167,7 +1248,10 @@ fn the_console_views_hold_no_secret_and_name_only_what_the_relay_holds(store: &d
         .expect("action");
     let actions = store.operator_actions(10, None).expect("actions");
     assert_eq!(actions.len(), 1);
-    assert_eq!((actions[0].operator.as_str(), actions[0].success), ("ops@example.test", false));
+    assert_eq!(
+        (actions[0].operator.as_str(), actions[0].success),
+        ("ops@example.test", false)
+    );
 
     store
         .record_provider_auth_event(&ProviderAuthEvent {
@@ -1179,7 +1263,10 @@ fn the_console_views_hold_no_secret_and_name_only_what_the_relay_holds(store: &d
         })
         .expect("event");
     let auth = store.provider_auth_events(10).expect("auth");
-    assert_eq!((auth[0].operation.as_str(), auth[0].success), ("console.issue", false));
+    assert_eq!(
+        (auth[0].operation.as_str(), auth[0].success),
+        ("console.issue", false)
+    );
     assert_eq!(auth[0].entry_hash.len(), 64);
 
     let (_, public) = keys::generate_encryption_keypair();
