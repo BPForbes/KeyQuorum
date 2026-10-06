@@ -7,8 +7,13 @@ environments = {
   staging    = { hostname = "relay-staging.example.com", worker = "keyquorum-relay-staging" }
 }
 
-# Leave empty until the admin Worker exists.
-admin_hostname  = ""
+# The admin Worker's hostnames, each behind Access with MFA. Leave empty to
+# create none. operator_emails must name someone when this is set.
+admin_environments = {}
+# admin_environments = {
+#   production = { hostname = "relay-admin.example.com", worker = "keyquorum-relay-admin" }
+#   staging    = { hostname = "relay-admin-staging.example.com", worker = "keyquorum-relay-admin-staging" }
+# }
 operator_emails = []
 
 # Free-plan-safe values; see the variable descriptions.

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.js";
-import { runSmoke } from "./smoke.mjs";
+import { runAdminSmoke, runSmoke } from "./smoke.mjs";
 
 const viaStub = (url, init) => worker.fetch(new Request(url, init));
 
@@ -62,4 +62,24 @@ test("health is retried until it answers", async () => {
   const problems = await runSmoke("https://relay.test", { fetchImpl: flaky, attempts: 5, delayMs: 0 });
   assert.deepEqual(problems, []);
   assert.equal(calls, 3);
+});
+
+test("the admin smoke test accepts a redirect to Access, a refusal and a closed Worker", async () => {
+  for (const status of [302, 401, 403, 503]) {
+    const refusing = () => Promise.resolve(new Response("", { status }));
+    assert.deepEqual(await runAdminSmoke("https://admin.test", { fetchImpl: refusing }), [], String(status));
+  }
+});
+
+test("the admin smoke test catches a success, a 404 and a hostname that does not answer", async () => {
+  const open = () => Promise.resolve(new Response("page", { status: 200 }));
+  const problems = await runAdminSmoke("https://admin.test", { fetchImpl: open });
+  assert.equal(problems.length, 5);
+  assert.ok(problems.every((p) => p.includes("without a credential")));
+  const missing = () => Promise.resolve(new Response("", { status: 404 }));
+  assert.equal((await runAdminSmoke("https://admin.test", { fetchImpl: missing })).length, 5);
+  const down = () => Promise.reject(Object.assign(new Error("down"), { name: "TypeError" }));
+  const unreachable = await runAdminSmoke("https://admin.test", { fetchImpl: down });
+  assert.equal(unreachable.length, 5);
+  assert.ok(unreachable.every((p) => p.includes("did not answer")));
 });

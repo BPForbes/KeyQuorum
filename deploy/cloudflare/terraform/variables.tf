@@ -16,10 +16,13 @@ variable "environments" {
   }))
 }
 
-variable "admin_hostname" {
-  description = "Hostname of the admin Worker, placed behind an Access application with MFA. Leave empty until the admin Worker exists."
-  type        = string
-  default     = ""
+variable "admin_environments" {
+  description = "Each environment's admin hostname and the admin Worker that serves it. Every hostname is placed behind an Access application with MFA. Leave empty to create none."
+  type = map(object({
+    hostname = string
+    worker   = string
+  }))
+  default = {}
 }
 
 variable "operator_emails" {

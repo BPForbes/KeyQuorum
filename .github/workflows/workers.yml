@@ -21,7 +21,11 @@
 #     with a required reviewer), each with the secrets CLOUDFLARE_API_TOKEN
 #     (Workers Scripts edit only) and CLOUDFLARE_ACCOUNT_ID, and the variable
 #     RELAY_URL (the Worker's custom domain, https://...), used for the
-#     environment link and the smoke test.
+#     environment link and the smoke test; optionally ADMIN_URL (the admin
+#     Worker's hostname, which the smoke test expects to refuse an anonymous
+#     caller), and ACCESS_TEAM_DOMAIN and ACCESS_AUD (not secrets: the Access
+#     team's domain and the admin application's audience tag), which the admin
+#     Worker needs before it will serve anything.
 #   - `workers` added to the required checks.
 # Until the secrets exist a deploy job warns and passes, so a merge to main is
 # never blocked by setup that has not happened yet.
@@ -149,16 +153,38 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: "false"
         run: npx wrangler deploy --env staging
+      - name: Deploy the staging admin Worker
+        if: steps.credentials.outputs.configured == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+          ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
+          ACCESS_AUD: ${{ vars.ACCESS_AUD }}
+        run: |
+          # The two variables are not secrets: they name the Access team and the
+          # application's audience tag. While either is empty the Worker is
+          # deployed unconfigured and serves nothing, which is the safe state.
+          args=()
+          if [ -n "${ACCESS_TEAM_DOMAIN}" ] && [ -n "${ACCESS_AUD}" ]; then
+            args+=(--var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" --var "ACCESS_AUD:${ACCESS_AUD}")
+          else
+            echo "::warning::cloudflare-staging has no ACCESS_TEAM_DOMAIN and ACCESS_AUD variables; the admin Worker was deployed unconfigured and serves nothing."
+          fi
+          npx wrangler deploy -c admin/wrangler.toml --env staging "${args[@]}"
       - name: Smoke test
         if: steps.credentials.outputs.configured == 'true'
         env:
           RELAY_URL: ${{ vars.RELAY_URL }}
+          ADMIN_URL: ${{ vars.ADMIN_URL }}
         run: |
           if [ -z "${RELAY_URL}" ]; then
             echo "::warning::cloudflare-staging has no RELAY_URL variable; the smoke test did not run."
             exit 0
           fi
-          node scripts/smoke.mjs "${RELAY_URL}"
+          admin=()
+          if [ -n "${ADMIN_URL}" ]; then admin=(--admin "${ADMIN_URL}"); fi
+          node scripts/smoke.mjs "${RELAY_URL}" "${admin[@]}"
 
   deploy-production:
     name: workers deploy production
@@ -203,12 +229,33 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: "false"
         run: npx wrangler deploy --env=""
+      - name: Deploy the production admin Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+          ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
+          ACCESS_AUD: ${{ vars.ACCESS_AUD }}
+        run: |
+          # The two variables are not secrets: they name the Access team and the
+          # application's audience tag. While either is empty the Worker is
+          # deployed unconfigured and serves nothing, which is the safe state.
+          args=()
+          if [ -n "${ACCESS_TEAM_DOMAIN}" ] && [ -n "${ACCESS_AUD}" ]; then
+            args+=(--var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" --var "ACCESS_AUD:${ACCESS_AUD}")
+          else
+            echo "::warning::cloudflare-production has no ACCESS_TEAM_DOMAIN and ACCESS_AUD variables; the admin Worker was deployed unconfigured and serves nothing."
+          fi
+          npx wrangler deploy -c admin/wrangler.toml --env="" "${args[@]}"
       - name: Smoke test
         env:
           RELAY_URL: ${{ vars.RELAY_URL }}
+          ADMIN_URL: ${{ vars.ADMIN_URL }}
         run: |
           test -n "${RELAY_URL}"
-          node scripts/smoke.mjs "${RELAY_URL}"
+          admin=()
+          if [ -n "${ADMIN_URL}" ]; then admin=(--admin "${ADMIN_URL}"); fi
+          node scripts/smoke.mjs "${RELAY_URL}" "${admin[@]}"
 
   # One stable check name for the whole pipeline, for branch protection. A job
   # that is skipped because an earlier one failed would count as passing, this

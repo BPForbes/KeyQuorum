@@ -67,13 +67,48 @@ export async function runSmoke(baseUrl, { fetchImpl = fetch, attempts = 1, delay
   return problems;
 }
 
+// The admin hostname sits behind Cloudflare Access, and the admin Worker also
+// refuses a request without a valid token. From outside, with no credential,
+// nothing may answer with success: Access redirects to its login (3xx) or
+// refuses, and the Worker answers 403 (or 503 while it is unconfigured).
+export async function runAdminSmoke(baseUrl, { fetchImpl = fetch } = {}) {
+  const base = baseUrl.replace(/\/+$/, "");
+  const problems = [];
+  for (const [method, path] of [
+    ["GET", "/"],
+    ["GET", "/index.html"],
+    ["GET", "/app.js"],
+    ["GET", "/api/whoami"],
+    ["POST", "/api/keys"],
+  ]) {
+    let response;
+    try {
+      response = await fetchImpl(`${base}${path}`, {
+        method,
+        redirect: "manual",
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (error) {
+      problems.push(`admin ${method} ${path} did not answer: ${error?.name ?? "no response"}`);
+      continue;
+    }
+    if (response.status < 300 || response.status >= 600 || response.status === 404) {
+      problems.push(`admin ${method} ${path} answered ${response.status} without a credential`);
+    }
+  }
+  return problems;
+}
+
 async function main(argv) {
   const url = argv[2];
-  if (!url || !/^https:\/\//.test(url)) {
-    console.error("usage: smoke.mjs https://HOSTNAME");
+  const adminFlag = argv.indexOf("--admin");
+  const adminUrl = adminFlag >= 0 ? argv[adminFlag + 1] : null;
+  if (!url || !/^https:\/\//.test(url) || (adminFlag >= 0 && !/^https:\/\//.test(adminUrl ?? ""))) {
+    console.error("usage: smoke.mjs https://HOSTNAME [--admin https://ADMIN_HOSTNAME]");
     return 2;
   }
   const problems = await runSmoke(url, { attempts: 6, delayMs: 5_000 });
+  if (adminUrl) problems.push(...(await runAdminSmoke(adminUrl)));
   for (const problem of problems) console.error(`error: ${problem}`);
   if (problems.length === 0) console.log("smoke: ok");
   return problems.length === 0 ? 0 : 1;
