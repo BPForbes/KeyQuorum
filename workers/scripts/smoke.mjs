@@ -137,7 +137,9 @@ export async function runAdminSmoke(baseUrl, { fetchImpl = fetch } = {}) {
     ["GET", "/app.js"],
     ["GET", "/api/whoami"],
     ["GET", "/api/config"],
-    ["POST", "/api/operate"],
+    ["GET", "/api/users"],
+    ["GET", "/api/status"],
+    ["POST", "/api/users"],
   ]) {
     let response;
     try {
@@ -145,10 +147,9 @@ export async function runAdminSmoke(baseUrl, { fetchImpl = fetch } = {}) {
         method,
         redirect: "manual",
         signal: AbortSignal.timeout(15_000),
-        // The console's one data route, asked for a read with no credential:
-        // it must not reach the relay.
+        // A change asked for with no credential: it must not reach the relay.
         ...(method === "POST"
-          ? { headers: { "content-type": "application/json" }, body: JSON.stringify({ op: "overview" }) }
+          ? { headers: { "content-type": "application/json", "idempotency-key": "smoke-test-never-sent" }, body: JSON.stringify({ name: "smoke" }) }
           : {}),
       });
     } catch (error) {

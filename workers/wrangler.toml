@@ -55,6 +55,11 @@ name = "RATE_LIMITER"
 namespace_id = "4701"
 simple = { limit = 300, period = 60 }
 
+# The version this Worker is (its id, tag and time), which the operator's status
+# page shows. Not inherited by an environment, so staging repeats it.
+[version_metadata]
+binding = "CF_VERSION_METADATA"
+
 # Not secret: the hostname(s) this Worker answers, filled by the deploy job.
 [vars]
 ALLOWED_HOSTS = ""
@@ -83,6 +88,9 @@ new_sqlite_classes = ["RelayObject"]
 name = "RATE_LIMITER"
 namespace_id = "4702"
 simple = { limit = 300, period = 60 }
+
+[env.staging.version_metadata]
+binding = "CF_VERSION_METADATA"
 
 [env.staging.vars]
 ALLOWED_HOSTS = ""

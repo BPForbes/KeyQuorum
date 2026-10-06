@@ -12,7 +12,11 @@ export function createFakeStorage() {
   let depth = 0;
   const sql = {
     exec(query, ...bindings) {
-      for (const statement of query.split(";")) {
+      // The real object refuses a transaction statement of the caller's own, by
+      // what the statement is, not by the text: the END that closes a trigger
+      // body is not one (checked on local workerd).
+      const withoutTriggers = query.replace(/CREATE\s+TRIGGER[\s\S]*?\bEND\s*;/gi, "");
+      for (const statement of withoutTriggers.split(";")) {
         if (TRANSACTION_STATEMENT.test(statement)) {
           throw new Error("To execute a transaction, please use the state.storage.transactionSync() API");
         }

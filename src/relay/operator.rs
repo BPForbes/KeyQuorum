@@ -9,7 +9,7 @@
 //!
 //! **Reading** (`overview`, `users`, `user`, `keys`, `activity`, `audit`,
 //! `letters`, `trees`, `checkpoint`, `status`) needs only the identity Access
-//! verified. **Changing anything** (`create_customer`, `issue`,
+//! verified. **Changing anything** (`create_customer`, `create_licence`, `issue`,
 //! `renew_licence`, `void_licence`, `rotate`, `void_key`, `assign_key`) also
 //! needs the operator lock (`kql_…`), presented with that one request, and an
 //! operation id. The lock is checked against the hash the relay holds and is
@@ -138,6 +138,13 @@ enum Request {
         recipient_public_key: String,
         relay_url: String,
         device_id: Option<String>,
+    },
+    CreateLicence {
+        operation_id: Option<String>,
+        customer_id: i64,
+        terms: Option<String>,
+        expires_at: Option<String>,
+        replaces_licence_id: Option<i64>,
     },
     RenewLicence {
         operation_id: Option<String>,
@@ -519,6 +526,27 @@ fn run(
                 "licence": licence_summary(&issued.licence),
                 "bundles": bundles,
                 "voided_licence_id": issued.voided.as_ref().map(|v| v.licence_id),
+            }))
+        }
+        Request::CreateLicence {
+            operation_id,
+            customer_id,
+            terms,
+            expires_at,
+            replaces_licence_id,
+        } => {
+            let subject = format!("customer {customer_id}");
+            let new = NewLicence {
+                terms: terms.unwrap_or_default(),
+                expires_at,
+                replaces: replaces_licence_id,
+            };
+            let (made, voided) = change(store, ctx, "create_licence", &subject, operation_id.as_deref(), |note| {
+                store.create_licence(customer_id, &new, Some(note))
+            })?;
+            changed(json!({
+                "licence": licence_summary(&made),
+                "voided_licence_id": voided.as_ref().map(|v| v.licence_id),
             }))
         }
         Request::RenewLicence {

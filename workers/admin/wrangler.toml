@@ -32,9 +32,23 @@ binding = "ASSETS"
 run_worker_first = true
 
 [[durable_objects.bindings]]
-name = "RELAY"
+name = "RELAY_ADMIN"
 class_name = "RelayObject"
 script_name = "keyquorum-relay"
+
+# Per-operator limits, keyed on the verified operator's email: reads, and the
+# much lower one for anything that changes the relay. A namespace_id is
+# account-wide, so each environment's is its own number (the public Worker
+# uses 4701 and 4702).
+[[ratelimits]]
+name = "READ_LIMITER"
+namespace_id = "4801"
+simple = { limit = 120, period = 60 }
+
+[[ratelimits]]
+name = "WRITE_LIMITER"
+namespace_id = "4802"
+simple = { limit = 20, period = 60 }
 
 [vars]
 ACCESS_TEAM_DOMAIN = ""
@@ -53,9 +67,19 @@ binding = "ASSETS"
 run_worker_first = true
 
 [[env.staging.durable_objects.bindings]]
-name = "RELAY"
+name = "RELAY_ADMIN"
 class_name = "RelayObject"
 script_name = "keyquorum-relay-staging"
+
+[[env.staging.ratelimits]]
+name = "READ_LIMITER"
+namespace_id = "4803"
+simple = { limit = 120, period = 60 }
+
+[[env.staging.ratelimits]]
+name = "WRITE_LIMITER"
+namespace_id = "4804"
+simple = { limit = 20, period = 60 }
 
 [env.staging.vars]
 ACCESS_TEAM_DOMAIN = ""

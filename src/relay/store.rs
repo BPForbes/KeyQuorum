@@ -263,6 +263,13 @@ pub trait RelayStore: Send + Sync {
     fn licence_counts(&self) -> Result<licence::Counts>;
     /// Every key link.
     fn key_links(&self) -> Result<Vec<KeyLink>>;
+    /// Record a licence for an existing customer, with no keys.
+    fn create_licence(
+        &self,
+        customer_id: i64,
+        new: &licence::NewLicence,
+        note: Option<&Note<'_>>,
+    ) -> Result<(Licence, Option<Voided>)>;
     /// Issue a licence's keys as sealed bundles (see [`issuance::issue`]).
     fn issue_licensed_bundles(
         &self,
@@ -668,6 +675,15 @@ impl<S: Sql + Send> RelayStore for SqlRelayStore<S> {
 
     fn key_links(&self) -> Result<Vec<KeyLink>> {
         self.with(|conn| licence::all_links(conn))
+    }
+
+    fn create_licence(
+        &self,
+        customer_id: i64,
+        new: &licence::NewLicence,
+        note: Option<&Note<'_>>,
+    ) -> Result<(Licence, Option<Voided>)> {
+        self.with(|conn| issuance::create_licence(conn, customer_id, new, note))
     }
 
     fn issue_licensed_bundles(

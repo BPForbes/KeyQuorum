@@ -39,6 +39,12 @@ export class RelayObject extends DurableObject {
     return this.service.operate(request);
   }
 
+  // The operator's status page, called only by the admin Worker through its
+  // binding.
+  status() {
+    return this.service.status();
+  }
+
   ready() {
     return this.service.ready();
   }

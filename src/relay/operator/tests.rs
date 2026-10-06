@@ -709,3 +709,36 @@ fn a_store_failure_is_reported_in_fixed_words_not_the_stores() {
     assert_eq!(failure(&Error::KeyNotAssigned).status, 409);
     assert_eq!(failure(&Error::DeliveryNotCollectable).status, 409);
 }
+
+#[test]
+fn a_licence_is_recorded_for_a_customer_without_keys_and_a_replacement_voids_the_old_one() {
+    let c = console();
+    let lock = c.lock();
+    let (_, made) = c.change(json!({ "op": "create_customer", "name": "Acme", "reference": "C-9" }), &lock);
+    let customer_id = made["customer"]["id"].as_i64().expect("customer");
+    assert_eq!(made["customer"]["reference"], "C-9");
+    // The same reference is refused.
+    assert_eq!(c.change(json!({ "op": "create_customer", "name": "Other", "reference": "C-9" }), &lock).0, 400);
+
+    let (status, first) = c.change(
+        json!({ "op": "create_licence", "customer_id": customer_id, "terms": "Five seats.", "expires_at": "2999-01-01" }),
+        &lock,
+    );
+    assert_eq!(status, 200);
+    assert_eq!((first["licence"]["status"].as_str(), first["licence"]["version"].as_i64()), (Some("active"), Some(1)));
+    assert!(c.store.list_keys().expect("keys").is_empty(), "a licence record carries no keys");
+    let first_id = first["licence"]["id"].as_i64().expect("licence");
+
+    let (status, second) = c.change(
+        json!({ "op": "create_licence", "customer_id": customer_id, "terms": "Ten seats.", "replaces_licence_id": first_id }),
+        &lock,
+    );
+    assert_eq!(status, 200);
+    assert_eq!(second["voided_licence_id"], first_id);
+    assert_eq!(second["licence"]["replaces_licence_id"], first_id);
+    let (_, detail) = c.ask(json!({ "op": "user", "id": customer_id }), None);
+    let statuses: Vec<_> = detail["licences"].as_array().expect("licences").iter().map(|l| l["status"].as_str().expect("status")).collect();
+    assert_eq!(statuses, ["active", "voided"]);
+    assert_eq!(c.change(json!({ "op": "create_licence", "customer_id": 99 }), &lock).0, 404);
+    assert_eq!(c.change(json!({ "op": "create_licence", "customer_id": customer_id, "expires_at": "2000-01-01" }), &lock).0, 400);
+}

@@ -94,7 +94,7 @@ test("whoami returns the verified email and expiry, and nothing else", async () 
 
 test("an api route the console does not have is 404, and nothing is read from the assets", async () => {
   const assets = assetsStub();
-  for (const path of ["/api", "/api/status", "/api/keys", "/api/audit/events"]) {
+  for (const path of ["/api", "/api/operate", "/api/users/1/everything", "/api/audit/events"]) {
     const response = await handle(get(path), { ...ENV, ASSETS: assets }, { verify: allow() });
     assert.equal(response.status, 404, path);
     assert.deepEqual(await response.json(), { error: "not found" });
@@ -102,18 +102,18 @@ test("an api route the console does not have is 404, and nothing is read from th
   assert.equal(assets.calls.length, 0);
 });
 
-test("only GET and HEAD are allowed everywhere but the one console route, which is POST only", async () => {
+test("outside the API only GET and HEAD are allowed, and the API answers a wrong method with the methods it has", async () => {
   const assets = assetsStub();
   for (const method of ["POST", "PUT", "DELETE", "PATCH"]) {
-    const response = await handle(get("/api/keys", { method }), { ...ENV, ASSETS: assets }, { verify: allow() });
-    assert.equal(response.status, 405, method);
-    assert.equal(response.headers.get("allow"), "GET, HEAD");
+    for (const path of ["/", "/index.html", "/api/whoami", "/api/config"]) {
+      const response = await handle(get(path, { method }), { ...ENV, ASSETS: assets }, { verify: allow() });
+      assert.equal(response.status, 405, `${method} ${path}`);
+      assert.equal(response.headers.get("allow"), "GET, HEAD");
+    }
   }
-  for (const method of ["GET", "HEAD", "PUT", "DELETE", "PATCH"]) {
-    const response = await handle(get("/api/operate", { method }), { ...ENV, ASSETS: assets }, { verify: allow() });
-    assert.equal(response.status, 405, method);
-    assert.equal(response.headers.get("allow"), "POST");
-  }
+  const wrong = await handle(get("/api/users", { method: "DELETE" }), { ...ENV, ASSETS: assets }, { verify: allow() });
+  assert.equal(wrong.status, 405);
+  assert.equal(wrong.headers.get("allow"), "GET, POST");
   assert.equal(assets.calls.length, 0);
 });
 

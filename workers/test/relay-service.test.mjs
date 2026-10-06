@@ -351,52 +351,69 @@ test("the alarm's scan purges expired letters and works without an identity", as
 // --- The provider's console, through the real core ---------------------------
 
 const OPERATOR = "ops@provider.test";
-function withIdentity() {
+function withIdentity(extra = {}) {
   return open({
     env: {
       RELAY_CERTIFICATE: randomBytes(40).toString("base64"),
       RELAY_PRIVATE_KEY: randomBytes(32).toString("hex"),
+      ...extra,
     },
   });
 }
+let counter = 0;
+const operation = () => `op-service-${String((counter += 1)).padStart(6, "0")}`;
 const ask = async (service, request, lock) => {
   const answer = service.operate({ body: JSON.stringify(request), operator: OPERATOR, lock });
   return { status: answer.status, body: JSON.parse(answer.body) };
 };
+const askChange = (service, request, lock) => ask(service, { operation_id: operation(), ...request }, lock);
 
-test("the console answers a read with only the operator's identity, and nothing is shown that is not the relay's own", async () => {
+// The lock, staged and confirmed.
+async function lockOf(service) {
+  const staged = (await ask(service, { op: "bootstrap" })).body.operator_lock;
+  assert.equal((await ask(service, { op: "confirm_lock" }, staged)).status, 200);
+  return staged;
+}
+
+test("the console answers a read with only the operator's identity", async () => {
   const { service } = withIdentity();
   const { status, body } = await ask(service, { op: "overview" });
   assert.equal(status, 200);
   assert.equal(body.operator_lock, false);
   assert.equal(body.identity_configured, true);
-  assert.deepEqual(body.keys, { live: 0, revoked: 0, expired: 0 });
+  assert.deepEqual(body.keys, { live: 0, revoked: 0, expired: 0, unassigned: 0 });
   assert.deepEqual(body.letters, { inbox: 0, devices: 0 });
+  assert.equal(body.customers, 0);
 });
 
-test("the operator lock is created once and shown once, and changing anything needs it", async () => {
+test("the operator lock is staged, confirmed and shown once, and changing anything needs it and an operation id", async () => {
   const { service, log } = withIdentity();
-  const issue = (lock) =>
-    ask(
+  const issue = (lock, extra = {}) =>
+    askChange(
       service,
       {
         op: "issue",
-        client: "Acme Ltd",
+        name: "Acme Ltd",
         terms: "Five seats.",
         scopes: ["inbox.push", "inbox.pull"],
         recipient_public_key: randomBytes(32).toString("hex"),
         relay_url: "https://relay.example.test",
+        ...extra,
       },
       lock,
     );
   assert.equal((await issue(undefined)).body.code, "no_lock");
-  const created = await ask(service, { op: "bootstrap" });
-  assert.equal(created.status, 200);
-  const lock = created.body.operator_lock;
+  const staged = (await ask(service, { op: "bootstrap" })).body;
+  assert.equal(staged.pending, true);
+  const lock = staged.operator_lock;
   assert.match(lock, /^kql_[A-Za-z0-9_-]{20,}$/);
+  assert.equal((await issue(lock)).body.code, "lock_unconfirmed", "a staged lock authorises nothing");
+  assert.equal((await ask(service, { op: "confirm_lock" }, `kql_${randomBytes(32).toString("base64url")}`)).body.code, "lock_refused");
+  assert.equal((await ask(service, { op: "confirm_lock" }, lock)).status, 200);
   assert.equal((await ask(service, { op: "bootstrap" })).status, 409);
   assert.equal((await issue(undefined)).body.code, "lock_required");
   assert.equal((await issue(`kql_${randomBytes(32).toString("base64url")}`)).body.code, "lock_refused");
+  assert.equal((await ask(service, { op: "issue", name: "Acme", scopes: ["inbox.push"], recipient_public_key: randomBytes(32).toString("hex"), relay_url: "https://relay.example.test" }, lock)).body.code, "operation_id_required");
   assert.equal((await ask(service, { op: "keys" })).body.keys.length, 0);
 
   const issued = await issue(lock);
@@ -409,16 +426,38 @@ test("the operator lock is created once and shown once, and changing anything ne
   }
   const keys = (await ask(service, { op: "keys" })).body.keys;
   assert.equal(keys.length, 2);
-  assert.ok(keys.every((key) => key.client === "Acme Ltd" && key.state === "live"));
+  assert.ok(keys.every((key) => key.customer === "Acme Ltd" && key.state === "live" && key.assigned));
   // Neither the lock nor a bearer is in any log or any later answer.
-  const logged = JSON.stringify(log.lines);
-  assert.ok(!logged.includes(lock));
-  assert.ok(!JSON.stringify((await ask(service, { op: "events" })).body).includes(lock));
+  assert.ok(!JSON.stringify(log.lines).includes(lock));
+  for (const feed of ["keys", "actions", "auth"]) {
+    assert.ok(!JSON.stringify((await ask(service, { op: "audit", feed })).body).includes(lock));
+  }
 
-  const voided = await ask(service, { op: "void_licence", licence_id: issued.body.licence.id, reason: "end" }, lock);
+  const voided = await askChange(service, { op: "void_licence", licence_id: issued.body.licence.id, reason: "end" }, lock);
   assert.equal(voided.status, 200);
   assert.equal(voided.body.revoked_keys.length, 2);
   assert.ok((await ask(service, { op: "keys" })).body.keys.every((key) => key.state === "revoked"));
+});
+
+test("a lost response is reconciled by the operation id, never done twice, through the real core", async () => {
+  const { service } = withIdentity();
+  const lock = await lockOf(service);
+  const request = {
+    op: "issue",
+    operation_id: "op-lost-response-1",
+    name: "Acme Ltd",
+    scopes: ["inbox.push"],
+    recipient_public_key: randomBytes(32).toString("hex"),
+    relay_url: "https://relay.example.test",
+  };
+  const first = await ask(service, request, lock);
+  assert.equal(first.status, 200);
+  const again = await ask(service, request, lock);
+  assert.deepEqual([again.status, again.body.code], [409, "already_done"]);
+  assert.equal(again.body.operation.result.licence_id, first.body.licence.id);
+  assert.ok(!JSON.stringify(again.body).includes("bundle_base64"));
+  assert.equal((await ask(service, { op: "users" })).body.users.length, 1);
+  assert.equal((await ask(service, { op: "keys" })).body.keys.length, 1);
 });
 
 test("without an identity the console cannot create the lock or issue, and says so", async () => {
@@ -451,9 +490,13 @@ test("a relay that failed to start answers the console with the same refusal as 
   const { service } = open({ env: { RELAY_CERTIFICATE: randomBytes(40).toString("base64") } });
   const answer = service.operate({ body: JSON.stringify({ op: "overview" }), operator: OPERATOR });
   assert.equal(answer.status, 503);
+  const status = await service.status();
+  assert.equal(status.ready, false);
+  assert.equal(status.failure, "relay identity misconfigured");
+  assert.equal(status.relay, null);
 });
 
-test("a known key's requests and refusals are counted for the console, and an unknown bearer is not", async () => {
+test("a known key's requests, refusals, time and bytes are counted for the console, and an unknown bearer is not", async () => {
   const { service, storage } = withIdentity();
   const push = addKey(storage, "inbox.push");
   // A push key cannot pull: refused for its scope, and counted as such.
@@ -463,18 +506,25 @@ test("a known key's requests and refusals are counted for the console, and an un
   assert.equal((await get(service, "/inbox", { authorization: `Bearer ${unknown}` })).status, 401);
   const view = (await ask(service, { op: "activity", hours: 24 })).body;
   assert.equal(view.by_key.length, 1);
-  assert.deepEqual(
-    [view.by_key[0].route, view.by_key[0].outcome, view.by_key[0].count],
-    ["inbox", "scope", 2],
-  );
+  assert.deepEqual([view.by_key[0].route, view.by_key[0].outcome, view.by_key[0].count], ["inbox", "scope", 2]);
+  assert.equal(view.totals.blocked, 2);
+  assert.equal(view.totals.requests, 2);
+  assert.ok(view.totals.bytes_out > 0, "the response bytes are counted");
   assert.equal((await ask(service, { op: "overview" })).body.last_24h.blocked, 2);
-  const count = storage.db.prepare("SELECT COUNT(*) AS n FROM access_activity").get().n;
-  assert.equal(count, 1);
+  assert.equal(storage.db.prepare("SELECT COUNT(*) AS n FROM access_activity").get().n, 1);
+});
+
+test("a failure to count a request never changes its answer", async () => {
+  const { service, storage, log } = withIdentity();
+  const push = addKey(storage, "inbox.push");
+  storage.db.exec("DROP TABLE access_activity");
+  assert.equal((await get(service, "/inbox", { authorization: `Bearer ${push}` })).status, 403);
+  assert.ok(JSON.stringify(log.lines).includes("could not be counted"));
 });
 
 test("the console is not a route of the public fetch: the core knows no such path", async () => {
   const { service } = withIdentity();
-  for (const path of ["/operate", "/api/operate", "/console", "/licences"]) {
+  for (const path of ["/operate", "/api/operate", "/console", "/licences", "/users", "/status"]) {
     assert.equal((await post(service, path, JSON.stringify({ op: "overview" }))).status, 404, path);
   }
 });
@@ -493,17 +543,68 @@ test("the scan drops activity past its retention and keeps the recent", async ()
   assert.equal(storage.db.prepare("SELECT COUNT(*) AS n FROM access_activity").get().n, 1);
 });
 
-test("the operator lock is replaced with the current one through the real core, and the old one is refused", async () => {
+test("the lock is replaced in two steps through the real core, and the old one stands until the new is confirmed", async () => {
   const { service } = withIdentity();
-  const old = (await ask(service, { op: "bootstrap" })).body.operator_lock;
+  const old = await lockOf(service);
   assert.equal((await ask(service, { op: "rotate_lock" })).body.code, "lock_required");
-  const rotated = await ask(service, { op: "rotate_lock" }, old);
-  assert.equal(rotated.status, 200);
-  const fresh = rotated.body.operator_lock;
-  assert.match(fresh, /^kql_/);
+  const staged = await ask(service, { op: "rotate_lock" }, old);
+  assert.equal(staged.status, 200);
+  const fresh = staged.body.operator_lock;
   assert.notEqual(fresh, old);
   const attempt = (lock) =>
-    ask(service, { op: "void_key", key_id: 1 }, lock).then((answer) => answer.body.code ?? answer.status);
+    askChange(service, { op: "void_key", key_id: 1 }, lock).then((answer) => answer.body.code ?? answer.status);
+  assert.equal(await attempt(old), "not_found", "the old lock still stands until the new one is confirmed");
+  assert.equal(await attempt(fresh), "lock_refused");
+  assert.equal((await ask(service, { op: "confirm_lock" }, fresh)).status, 200);
   assert.equal(await attempt(old), "lock_refused");
   assert.equal(await attempt(fresh), "not_found", "the new lock is accepted (there is just no such key)");
+});
+
+test("the status joins what the core knows with what only the object can see", async () => {
+  const meta = { id: "version-id-1", tag: "v1", timestamp: "2026-10-06T10:00:00.000Z" };
+  const { service, storage } = withIdentity({ CF_VERSION_METADATA: meta });
+  Object.defineProperty(storage.sql, "databaseSize", { value: 24576 });
+  await service.start();
+  const before = await service.status();
+  assert.equal(before.ready, true);
+  assert.equal(before.runtime.started_at, NOW.toISOString());
+  assert.deepEqual(before.runtime.deployment, meta);
+  assert.equal(before.runtime.storage_bytes, 24576);
+  assert.equal(before.runtime.alarm.next_at, new Date(NOW.getTime() + SCAN_INTERVAL_MS).toISOString());
+  assert.deepEqual([before.runtime.alarm.last_run_at, before.runtime.alarm.last_failure], [null, null]);
+  assert.equal(before.relay.identity.configured, true);
+  assert.deepEqual(before.relay.operator_lock, { exists: false, pending: false });
+  assert.deepEqual(before.relay.counts, { customers: 0, keys: 0 });
+  assert.ok(before.note.includes("not counted here"));
+
+  // Requests admitted and refused for being busy are counted from the object's view.
+  const key = addKey(storage, "inbox.pull", "a".repeat(64));
+  await get(service, "/inbox", { authorization: `Bearer ${key}` });
+  await service.alarm();
+  const after = await service.status();
+  assert.equal(after.runtime.requests_admitted, 1);
+  assert.equal(after.runtime.alarm.last_run_at, NOW.toISOString());
+  assert.equal(JSON.stringify(after).includes(key), false);
+});
+
+test("the status says plainly when the platform does not tell the size or the version", async () => {
+  const { service } = open();
+  const status = await service.status();
+  assert.equal(status.runtime.storage_bytes, null);
+  assert.equal(status.runtime.deployment, null);
+  assert.equal(status.relay.identity.configured, false);
+});
+
+test("the schema keeps a delivered licence statement immutable in the real object storage", async () => {
+  const { service, storage } = withIdentity();
+  const lock = await lockOf(service);
+  const made = await askChange(service, { op: "create_customer", name: "Acme" }, lock);
+  const licence = await askChange(
+    service,
+    { op: "create_licence", customer_id: made.body.customer.id, terms: "As delivered." },
+    lock,
+  );
+  assert.equal(licence.status, 200);
+  assert.throws(() => storage.db.exec("UPDATE licence_versions SET terms = 'rewritten'"), /immutable/);
+  assert.throws(() => storage.db.exec("DELETE FROM licence_versions"), /immutable/);
 });

@@ -147,12 +147,12 @@ test("the admin smoke test accepts a redirect to Access, a refusal and a closed 
 test("the admin smoke test catches a success, a 404 and a hostname that does not answer", async () => {
   const open = () => Promise.resolve(new Response("page", { status: 200 }));
   const problems = await runAdminSmoke("https://admin.test", { fetchImpl: open });
-  assert.equal(problems.length, 6);
+  assert.equal(problems.length, 8);
   assert.ok(problems.every((p) => p.includes("without a credential")));
   const missing = () => Promise.resolve(new Response("", { status: 404 }));
-  assert.equal((await runAdminSmoke("https://admin.test", { fetchImpl: missing })).length, 6);
+  assert.equal((await runAdminSmoke("https://admin.test", { fetchImpl: missing })).length, 8);
   const down = () => Promise.reject(Object.assign(new Error("down"), { name: "TypeError" }));
   const unreachable = await runAdminSmoke("https://admin.test", { fetchImpl: down });
-  assert.equal(unreachable.length, 6);
+  assert.equal(unreachable.length, 8);
   assert.ok(unreachable.every((p) => p.includes("did not answer")));
 });

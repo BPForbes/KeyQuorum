@@ -196,6 +196,35 @@ pub fn create_customer(
     })
 }
 
+/// Records a licence for an existing customer, with no keys, atomically with
+/// its operation record. A licence recorded as replacing another voids it, with
+/// its keys, in the same unit of work.
+pub fn create_licence(
+    conn: &dyn Sql,
+    customer_id: i64,
+    new: &NewLicence,
+    note: Option<&Note<'_>>,
+) -> Result<(Licence, Option<Voided>)> {
+    conn.with_transaction(|| {
+        customer::get(conn, customer_id)?;
+        let made = licence::create(conn, customer_id, new)?;
+        let voided = match made.replaces_licence_id {
+            Some(old) => Some(void_inner(conn, old, Some("replaced by a new licence"))?),
+            None => None,
+        };
+        done(
+            note,
+            conn,
+            json!({
+                "customer_id": customer_id,
+                "licence_id": made.id,
+                "voided_licence_id": voided.as_ref().map(|v| v.licence_id),
+            }),
+        )?;
+        Ok((made, voided))
+    })
+}
+
 /// Issues the licence's keys as sealed bundles, atomically: the customer and
 /// licence (when new), one key per scope, each key's delivery record and its
 /// link to the licence, a replaced licence's voiding if one is named, and the
