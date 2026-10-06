@@ -33,6 +33,11 @@ relay:
   scanIntervalSeconds: 60
   # RUST_LOG for the relay (INFO shows denials and purges; never secrets).
   logLevel: info
+  # Serve the operator console at /console/ (public static files embedded
+  # in the image; everything it shows needs an API key). Restrict that path
+  # at the ingress to operator networks or an identity-aware proxy, or turn
+  # it off here (docs/operator/relay-deployment.md, "Operator console").
+  console: true
   # The database within the MongoDB deployment.
   mongodbDatabase: keyquorum
 

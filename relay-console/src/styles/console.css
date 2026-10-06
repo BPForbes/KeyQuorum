@@ -1,0 +1,586 @@
+/* Palette and type follow the KeyQuorum Lab (lab/src/styles/lab.css), so
+   the two interfaces read as one family. The console loads no web font and
+   no remote stylesheet: it is served under a Content-Security-Policy that
+   allows nothing but its own origin. */
+:root {
+  --p-near-black: #10120f;
+  --p-bark: #181a16;
+  --p-moss-dark: #1f221c;
+  --p-line: #2c2f28;
+  --p-line-strong: #3d4036;
+  --p-stone: #6d7264;
+  --p-bone: #ebe6d8;
+  --p-linen: #c4bdae;
+  --p-ash: #8f897b;
+  --p-copper: #c98a4a;
+  --p-copper-soft: #e0b27a;
+  --p-patina-soft: #9dc389;
+  --p-rust: #e0685c;
+  --p-ink: #0b0c0a;
+
+  --surface-page: var(--p-near-black);
+  --surface-raised: var(--p-bark);
+  --surface-sunken: var(--p-moss-dark);
+  --text: var(--p-bone);
+  --text-muted: var(--p-linen);
+  --text-subtle: var(--p-ash);
+  --border: var(--p-line);
+  --border-strong: var(--p-line-strong);
+  --action: var(--p-copper);
+  --action-hover: var(--p-copper-soft);
+  --focus: var(--p-copper-soft);
+  --ok: var(--p-patina-soft);
+  --error: var(--p-rust);
+
+  --font-display: "Fraunces", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --font-body: "Sora", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+  --radius: 12px;
+  --tap: 44px;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--surface-page);
+  color: var(--text);
+  font: 15px/1.5 var(--font-body);
+}
+
+code,
+pre {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+a {
+  color: var(--action-hover);
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  line-height: 1.2;
+  margin: 0 0 0.5rem;
+}
+
+h1 {
+  font-size: clamp(1.4rem, 3vw, 2rem);
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.eyebrow {
+  margin: 0 0 0.25rem;
+  color: var(--action-hover);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.small {
+  font-size: 0.85rem;
+}
+
+.console,
+.console-boot {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+.console-boot {
+  padding-top: 20vh;
+}
+
+.console-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: flex-end;
+  justify-content: space-between;
+}
+
+.console-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.console-build {
+  color: var(--text-subtle);
+  font-size: 0.8rem;
+}
+
+.console-disclaimer {
+  margin: 0.75rem 0 1rem;
+  padding: 0.75rem 1rem;
+  border-left: 3px solid var(--action);
+  background: var(--surface-sunken);
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+  padding: 0.5rem 0.9rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-sunken);
+  color: var(--text);
+  font: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.btn:hover {
+  border-color: var(--action);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--action);
+  border-color: var(--action);
+  color: var(--p-ink);
+  font-weight: 600;
+}
+
+.btn-primary:hover {
+  background: var(--action-hover);
+}
+
+.btn-danger {
+  border-color: var(--error);
+}
+
+.small-btn {
+  min-height: auto;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.8rem;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.75rem;
+}
+
+.console-tab {
+  min-height: var(--tap);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-sunken);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.console-tab[aria-pressed="true"] {
+  border-color: var(--action);
+  background: #2a2319;
+  box-shadow: inset 3px 0 0 var(--action);
+}
+
+.panel {
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+}
+
+.panel-title {
+  font-size: 1.1rem;
+}
+
+.session {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) 2fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+.session p {
+  margin: 0.15rem 0;
+}
+
+.session-name {
+  font-size: 1.25rem;
+}
+
+.signin-form,
+.check-form,
+.lookup-form {
+  display: grid;
+  gap: 0.4rem;
+  align-content: start;
+}
+
+.signin-form input,
+.check-form input,
+.lookup-form input,
+.filter {
+  min-height: var(--tap);
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-page);
+  color: var(--text);
+  font: inherit;
+  font-family: var(--font-mono);
+}
+
+.console-status {
+  margin: 1rem 0;
+  padding: 0.6rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-sunken);
+}
+
+.console-status.is-ok {
+  border-color: var(--ok);
+}
+
+.console-status.is-error {
+  border-color: var(--error);
+}
+
+.console-tabs {
+  display: none;
+}
+
+.console-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.panel-wide {
+  grid-column: 1 / -1;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.3rem 0.9rem;
+  margin: 0 0 0.75rem;
+}
+
+.facts > div {
+  display: contents;
+}
+
+.facts dt {
+  color: var(--text-subtle);
+}
+
+.facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.hash {
+  overflow-wrap: anywhere;
+}
+
+.status-pill {
+  display: inline-block;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  font-size: 0.78rem;
+}
+
+.status-ok {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.status-error {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.status-muted {
+  color: var(--text-subtle);
+}
+
+.tag {
+  display: inline-block;
+  margin: 0.1rem 0.25rem 0.1rem 0;
+  padding: 0.05rem 0.45rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  margin-top: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.data-table th {
+  padding: 0.5rem 0.7rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border-strong);
+  background: var(--surface-sunken);
+  color: var(--text-muted);
+}
+
+.data-table td {
+  padding: 0.45rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.data-table tbody tr:hover {
+  background: var(--surface-sunken);
+}
+
+.tree,
+.tree ul {
+  list-style: none;
+  margin: 0;
+  padding-left: 1rem;
+}
+
+.tree {
+  padding-left: 0;
+}
+
+.tree ul {
+  border-left: 1px dashed var(--border-strong);
+  margin-left: 0.5rem;
+}
+
+.tree-node {
+  display: grid;
+  gap: 0.15rem;
+  margin: 0.35rem 0;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-sunken);
+}
+
+.tree-node[data-active] {
+  border-color: var(--action);
+}
+
+.tree-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.mono-list {
+  margin: 0.25rem 0;
+  padding-left: 1rem;
+}
+
+.notice {
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--action);
+  background: var(--surface-sunken);
+}
+
+.empty {
+  color: var(--text-subtle);
+}
+
+.log ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.log li {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.log p {
+  margin: 0.25rem 0 0;
+}
+
+.outcome {
+  display: inline-block;
+  min-width: 3.5rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.outcome-ok {
+  color: var(--ok);
+}
+
+.outcome-failed {
+  color: var(--error);
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.modal {
+  display: flex;
+  flex-direction: column;
+  width: min(34rem, 100%);
+  max-height: 85vh;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface-raised);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.modal-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-sunken);
+}
+
+.modal-titlebar h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.modal-close {
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.modal-body {
+  padding: 1rem;
+  overflow-y: auto;
+}
+
+.console-footer {
+  margin-top: 1.5rem;
+  color: var(--text-subtle);
+  font-size: 0.85rem;
+}
+
+/* Tablets: one column, every section still visible. */
+@media (max-width: 960px) {
+  .console-grid,
+  .session {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Phones: one section at a time, chosen from the tab row. */
+@media (max-width: 640px) {
+  .console {
+    padding: 0.75rem;
+  }
+
+  .console-disclaimer {
+    font-size: 0.8rem;
+  }
+
+  .console-tabs {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    gap: 0.35rem;
+    overflow-x: auto;
+    margin: 0 -0.75rem 0.75rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--surface-page);
+  }
+
+  .console-tab {
+    flex: 0 0 auto;
+    padding: 0.3rem 0.7rem;
+  }
+
+  .console-grid > .panel {
+    display: none;
+  }
+
+  .console-grid[data-tab="relay"] > [data-panel="relay"],
+  .console-grid[data-tab="keys"] > [data-panel="keys"],
+  .console-grid[data-tab="audit"] > [data-panel="audit"],
+  .console-grid[data-tab="check"] > [data-panel="check"],
+  .console-grid[data-tab="trees"] > [data-panel="trees"],
+  .console-grid[data-tab="devices"] > [data-panel="devices"],
+  .console-grid[data-tab="activity"] > [data-panel="activity"] {
+    display: block;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    scroll-behavior: auto !important;
+  }
+}

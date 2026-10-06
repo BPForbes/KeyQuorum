@@ -19,13 +19,27 @@
 # authoritative for anything: with MongoDB configured the SQLite file is
 # not opened at all, and the root filesystem can be read-only.
 #
+# The operator console the relay serves at /console/ (relay-console/) is
+# built first and embedded into the binary by build.rs; it is public static
+# files and holds no secret.
+#
 # Build arguments:
 #   RUST_VERSION   the Rust toolchain tag of the builder image
+#   NODE_VERSION   the Node.js tag of the console builder image
 #   FEATURES       cargo features of the binary (provider is required to
 #                  serve; mongodb for the hosted store)
 
 ARG RUST_VERSION=1.97
+ARG NODE_VERSION=22
 ARG FEATURES=provider,mongodb
+
+# --- console --------------------------------------------------------------
+FROM node:${NODE_VERSION}-bookworm-slim AS console
+WORKDIR /console
+COPY relay-console/package.json relay-console/package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci --ignore-scripts
+COPY relay-console/ ./
+RUN npm run build
 
 # --- build ----------------------------------------------------------------
 FROM rust:${RUST_VERSION}-bookworm AS build
@@ -34,6 +48,7 @@ WORKDIR /src
 # The dependency graph first, so a source change does not refetch it.
 COPY Cargo.toml Cargo.lock build.rs deny.toml ./
 COPY src ./src
+COPY --from=console /console/dist ./relay-console/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --locked --release --features "${FEATURES}" --bin keyquorum \

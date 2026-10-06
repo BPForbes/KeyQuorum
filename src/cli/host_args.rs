@@ -36,6 +36,10 @@ pub enum HostCommand {
         /// X-Forwarded-For address, which the proxy must set.
         #[arg(long, default_value_t = 600)]
         rate_limit_per_minute: u32,
+        /// Do not serve the operator console at /console. The console is
+        /// public static files; everything it shows needs an API key.
+        #[arg(long)]
+        no_console: bool,
     },
     /// Generate a relay identity keypair (private key written owner-only).
     Identity {

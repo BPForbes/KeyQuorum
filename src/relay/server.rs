@@ -44,6 +44,9 @@ pub struct AppState {
     admission: Arc<Semaphore>,
     probe_admission: Arc<Semaphore>,
     admission_wait: Duration,
+    /// Whether the operator console (`super::console`) is served at
+    /// `/console/`; `host serve --no-console` turns it off.
+    console: bool,
 }
 
 /// Store operations a relay runs at once by default (see
@@ -79,7 +82,14 @@ impl AppState {
             admission: Arc::new(Semaphore::new(DEFAULT_STORE_CONCURRENCY)),
             probe_admission: Arc::new(Semaphore::new(PROBE_CONCURRENCY)),
             admission_wait: STORE_ADMISSION_WAIT,
+            console: true,
         }
+    }
+
+    /// Leave the operator console out of the router (`--no-console`).
+    pub fn without_console(mut self) -> Self {
+        self.console = false;
+        self
     }
 
     /// How long a request waits for a store slot (tests shorten it).
@@ -874,8 +884,15 @@ pub fn check_bind(addr: &SocketAddr, behind_tls_proxy: bool) -> crate::error::Re
 
 pub fn router(state: AppState) -> Router {
     let limiter = state.rate_limit.clone();
+    // The console is static files inside the same router, so the request
+    // timeout, the rate limit and the trace apply to it like to the API.
+    let console = state
+        .console
+        .then(super::console::router)
+        .unwrap_or_default();
     let app = Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
+        .merge(console)
         .route("/health", get(health))
         .route("/ready", get(ready))
         .route("/keycheck", post(post_keycheck))

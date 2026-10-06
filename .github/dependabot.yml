@@ -2,7 +2,7 @@
 # steps and reusable-workflow calls like notify-portfolio.yml's `uses:`
 # reference to BPForbes/Bailey-Forbes-Portfolio-Site.github.io -- see that
 # workflow for why it is pinned to a commit rather than a branch), Rust crates,
-# and the Lab's npm packages.
+# and the Lab's and the relay console's npm packages.
 #
 # Only the github-actions updates are merged automatically
 # (dependabot-auto-merge.yml). Cargo and npm updates, which include the
@@ -32,6 +32,17 @@ updates:
           - "patch"
   - package-ecosystem: "npm"
     directory: "/lab"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      npm-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+  - package-ecosystem: "npm"
+    directory: "/relay-console"
     schedule:
       interval: "weekly"
     commit-message:

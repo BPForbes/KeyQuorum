@@ -1,0 +1,43 @@
+# Cloudflare Tunnel (cloudflared) in front of a single-node KeyQuorum relay:
+# Path A of docs/operator/relay-hosting.md, with no inbound port on the
+# origin at all. cloudflared runs on the relay host next to the relay and
+# Caddy, opens outbound connections to Cloudflare, and forwards each request
+# to Caddy on loopback; the relay itself still binds 127.0.0.1:8787 and is
+# started with --behind-tls-proxy.
+#
+# Install: /etc/cloudflared/config.yml, root-owned, 0640 to the cloudflared
+# user. The tunnel credentials file it names is a secret (it lets anyone who
+# holds it answer for your hostname): keep it root:cloudflared 0640, off
+# version control, and rotate it from the Zero Trust dashboard when a person
+# who could read it leaves. No KeyQuorum credential belongs in this file.
+#
+# Why Caddy stays in the chain: Caddy is where the client address is
+# decided (CF-Connecting-IP from Cloudflare's ranges only, rewritten into a
+# single X-Forwarded-For entry for the relay's rate limiter), where the
+# /console/ path is restricted, and where request bodies are capped. Point
+# cloudflared at Caddy's plain-HTTP loopback listener (see the Caddyfile
+# snippet in relay-hosting.md), never straight at the relay, or those
+# controls are skipped.
+
+tunnel: <tunnel-id>
+credentials-file: /etc/cloudflared/<tunnel-id>.json
+
+# Reconnect and keep-alive settings; the defaults are fine for a relay whose
+# requests finish within 30 s (the relay's own REQUEST_TIMEOUT).
+protocol: quic
+no-autoupdate: true
+
+ingress:
+  - hostname: relay.example.com
+    service: http://127.0.0.1:8080
+    originRequest:
+      # Longer than the relay's 30 s request timeout, shorter than
+      # Cloudflare's 100 s proxy read timeout, so the relay's 408 is what a
+      # client sees, not a Cloudflare 524.
+      connectTimeout: 10s
+      keepAliveTimeout: 90s
+      # Caddy sees the client only through the headers cloudflared sets;
+      # it must not see a different Host than the one its site block names.
+      httpHostHeader: relay.example.com
+  # Everything else is refused at the edge.
+  - service: http_status:404

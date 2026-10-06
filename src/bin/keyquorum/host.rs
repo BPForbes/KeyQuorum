@@ -54,6 +54,7 @@ pub fn run(store_args: &StoreArgs, org_db: &Path, command: HostCommand) -> Resul
             scan_interval_seconds,
             behind_tls_proxy,
             rate_limit_per_minute,
+            no_console,
         } => {
             // INFO by default (RUST_LOG still overrides), so authentication
             // and scope denials and TTL purges reach the operator's logs
@@ -91,10 +92,13 @@ pub fn run(store_args: &StoreArgs, org_db: &Path, command: HostCommand) -> Resul
                     store,
                     identity,
                     addr,
-                    scan_db,
-                    scan_interval_seconds,
-                    behind_tls_proxy,
-                    rate_limit_per_minute,
+                    ServeOptions {
+                        scan_db,
+                        scan_interval_seconds,
+                        behind_tls_proxy,
+                        rate_limit_per_minute,
+                        no_console,
+                    },
                 ))
         }
         HostCommand::Identity { command } => run_identity(command),
@@ -879,15 +883,28 @@ fn load_serve_identity(
     ))
 }
 
-async fn serve(
-    store: Arc<dyn RelayStore>,
-    identity: ProviderIdentity,
-    addr: SocketAddr,
+/// The `host serve` settings that are neither the store nor the identity.
+struct ServeOptions {
     scan_db: Option<PathBuf>,
     scan_interval_seconds: u64,
     behind_tls_proxy: bool,
     rate_limit_per_minute: u32,
+    no_console: bool,
+}
+
+async fn serve(
+    store: Arc<dyn RelayStore>,
+    identity: ProviderIdentity,
+    addr: SocketAddr,
+    options: ServeOptions,
 ) -> Result<()> {
+    let ServeOptions {
+        scan_db,
+        scan_interval_seconds,
+        behind_tls_proxy,
+        rate_limit_per_minute,
+        no_console,
+    } = options;
     let listener = TcpListener::bind(addr).await?;
     let local = listener.local_addr()?;
     eprintln!("mailbox listening on http://{local}");
@@ -895,12 +912,25 @@ async fn serve(
         tracing::warn!("serving plain HTTP on {local}; TLS must terminate in front of this relay");
     }
     eprintln!("Swagger UI: http://{local}/swagger-ui");
+    if !no_console {
+        eprintln!(
+            "Operator console: http://{local}/console/{}",
+            if relay::console::BUILT {
+                ""
+            } else {
+                " (placeholder: this binary was built without relay-console/dist)"
+            }
+        );
+    }
     if let Some(path) = &scan_db {
         eprintln!("TTL file scan: {}", path.display());
     }
 
-    let state = AppState::with_store(store.clone(), Some(identity))
+    let mut state = AppState::with_store(store.clone(), Some(identity))
         .with_rate_limit(rate_limit_per_minute, behind_tls_proxy);
+    if no_console {
+        state = state.without_console();
+    }
     if rate_limit_per_minute == 0 {
         tracing::warn!("rate limiting is off; limit requests in front of this relay");
     }

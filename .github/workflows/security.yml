@@ -1,6 +1,6 @@
 # Security scanning: known-vulnerable dependencies, licence and source policy,
-# committed secrets, the Lab's npm dependencies, and CodeQL static analysis of
-# the crate, the Lab and the workflows.
+# committed secrets, the Lab's and the relay console's npm dependencies, and
+# CodeQL static analysis of the crate, the Lab, the console and the workflows.
 #
 # Runs on every pull request and push to main, and weekly, because new
 # advisories appear without any change to this repository. It reads, scans and
@@ -77,6 +77,22 @@ jobs:
         working-directory: lab
         run: npm audit --omit=dev --audit-level=high
 
+  console-dependencies:
+    name: console dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: relay-console/package-lock.json
+      - name: npm audit (production dependencies)
+        working-directory: relay-console
+        run: npm audit --omit=dev --audit-level=high
+
   codeql:
     name: codeql (${{ matrix.language }})
     runs-on: ubuntu-latest
@@ -86,8 +102,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Rust is the crate, javascript-typescript is the Lab, actions is this
-        # repository's own workflows (a changed workflow is a changed control).
+        # Rust is the crate, javascript-typescript is the Lab and the relay
+        # console, actions is this repository's own workflows (a changed
+        # workflow is a changed control).
         language: [rust, javascript-typescript, actions]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

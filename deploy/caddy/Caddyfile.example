@@ -36,7 +36,21 @@ relay.example.com {
 		}
 	}
 
-	# Hygiene headers for the few HTML pages (the OpenAPI UI).
+	# The operator console (/console/, see docs/operator/relay-deployment.md)
+	# is public static files, and everything it shows needs an API key; it
+	# is still only useful to an operator, so limit it to operator networks.
+	# Replace the range, or put an identity-aware proxy with MFA in front
+	# of this path instead.
+	@console path /console /console/*
+	@not_operator not remote_ip 203.0.113.0/24
+	handle @console {
+		respond @not_operator 403
+		reverse_proxy 127.0.0.1:8787 {
+			header_up X-Forwarded-For {client_ip}
+		}
+	}
+
+	# Hygiene headers for the few HTML pages (the OpenAPI UI, the console).
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"

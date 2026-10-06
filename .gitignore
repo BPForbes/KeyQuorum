@@ -96,3 +96,8 @@ scratch/
 /lab/test-results/
 /lab/playwright-report/
 /lab/public/project-metadata.json
+
+# Relay operator console (relay-console/): built bundle and test output
+/relay-console/dist/
+/relay-console/test-results/
+/relay-console/playwright-report/

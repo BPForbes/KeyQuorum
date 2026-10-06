@@ -1,0 +1,105 @@
+# The relay operator console (relay-console/): typecheck and build the
+# bundle, run its browser tests against the mock relay, then build the
+# provider binary with that bundle embedded (build.rs) and run the console's
+# Rust tests with KEYQUORUM_CONSOLE_EXPECT_BUILT set, which fails them if the
+# binary carried the placeholder instead of the build. The everyday test
+# groups (tests.yml) run the same Rust tests without a bundle, so a relay
+# built without the console keeps its placeholder working too.
+
+name: Relay console
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  console:
+    name: relay console
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: relay-console/package-lock.json
+      - name: Install console dependencies
+        working-directory: relay-console
+        run: npm ci
+      - name: Typecheck and build the console
+        working-directory: relay-console
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: npm run build
+      - name: The bundle carries no inline script or style
+        working-directory: relay-console
+        # The relay serves it under a policy that forbids both.
+        run: |
+          ! grep -Eq '<script>|<style|onload=' dist/index.html
+          test -z "$(find dist -name '*.map')"
+      - name: Install Chromium for browser tests
+        working-directory: relay-console
+        run: npx playwright install --with-deps chromium
+      - name: Browser tests
+        working-directory: relay-console
+        env:
+          CI: "true"
+        run: npm run test:browser
+      - name: Keep the browser test report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: relay-console-playwright-report-${{ github.sha }}
+          path: relay-console/playwright-report
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: standard
+      - name: Pre-download Swagger UI (workaround for proxy issues)
+        run: |
+          SWAGGER_FILE="/tmp/swagger-ui-v5.32.6.zip"
+          for attempt in {1..3}; do
+            if [ -f "$SWAGGER_FILE" ] && unzip -t "$SWAGGER_FILE" > /dev/null 2>&1; then
+              echo "SWAGGER_UI_DOWNLOAD_URL=file://$SWAGGER_FILE" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            rm -f "$SWAGGER_FILE"
+            if curl -L --progress-bar -o "$SWAGGER_FILE" "https://github.com/swagger-api/swagger-ui/archive/refs/tags/v5.32.6.zip" \
+                && unzip -t "$SWAGGER_FILE" > /dev/null 2>&1; then
+              echo "SWAGGER_UI_DOWNLOAD_URL=file://$SWAGGER_FILE" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep $((2 ** (attempt - 1)))
+          done
+          echo "Failed to download and verify swagger-ui after 3 attempts"
+          exit 1
+      - name: Build the provider binary with the console embedded
+        run: cargo build --locked --features provider --bin keyquorum
+      - name: The embedded console is the build, not the placeholder
+        env:
+          KEYQUORUM_CONSOLE_EXPECT_BUILT: "1"
+        run: cargo test --locked --features provider --lib relay::console
+      - name: The relay serves it
+        run: |
+          set -euo pipefail
+          page="$(./target/debug/keyquorum --help >/dev/null && echo ok)"
+          test "$page" = ok
+          # No identity is configured here, so `host serve` refuses to start;
+          # the embedded page is checked through the test above. Confirm the
+          # flag exists so the runbook's command line is right.
+          ./target/debug/keyquorum host serve --help | grep -q -- '--no-console'

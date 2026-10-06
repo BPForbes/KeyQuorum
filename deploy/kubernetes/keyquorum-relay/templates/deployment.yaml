@@ -63,6 +63,9 @@ spec:
             - {{ .Values.relay.rateLimitPerMinute | quote }}
             - --scan-interval-seconds
             - {{ .Values.relay.scanIntervalSeconds | quote }}
+            {{- if not .Values.relay.console }}
+            - --no-console
+            {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ include "keyquorum-relay.fullname" . }}

@@ -95,7 +95,7 @@ reviews:
         descriptor and key-delivery code rather than re-rolling a rule, and
         never hold a raw bearer; every backend passes the conformance suite
         (PI1.2, PI1.3, CC6.1, C1.1).
-    - path: "{Dockerfile,.dockerignore,deploy/**,.github/workflows/{deploy,mongodb}.yml,docs/operator/**}"
+    - path: "{Dockerfile,.dockerignore,deploy/**,.github/workflows/{deploy,mongodb,relay-console}.yml,docs/operator/**}"
       instructions: >
         Deployment assets and the operator runbook. No credential, key,
         bearer, connection string or certificate may be rendered, baked into
@@ -133,6 +133,17 @@ reviews:
         bundle, ready handshake posts only to https://bailey-forbes.com or a
         loopback origin and never "*", no unsafe HTML injection (CC6.6, C1.1).
         UI text and tutorials must match the CLI.
+    - path: "{relay-console/**,src/relay/console.rs,src/relay/console/**}"
+      instructions: >
+        The relay operator console: a page the provider binary serves at
+        /console/ from an embedded table. It must add no route and decide no
+        scope or trust question of its own (every action is an existing
+        authenticated relay route under the key the operator typed in), keep
+        that key only in the tab's memory (never storage, a cookie or the URL),
+        load nothing from another origin, and ship no inline script or style
+        (its Content-Security-Policy forbids both). The mock relay under tests/
+        is a test double whose bearers come from the environment; a test
+        bearer written as a literal is a finding (CC6.1, CC6.6, CC6.7, C1.1).
     - path: "src/db/**"
       instructions: >
         SQLite schema and queries. Parameterized queries only, migrations that

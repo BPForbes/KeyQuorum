@@ -137,9 +137,44 @@ entry, the Caddy example, the non-secret environment example) and the
 image with no credential in any layer; `.github/workflows/deploy.yml` lints
 and renders the chart, validates the manifests, builds the image and checks
 it runs as non-root with no key, certificate or database file in its filesystem.
-`docs/operator/relay-deployment.md` is the operator runbook and
-`docs/operator/relay-secrets.md` the secret classification; neither is
-customer-facing, and the README still does not document `host`.
+`docs/operator/relay-deployment.md` is the operator runbook,
+`docs/operator/relay-secrets.md` the secret classification and
+`docs/operator/relay-hosting.md` the hosting decision record (AWS EC2 with
+the native relay first, the Cloudflare edge design with
+`deploy/cloudflare/cloudflared-config.example.yml`, Cloudflare Workers
+deferred); none is customer-facing, and the README still does not
+document `host`.
+
+`relay-console/` is the relay operator console: a Vite/React page in the
+lab's style (`lab/`, same palette and panels) that `keyquorum host serve`
+serves at `/console/` (`src/relay/console.rs`, feature `provider`;
+`--no-console` leaves the routes out, `AppState::without_console`).
+`build.rs` embeds `relay-console/dist` into the provider binary as
+`include_bytes!` entries, or `src/relay/console/placeholder.html` when
+there is no build, so the running relay never reads a file and a request
+under `/console/` is matched against that table only. The page is public
+static files, like the OpenAPI document, served with a
+`Content-Security-Policy` that allows only its own bundle and origin (no
+inline script or style, never framed); `index.html` is `no-store` and the
+hashed `assets/` are immutable. It adds no route and no rule: signed in
+with an API key (`POST /keycheck`, then a bearer on each request, held in
+the tab's memory and never in browser storage, a cookie or the URL), it
+shows exactly what that key's scope gets from the existing routes: status
+(`/health`, `/ready`, `/provider-identity`, whose certificate it digests
+for comparison but does not verify), keys (list and revoke, `admin`), the
+audit trail (every event for `admin`, own events otherwise), a key check
+by stored hash (never a bearer), a tree slice (`inbox.pull`) and a device
+descriptor (`device.pull` or `device.push`), and a log of its own requests
+by method, path and status. It cannot mint or rotate a key or read a
+letter. `relay-console/tests/mock-relay.mjs` is a test double for the
+browser tests only (its bearers are drawn at random by
+`playwright.config.ts` and never written down);
+`.github/workflows/relay-console.yml` builds the bundle, runs those tests,
+then builds a provider binary that embeds it and runs the Rust console
+tests with `KEYQUORUM_CONSOLE_EXPECT_BUILT`; the everyday test groups run
+them without a bundle, against the placeholder. The `Dockerfile` builds
+the console in a Node stage before the binary. Like `host`, the console is
+documented only under `docs/operator/`, never in the README.
 
 The relay host's own operating controls: the relay database is owner-only
 (0600, journal sidecars too, like the personal store). It serves plain HTTP,
@@ -674,6 +709,7 @@ Each seeded person has `use` and `device bind` run for their own slot (re-run fo
 - Test: `cargo test --locked --all-targets --all-features`
 - Lint: `cargo clippy --locked --all-targets --all-features -- -D warnings`
 - Lab (`src/lab/`, `lab/`), from `lab/`: `npm run build:wasm`, `npm run build`, `npm run test:browser`
+- Relay console (`relay-console/`, `src/relay/console.rs`), from `relay-console/`: `npm run build`, `npm run test:browser`, then `KEYQUORUM_CONSOLE_EXPECT_BUILT=1 cargo test --features provider --lib relay::console`
 - Format: `cargo fmt`
 
 Run format, lint, and tests before considering any change complete.
@@ -827,6 +863,9 @@ Report a finding, with the rule as its Source, for any of these:
 - The Lab reimplementing quorum, custody, approval, visibility, bridge or delivery rules,
   or adding a gate in front of them; the Lab bundle containing anything secret; the
   `provider` feature in a wasm32 build.
+- The relay console (`relay-console/`, `src/relay/console.rs`) gaining a route of its own,
+  deciding a scope or trust question the relay did not, keeping a bearer anywhere but the
+  tab's memory, or loading anything from another origin; a test bearer written as a literal.
 - Tests placed inline in implementation files instead of a `tests.rs` next to the module;
   a changed behavior with no test; a `--features provider,lab,tui` build or clippy
   warning left behind.
@@ -841,7 +880,7 @@ Report a finding, with the rule as its Source, for any of these:
 This repo also carries `CLAUDE.md` (Claude) and `.cursorrules` (Cursor). Keep guidance
 consistent across these files when updating one.
 
-- Legacy checks: tests of deprecated verbs (`deliver`, `file receive|ack`, `relay pull` spellings) sit behind the `legacy-tests` feature and the `legacy` workflow (`.github/workflows/legacy.yml`), whose single job is skipped by default and run on the `legacy` PR label or a manual dispatch. `--all-features` includes them; the everyday CI gate is the `Native KeyQuorum tests` job in `.github/workflows/deploy-lab.yml`, which calls the parallel test groups of `.github/workflows/tests.yml` (lab, cli, file_history, relay+provider+db, and everything else, so a new module needs no workflow edit) with `--features provider,lab,tui`; its `test` job is the one stable check, and the lab build and the Pages publish follow it. There is no separate compile workflow: those groups and the lint job build every target. The legacy run uses the same groups with `--all-features`. The `mongodb` feature is in `--all-features` and compiles `relay::mongo`; its tests skip without `KEYQUORUM_TEST_MONGODB_URI` and run in `.github/workflows/mongodb.yml` against a single-node replica set; `.github/workflows/deploy.yml` checks the Helm chart, the rendered manifests and the container image.
-- Security checks: `.github/workflows/security.yml` runs `cargo audit`, `cargo deny --locked check` (policy in `deny.toml`), `gitleaks` over the full history (allowlist in `.gitleaks.toml`, which passes only the published Lab demo passphrases and lockfile checksums), `npm audit` for `lab/` and CodeQL (security-and-quality suite from `.github/codeql/codeql-config.yml`, for Rust, the Lab's TypeScript and the workflows; `.github/scripts/codeql_report.py` prints each finding as source, source quote, quoted lines, SOC 2 criterion and fix, and the `codeql gate` check fails on a high or critical finding in shipped code), on every PR, on `main` and weekly; `.github/workflows/sbom.yml` keeps CycloneDX SBOMs as artifacts. A new dependency must satisfy `deny.toml` (add a licence only after checking it). The MongoDB driver's tree brought `CC0-1.0` (tiny-keccak), allowed in `deny.toml` after checking. Dependabot covers Actions, Cargo and npm, but only Actions updates auto-merge; cargo and npm updates (which include the cryptographic crates) wait for a person. Vulnerabilities are reported privately as `SECURITY.md` describes.
+- Legacy checks: tests of deprecated verbs (`deliver`, `file receive|ack`, `relay pull` spellings) sit behind the `legacy-tests` feature and the `legacy` workflow (`.github/workflows/legacy.yml`), whose single job is skipped by default and run on the `legacy` PR label or a manual dispatch. `--all-features` includes them; the everyday CI gate is the `Native KeyQuorum tests` job in `.github/workflows/deploy-lab.yml`, which calls the parallel test groups of `.github/workflows/tests.yml` (lab, cli, file_history, relay+provider+db, and everything else, so a new module needs no workflow edit) with `--features provider,lab,tui`; its `test` job is the one stable check, and the lab build and the Pages publish follow it. There is no separate compile workflow: those groups and the lint job build every target. The legacy run uses the same groups with `--all-features`. The `mongodb` feature is in `--all-features` and compiles `relay::mongo`; its tests skip without `KEYQUORUM_TEST_MONGODB_URI` and run in `.github/workflows/mongodb.yml` against a single-node replica set; `.github/workflows/deploy.yml` checks the Helm chart, the rendered manifests and the container image; `.github/workflows/relay-console.yml` builds and browser-tests the relay console and the provider binary that embeds it.
+- Security checks: `.github/workflows/security.yml` runs `cargo audit`, `cargo deny --locked check` (policy in `deny.toml`), `gitleaks` over the full history (allowlist in `.gitleaks.toml`, which passes only the published Lab demo passphrases and lockfile checksums), `npm audit` for `lab/` and `relay-console/` and CodeQL (security-and-quality suite from `.github/codeql/codeql-config.yml`, for Rust, the Lab's and the console's TypeScript and the workflows; `.github/scripts/codeql_report.py` prints each finding as source, source quote, quoted lines, SOC 2 criterion and fix, and the `codeql gate` check fails on a high or critical finding in shipped code), on every PR, on `main` and weekly; `.github/workflows/sbom.yml` keeps CycloneDX SBOMs as artifacts. A new dependency must satisfy `deny.toml` (add a licence only after checking it). The MongoDB driver's tree brought `CC0-1.0` (tiny-keccak), allowed in `deny.toml` after checking. Dependabot covers Actions, Cargo and npm, but only Actions updates auto-merge; cargo and npm updates (which include the cryptographic crates) wait for a person. Vulnerabilities are reported privately as `SECURITY.md` describes.
 - SOC 2: `docs/soc2-controls.md` maps each Trust Services Criterion to the control in this repository, its evidence (test or workflow) and what the operator must still provide (TLS termination, rate limiting, backups, log retention). Update it with any change to a control it names.
 - Review rules: the "Review guidelines (strict, SOC 2)" section above is also loaded by CodeRabbit (`.coderabbit.yaml` points its per-path checks at it and runs a "SOC 2 evidence" pre-merge check) and by Codex review. Change the rules in all three agent files together, and keep `.coderabbit.yaml` consistent with them.

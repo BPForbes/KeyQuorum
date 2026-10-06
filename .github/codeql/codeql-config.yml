@@ -20,3 +20,4 @@ paths-ignore:
   - lab/dist
   - lab/pkg
   - lab/public/docs
+  - relay-console/dist

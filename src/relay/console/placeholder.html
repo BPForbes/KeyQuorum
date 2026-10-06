@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>KeyQuorum Relay Console</title>
+  </head>
+  <body>
+    <h1>KeyQuorum Relay Console</h1>
+    <p>This relay was built without the console bundle, so there is nothing to show here.</p>
+    <p>
+      To include it, build the console and then the relay binary again:
+      <code>cd relay-console &amp;&amp; npm ci &amp;&amp; npm run build</code>, then
+      <code>cargo build --release --features provider</code>.
+    </p>
+    <p>The relay's API is unaffected; its OpenAPI document is at <a href="/swagger-ui/">/swagger-ui/</a>.</p>
+  </body>
+</html>

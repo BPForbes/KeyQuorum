@@ -8,7 +8,9 @@ customers get a URL and a sealed `.kqkey` and use `keyquorum loadkey`,
 `send` and `inbox`, as the README describes.
 
 Read `relay-secrets.md` next to this file first: it says which artifact is
-secret, where each one lives, and where it never goes.
+secret, where each one lives, and where it never goes. `relay-hosting.md`
+is the hosting decision record (AWS EC2 for the first deployment, the
+Cloudflare edge design, and why Cloudflare Workers is deferred).
 
 ## The two persistence domains
 
@@ -420,6 +422,61 @@ below. None of it is a feature a hosting vendor supplies on its own.
   audit chains against the checkpoint for that restore point before you rely
   on it; run a synthetic client that completes the provider challenge, since
   `/ready` does not.
+
+## Operator console
+
+`keyquorum host serve` also serves a browser console at `/console/`,
+built from `relay-console/` in the style of the KeyQuorum Lab and embedded
+in the provider binary at build time (`build.rs` reads
+`relay-console/dist`; a binary built without it serves a placeholder page
+that says so). Build it before the binary:
+
+```sh
+(cd relay-console && npm ci && npm run build)
+cargo build --release --features provider          # or provider,mongodb
+```
+
+The `Dockerfile` does both. The startup line `Operator console:
+http://127.0.0.1:8787/console/` confirms which page the binary carries.
+
+What the console is, and is not:
+
+- **Public static files, like `/swagger-ui`.** The page itself needs no
+  key. It is served with a `Content-Security-Policy` that lets it load only
+  its own bundle and talk only to its own origin (no inline script or
+  style, no other host, never framed), with `index.html` uncached so an
+  upgrade is a reload. Requests under `/console/` are matched against the
+  embedded file table, never a path on disk.
+- **No route and no rule of its own.** Everything it shows is an ordinary
+  request to the API documented at `/swagger-ui`, with the API key the
+  operator types into it sent as a bearer. An `admin` key lists and revokes
+  keys and reads the whole audit trail; an `inbox.pull` key sees its own
+  events and its tree slice; a device key sees a device descriptor. The
+  relay decides every one of those exactly as it does for `keyquorum`
+  itself. The console cannot mint or rotate a key (`host keys` on the host,
+  never HTTP), cannot read a letter, and cannot reach the store.
+- **The key stays in the tab.** It is checked with `POST /keycheck`, kept
+  in the page's memory, and never written to browser storage, a cookie or
+  the URL; closing the tab or pressing Sign out forgets it, and a key the
+  relay stops accepting (revoked, expired) signs the tab out on the next
+  request. Paste it into the console rather than into a shell, where it
+  would stay in the history.
+- **A digest, not a verification.** The status panel challenges
+  `POST /provider-identity` and shows the SHA-256 of the certificate the
+  relay presented, so you can compare it with the `provider.kqcert` you
+  installed. It does not verify the certificate or the signature against
+  the KeyQuorum root; `keyquorum loadkey` does, and that is the check that
+  matters to customers.
+
+Because an admin key is what makes the console useful, treat its page the
+way you treat the admin routes it drives: reach it from an operator
+network, over the proxy's TLS, and limit `/console/` at the proxy to
+operator addresses or an identity-aware proxy with MFA
+(`deploy/caddy/Caddyfile.example` shows the Caddy form; behind Cloudflare,
+Cloudflare Access on that path, see `relay-hosting.md`). A relay that
+should not serve the page at all is started with `--no-console`. Nothing
+the console does is recorded differently: a revocation from it lands in
+`api_key_events` as `admin:<id>` like one from any other client.
 
 ## Verification
 

@@ -14,6 +14,8 @@
 mod api_key;
 pub mod audit;
 mod client;
+#[cfg(feature = "provider")]
+pub mod console;
 mod device_directory;
 mod device_mail;
 pub mod key_delivery;
