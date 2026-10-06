@@ -58,6 +58,9 @@ a variable file in this directory, or an agent session.
 - Not managed here yet: Cloudflare Notifications (Worker and Durable Object error
   alerts) and the R2 bucket's retention lock. They are set in the dashboard until
   a validated resource for them is added.
-- Everything here is resource syntax for provider major version 5 written
-  without access to the provider registry; the CI validation is the first real
-  check, and `.terraform.lock.hcl` pins the provider once it is committed.
+- CI's `terraform validate` accepts this configuration against provider 5.27.0,
+  which the committed `.terraform.lock.hcl` pins (`init -lockfile=readonly`, so a
+  changed selection fails CI; Dependabot proposes provider updates). Validation
+  checks the configuration's shape, not the account: it has never been planned
+  or applied against a real Cloudflare account, so expect the first `plan` to
+  surface plan-time checks the validator cannot make.

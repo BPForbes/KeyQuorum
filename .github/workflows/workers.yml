@@ -90,20 +90,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: The provider lock file is committed
+        run: git ls-files --error-unmatch deploy/cloudflare/terraform/.terraform.lock.hcl
       - name: Format
         run: |
           docker run --rm -v "$PWD/deploy/cloudflare/terraform:/work" -w /work \
             "${TERRAFORM_IMAGE}" fmt -check -recursive -diff
-      - name: Initialise without a backend, so no credential or state is touched
+      - name: Initialise without a backend, so no credential or state is touched, and only with the committed provider lock
         run: |
           docker run --rm -v "$PWD/deploy/cloudflare/terraform:/work" -w /work \
-            "${TERRAFORM_IMAGE}" init -backend=false -input=false
+            "${TERRAFORM_IMAGE}" init -backend=false -input=false -lockfile=readonly
       - name: Validate
         run: |
           docker run --rm -v "$PWD/deploy/cloudflare/terraform:/work" -w /work \
             "${TERRAFORM_IMAGE}" validate
-      - name: Show the provider lock file
-        run: cat deploy/cloudflare/terraform/.terraform.lock.hcl
 
   deploy-staging:
     name: workers deploy staging

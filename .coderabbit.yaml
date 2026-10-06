@@ -94,18 +94,22 @@ reviews:
         descriptor and key-delivery code rather than re-rolling a rule, and
         never hold a raw bearer; every backend passes the conformance suite
         (PI1.2, PI1.3, CC6.1, C1.1).
-    - path: "{deploy/**,docs/operator/**}"
+    - path: "{deploy/**,workers/**,docs/operator/**}"
       instructions: >
-        Hosting assets and the operator runbook (Cloudflare is the only
-        production host; the Workers and deploy/cloudflare are planned in
-        docs/operator/relay-hosting.md). No credential, key, bearer or
-        certificate, and no Terraform state, may be rendered, baked in or
-        written into wrangler.toml [vars], a .dev.vars file, a workflow log or
-        a GitHub secret; the relay key, certificate and revocation list reach a
-        Worker only as Worker secrets, and the provider-root key and the kql_
-        operator lock never go on a Worker. Commands, flags, paths and defaults
-        quoted in the runbook must match `--help` and the code (CC6.7, CC6.8,
-        C1.1, CC8.1).
+        Hosting assets, the Worker and the operator runbook (Cloudflare is the
+        only production host; plan of record docs/operator/relay-hosting.md;
+        workers/ is a health-only stub and the relay itself is not built yet).
+        No credential, key, bearer or certificate, and no Terraform state, may
+        be rendered, baked in or written into wrangler.toml [vars], a .dev.vars
+        file, the built bundle, a workflow log or a GitHub secret; Terraform
+        state and terraform.tfvars are never committed. The relay key,
+        certificate and revocation list reach a Worker only as Worker secrets,
+        and the provider-root key and the kql_ operator lock never go on a
+        Worker. workers.dev and preview URLs stay off, and a Durable Object
+        migration that deletes or renames a class (which destroys its data)
+        needs explicit review; scripts/guard.mjs enforces both and must not be
+        weakened. Commands, flags, paths and defaults quoted in the runbook
+        must match `--help` and the code (CC6.7, CC6.8, C1.1, CC8.1).
     - path: "src/bin/keyquorum/host.rs"
       instructions: >
         The hidden mailbox host. It must stay out of customer-facing docs and the
@@ -165,8 +169,11 @@ reviews:
         CI and automation. Least-privilege permissions, no write token on
         untrusted input, actions from a known source and pinned, no secrets echoed,
         and no weakening or skipping of tests or the security workflow
-        (SOC 2 CC6.8, CC7.1, CC8.1). Cargo and npm Dependabot updates must not
-        auto-merge.
+        (SOC 2 CC6.8, CC7.1, CC8.1). Cargo, npm and Terraform Dependabot
+        updates must not auto-merge. workers.yml must keep its deploy jobs
+        behind GitHub environments (cloudflare-staging, cloudflare-production)
+        and its Cloudflare credentials environment-scoped, with no third-party
+        deploy action.
     - path: ".github/{codeql,scripts}/**"
       instructions: >
         CodeQL configuration and the report script that turns its findings into

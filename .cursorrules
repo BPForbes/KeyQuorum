@@ -113,14 +113,29 @@ then a prompt; both flags at once is refused) and the provider root key
 (`--root-key`, `KEYQUORUM_PROVIDER_ROOT_KEY_FILE`, then the raw
 `KEYQUORUM_PROVIDER_ROOT_KEY`), each read with a bound, one trailing line
 ending removed, zeroized, and named only by path in errors.
-No container, chart or unit is shipped: production hosting is Cloudflare only,
-planned in `docs/operator/relay-hosting.md` (a public Worker and one
-SQLite-backed Durable Object running `relay::service::dispatch`, an admin
-Worker behind Cloudflare Access for minting; `deploy/cloudflare/` and
-`workers/` are planned, not implemented), and native `host serve` is the dev,
-test and reference host. The relay key, certificate and revocation list are
-planned as Worker secrets; the `kql_` lock and the provider root key never go
-on a Worker. `docs/operator/relay-deployment.md` is the operator runbook
+No container, chart or unit is shipped: production hosting is Cloudflare only
+(plan of record `docs/operator/relay-hosting.md`), and native `host serve` is
+the dev, test and reference host. `workers/` holds a health-only stub Worker
+(JavaScript), its `wrangler.toml` (production at the top level, `[env.staging]`,
+wrangler pinned by `package-lock.json`) and the `scripts/guard.mjs` and
+`scripts/smoke.mjs` scripts with their `node:test` tests.
+`deploy/cloudflare/terraform/` holds the Cloudflare infrastructure as code
+(custom domains, edge rate-limit and cache-bypass rulesets, an Access
+application with MFA for the admin hostname that exists only when
+`admin_hostname` is set, an optional R2 bucket); the operator runs `terraform
+apply` locally with their own credentials, and `.terraform.lock.hcl` pins the
+provider. `.github/workflows/workers.yml` builds and dry-runs the Worker,
+formats and validates the Terraform, deploys to the `cloudflare-staging`
+environment from `main` (production is a manual run into
+`cloudflare-production`) and gates everything behind the one stable check
+`workers`; it uses no third-party deploy action, and the only Cloudflare
+credential in GitHub is the Workers-deploy token and account id per
+environment. The relay itself (a public Worker and one SQLite-backed Durable
+Object running `relay::service::dispatch`, an admin Worker behind Cloudflare
+Access for minting) is planned and not implemented. The relay key,
+certificate and revocation list are Worker secrets the operator sets with
+`wrangler secret put`, never GitHub secrets; the `kql_` lock and the provider
+root key never go on a Worker. `docs/operator/relay-deployment.md` is the operator runbook
 (secrets, certificates, bootstrap, rotation, the dev host) and
 `docs/operator/relay-secrets.md` the secret classification; neither is
 customer-facing, and the README still does not document `host`.
@@ -694,8 +709,8 @@ Each seeded person has `use` and `device bind` run for their own slot (re-run fo
   serial and expiry through `tracing::info!` like its other operating lines,
   never `eprintln!`; keep both that way rather than suppressing the query.
 
-- Legacy checks: tests of deprecated verbs (`deliver`, `file receive|ack`, `relay pull` spellings) sit behind the `legacy-tests` feature and the `legacy` workflow (`.github/workflows/legacy.yml`), whose single job is skipped by default and run on the `legacy` PR label or a manual dispatch. `--all-features` includes them; the everyday CI gate is the `Native KeyQuorum tests` job in `.github/workflows/deploy-lab.yml`, which calls the parallel test groups of `.github/workflows/tests.yml` (lab, cli, file_history, relay+provider+db, and everything else, so a new module needs no workflow edit) with `--features provider,lab,tui`; its `test` job is the one stable check, and the lab build and the Pages publish follow it. There is no separate compile workflow: those groups and the lint job build every target. The legacy run uses the same groups with `--all-features`.
-- Security checks: `.github/workflows/security.yml` runs `cargo audit`, `cargo deny --locked check` (policy in `deny.toml`), `gitleaks` over the full history (allowlist in `.gitleaks.toml`, which passes only the published Lab demo passphrases and lockfile checksums), `npm audit` for `lab/` and CodeQL (security-and-quality suite from `.github/codeql/codeql-config.yml`, for Rust, the Lab's TypeScript and the workflows; `.github/scripts/codeql_report.py` prints each finding as source, source quote, quoted lines, SOC 2 criterion and fix, and the `codeql gate` check fails on a high or critical finding in shipped code), on every PR, on `main` and weekly; `.github/workflows/sbom.yml` keeps CycloneDX SBOMs as artifacts. A new dependency must satisfy `deny.toml` (add a licence only after checking it). Dependabot covers Actions, Cargo and npm, but only Actions updates auto-merge; cargo and npm updates (which include the cryptographic crates) wait for a person. Vulnerabilities are reported privately as `SECURITY.md` describes.
+- Legacy checks: tests of deprecated verbs (`deliver`, `file receive|ack`, `relay pull` spellings) sit behind the `legacy-tests` feature and the `legacy` workflow (`.github/workflows/legacy.yml`), whose single job is skipped by default and run on the `legacy` PR label or a manual dispatch. `--all-features` includes them; the everyday CI gate is the `Native KeyQuorum tests` job in `.github/workflows/deploy-lab.yml`, which calls the parallel test groups of `.github/workflows/tests.yml` (lab, cli, file_history, relay+provider+db, and everything else, so a new module needs no workflow edit) with `--features provider,lab,tui`; its `test` job is the one stable check, and the lab build and the Pages publish follow it. The Worker has its own stable check, `workers` (`.github/workflows/workers.yml`: it builds the Worker, validates the Terraform and gates the staging and production deploys), beside `test` and `codeql gate`. There is no separate compile workflow: those groups and the lint job build every target. The legacy run uses the same groups with `--all-features`.
+- Security checks: `.github/workflows/security.yml` runs `cargo audit`, `cargo deny --locked check` (policy in `deny.toml`), `gitleaks` over the full history (allowlist in `.gitleaks.toml`, which passes only the published Lab demo passphrases and lockfile checksums), `npm audit` for `lab/` and `workers/` and CodeQL (security-and-quality suite from `.github/codeql/codeql-config.yml`, for Rust, the Lab's TypeScript, the Worker's JavaScript and the workflows; `.github/scripts/codeql_report.py` prints each finding as source, source quote, quoted lines, SOC 2 criterion and fix, and the `codeql gate` check fails on a high or critical finding in shipped code), on every PR, on `main` and weekly; `.github/workflows/sbom.yml` keeps CycloneDX SBOMs as artifacts. A new dependency must satisfy `deny.toml` (add a licence only after checking it). Dependabot covers Actions, Cargo, npm (`/lab`, `/workers`) and Terraform, but only Actions updates auto-merge; cargo, npm and Terraform updates (which include the cryptographic crates and the deploy tooling) wait for a person. Vulnerabilities are reported privately as `SECURITY.md` describes.
 - SOC 2: `docs/soc2-controls.md` maps each Trust Services Criterion to the control in this repository, its evidence (test or workflow) and what the operator must still provide (TLS termination, rate limiting, backups, log retention). Update it with any change to a control it names.
 
 ## Review guidelines (strict, SOC 2)
@@ -792,6 +807,11 @@ Report a finding, with the rule as its Source, for any of these:
   taken from a flag value, written into `wrangler.toml` `[vars]`, a `.dev.vars` file,
   Terraform state or `terraform.tfvars`, a GitHub Actions secret or log, a unit file or an
   image layer; the provider root key or the operator lock given to a running relay.
+- The Worker's deployment (`workers/`, `deploy/cloudflare/**`,
+  `.github/workflows/workers.yml`) gaining a route that bypasses Access to an operator
+  path, re-enabling `workers.dev` or preview URLs, a migration that deletes or renames a
+  Durable Object class without review, key material in `wrangler.toml` or the bundle, or a
+  deploy credential broader than Workers Scripts edit.
 - A cache (`recent_params`, `relay_trust_cache`, `verified_cache`) used as an input to
   a signature, quorum, custody, approval, freshness or trust decision.
 - Producers (`reissue`, `tree restructure`, `tree countersign`, `bridge private ...`) that
