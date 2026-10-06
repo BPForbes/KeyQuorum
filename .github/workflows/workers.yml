@@ -1,0 +1,317 @@
+# The Cloudflare Worker for the relay (workers/) and its infrastructure as code
+# (deploy/cloudflare/terraform), as a GitHub deployment check:
+#
+#   pull request   workers build + terraform           (no credentials, no deploy)
+#   push to main   ... then deploy to cloudflare-staging and smoke-test it
+#   manual run     ... on main with `production`, deploy to cloudflare-production
+#
+# The job named `workers` is the one stable check for branch protection, in the
+# same form as `test` in deploy-lab.yml and `codeql gate` in security.yml.
+#
+# Stage 2 deploys a health-only stub, so the pipeline is proven before the relay
+# exists. Nothing secret is built or deployed from here: the relay key,
+# provider.kqcert and provider.kqrl are Worker secrets the operator sets locally
+# with `wrangler secret put`, and the only Cloudflare credential in GitHub is the
+# Workers-deploy token and the account id, scoped to the two environments below.
+# wrangler is installed from workers/package-lock.json, not through a
+# third-party deploy action.
+#
+# One-time setup (GitHub and Cloudflare settings this workflow cannot make):
+#   - Environments `cloudflare-staging` and `cloudflare-production` (production
+#     with a required reviewer), each with the secrets CLOUDFLARE_API_TOKEN
+#     (Workers Scripts edit only) and CLOUDFLARE_ACCOUNT_ID, and the variable
+#     RELAY_URL (the Worker's custom domain, https://...), used for the
+#     environment link and the smoke test; optionally ADMIN_URL (the admin
+#     Worker's hostname, which the smoke test expects to refuse an anonymous
+#     caller), and ACCESS_TEAM_DOMAIN and ACCESS_AUD (not secrets: the Access
+#     team's domain and the admin application's audience tag), which the admin
+#     Worker needs before it will serve anything.
+#   - `workers` added to the required checks.
+# Until the secrets exist a deploy job warns and passes, so a merge to main is
+# never blocked by setup that has not happened yet.
+
+name: Cloudflare Workers
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      production:
+        description: "Deploy to cloudflare-production (on main only)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workers-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Not a secret: names the Terraform image the formatting and validation run in,
+  # the way security.yml runs gitleaks, so no third-party action is involved.
+  TERRAFORM_IMAGE: hashicorp/terraform:1.16.5
+
+jobs:
+  build:
+    name: workers build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: workers
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - name: Refuse a workers build that carries provider or lab
+        # build.rs names the refusal; --keep-going lets cargo reach it past
+        # provider dependencies that do not compile for wasm32 at all.
+        working-directory: .
+        run: |
+          set -uo pipefail
+          for other in provider lab; do
+            if cargo check --keep-going --locked --lib --target wasm32-unknown-unknown --features "workers,${other}" > guard.log 2>&1; then
+              echo "::error::a wasm32 build with workers and ${other} compiled"
+              exit 1
+            fi
+            grep -q "the workers feature excludes provider and lab" guard.log
+          done
+      - name: Read the pinned wasm-bindgen version
+        id: bindgen
+        working-directory: .
+        run: |
+          set -euo pipefail
+          version="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)"
+          test -n "${version}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        with:
+          tool: wasm-bindgen@${{ steps.bindgen.outputs.version }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: workers/package-lock.json
+      - name: Install (wrangler is pinned by the lockfile)
+        run: npm ci
+      - name: Build the relay core (workers feature only) to WebAssembly
+        run: npm run build:relay-wasm
+      - name: Guard, smoke-test and relay-core tests
+        run: npm test
+      - name: Configuration guard (no key material, no secret-like vars, no destructive migration)
+        run: npm run guard
+      - name: Build both environments (dry run, no credentials)
+        env:
+          CI: "true"
+          WRANGLER_SEND_METRICS: "false"
+        run: npm run build
+      - name: Bundle guard (no key material, size bound)
+        run: npm run guard:bundle
+
+  terraform:
+    name: terraform
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The provider lock file is committed
+        run: git ls-files --error-unmatch deploy/cloudflare/terraform/.terraform.lock.hcl
+      - name: Format
+        run: |
+          docker run --rm -v "$PWD/deploy/cloudflare/terraform:/work" -w /work \
+            "${TERRAFORM_IMAGE}" fmt -check -recursive -diff
+      - name: Initialise without a backend, so no credential or state is touched, and only with the committed provider lock
+        run: |
+          docker run --rm -v "$PWD/deploy/cloudflare/terraform:/work" -w /work \
+            "${TERRAFORM_IMAGE}" init -backend=false -input=false -lockfile=readonly
+      - name: Validate
+        run: |
+          docker run --rm -v "$PWD/deploy/cloudflare/terraform:/work" -w /work \
+            "${TERRAFORM_IMAGE}" validate
+
+  deploy-staging:
+    name: workers deploy staging
+    needs: [build, terraform]
+    # A push to main only: a manual run (with or without `production`) never
+    # touches staging.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: workers-staging
+      cancel-in-progress: false
+    environment:
+      name: cloudflare-staging
+      url: ${{ vars.RELAY_URL }}
+    defaults:
+      run:
+        working-directory: workers
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: workers/package-lock.json
+      - run: npm ci
+      - name: Check that the environment holds its Cloudflare credentials
+        id: credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -n "${CLOUDFLARE_API_TOKEN}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID}" ]; then
+            echo "configured=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "configured=false" >> "${GITHUB_OUTPUT}"
+            echo "::warning::cloudflare-staging has no CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets; nothing was deployed."
+          fi
+      - name: Deploy the staging Worker
+        if: steps.credentials.outputs.configured == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+        run: npx wrangler deploy --env staging
+      - name: Deploy the staging admin Worker
+        if: steps.credentials.outputs.configured == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+          ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
+          ACCESS_AUD: ${{ vars.ACCESS_AUD }}
+        run: |
+          # The two variables are not secrets: they name the Access team and the
+          # application's audience tag. While either is empty the Worker is
+          # deployed unconfigured and serves nothing, which is the safe state.
+          args=()
+          if [ -n "${ACCESS_TEAM_DOMAIN}" ] && [ -n "${ACCESS_AUD}" ]; then
+            args+=(--var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" --var "ACCESS_AUD:${ACCESS_AUD}")
+          else
+            echo "::warning::cloudflare-staging has no ACCESS_TEAM_DOMAIN and ACCESS_AUD variables; the admin Worker was deployed unconfigured and serves nothing."
+          fi
+          npx wrangler deploy -c admin/wrangler.toml --env staging "${args[@]}"
+      - name: Smoke test
+        if: steps.credentials.outputs.configured == 'true'
+        env:
+          RELAY_URL: ${{ vars.RELAY_URL }}
+          ADMIN_URL: ${{ vars.ADMIN_URL }}
+        run: |
+          if [ -z "${RELAY_URL}" ]; then
+            echo "::warning::cloudflare-staging has no RELAY_URL variable; the smoke test did not run."
+            exit 0
+          fi
+          admin=()
+          if [ -n "${ADMIN_URL}" ]; then admin=(--admin "${ADMIN_URL}"); fi
+          node scripts/smoke.mjs "${RELAY_URL}" "${admin[@]}"
+
+  deploy-production:
+    name: workers deploy production
+    needs: [build, terraform]
+    if: github.event_name == 'workflow_dispatch' && inputs.production && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: workers-production
+      cancel-in-progress: false
+    environment:
+      name: cloudflare-production
+      url: ${{ vars.RELAY_URL }}
+    defaults:
+      run:
+        working-directory: workers
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: workers/package-lock.json
+      - run: npm ci
+      - name: Check that the environment holds its Cloudflare credentials
+        id: credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -n "${CLOUDFLARE_API_TOKEN}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID}" ]; then
+            echo "configured=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "::error::cloudflare-production has no CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets."
+            exit 1
+          fi
+      - name: Deploy the production Worker (the top-level configuration)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+        run: npx wrangler deploy --env=""
+      - name: Deploy the production admin Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+          ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
+          ACCESS_AUD: ${{ vars.ACCESS_AUD }}
+        run: |
+          # The two variables are not secrets: they name the Access team and the
+          # application's audience tag. While either is empty the Worker is
+          # deployed unconfigured and serves nothing, which is the safe state.
+          args=()
+          if [ -n "${ACCESS_TEAM_DOMAIN}" ] && [ -n "${ACCESS_AUD}" ]; then
+            args+=(--var "ACCESS_TEAM_DOMAIN:${ACCESS_TEAM_DOMAIN}" --var "ACCESS_AUD:${ACCESS_AUD}")
+          else
+            echo "::warning::cloudflare-production has no ACCESS_TEAM_DOMAIN and ACCESS_AUD variables; the admin Worker was deployed unconfigured and serves nothing."
+          fi
+          npx wrangler deploy -c admin/wrangler.toml --env="" "${args[@]}"
+      - name: Smoke test
+        env:
+          RELAY_URL: ${{ vars.RELAY_URL }}
+          ADMIN_URL: ${{ vars.ADMIN_URL }}
+        run: |
+          test -n "${RELAY_URL}"
+          admin=()
+          if [ -n "${ADMIN_URL}" ]; then admin=(--admin "${ADMIN_URL}"); fi
+          node scripts/smoke.mjs "${RELAY_URL}" "${admin[@]}"
+
+  # One stable check name for the whole pipeline, for branch protection. A job
+  # that is skipped because an earlier one failed would count as passing, this
+  # one fails; a deploy job that was never meant to run (a pull request, or no
+  # production request) is skipped on purpose and does not fail it.
+  workers:
+    name: workers
+    needs: [build, terraform, deploy-staging, deploy-production]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every Workers job that had to run passed
+        env:
+          BUILD: ${{ needs.build.result }}
+          TERRAFORM: ${{ needs.terraform.result }}
+          STAGING: ${{ needs.deploy-staging.result }}
+          PRODUCTION: ${{ needs.deploy-production.result }}
+        run: |
+          test "${BUILD}" = success
+          test "${TERRAFORM}" = success
+          for result in "${STAGING}" "${PRODUCTION}"; do
+            case "${result}" in
+              success|skipped) ;;
+              *) echo "::error::a deploy job finished as ${result}"; exit 1 ;;
+            esac
+          done

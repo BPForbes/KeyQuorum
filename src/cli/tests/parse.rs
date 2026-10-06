@@ -441,22 +441,19 @@ fn loadkey_bundle_excludes_a_typed_key_and_takes_a_slot_or_key_file() {
 #[cfg(feature = "provider")]
 #[test]
 fn provider_host_store_and_credential_file_flags_parse() {
-    // The MongoDB connection string comes from a file (or the environment),
-    // never a flag value, and the database name may be named.
+    // The mailbox file may be named, and the MongoDB flags are gone.
+    assert!(
+        Cli::try_parse_from(["keyquorum", "host", "--mailbox-db", "relay.sqlite", "serve",])
+            .is_ok()
+    );
     assert!(Cli::try_parse_from([
         "keyquorum",
         "host",
         "--mongodb-uri-file",
         "/run/secrets/mongodb-uri",
-        "--mongodb-db",
-        "keyquorum",
         "serve",
     ])
-    .is_ok());
-    assert!(
-        Cli::try_parse_from(["keyquorum", "host", "--mongodb-uri", "mongodb://x", "serve"])
-            .is_err()
-    );
+    .is_err());
     // The operator lock may come from a file; a file and a value together
     // are refused rather than guessed.
     assert!(Cli::try_parse_from([

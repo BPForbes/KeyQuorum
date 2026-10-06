@@ -1,0 +1,24 @@
+# Copy to terraform.tfvars (ignored by git) and fill in.
+account_id = "00000000000000000000000000000000"
+zone_id    = "00000000000000000000000000000000"
+
+environments = {
+  production = { hostname = "relay.example.com", worker = "keyquorum-relay" }
+  staging    = { hostname = "relay-staging.example.com", worker = "keyquorum-relay-staging" }
+}
+
+# The admin Worker's hostnames, each behind Access with MFA. Leave empty to
+# create none. operator_emails must name someone when this is set.
+admin_environments = {}
+# admin_environments = {
+#   production = { hostname = "relay-admin.example.com", worker = "keyquorum-relay-admin" }
+#   staging    = { hostname = "relay-admin-staging.example.com", worker = "keyquorum-relay-admin-staging" }
+# }
+operator_emails = []
+
+# Free-plan-safe values; see the variable descriptions.
+rate_limit_requests = 600
+rate_limit_period   = 60
+rate_limit_timeout  = 60
+
+archive_bucket_name = ""

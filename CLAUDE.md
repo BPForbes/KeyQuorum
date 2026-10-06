@@ -93,51 +93,86 @@ persistence boundary every route handler (`relay::service`), the HTTP server,
 the host `keys` commands and the browser lab speak to, drawn at the relay's
 units of work (push a letter with its trees, rotate a key with its sealed
 replacement, grace period, delivery record and audit event), never at rows.
-`SqliteRelayStore` is the original owner-only SQLite file, one connection
-behind a mutex, delegating to the modules that own each table unchanged; it
-stays the reference backend and the one tests, the lab and a single-node
-deployment use. `relay::mongo::MongoRelayStore` (feature `mongodb`, native
-only, refused on wasm32 by `build.rs`) is the hosted relay's store, shared by
-every replica: each writing unit of work is one multi-document transaction
-(snapshot reads, majority writes) retried from the start on a write conflict
-(`Error::StoreConflict`); audit rows chain onto the head the transaction read
-and `audit_heads` advances by compare-and-set; ids come from `counters` inside
-the transaction so paging never skips a letter; `audit_anchors` is unique per
-table and row count so two replicas cannot double-anchor; a bundle handed out
-during a transaction turns retries off (`Tx::no_retry`) so a retry can never
-mint a different key than the file holds. It reimplements no rule: audit
-hashing and verification (`audit::entry_hash`, `verify_table`, `sign_anchor`,
-`sign_checkpoint`), letter routing (`mailbox::routing_of`,
-`device_mail::check_package`), tree merging (`org_tree::merge_into_existing`),
-descriptor checks and the sealed key-delivery flow (`key_delivery::DeliveryOps`
-over `create_as_bundle_with`, `rotate_as_letter_with`, `rotate_as_bundle_with`)
-are the same code both backends call. Time text is the same shape either way
-(`relay::mongo::clock`). A store refuses a personal store's tables or
-collections (`OrganizationDatabase`) and a database written by a newer
-`SCHEMA_VERSION`. Every backend passes `relay::store::conformance` (the
-SQLite store on every `cargo test`; the MongoDB store in
-`.github/workflows/mongodb.yml` against a single-node replica set, and locally
-when `KEYQUORUM_TEST_MONGODB_URI` names one; without it those tests skip).
+`SqlRelayStore<S>` is the one `RelayStore` implementation: one `relay::sql::Sql`
+executor behind a mutex, delegating to the modules that own each table, all of
+which take `&dyn Sql` and never a `rusqlite::Connection`. `Sql` carries no
+rule (bind values, run a statement, stream rows, `transaction`, which nests);
+SQL stays SQLite's own (`'now'`, `INSERT OR IGNORE`, `ON CONFLICT`), and a
+table module never opens `BEGIN` or `COMMIT` itself, because a Durable Object
+refuses them and runs a unit of work as `transactionSync`. `SqliteRelayStore`
+is `SqlRelayStore<rusqlite::Connection>`, the original owner-only SQLite file;
+it stays the reference backend and the one tests, the lab and the native host
+use. A backend reimplements no rule: audit hashing and verification
+(`audit::entry_hash`, `verify_table`, `sign_anchor`, `sign_checkpoint`),
+letter routing (`mailbox::routing_of`, `device_mail::check_package`), tree
+merging (`org_tree::merge_into_existing`), descriptor checks and the sealed
+key-delivery flow (`key_delivery::DeliveryOps` over `create_as_bundle_with`,
+`rotate_as_letter_with`, `rotate_as_bundle_with`) are the same code every
+backend calls. A store refuses a personal store's tables
+(`OrganizationDatabase`) and a database written by a newer `SCHEMA_VERSION`.
+Every backend passes `relay::store::conformance` (the SQLite store on every
+`cargo test`, and again over an executor that refuses transaction statements,
+as a Durable Object's does). The planned Cloudflare backend (not implemented:
+`SqlRelayStore` over a Durable Object's SQL API, `DoRelayStore` in
+`docs/operator/relay-hosting.md`) must pass the same suite and re-roll no rule
+that lives in `audit`, `mailbox`, `device_mail`, `org_tree`,
+`device_directory` or `key_delivery`.
 `GET /ready` answers only when the store answers (the readiness probe);
 `GET /health` is the process alone. The personal and organization SQLite
-stores never pass through `RelayStore` and are never moved to MongoDB.
+stores never pass through `RelayStore`.
 `src/cli/host_env.rs` resolves what the host reads from files rather than
 flags or the environment: the operator lock (`--licensee-key-file`,
 `KEYQUORUM_LICENSEE_KEY_FILE`, then `--licensee-key`, `KEYQUORUM_LICENSEE_KEY`,
-then a prompt; both flags at once is refused), the provider root key
+then a prompt; both flags at once is refused) and the provider root key
 (`--root-key`, `KEYQUORUM_PROVIDER_ROOT_KEY_FILE`, then the raw
-`KEYQUORUM_PROVIDER_ROOT_KEY`), and the MongoDB connection string
-(`--mongodb-uri-file`, `KEYQUORUM_MONGODB_URI_FILE`, then
-`KEYQUORUM_MONGODB_URI`; never a flag value), each read with a bound, one
-trailing line ending removed, zeroized, and named only by path in errors.
-`deploy/` holds the deployment assets (the Helm chart under
-`deploy/kubernetes/keyquorum-relay`, the hardened systemd unit and tmpfiles
-entry, the Caddy example, the non-secret environment example) and the
-`Dockerfile` builds the provider+mongodb binary into a distroless non-root
-image with no credential in any layer; `.github/workflows/deploy.yml` lints
-and renders the chart, validates the manifests, builds the image and checks
-it runs as non-root with no key, certificate or database file in its filesystem.
-`docs/operator/relay-deployment.md` is the operator runbook and
+`KEYQUORUM_PROVIDER_ROOT_KEY`), each read with a bound, one trailing line
+ending removed, zeroized, and named only by path in errors.
+No container, chart or unit is shipped: production hosting is Cloudflare only
+(plan of record `docs/operator/relay-hosting.md`), and native `host serve` is
+the dev, test and reference host. `workers/` holds a health-only stub Worker
+(JavaScript), its `wrangler.toml` (production at the top level, `[env.staging]`,
+wrangler pinned by `package-lock.json`) and the `scripts/guard.mjs` and
+`scripts/smoke.mjs` scripts with their `node:test` tests. Preview URLs are on for the public Worker only (Cloudflare Workers Builds previews beside the `workers` check; the guard's `--allow-preview-urls` is passed for that one file), and a preview must be refused by the Worker before it serves the relay, since a preview version shares the production bindings and secrets. `src/relay/worker.rs` (feature `workers`, built for wasm32 by
+`workers/scripts/build-relay-wasm.mjs` into the git-ignored `workers/relay-wasm/`, and
+refused together with `provider` or `lab` by `build.rs` and `lib.rs`) is the relay core
+for a Durable Object: `RelayCore` is `SqlRelayStore` over `worker::do_sql::DoSql`, the
+Durable Object's SQL reached through `workers/src/sql-adapter.js` (a cursor per query,
+`transactionSync` per unit of work), running `relay::service::dispatch`. It reads no
+clock (the Worker passes the time in as text), has no mint or rotate route, and holds the
+relay key and certificate only as the bytes the Worker's secrets give it; the Worker
+around it is not built yet. `workers/test/` runs the built module over a Durable
+Object-shaped storage on Node's SQLite. `workers/admin/` is
+the admin Worker's front door: a static operator page (`public/`, no inline
+code, no outside origin) served by the Worker on its own hostname behind a
+Cloudflare Access application with MFA. `src/access.js` verifies Access's signed
+token itself (RS256, the team's key set, issuer, audience, expiry), so a mistake
+in the Access application cannot expose it; without a valid token, or while its
+two non-secret variables `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are empty, it
+serves nothing. It shows only who is signed in, every other `/api` route
+answers 503 until the relay's store exists, there is no mint route and only GET
+and HEAD are allowed. The guard checks its config, `npm run build` dry-runs it,
+the smoke test (`--admin`) requires anonymous requests to its hostname to be
+refused, and `workers.yml` deploys it with the two variables taken from GitHub
+environment variables, not secrets.
+`deploy/cloudflare/terraform/` holds the Cloudflare infrastructure as code
+(custom domains, edge rate-limit and cache-bypass rulesets, a custom domain and
+an Access application with MFA per admin environment (`admin_environments`), an
+optional R2 bucket); the operator runs `terraform
+apply` locally with their own credentials, and `.terraform.lock.hcl` pins the
+provider. `.github/workflows/workers.yml` builds and dry-runs the Worker,
+formats and validates the Terraform, deploys to the `cloudflare-staging`
+environment from `main` (production is a manual run into
+`cloudflare-production`) and gates everything behind the one stable check
+`workers`; it uses no third-party deploy action, and the only Cloudflare
+credential in GitHub is the Workers-deploy token and account id per
+environment. The relay itself (a public Worker and one SQLite-backed Durable
+Object running `relay::service::dispatch`, the relay-backed operator pages and
+routes behind the admin Worker's Access check, and minting) is planned and not
+implemented. The relay key,
+certificate and revocation list are Worker secrets the operator sets with
+`wrangler secret put`, never GitHub secrets; the `kql_` lock and the provider
+root key never go on a Worker. `docs/operator/relay-deployment.md` is the operator runbook
+(secrets, certificates, bootstrap, rotation, the dev host) and
 `docs/operator/relay-secrets.md` the secret classification; neither is
 customer-facing, and the README still does not document `host`.
 
@@ -170,18 +205,17 @@ with `Retry-After`), keyed by peer address (an IPv6 one by its /64), or by the l
 entry behind `--behind-tls-proxy`, in a table capped at
 `MAX_RATE_LIMITED_CLIENTS`. An inbox read is also capped at
 `mailbox::MAX_INBOX_PAGE_BYTES` (16 MiB of sealed bytes, never fewer than one
-letter; `mailbox::bound_page`, shared by both mailboxes and both backends, reads
+letter; `mailbox::bound_page`, shared by both mailboxes and every backend, reads
 rows as a stream and stops at the budget plus one letter, with `next_after`
 pointing at the last letter kept), so a page can neither outgrow the relay's
-memory nor `relay::client::MAX_RESPONSE_BYTES` once encoded; the MongoDB cursor
-sends `PAGE_BATCH` documents at a time for the same reason. Store
+memory nor `relay::client::MAX_RESPONSE_BYTES` once encoded. Store
 work runs on the blocking pool behind an admission pool
 (`DEFAULT_STORE_CONCURRENCY`, 64 slots, `STORE_ADMISSION_WAIT` 5 s, then 503),
 and the slot is held until the store call itself returns, since a timed-out
 request cannot cancel it; `GET /ready` has its own two slots. `host serve` ends
-gracefully on SIGINT or SIGTERM. A MongoDB commit whose result stays unknown
-past the retry deadline is `Error::StoreCommitUnknown`, not a failure: `host
-keys` keeps the sealed `.kqkey` it wrote (the key may exist; check `keys list`
+gracefully on SIGINT or SIGTERM. A commit whose result stays unknown on a
+store reached over a network is `Error::StoreCommitUnknown`, not a failure:
+`host keys` keeps the sealed `.kqkey` it wrote (the key may exist; check `keys list`
 and `keys events` before retrying) and removes it only on a failure that is
 certain. `identity
 generate` and `root generate` write the private key only to
@@ -807,10 +841,18 @@ Report a finding, with the rule as its Source, for any of these:
 - A `RelayStore` backend that persists a raw bearer, unseals a letter, splits one unit of
   work across transactions, or re-rolls a rule that lives in `audit`, `mailbox`,
   `device_mail`, `org_tree`, `device_directory` or `key_delivery`; a personal or
-  organization store reached through `RelayStore` or moved to MongoDB; a relay
-  credential (relay key, MongoDB connection string, operator lock, provider root key)
-  taken from a flag value, written into a ConfigMap, `values.yaml`, a unit file, an image
-  layer or a log; the provider root key or the operator lock given to a running relay.
+  organization store reached through `RelayStore` or moved to another database; a relay
+  credential (relay key, operator lock, provider root key)
+  taken from a flag value, written into `wrangler.toml` `[vars]`, a `.dev.vars` file,
+  Terraform state or `terraform.tfvars`, a GitHub Actions secret or log, a unit file or an
+  image layer; the provider root key or the operator lock given to a running relay.
+- The Worker's deployment (`workers/`, `deploy/cloudflare/**`,
+  `.github/workflows/workers.yml`) letting the admin Worker serve anything without a
+  verified Access token, or gaining a route that bypasses Access to an operator
+  path, re-enabling `workers.dev`, preview URLs on the admin Worker or on anything but the
+  public Worker (or a public Worker preview that reaches relay data or secrets), a migration that deletes or renames a
+  Durable Object class without review, key material in `wrangler.toml` or the bundle, or a
+  deploy credential broader than Workers Scripts edit.
 - A cache (`recent_params`, `relay_trust_cache`, `verified_cache`) used as an input to
   a signature, quorum, custody, approval, freshness or trust decision.
 - Producers (`reissue`, `tree restructure`, `tree countersign`, `bridge private ...`) that
@@ -832,7 +874,7 @@ Report a finding, with the rule as its Source, for any of these:
 This repo also carries `AGENTS.md` (Codex and other agent tooling) and `.cursorrules`
 (Cursor). Keep guidance consistent across these files when updating one.
 
-- Legacy checks: tests of deprecated verbs (`deliver`, `file receive|ack`, `relay pull` spellings) sit behind the `legacy-tests` feature and the `legacy` workflow (`.github/workflows/legacy.yml`), whose single job is skipped by default and run on the `legacy` PR label or a manual dispatch. `--all-features` includes them; the everyday CI gate is the `Native KeyQuorum tests` job in `.github/workflows/deploy-lab.yml`, which calls the parallel test groups of `.github/workflows/tests.yml` (lab, cli, file_history, relay+provider+db, and everything else, so a new module needs no workflow edit) with `--features provider,lab,tui`; its `test` job is the one stable check, and the lab build and the Pages publish follow it. There is no separate compile workflow: those groups and the lint job build every target. The legacy run uses the same groups with `--all-features`. The `mongodb` feature is in `--all-features` and compiles `relay::mongo`; its tests skip without `KEYQUORUM_TEST_MONGODB_URI` and run in `.github/workflows/mongodb.yml` against a single-node replica set; `.github/workflows/deploy.yml` checks the Helm chart, the rendered manifests and the container image.
-- Security checks: `.github/workflows/security.yml` runs `cargo audit`, `cargo deny --locked check` (policy in `deny.toml`), `gitleaks` over the full history (allowlist in `.gitleaks.toml`, which passes only the published Lab demo passphrases and lockfile checksums), `npm audit` for `lab/` and CodeQL (security-and-quality suite from `.github/codeql/codeql-config.yml`, for Rust, the Lab's TypeScript and the workflows; `.github/scripts/codeql_report.py` prints each finding as source, source quote, quoted lines, SOC 2 criterion and fix, and the `codeql gate` check fails on a high or critical finding in shipped code), on every PR, on `main` and weekly; `.github/workflows/sbom.yml` keeps CycloneDX SBOMs as artifacts. A new dependency must satisfy `deny.toml` (add a licence only after checking it). The MongoDB driver's tree brought `CC0-1.0` (tiny-keccak), allowed in `deny.toml` after checking. Dependabot covers Actions, Cargo and npm, but only Actions updates auto-merge; cargo and npm updates (which include the cryptographic crates) wait for a person. Vulnerabilities are reported privately as `SECURITY.md` describes.
+- Legacy checks: tests of deprecated verbs (`deliver`, `file receive|ack`, `relay pull` spellings) sit behind the `legacy-tests` feature and the `legacy` workflow (`.github/workflows/legacy.yml`), whose single job is skipped by default and run on the `legacy` PR label or a manual dispatch. `--all-features` includes them; the everyday CI gate is the `Native KeyQuorum tests` job in `.github/workflows/deploy-lab.yml`, which calls the parallel test groups of `.github/workflows/tests.yml` (lab, cli, file_history, relay+provider+db, and everything else, so a new module needs no workflow edit) with `--features provider,lab,tui`; its `test` job is the one stable check, and the lab build and the Pages publish follow it. The Worker has its own stable check, `workers` (`.github/workflows/workers.yml`: it builds the Worker, validates the Terraform and gates the staging and production deploys), beside `test` and `codeql gate`. There is no separate compile workflow: those groups and the lint job build every target. The legacy run uses the same groups with `--all-features`.
+- Security checks: `.github/workflows/security.yml` runs `cargo audit`, `cargo deny --locked check` (policy in `deny.toml`), `gitleaks` over the full history (allowlist in `.gitleaks.toml`, which passes only the published Lab demo passphrases and lockfile checksums), `npm audit` for `lab/` and `workers/` and CodeQL (security-and-quality suite from `.github/codeql/codeql-config.yml`, for Rust, the Lab's TypeScript, the Worker's JavaScript and the workflows; `.github/scripts/codeql_report.py` prints each finding as source, source quote, quoted lines, SOC 2 criterion and fix, and the `codeql gate` check fails on a high or critical finding in shipped code), on every PR, on `main` and weekly; `.github/workflows/sbom.yml` keeps CycloneDX SBOMs as artifacts. A new dependency must satisfy `deny.toml` (add a licence only after checking it). Dependabot covers Actions, Cargo, npm (`/lab`, `/workers`) and Terraform, but only Actions updates auto-merge; cargo, npm and Terraform updates (which include the cryptographic crates and the deploy tooling) wait for a person. Vulnerabilities are reported privately as `SECURITY.md` describes.
 - SOC 2: `docs/soc2-controls.md` maps each Trust Services Criterion to the control in this repository, its evidence (test or workflow) and what the operator must still provide (TLS termination, rate limiting, backups, log retention). Update it with any change to a control it names.
 - Review rules: the "Review guidelines (strict, SOC 2)" section above is also loaded by CodeRabbit (`.coderabbit.yaml` points its per-path checks at it and runs a "SOC 2 evidence" pre-merge check) and by Codex review. Change the rules in all three agent files together, and keep `.coderabbit.yaml` consistent with them.

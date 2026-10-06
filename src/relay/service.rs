@@ -3,8 +3,8 @@
 //! The provider-only axum server (`server.rs`) adapts HTTP to these
 //! functions, and [`dispatch`] routes an already-parsed request to them in
 //! process. Every function reaches the relay's state through
-//! [`RelayStore`], so the same handlers serve the SQLite relay and the
-//! MongoDB-backed cloud relay. That second path is how the browser lab runs a relay without a
+//! [`RelayStore`], so the same handlers serve the SQLite relay and any other
+//! backend. [`dispatch`] is also how the browser lab runs a relay without a
 //! listener: the same authentication, scopes, fingerprint binding, and
 //! opaque-envelope storage, reached through the CLI's relay client. Nothing
 //! here serves sockets, mints API keys, or issues certificates; those stay

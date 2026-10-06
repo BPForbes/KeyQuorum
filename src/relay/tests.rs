@@ -677,8 +677,8 @@ fn http_revocation_records_the_admin_key_that_revoked() {
         label: None,
         ttl_seconds: None,
     };
-    let admin = relay::create_api_key(&conn, &new_key(ApiKeyScope::Admin)).expect("admin");
-    let target = relay::create_api_key(&conn, &new_key(ApiKeyScope::InboxPush)).expect("push");
+    let admin = relay::create_api_key(&*conn, &new_key(ApiKeyScope::Admin)).expect("admin");
+    let target = relay::create_api_key(&*conn, &new_key(ApiKeyScope::InboxPush)).expect("push");
 
     drop(conn);
     relay::service::revoke_key(&store, &admin.token, target.info.id).expect("revoke");
@@ -695,7 +695,7 @@ fn http_revocation_records_the_admin_key_that_revoked() {
         )
     );
     // A key without the admin scope cannot revoke, and nothing is recorded.
-    let push = relay::create_api_key(&conn, &new_key(ApiKeyScope::InboxPush)).expect("push");
+    let push = relay::create_api_key(&*conn, &new_key(ApiKeyScope::InboxPush)).expect("push");
     let before = key_events(&conn).len();
     drop(conn);
     assert!(matches!(

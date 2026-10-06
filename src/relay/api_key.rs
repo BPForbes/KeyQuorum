@@ -3,10 +3,10 @@
 //! The bearer is returned once at creation; the database stores only
 //! `hex(SHA-256(raw))`, matching `sharing.rs`.
 
+use super::sql::{params, Row, Sql};
 use crate::error::{Error, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
@@ -159,7 +159,7 @@ pub(crate) fn normalize_fingerprint(fingerprint: &str) -> Result<String> {
 /// SQLite `datetime('now', '+N seconds')` yields NULL outside its supported
 /// range (and for some extreme `i64` modifiers). A NULL `expires_at` is
 /// treated as non-expiring, so refuse those TTLs before insert.
-fn expiry_from_ttl(conn: &Connection, ttl_seconds: i64) -> Result<String> {
+fn expiry_from_ttl(conn: &dyn Sql, ttl_seconds: i64) -> Result<String> {
     if ttl_seconds == 0 {
         return Err(Error::InvalidApiKeyRequest);
     }
@@ -171,7 +171,7 @@ fn expiry_from_ttl(conn: &Connection, ttl_seconds: i64) -> Result<String> {
     expiry.ok_or(Error::InvalidApiKeyRequest)
 }
 
-fn load_info(conn: &Connection, id: i64) -> Result<ApiKeyInfo> {
+fn load_info(conn: &dyn Sql, id: i64) -> Result<ApiKeyInfo> {
     conn.query_row(
         "SELECT id, scope, recipient_fingerprint, label, created_at, expires_at,
                 revoked_at, last_used_at
@@ -182,7 +182,7 @@ fn load_info(conn: &Connection, id: i64) -> Result<ApiKeyInfo> {
     .map_err(|_| Error::ApiKeyNotFound)
 }
 
-fn row_to_info(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApiKeyInfo> {
+fn row_to_info(row: &Row) -> Result<ApiKeyInfo> {
     Ok(ApiKeyInfo {
         id: row.get(0)?,
         scope: row.get(1)?,
@@ -221,7 +221,7 @@ pub struct ApiKeyEvent {
 }
 
 fn record_event(
-    conn: &Connection,
+    conn: &dyn Sql,
     key_id: i64,
     event: &str,
     actor: &str,
@@ -235,24 +235,24 @@ fn record_event(
     super::audit::seal_row(
         conn,
         super::audit::AuditTable::ApiKeyEvents,
-        conn.last_insert_rowid(),
+        conn.last_insert_rowid()?,
     )
 }
 
 /// The lifecycle audit trail, oldest first. Holds no bearer or hash of one.
-pub fn events(conn: &Connection) -> Result<Vec<ApiKeyEvent>> {
+pub fn events(conn: &dyn Sql) -> Result<Vec<ApiKeyEvent>> {
     query_events(conn, None)
 }
 
 /// Only the events that pertain to key `id`: those about it, those it
 /// caused as an admin, and the rotation that replaced it.
-pub fn events_for_key(conn: &Connection, id: i64) -> Result<Vec<ApiKeyEvent>> {
+pub fn events_for_key(conn: &dyn Sql, id: i64) -> Result<Vec<ApiKeyEvent>> {
     query_events(conn, Some(id))
 }
 
 /// What the holder of `auth` may read: an admin key sees the whole trail,
 /// any other key only the events that pertain to itself.
-pub fn events_visible_to(conn: &Connection, auth: &AuthedKey) -> Result<Vec<ApiKeyEvent>> {
+pub fn events_visible_to(conn: &dyn Sql, auth: &AuthedKey) -> Result<Vec<ApiKeyEvent>> {
     if auth.scope == ApiKeyScope::Admin {
         events(conn)
     } else {
@@ -260,8 +260,8 @@ pub fn events_visible_to(conn: &Connection, auth: &AuthedKey) -> Result<Vec<ApiK
     }
 }
 
-fn query_events(conn: &Connection, key: Option<i64>) -> Result<Vec<ApiKeyEvent>> {
-    let mut stmt = conn.prepare(
+fn query_events(conn: &dyn Sql, key: Option<i64>) -> Result<Vec<ApiKeyEvent>> {
+    conn.query_map(
         "SELECT id, api_key_id, event, actor, related_key_id, occurred_at,
                 COALESCE(entry_hash, '')
          FROM api_key_events
@@ -270,32 +270,32 @@ fn query_events(conn: &Connection, key: Option<i64>) -> Result<Vec<ApiKeyEvent>>
             OR related_key_id = ?1
             OR actor = 'admin:' || ?1
          ORDER BY id",
-    )?;
-    let rows = stmt.query_map(params![key], |row| {
-        Ok(ApiKeyEvent {
-            id: row.get(0)?,
-            key_id: row.get(1)?,
-            event: row.get(2)?,
-            actor: row.get(3)?,
-            related_key_id: row.get(4)?,
-            occurred_at: row.get(5)?,
-            entry_hash: row.get(6)?,
-        })
-    })?;
-    rows.collect::<rusqlite::Result<_>>().map_err(Error::from)
+        params![key],
+        |row| {
+            Ok(ApiKeyEvent {
+                id: row.get(0)?,
+                key_id: row.get(1)?,
+                event: row.get(2)?,
+                actor: row.get(3)?,
+                related_key_id: row.get(4)?,
+                occurred_at: row.get(5)?,
+                entry_hash: row.get(6)?,
+            })
+        },
+    )
 }
 
 /// Hands out a new bearer once and stores only its hash. Recorded in
 /// `api_key_events` as created by the host.
-pub fn create(conn: &Connection, new: &NewApiKey) -> Result<CreatedApiKey> {
-    crate::db::with_immediate_transaction(conn, || {
+pub fn create(conn: &dyn Sql, new: &NewApiKey) -> Result<CreatedApiKey> {
+    conn.with_transaction(|| {
         let created = insert(conn, new)?;
         record_event(conn, created.info.id, "created", HOST_ACTOR, None)?;
         Ok(created)
     })
 }
 
-fn insert(conn: &Connection, new: &NewApiKey) -> Result<CreatedApiKey> {
+fn insert(conn: &dyn Sql, new: &NewApiKey) -> Result<CreatedApiKey> {
     let fingerprint = match (
         new.scope.binds_recipient(),
         new.recipient_fingerprint.as_deref(),
@@ -318,40 +318,40 @@ fn insert(conn: &Connection, new: &NewApiKey) -> Result<CreatedApiKey> {
             token_hash,
             new.scope.as_str(),
             fingerprint,
-            new.label,
+            new.label.as_deref(),
             expires_at
         ],
     )?;
 
-    let id = conn.last_insert_rowid();
+    let id = conn.last_insert_rowid()?;
     Ok(CreatedApiKey {
         info: load_info(conn, id)?,
         token,
     })
 }
 
-pub fn list(conn: &Connection) -> Result<Vec<ApiKeyInfo>> {
-    let mut stmt = conn.prepare(
+pub fn list(conn: &dyn Sql) -> Result<Vec<ApiKeyInfo>> {
+    conn.query_map(
         "SELECT id, scope, recipient_fingerprint, label, created_at, expires_at,
                 revoked_at, last_used_at
          FROM api_keys ORDER BY id",
-    )?;
-    let rows = stmt.query_map([], row_to_info)?;
-    rows.collect::<rusqlite::Result<_>>().map_err(Error::from)
+        params![],
+        row_to_info,
+    )
 }
 
 /// Revokes key `id` on the host. See [`revoke_by`].
-pub fn revoke(conn: &Connection, id: i64) -> Result<()> {
+pub fn revoke(conn: &dyn Sql, id: i64) -> Result<()> {
     revoke_by(conn, id, HOST_ACTOR)
 }
 
 /// Revokes key `id` and records who did it. Revoking an already revoked key
 /// succeeds and records nothing, since nothing changed.
-pub fn revoke_by(conn: &Connection, id: i64, actor: &str) -> Result<()> {
-    crate::db::with_immediate_transaction(conn, || revoke_inner(conn, id, actor))
+pub fn revoke_by(conn: &dyn Sql, id: i64, actor: &str) -> Result<()> {
+    conn.with_transaction(|| revoke_inner(conn, id, actor))
 }
 
-fn revoke_inner(conn: &Connection, id: i64, actor: &str) -> Result<()> {
+fn revoke_inner(conn: &dyn Sql, id: i64, actor: &str) -> Result<()> {
     let n = conn.execute(
         "UPDATE api_keys
          SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -361,13 +361,11 @@ fn revoke_inner(conn: &Connection, id: i64, actor: &str) -> Result<()> {
     if n == 1 {
         return record_event(conn, id, "revoked", actor, None);
     }
-    let exists: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM api_keys WHERE id = ?1",
-            params![id],
-            |row| row.get(0),
-        )
-        .optional()?;
+    let exists: Option<i64> = conn.query_opt(
+        "SELECT id FROM api_keys WHERE id = ?1",
+        params![id],
+        |row| row.get(0),
+    )?;
     if exists.is_some() {
         Ok(())
     } else {
@@ -389,32 +387,32 @@ pub enum OldKey {
 /// Whether a live `inbox.pull` key is bound to `fingerprint` (a recipient key's
 /// SHA-256): the one scope that can collect a mailbox letter addressed to it.
 /// Live means not revoked and not past its own expiry.
-pub fn has_live_pull_key(conn: &Connection, fingerprint: &str) -> Result<bool> {
+pub fn has_live_pull_key(conn: &dyn Sql, fingerprint: &str) -> Result<bool> {
     let fingerprint = normalize_fingerprint(fingerprint)?;
     let found: i64 = conn.query_row(
         "SELECT COUNT(*) FROM api_keys
          WHERE scope = 'inbox.pull' AND recipient_fingerprint = ?1
            AND revoked_at IS NULL
            AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))",
-        params![fingerprint],
+        params![&fingerprint],
         |row| row.get(0),
     )?;
     Ok(found > 0)
 }
 
 /// A key's record, as `list` shows it. Never the bearer or its hash.
-pub fn info(conn: &Connection, id: i64) -> Result<ApiKeyInfo> {
+pub fn info(conn: &dyn Sql, id: i64) -> Result<ApiKeyInfo> {
     load_info(conn, id)
 }
 
 /// Inserts a replacement key with the same scope and binding, then revokes the old one.
-pub fn rotate(conn: &Connection, id: i64) -> Result<CreatedApiKey> {
+pub fn rotate(conn: &dyn Sql, id: i64) -> Result<CreatedApiKey> {
     rotate_with(conn, id, OldKey::RevokeNow)
 }
 
 /// [`rotate`], ending the old key as `old` says.
-pub fn rotate_with(conn: &Connection, id: i64, old: OldKey) -> Result<CreatedApiKey> {
-    crate::db::with_immediate_transaction(conn, || {
+pub fn rotate_with(conn: &dyn Sql, id: i64, old: OldKey) -> Result<CreatedApiKey> {
+    conn.with_transaction(|| {
         let info = load_info(conn, id)?;
         if info.revoked_at.is_some() {
             return Err(Error::ApiKeyRevoked);
@@ -462,7 +460,7 @@ pub fn rotate_with(conn: &Connection, id: i64, old: OldKey) -> Result<CreatedApi
 }
 
 /// Atomic lookup: stamps last-used only when the key is live, unexpired, and in `required`.
-pub fn authenticate(conn: &Connection, token: &str, required: ApiKeyScope) -> Result<AuthedKey> {
+pub fn authenticate(conn: &dyn Sql, token: &str, required: ApiKeyScope) -> Result<AuthedKey> {
     let token_hash = hash_bearer(token)?;
     let claimed = conn.execute(
         "UPDATE api_keys
@@ -471,13 +469,13 @@ pub fn authenticate(conn: &Connection, token: &str, required: ApiKeyScope) -> Re
            AND revoked_at IS NULL
            AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
            AND scope = ?2",
-        params![token_hash, required.as_str()],
+        params![&token_hash, required.as_str()],
     )?;
 
     if claimed == 1 {
         let (id, fingerprint): (i64, Option<String>) = conn.query_row(
             "SELECT id, recipient_fingerprint FROM api_keys WHERE key_hash = ?1",
-            params![token_hash],
+            params![&token_hash],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         return Ok(AuthedKey {
@@ -487,16 +485,14 @@ pub fn authenticate(conn: &Connection, token: &str, required: ApiKeyScope) -> Re
         });
     }
 
-    let row: Option<(bool, bool, String)> = conn
-        .query_row(
-            "SELECT revoked_at IS NOT NULL,
-                    expires_at IS NOT NULL AND datetime(expires_at) <= datetime('now'),
-                    scope
-             FROM api_keys WHERE key_hash = ?1",
-            params![token_hash],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .optional()?;
+    let row: Option<(bool, bool, String)> = conn.query_opt(
+        "SELECT revoked_at IS NOT NULL,
+                expires_at IS NOT NULL AND datetime(expires_at) <= datetime('now'),
+                scope
+         FROM api_keys WHERE key_hash = ?1",
+        params![&token_hash],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
 
     let Some((revoked, expired, scope)) = row else {
         return Err(Error::InvalidApiKey);
@@ -515,15 +511,13 @@ pub fn authenticate(conn: &Connection, token: &str, required: ApiKeyScope) -> Re
 /// Authenticates a live, unexpired key of any scope and stamps its use.
 /// For routes whose answer is scoped to the caller rather than gated on a
 /// scope (the caller's own audit events).
-pub fn authenticate_any(conn: &Connection, token: &str) -> Result<AuthedKey> {
+pub fn authenticate_any(conn: &dyn Sql, token: &str) -> Result<AuthedKey> {
     let token_hash = hash_bearer(token)?;
-    let scope: Option<String> = conn
-        .query_row(
-            "SELECT scope FROM api_keys WHERE key_hash = ?1",
-            params![token_hash],
-            |row| row.get(0),
-        )
-        .optional()?;
+    let scope: Option<String> = conn.query_opt(
+        "SELECT scope FROM api_keys WHERE key_hash = ?1",
+        params![token_hash],
+        |row| row.get(0),
+    )?;
     let scope = scope.ok_or(Error::InvalidApiKey)?;
     // The scoped check does the rest: revoked, expired and last-used.
     authenticate(conn, token, ApiKeyScope::parse(&scope)?)
@@ -554,7 +548,7 @@ impl KeyCheck {
 }
 
 /// Looks up a bearer without requiring a scope and without recording use.
-pub fn check_token(conn: &Connection, token: &str) -> Result<KeyCheck> {
+pub fn check_token(conn: &dyn Sql, token: &str) -> Result<KeyCheck> {
     match hash_bearer(token) {
         Ok(hash) => check_hash(conn, &hash),
         Err(_) => Ok(KeyCheck::invalid()),
@@ -563,35 +557,33 @@ pub fn check_token(conn: &Connection, token: &str) -> Result<KeyCheck> {
 
 /// Looks up `hex(SHA-256(raw))` the same way the personal store revalidates
 /// a previously loaded key.
-pub fn check_hash(conn: &Connection, key_hash: &str) -> Result<KeyCheck> {
+pub fn check_hash(conn: &dyn Sql, key_hash: &str) -> Result<KeyCheck> {
     if key_hash.len() != 64 || !key_hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Ok(KeyCheck::invalid());
     }
     let key_hash = key_hash.to_ascii_lowercase();
-    let row = conn
-        .query_row(
-            "SELECT id, scope, label, recipient_fingerprint,
-                    revoked_at IS NOT NULL,
-                    expires_at IS NOT NULL AND datetime(expires_at) <= datetime('now')
-             FROM api_keys WHERE key_hash = ?1",
-            params![key_hash],
-            |row| {
-                let revoked: bool = row.get(4)?;
-                let expired: bool = row.get(5)?;
-                if revoked || expired {
-                    Ok(KeyCheck::invalid())
-                } else {
-                    Ok(KeyCheck {
-                        valid: true,
-                        id: Some(row.get(0)?),
-                        scope: Some(row.get(1)?),
-                        label: row.get(2)?,
-                        recipient_fingerprint: row.get(3)?,
-                    })
-                }
-            },
-        )
-        .optional()?;
+    let row = conn.query_opt(
+        "SELECT id, scope, label, recipient_fingerprint,
+                revoked_at IS NOT NULL,
+                expires_at IS NOT NULL AND datetime(expires_at) <= datetime('now')
+         FROM api_keys WHERE key_hash = ?1",
+        params![key_hash],
+        |row| {
+            let revoked: bool = row.get(4)?;
+            let expired: bool = row.get(5)?;
+            if revoked || expired {
+                Ok(KeyCheck::invalid())
+            } else {
+                Ok(KeyCheck {
+                    valid: true,
+                    id: Some(row.get(0)?),
+                    scope: Some(row.get(1)?),
+                    label: row.get(2)?,
+                    recipient_fingerprint: row.get(3)?,
+                })
+            }
+        },
+    )?;
     Ok(row.unwrap_or_else(KeyCheck::invalid))
 }
 
@@ -600,7 +592,7 @@ pub fn check_hash(conn: &Connection, key_hash: &str) -> Result<KeyCheck> {
 /// A supplied key is never ignored in favor of a fresh bootstrap, so a
 /// mistyped `--db` path cannot mint against a new empty issuer store.
 pub fn authorize_licensee_or_bootstrap(
-    conn: &Connection,
+    conn: &dyn Sql,
     supplied: Option<&str>,
 ) -> Result<Option<CreatedLicensee>> {
     if let Some(key) = supplied {
@@ -616,8 +608,10 @@ pub fn authorize_licensee_or_bootstrap(
 /// Mints the one-time internal operator issuer when none exists. HTTP never
 /// sees this token. The host CLI must already have verified a KeyQuorum-signed
 /// provider identity before calling this; it is not a public mint path.
-pub fn bootstrap_licensee_if_empty(conn: &Connection) -> Result<Option<CreatedLicensee>> {
-    let n: i64 = conn.query_row("SELECT COUNT(*) FROM licensee_issuer", [], |row| row.get(0))?;
+pub fn bootstrap_licensee_if_empty(conn: &dyn Sql) -> Result<Option<CreatedLicensee>> {
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM licensee_issuer", params![], |row| {
+        row.get(0)
+    })?;
     if n == 0 {
         let (token, token_hash) = generate_prefixed_bearer(LICENSEE_PREFIX);
         conn.execute(
@@ -631,16 +625,14 @@ pub fn bootstrap_licensee_if_empty(conn: &Connection) -> Result<Option<CreatedLi
 }
 
 /// Confirms the caller holds the licensee issuer. Does not stamp API-key use.
-pub fn authenticate_licensee(conn: &Connection, token: &str) -> Result<()> {
+pub fn authenticate_licensee(conn: &dyn Sql, token: &str) -> Result<()> {
     let token_hash =
         hash_prefixed(token, LICENSEE_PREFIX).map_err(|_| Error::InvalidLicenseeKey)?;
-    let found: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM licensee_issuer WHERE id = 1 AND key_hash = ?1",
-            params![token_hash],
-            |row| row.get(0),
-        )
-        .optional()?;
+    let found: Option<i64> = conn.query_opt(
+        "SELECT id FROM licensee_issuer WHERE id = 1 AND key_hash = ?1",
+        params![token_hash],
+        |row| row.get(0),
+    )?;
     match found {
         Some(_) => Ok(()),
         None => Err(Error::InvalidLicenseeKey),
@@ -649,14 +641,14 @@ pub fn authenticate_licensee(conn: &Connection, token: &str) -> Result<()> {
 
 /// Record a privileged provider-auth attempt. Never store secrets.
 pub fn record_provider_auth_event(
-    conn: &Connection,
+    conn: &dyn Sql,
     operation: &str,
     provider_id: Option<&str>,
     network_id: Option<&str>,
     hardware_fingerprints: Option<&str>,
     success: bool,
 ) -> Result<()> {
-    crate::db::with_immediate_transaction(conn, || {
+    conn.with_transaction(|| {
         conn.execute(
             "INSERT INTO provider_auth_events
              (operation, provider_id, network_id, hardware_fingerprints, success)
@@ -672,7 +664,7 @@ pub fn record_provider_auth_event(
         super::audit::seal_row(
             conn,
             super::audit::AuditTable::ProviderAuthEvents,
-            conn.last_insert_rowid(),
+            conn.last_insert_rowid()?,
         )
     })
 }

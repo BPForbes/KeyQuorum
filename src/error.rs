@@ -149,14 +149,12 @@ pub enum Error {
     /// holds can collect it: the key's own scope cannot, and no live
     /// `inbox.pull` key is bound to the recipient.
     DeliveryNotCollectable,
-    /// The relay's store (its SQLite file or its MongoDB deployment) failed
-    /// an operation; the text is the backend's own, never a bearer or a key.
+    /// The relay's store failed an operation; the text is the backend's own,
+    /// never a bearer or a key.
     Store(String),
-    /// Two relay replicas wrote the same record at once; the unit of work
-    /// is retried from the start. Only `relay::mongo` raises it.
-    StoreConflict,
-    /// A shared store could not tell whether a write committed (a lost
-    /// commit response). Nothing may be undone or repeated on a guess.
+    /// A store reached over a network could not tell whether a write
+    /// committed (a lost commit response). Nothing may be undone or repeated
+    /// on a guess. No backend raises it today; `host keys` already handles it.
     StoreCommitUnknown,
 }
 
@@ -254,7 +252,6 @@ impl fmt::Display for Error {
                 "this key's scope cannot collect a mailbox letter and no live inbox.pull key is bound to its recipient; write a sealed bundle with --out instead"
             ),
             Error::Store(message) => write!(f, "relay store error: {message}"),
-            Error::StoreConflict => write!(f, "relay store write conflict; retry"),
             Error::StoreCommitUnknown => write!(
                 f,
                 "relay store could not confirm the write committed; check \

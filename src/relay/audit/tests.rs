@@ -1,6 +1,7 @@
 use super::*;
 use crate::provider::test_helpers::{empty_revoked, issued_identity};
 use crate::relay::{self, ApiKeyScope, NewApiKey};
+use rusqlite::Connection;
 
 const SIGNED_AT: &str = "2026-06-01 12:00:00.000";
 

@@ -460,20 +460,9 @@ pub enum Command {
 #[cfg(feature = "provider")]
 #[derive(clap::Args)]
 pub struct HostOpts {
-    /// Mailbox SQLite file (not an organization store). Not used when a
-    /// MongoDB deployment is configured.
+    /// Mailbox SQLite file (not an organization store).
     #[arg(long, default_value = "keyquorum-relay.sqlite")]
     pub mailbox_db: PathBuf,
-    /// A file holding the MongoDB connection string of the hosted relay's
-    /// store (or KEYQUORUM_MONGODB_URI_FILE, or the raw
-    /// KEYQUORUM_MONGODB_URI). Needs a build with the `mongodb` feature.
-    /// Never a flag value: the string may carry a password.
-    #[arg(long)]
-    pub mongodb_uri_file: Option<PathBuf>,
-    /// The database within that deployment (or KEYQUORUM_MONGODB_DB;
-    /// `keyquorum` by default)
-    #[arg(long)]
-    pub mongodb_db: Option<String>,
     #[command(subcommand)]
     pub command: host_args::HostCommand,
 }

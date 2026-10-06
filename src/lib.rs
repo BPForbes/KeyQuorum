@@ -5,6 +5,15 @@ compile_error!(
     "provider and lab builds are mutually exclusive: the lab WASM must not carry mailbox-host code"
 );
 
+#[cfg(all(
+    feature = "workers",
+    any(feature = "provider", feature = "lab"),
+    target_arch = "wasm32"
+))]
+compile_error!(
+    "the workers feature excludes provider and lab on wasm32: the public Worker must not carry mailbox-host code or the browser lab"
+);
+
 pub mod api_key_delivery;
 pub mod authority;
 pub mod bridge_command;

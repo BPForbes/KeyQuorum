@@ -189,50 +189,6 @@ fn the_root_key_source_prefers_the_flag_then_the_file_variable() {
 }
 
 #[test]
-fn the_mongodb_uri_comes_from_a_file_before_the_environment() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let file = file_with(
-        &dir,
-        "uri",
-        b"mongodb://relay-user:pw@mongo.internal/?replicaSet=rs0\n",
-    );
-    let got = mongodb_uri(
-        Some(file.clone()),
-        &vars(&[(MONGODB_URI_VAR, "mongodb://other".into())]),
-    )
-    .expect("resolve")
-    .expect("a value");
-    assert_eq!(
-        got.as_str(),
-        "mongodb://relay-user:pw@mongo.internal/?replicaSet=rs0"
-    );
-    let got = mongodb_uri(
-        None,
-        &vars(&[(MONGODB_URI_FILE_VAR, file.display().to_string())]),
-    )
-    .expect("resolve")
-    .expect("a value");
-    assert!(got.starts_with("mongodb://"));
-    let got = mongodb_uri(None, &vars(&[(MONGODB_URI_VAR, "mongodb://other".into())]))
-        .expect("resolve")
-        .expect("a value");
-    assert_eq!(got.as_str(), "mongodb://other");
-    assert!(mongodb_uri(None, &vars(&[])).expect("resolve").is_none());
-    assert_eq!(mongodb_database(None, &vars(&[])), "keyquorum");
-    assert_eq!(
-        mongodb_database(None, &vars(&[(MONGODB_DATABASE_VAR, "relay".into())])),
-        "relay"
-    );
-    assert_eq!(
-        mongodb_database(
-            Some("flag".into()),
-            &vars(&[(MONGODB_DATABASE_VAR, "relay".into())])
-        ),
-        "flag"
-    );
-}
-
-#[test]
 fn a_key_file_is_hex_read_with_the_credential_bound() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (secret, _public) = crate::keys::generate_signing_keypair();

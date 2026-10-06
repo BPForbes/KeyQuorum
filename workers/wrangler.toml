@@ -1,0 +1,31 @@
+# Cloudflare Worker for the KeyQuorum relay (production is the top level,
+# staging is [env.staging], deployed as keyquorum-relay-staging).
+#
+# Stage 2 ships a health-only stub so the deployment check can be proven
+# before the relay exists; see docs/operator/relay-hosting.md.
+#
+# Nothing secret belongs in this file. The relay key, provider.kqcert and
+# provider.kqrl are Worker secrets the operator sets with `wrangler secret
+# put`, never a [vars] entry and never a GitHub secret. scripts/guard.mjs
+# fails CI if this file or the built bundle holds key material, a secret-like
+# [vars] name, or a Durable Object migration that deletes or renames a class
+# (which destroys its data).
+#
+# There is deliberately no route here: the hostname is a Worker custom
+# domain managed in deploy/cloudflare/terraform, and workers.dev stays off so
+# one hostname carries the relay's identity. Preview URLs are on for this
+# Worker only (Cloudflare Workers Builds previews, owner decision 2026-10-06):
+# the stub holds no secrets and no data, and the guard accepts it only for this
+# file. Before this Worker serves the relay, a preview must be refused (a host
+# check in src/index.js) or bind a throwaway Durable Object, because a preview
+# version shares the production bindings and secrets. The admin Worker never
+# gets previews: its hostname sits behind Access and a preview hostname does not.
+name = "keyquorum-relay"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+workers_dev = false
+preview_urls = true
+
+[env.staging]
+workers_dev = false
+preview_urls = true

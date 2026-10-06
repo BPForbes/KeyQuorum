@@ -1,10 +1,10 @@
 //! Opaque envelope store. The only header field used for routing is the
 //! recipient X25519 public key; the sealed payload is stored verbatim.
 
+use super::sql::{params, Row, Sql, Value};
 use crate::error::{Error, Result};
 use crate::keys;
 use crate::private_bridge;
-use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 
 /// Default `GET /inbox` page when `limit` is omitted.
@@ -31,14 +31,14 @@ pub struct MailboxPage {
     pub next_after: Option<i64>,
 }
 
-pub fn store(conn: &Connection, envelope: &[u8]) -> Result<(i64, String, bool)> {
+pub fn store(conn: &dyn Sql, envelope: &[u8]) -> Result<(i64, String, bool)> {
     store_until(conn, envelope, None)
 }
 
 /// Store an opaque envelope, optionally with a UTC expiry
 /// (`YYYY-MM-DD HH:MM:00`). The host scan and inbox pull drop expired rows.
 pub fn store_until(
-    conn: &Connection,
+    conn: &dyn Sql,
     envelope: &[u8],
     expires_at: Option<&str>,
 ) -> Result<(i64, String, bool)> {
@@ -48,16 +48,16 @@ pub fn store_until(
         "INSERT OR IGNORE INTO mailbox
             (recipient_fingerprint, envelope, content_hash, expires_at)
          VALUES (?1, ?2, ?3, ?4)",
-        params![fingerprint, envelope, content_hash, expires_at],
+        params![&fingerprint, envelope, &content_hash, expires_at],
     )?;
 
-    if conn.changes() == 1 {
-        Ok((conn.last_insert_rowid(), fingerprint, false))
+    if conn.changes()? == 1 {
+        Ok((conn.last_insert_rowid()?, fingerprint, false))
     } else {
         let id: i64 = conn.query_row(
             "SELECT id FROM mailbox
              WHERE recipient_fingerprint = ?1 AND content_hash = ?2",
-            params![fingerprint, content_hash],
+            params![&fingerprint, &content_hash],
             |row| row.get(0),
         )?;
         Ok((id, fingerprint, true))
@@ -88,38 +88,98 @@ pub(crate) fn page_size(limit: Option<i64>) -> Result<i64> {
     }
 }
 
+/// The rule that decides an inbox page: at most `page` rows and
+/// `MAX_INBOX_PAGE_BYTES` of sealed bytes (never fewer than one row). Rows
+/// are offered in id order; the first one that does not fit decides the page,
+/// so a reader holds the budget plus one letter, never every candidate.
+pub(crate) struct PageBuilder<T> {
+    kept: Vec<T>,
+    bytes: usize,
+    page: i64,
+    more: bool,
+}
+
+impl<T> PageBuilder<T> {
+    pub(crate) fn new(page: i64) -> Self {
+        Self {
+            kept: Vec::new(),
+            bytes: 0,
+            page,
+            more: false,
+        }
+    }
+
+    /// Offers the next row. `false` means the page is decided and the row was
+    /// dropped (it only told the builder that more remain).
+    pub(crate) fn offer(&mut self, row: T, len: usize) -> bool {
+        let next = self.bytes.saturating_add(len);
+        if self.kept.len() as i64 >= self.page
+            || (!self.kept.is_empty() && next > MAX_INBOX_PAGE_BYTES)
+        {
+            self.more = true;
+            return false;
+        }
+        self.bytes = next;
+        self.kept.push(row);
+        true
+    }
+
+    /// The rows kept, and `next_after` (the last row kept) whenever any was
+    /// left behind.
+    pub(crate) fn finish(self, id_of: impl Fn(&T) -> i64) -> (Vec<T>, Option<i64>) {
+        let next_after = if self.more {
+            self.kept.last().map(id_of)
+        } else {
+            None
+        };
+        (self.kept, next_after)
+    }
+}
+
 /// Reads an inbox page from `rows` (in id order, each read from the store as
-/// it is pulled) and stops as soon as the page is decided: at most `page`
-/// rows and `MAX_INBOX_PAGE_BYTES` of sealed bytes (never fewer than one row).
-/// The row that does not fit is read to learn that more remain and then
-/// dropped, so a store holds the budget plus one letter, never every
-/// candidate; `next_after` is the last row kept whenever any was left behind.
-/// Both mailboxes and both backends use this, so the rule lives once.
+/// it is pulled) and stops as soon as the page is decided (see
+/// [`PageBuilder`]). Both mailboxes and every backend decide a page through
+/// that one builder, so the rule lives once.
+#[cfg(test)]
 pub(crate) fn bound_page<T, E>(
     rows: impl IntoIterator<Item = std::result::Result<T, E>>,
     page: i64,
     id_of: impl Fn(&T) -> i64,
     len_of: impl Fn(&T) -> usize,
 ) -> std::result::Result<(Vec<T>, Option<i64>), E> {
-    let mut kept = Vec::new();
-    let mut bytes = 0usize;
-    let mut more = false;
+    let mut builder = PageBuilder::new(page);
     for row in rows {
         let row = row?;
-        let next = bytes.saturating_add(len_of(&row));
-        if kept.len() as i64 >= page || (!kept.is_empty() && next > MAX_INBOX_PAGE_BYTES) {
-            more = true;
+        let len = len_of(&row);
+        if !builder.offer(row, len) {
             break;
         }
-        bytes = next;
-        kept.push(row);
     }
-    let next_after = if more { kept.last().map(id_of) } else { None };
-    Ok((kept, next_after))
+    Ok(builder.finish(id_of))
+}
+
+/// Runs `sql` (which must order by id and fetch one row more than `page`) and
+/// decides the page as the rows stream in. Used by both mailboxes.
+pub(crate) fn read_page<T>(
+    conn: &dyn Sql,
+    sql: &str,
+    params: &[Value],
+    page: i64,
+    map: impl Fn(&Row) -> Result<T>,
+    id_of: impl Fn(&T) -> i64,
+    len_of: impl Fn(&T) -> usize,
+) -> Result<(Vec<T>, Option<i64>)> {
+    let mut builder = PageBuilder::new(page);
+    conn.query_each(sql, params, &mut |row| {
+        let item = map(row)?;
+        let len = len_of(&item);
+        Ok(builder.offer(item, len))
+    })?;
+    Ok(builder.finish(id_of))
 }
 
 pub fn list_after(
-    conn: &Connection,
+    conn: &dyn Sql,
     fingerprint: &str,
     after: Option<i64>,
     limit: Option<i64>,
@@ -128,22 +188,26 @@ pub fn list_after(
     let after = after.unwrap_or(0);
     let fetch = page.saturating_add(1);
     purge_expired(conn)?;
-    let mut stmt = conn.prepare(
+    let (envelopes, next_after) = read_page(
+        conn,
         "SELECT id, recipient_fingerprint, envelope
          FROM mailbox
          WHERE recipient_fingerprint = ?1 AND id > ?2
            AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
          ORDER BY id ASC
          LIMIT ?3",
+        params![fingerprint, after, fetch],
+        page,
+        |row| {
+            Ok(StoredEnvelope {
+                id: row.get(0)?,
+                recipient_fingerprint: row.get(1)?,
+                bytes: row.get(2)?,
+            })
+        },
+        |item| item.id,
+        |item| item.bytes.len(),
     )?;
-    let rows = stmt.query_map(params![fingerprint, after, fetch], |row| {
-        Ok(StoredEnvelope {
-            id: row.get(0)?,
-            recipient_fingerprint: row.get(1)?,
-            bytes: row.get(2)?,
-        })
-    })?;
-    let (envelopes, next_after) = bound_page(rows, page, |item| item.id, |item| item.bytes.len())?;
     Ok(MailboxPage {
         envelopes,
         next_after,
@@ -153,13 +217,13 @@ pub fn list_after(
 /// Deletes mailbox rows whose date-based TTL has passed. The sealed
 /// envelope bytes live in this table, so the DELETE is what removes them
 /// from disk (the SQLite file).
-pub fn purge_expired(conn: &Connection) -> Result<u64> {
+pub fn purge_expired(conn: &dyn Sql) -> Result<u64> {
     conn.execute(
         "DELETE FROM mailbox
          WHERE expires_at IS NOT NULL AND datetime(expires_at) <= datetime('now')",
-        [],
+        params![],
     )?;
-    Ok(conn.changes())
+    conn.changes()
 }
 
 #[cfg(test)]

@@ -7,14 +7,14 @@
 //! documents. Pull slices the document for the recipient fingerprint and the
 //! personal store translates that slice into SQLite.
 
+use super::sql::{params, Sql};
 use crate::error::{Error, Result};
 use crate::key_tree::{filter_public_tree, visible_labels_in_public_tree, PublicTree};
-use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 
-pub fn put_public_tree(conn: &Connection, snapshot: &PublicTree) -> Result<PublicTree> {
+pub fn put_public_tree(conn: &dyn Sql, snapshot: &PublicTree) -> Result<PublicTree> {
     validate_public_tree(snapshot)?;
-    crate::db::with_immediate_transaction(conn, || persist_public_tree(conn, snapshot))
+    conn.with_transaction(|| persist_public_tree(conn, snapshot))
 }
 
 /// Upsert the incoming nodes and edges into an existing document.
@@ -22,9 +22,9 @@ pub fn put_public_tree(conn: &Connection, snapshot: &PublicTree) -> Result<Publi
 /// Labels present in `snapshot` are authoritative. Nodes and edges the
 /// sender does not mention stay in place, so a personal subgraph cannot
 /// erase unrelated topology. Use [`put_public_tree`] to replace a document.
-pub fn merge_public_tree(conn: &Connection, snapshot: &PublicTree) -> Result<PublicTree> {
+pub fn merge_public_tree(conn: &dyn Sql, snapshot: &PublicTree) -> Result<PublicTree> {
     validate_public_tree(snapshot)?;
-    crate::db::with_immediate_transaction(conn, || {
+    conn.with_transaction(|| {
         let merged = match get_public_tree(conn, &snapshot.label) {
             Ok(existing) => merge_into_existing(&existing, snapshot)?,
             Err(Error::TreeNotFound) => snapshot.clone(),
@@ -86,14 +86,12 @@ pub(crate) fn merge_into_existing(
     Ok(merged)
 }
 
-fn persist_public_tree(conn: &Connection, snapshot: &PublicTree) -> Result<PublicTree> {
-    let existing: Option<i64> = conn
-        .query_row(
-            "SELECT generation FROM org_tree_docs WHERE label = ?1",
-            params![snapshot.label],
-            |row| row.get(0),
-        )
-        .optional()?;
+fn persist_public_tree(conn: &dyn Sql, snapshot: &PublicTree) -> Result<PublicTree> {
+    let existing: Option<i64> = conn.query_opt(
+        "SELECT generation FROM org_tree_docs WHERE label = ?1",
+        params![&snapshot.label],
+        |row| row.get(0),
+    )?;
     let generation = existing.map(|gen| gen.saturating_add(1)).unwrap_or(1);
     let mut stored = snapshot.clone();
     stored.generation = u32::try_from(generation).unwrap_or(u32::MAX);
@@ -104,28 +102,28 @@ fn persist_public_tree(conn: &Connection, snapshot: &PublicTree) -> Result<Publi
             generation = excluded.generation,
             document = excluded.document,
             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
-        params![stored.label, generation, document],
+        params![&stored.label, generation, &document],
     )?;
     Ok(stored)
 }
 
-pub fn get_public_tree(conn: &Connection, label: &str) -> Result<PublicTree> {
+pub fn get_public_tree(conn: &dyn Sql, label: &str) -> Result<PublicTree> {
     let document: String = conn
-        .query_row(
+        .query_opt(
             "SELECT document FROM org_tree_docs WHERE label = ?1",
             params![label],
             |row| row.get(0),
-        )
-        .optional()?
+        )?
         .ok_or(Error::TreeNotFound)?;
     parse_document(&document)
 }
 
-pub fn list_public_trees(conn: &Connection) -> Result<Vec<PublicTree>> {
-    let mut stmt = conn.prepare("SELECT document FROM org_tree_docs ORDER BY label")?;
-    let trees = stmt
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+pub fn list_public_trees(conn: &dyn Sql) -> Result<Vec<PublicTree>> {
+    let trees = conn.query_map(
+        "SELECT document FROM org_tree_docs ORDER BY label",
+        params![],
+        |row| row.get::<String>(0),
+    )?;
     trees
         .iter()
         .map(|document| parse_document(document))
@@ -134,7 +132,7 @@ pub fn list_public_trees(conn: &Connection) -> Result<Vec<PublicTree>> {
 
 /// Slice every stored tree that contains this encryption fingerprint.
 /// Trees that do not mention the fingerprint are omitted, not an error.
-pub fn slices_for_fingerprint(conn: &Connection, fingerprint: &str) -> Result<Vec<PublicTree>> {
+pub fn slices_for_fingerprint(conn: &dyn Sql, fingerprint: &str) -> Result<Vec<PublicTree>> {
     let mut slices = Vec::new();
     for full in list_public_trees(conn)? {
         if let Some(slice) = slice_for_fingerprint(&full, fingerprint) {
@@ -146,7 +144,7 @@ pub fn slices_for_fingerprint(conn: &Connection, fingerprint: &str) -> Result<Ve
 
 /// Slice one published tree for every leaf bound to this fingerprint.
 pub fn context_for_fingerprint(
-    conn: &Connection,
+    conn: &dyn Sql,
     label: &str,
     fingerprint: &str,
 ) -> Result<PublicTree> {
@@ -172,7 +170,7 @@ pub(crate) fn slice_for_fingerprint(full: &PublicTree, fingerprint: &str) -> Opt
 
 /// Every published tree this fingerprint appears in, already sliced.
 /// Unknown fingerprints yield an empty list so inbox pull still succeeds.
-pub fn contexts_for_fingerprint(conn: &Connection, fingerprint: &str) -> Result<Vec<PublicTree>> {
+pub fn contexts_for_fingerprint(conn: &dyn Sql, fingerprint: &str) -> Result<Vec<PublicTree>> {
     slices_for_fingerprint(conn, fingerprint)
 }
 

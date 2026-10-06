@@ -817,7 +817,7 @@ impl LabState {
         label: &str,
     ) -> Result<String> {
         Ok(relay::create_api_key(
-            &self.vm().relay_conn(),
+            &*self.vm().relay_conn(),
             &NewApiKey {
                 scope,
                 recipient_fingerprint,

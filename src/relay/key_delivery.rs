@@ -36,12 +36,12 @@
 //! letter by its mailbox id.
 
 use super::api_key::{self, ApiKeyInfo, ApiKeyScope, CreatedApiKey, NewApiKey, OldKey};
+use super::sql::{params, Sql};
 use super::{mailbox, ProviderIdentity};
 use crate::api_key_delivery::{self, KeyIssue, DEVICE_ID_LEN};
 use crate::db::relay_credential::normalize_url;
 use crate::error::{Error, Result};
 use crate::keys;
-use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 /// How long the key a letter replaces stays usable to collect the letter.
@@ -79,18 +79,17 @@ pub struct Delivered {
 }
 
 /// The recipient recorded for key `id`, if it was ever sealed to one.
-pub fn recipient_for(conn: &Connection, id: i64) -> Result<Option<Recipient>> {
-    conn.query_row(
+pub fn recipient_for(conn: &dyn Sql, id: i64) -> Result<Option<Recipient>> {
+    conn.query_opt(
         "SELECT recipient_public_key, relay_url, device_id, licence
          FROM api_key_deliveries WHERE api_key_id = ?1",
         params![id],
         |row| {
             let public_key: Vec<u8> = row.get(0)?;
             let device_id: Option<Vec<u8>> = row.get(2)?;
-            Ok((public_key, row.get::<_, String>(1)?, device_id, row.get(3)?))
+            Ok((public_key, row.get::<String>(1)?, device_id, row.get(3)?))
         },
-    )
-    .optional()?
+    )?
     .map(|(public_key, relay_url, device_id, licence)| {
         Ok(Recipient {
             public_key: public_key.try_into().map_err(|_| Error::InvalidPublicKey)?,
@@ -106,9 +105,9 @@ pub fn recipient_for(conn: &Connection, id: i64) -> Result<Option<Recipient>> {
 
 /// What a sealed issue needs from the store it runs in, inside the one unit
 /// of work that mints or rotates the key. The SQLite store implements it
-/// over its open transaction ([`SqliteOps`]) and the MongoDB store over its
-/// session, so the flow that decides whom a key is sealed to, whether a
-/// letter can be collected, and what is recorded is written once, here.
+/// over its open transaction ([`SqlOps`]) and any other backend over its
+/// own, so the flow that decides whom a key is sealed to, whether a letter
+/// can be collected, and what is recorded is written once, here.
 pub(crate) trait DeliveryOps {
     fn key_info(&mut self, id: i64) -> Result<ApiKeyInfo>;
     fn has_live_pull_key(&mut self, fingerprint: &str) -> Result<bool>;
@@ -124,9 +123,9 @@ pub(crate) trait DeliveryOps {
 
 /// [`DeliveryOps`] over the relay's SQLite connection, already inside a
 /// transaction.
-pub(crate) struct SqliteOps<'a>(pub &'a Connection);
+pub(crate) struct SqlOps<'a>(pub &'a dyn Sql);
 
-impl DeliveryOps for SqliteOps<'_> {
+impl DeliveryOps for SqlOps<'_> {
     fn key_info(&mut self, id: i64) -> Result<ApiKeyInfo> {
         api_key::info(self.0, id)
     }
@@ -166,7 +165,7 @@ impl DeliveryOps for SqliteOps<'_> {
                 &recipient.public_key[..],
                 normalize_url(&recipient.relay_url),
                 recipient.device_id.as_ref().map(|id| &id[..]),
-                recipient.licence,
+                recipient.licence.as_deref(),
                 kind,
                 letter_id,
                 sha256,
@@ -176,11 +175,11 @@ impl DeliveryOps for SqliteOps<'_> {
     }
 
     fn now_seconds(&mut self) -> Result<String> {
-        Ok(self
-            .0
-            .query_row("SELECT strftime('%Y-%m-%d %H:%M:%S', 'now')", [], |row| {
-                row.get(0)
-            })?)
+        self.0.query_row(
+            "SELECT strftime('%Y-%m-%d %H:%M:%S', 'now')",
+            params![],
+            |row| row.get(0),
+        )
     }
 }
 
@@ -190,21 +189,17 @@ impl DeliveryOps for SqliteOps<'_> {
 /// must match. On an error the key does not exist; if `write` had already
 /// succeeded the caller removes what it wrote.
 pub fn create_as_bundle(
-    conn: &Connection,
+    conn: &dyn Sql,
     identity: &ProviderIdentity,
     new: &NewApiKey,
     recipient: &Recipient,
     write: impl FnOnce(&[u8]) -> Result<()>,
 ) -> Result<Delivered> {
     let mut write = Some(write);
-    crate::db::with_immediate_transaction(conn, || {
-        create_as_bundle_with(
-            &mut SqliteOps(conn),
-            identity,
-            new,
-            recipient,
-            &mut |bytes| write.take().ok_or(Error::IntegrityCheckFailed)?(bytes),
-        )
+    conn.with_transaction(|| {
+        create_as_bundle_with(&mut SqlOps(conn), identity, new, recipient, &mut |bytes| {
+            write.take().ok_or(Error::IntegrityCheckFailed)?(bytes)
+        })
     })
 }
 
@@ -235,14 +230,14 @@ pub(crate) fn create_as_bundle_with(
 /// one transaction. The old key stays usable for `grace_seconds` to collect
 /// it, and the letter expires with it.
 pub fn rotate_as_letter(
-    conn: &Connection,
+    conn: &dyn Sql,
     identity: &ProviderIdentity,
     id: i64,
     recipient: Option<Recipient>,
     grace_seconds: i64,
 ) -> Result<Delivered> {
-    crate::db::with_immediate_transaction(conn, || {
-        rotate_as_letter_with(&mut SqliteOps(conn), identity, id, recipient, grace_seconds)
+    conn.with_transaction(|| {
+        rotate_as_letter_with(&mut SqlOps(conn), identity, id, recipient, grace_seconds)
     })
 }
 
@@ -280,21 +275,17 @@ pub(crate) fn rotate_as_letter_with(
 /// Rotate key `id`, revoking it at once, and hand the replacement to
 /// `write` as a sealed `.kqkey` bundle, in one transaction.
 pub fn rotate_as_bundle(
-    conn: &Connection,
+    conn: &dyn Sql,
     identity: &ProviderIdentity,
     id: i64,
     recipient: Option<Recipient>,
     write: impl FnOnce(&[u8]) -> Result<()>,
 ) -> Result<Delivered> {
     let mut write = Some(write);
-    crate::db::with_immediate_transaction(conn, || {
-        rotate_as_bundle_with(
-            &mut SqliteOps(conn),
-            identity,
-            id,
-            recipient,
-            &mut |bytes| write.take().ok_or(Error::IntegrityCheckFailed)?(bytes),
-        )
+    conn.with_transaction(|| {
+        rotate_as_bundle_with(&mut SqlOps(conn), identity, id, recipient, &mut |bytes| {
+            write.take().ok_or(Error::IntegrityCheckFailed)?(bytes)
+        })
     })
 }
 

@@ -20,8 +20,6 @@ fn main() -> ExitCode {
         Command::Host(opts) => host::run(
             &host::StoreArgs {
                 mailbox_db: opts.mailbox_db,
-                mongodb_uri_file: opts.mongodb_uri_file,
-                mongodb_db: opts.mongodb_db,
             },
             &cli::resolve_db(cli.db.as_deref()),
             opts.command,
