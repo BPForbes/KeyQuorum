@@ -11,7 +11,14 @@ Durable Object running `relay::service::dispatch`, with an admin Worker behind
 Cloudflare Access) is **planned and not yet implemented**; the plan of record
 is `relay-hosting.md` next to this file. Nothing in this repository deploys a
 relay to Cloudflare yet, and this runbook does not describe a running
-production deployment.
+production deployment. What exists (stage 2) is the pipeline around a
+health-only stub Worker: `workers/`, the `workers` workflow
+(`.github/workflows/workers.yml`) and the Terraform in
+`deploy/cloudflare/terraform/`. CI's `terraform validate` accepts the
+Terraform, but the authors never planned or applied it against a real account,
+and the owner's GitHub and Cloudflare setup (environments, secrets,
+`RELAY_URL`, the `workers` required check, account, zone, domain) is not done.
+No deployment has run.
 
 What exists today is the native host, `keyquorum host serve` (feature
 `provider`), backed by `SqliteRelayStore`, the relay's own owner-only SQLite

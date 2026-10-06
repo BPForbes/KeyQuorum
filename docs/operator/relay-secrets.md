@@ -11,10 +11,15 @@ process needs for itself arrives as a file through the platform's
 credential mechanism.
 
 Hosting status: Cloudflare is the sole production hosting provider. The
-Workers relay is **planned and not yet implemented**; rows marked
-"(planned)" below describe the plan of record in `relay-hosting.md`, not
-anything that exists or runs today. The native `keyquorum host serve` is the
-development, test and reference host.
+Workers relay is **not yet implemented**: the deployed Worker is a health-only
+stub (`workers/`). What exists is the deployment pipeline around it
+(`.github/workflows/workers.yml`, `workers/scripts/guard.mjs`,
+`deploy/cloudflare/terraform/`); rows marked "(process exists, relay not
+implemented)" below describe a process the repository now contains, and rows
+marked "(planned)" describe the plan of record in `relay-hosting.md`. No
+deployment has run, and the owner's GitHub and Cloudflare setup is not done.
+The native `keyquorum host serve` is the development, test and reference
+host.
 
 | Artifact | Secret? | On the relay? | Persistence | Source | Never |
 | --- | ---: | ---: | --- | --- | --- |
@@ -31,9 +36,9 @@ development, test and reference host.
 | `.kqkey` bootstrap bundle (`KQXB` type 4) | sealed secret carrier | handoff only | temporary, owner-only, never overwritten; deleted once loaded | `host keys create --recipient-key --out` (#86) | the repository (`*.kqkey` is ignored); being left on the relay; being opened by anyone but the recipient key |
 | `.kqpb` key-rotation letter (`KQPB` kind 20) | sealed secret carrier | opaque, in the mailbox until collected or expired | the mailbox, with the old key's grace period as its TTL | `host keys rotate` (#86) | being unsealed by the relay |
 | audit checkpoint file | not secret, but the evidence | **no** (that is its point) | write-once storage the operator controls | `host keys checkpoint --out` | the relay host or database |
-| Worker secrets: relay key, `provider.kqcert`, `provider.kqrl` (planned, not implemented) | relay key **yes**; certificate and KRL no (signed) | the Worker and its Durable Object, at run time | Cloudflare Worker secrets, set by the operator with `wrangler secret put`; readable by the Worker at run time and by Cloudflare account members who may edit the Worker | the operator (relay key from `host identity generate`; certificate and KRL from the offline root) | GitHub secrets, `wrangler.toml` or any committed file, `[vars]`, Terraform state or `terraform.tfvars`, a log; the `kql_` lock or the provider-root private key on a Worker |
-| Cloudflare API token for deploy (planned) | **yes** | no | a GitHub environment secret, scoped to Workers edit only, readable by the deploy job of that environment | the Cloudflare account owner | broader scopes (DNS, account, Access, zone); the repository; a log; a Worker; the relay key or any row above |
-| Terraform state and `terraform.tfvars` (planned) | **yes** (state can hold resource attributes and variables in plain text) | no | the operator's own encrypted, access-controlled backend; `terraform.tfvars` only on the operator's machine, owner-only | the operator | version control (`*.tfstate`, `*.tfvars`), CI logs or artifacts, a shared or world-readable location |
+| Worker secrets: relay key, `provider.kqcert`, `provider.kqrl` (process exists, relay not implemented) | relay key **yes**; certificate and KRL no (signed) | the Worker and its Durable Object, at run time | Cloudflare Worker secrets, set by the operator with `wrangler secret put`; readable by the Worker at run time and by Cloudflare account members who may edit the Worker | the operator (relay key from `host identity generate`; certificate and KRL from the offline root) | GitHub secrets, `wrangler.toml` or any committed file, `[vars]`, Terraform state or `terraform.tfvars`, a log; the `kql_` lock or the provider-root private key on a Worker. `workers/scripts/guard.mjs` fails CI on key-like material or a secret-like `[vars]` name in `wrangler.toml` or the built bundle (a pattern check, not proof). The stub Worker reads no secret today |
+| Cloudflare API token for deploy (process exists, not configured) | **yes** | no | a GitHub environment secret (`CLOUDFLARE_API_TOKEN`, with `CLOUDFLARE_ACCOUNT_ID`) in `cloudflare-staging` and `cloudflare-production`, scoped to Workers Scripts edit only, readable by the deploy jobs of `workers.yml` for that environment; the owner has not created the environments or secrets, and until they exist the staging job warns and passes | the Cloudflare account owner | broader scopes (DNS, account, Access, zone); the repository; a log; a Worker; the relay key or any row above |
+| Terraform state and `terraform.tfvars` (process exists, never applied) | **yes** (state can hold resource attributes and variables in plain text) | no | the operator's own encrypted, access-controlled backend (local state by default, git-ignored); `terraform.tfvars` only on the operator's machine, owner-only (git-ignored); the operator runs `terraform apply` with their own `CLOUDFLARE_API_TOKEN`, a different token from the deploy token, never in GitHub | the operator | version control (`*.tfstate`, `*.tfvars`), CI logs or artifacts, a shared or world-readable location |
 | slot passphrases, PINs, vault passwords | **yes** | never | the person's memory; prompted and zeroized | the person | the relay, a file the relay reads, an environment variable |
 
 ## Where each secret enters a process
@@ -45,8 +50,8 @@ development, test and reference host.
 | `keyquorum host keys list\|events\|revoke\|checkpoint` | relay key only for `checkpoint` and to sign a revocation at once | `--relay-key PATH` |
 | `keyquorum host certify\|krl\|policy issue` (offline) | provider-root private key | `--root-key PATH` / `KEYQUORUM_PROVIDER_ROOT_KEY_FILE` (then the raw `KEYQUORUM_PROVIDER_ROOT_KEY`) |
 | a customer's `keyquorum loadkey --bundle` | their slot passphrase | a prompt, zeroized |
-| planned Workers relay (not implemented) | relay key, certificate, KRL | Worker secrets set with `wrangler secret put` (`relay-hosting.md`) |
-| planned deploy job (not implemented) | Cloudflare API token (Workers edit only) | a GitHub environment secret, injected into that job only |
+| planned Workers relay (not implemented; the stub reads none) | relay key, certificate, KRL | Worker secrets set with `wrangler secret put` (`relay-hosting.md`) |
+| `workers deploy staging` / `workers deploy production` (`workers.yml`; exist, environments not configured) | Cloudflare API token (Workers Scripts edit only) and account id | GitHub environment secrets, injected into that job only; the Terraform token never enters GitHub |
 
 Every file source, the relay and provider-root key files included
 (`host_env::read_key_file`), is read with a bound

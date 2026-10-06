@@ -9,15 +9,15 @@ locals {
 resource "cloudflare_ruleset" "relay_rate_limit" {
   zone_id     = var.zone_id
   name        = "keyquorum relay rate limit"
-  description = "Per-client limit on the customer routes, ahead of the Worker's own limit."
+  description = "Per-client limit on every relay route except /health, ahead of the Worker's own limit."
   kind        = "zone"
   phase       = "http_ratelimit"
 
   rules = [{
     action      = "block"
-    description = "Customer routes: inbox, key check, provider identity"
+    description = "Every route except /health"
     enabled     = true
-    expression  = "(${local.host_match} and (starts_with(http.request.uri.path, \"/inbox\") or http.request.uri.path eq \"/keycheck\" or http.request.uri.path eq \"/provider-identity\"))"
+    expression  = "(${local.host_match} and http.request.uri.path ne \"/health\")"
     ratelimit = {
       characteristics     = ["cf.colo.id", "ip.src"]
       period              = var.rate_limit_period
