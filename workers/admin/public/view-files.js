@@ -1,6 +1,6 @@
 import { api } from "./api.js";
 import { commit, operation } from "./confirm.js";
-import { MAX_FILE_BYTES, PRIVATE_NAME_NOTE, classify, fromBase64, readEnrollment, readPackage, refusedName } from "./files.js";
+import { MAX_FILE_BYTES, classify, fromBase64, readEnrollment, readPackage, refusedName } from "./files.js";
 import { formatTime } from "./format.js";
 import { stash } from "./stash.js";
 import { badge, clear, h, notice, section } from "./ui.js";
