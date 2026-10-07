@@ -1,7 +1,7 @@
 import { ApiError, api, get } from "./api.js";
 import { bundleList, packageResult } from "./bundles.js";
 import { commit, operation } from "./confirm.js";
-import { classify, readEnrollment, toBase64 } from "./files.js";
+import { PRIVATE_NAME_NOTE, classify, isPrivateName, readEnrollment, toBase64 } from "./files.js";
 import { isHex, scopeLabel } from "./format.js";
 import { stash } from "./stash.js";
 import { issuanceBlock } from "./setup-state.js";
@@ -98,6 +98,11 @@ export default async function issue(ctx) {
     enrolled = null;
     clear(enrollSummary);
     if (!file) return;
+    if (isPrivateName(file.name)) {
+      // Refused from the name alone; the file is never read into the page.
+      enrollSummary.append(notice("bad", PRIVATE_NAME_NOTE));
+      return;
+    }
     const bytes = new Uint8Array(await file.arrayBuffer());
     if (classify(bytes, file.name).kind !== "enrollment") {
       enrollSummary.append(notice("bad", "That is not an enrollment request."));

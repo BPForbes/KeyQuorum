@@ -96,8 +96,11 @@ fn plan(package_path: &Path, device: &Path, label: &str) -> Result<Plan> {
         None => None,
     };
     if steps.is_some() {
-        // Every sealed key is opened and checked now, before the first write, so
-        // a key that cannot install leaves no identity or certificate behind.
+        // Every sealed key is opened and checked offline now, before the first
+        // write (the relay challenge still runs when it installs), so a key that
+        // cannot open or is for another drive leaves no identity or certificate
+        // behind. A package without a manifest creates the slot while it runs,
+        // so it has none to open yet and keeps the fixed plan.
         let slot = format!("{}={label}", device.display());
         for component in package
             .components

@@ -93,7 +93,18 @@ fn a_mailbox_from_before_held_letters_gets_the_columns_once() {
         })
         .expect("blob_ready exists");
     assert_eq!(ready, 1, "an old letter is ready");
-    conn.execute("SELECT blob_len FROM mailbox", []).ok();
+    let held: Option<i64> = conn
+        .query_row("SELECT blob_len FROM mailbox WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .expect("blob_len exists");
+    assert_eq!(held, None, "an old letter has no held length");
+    let expires: Option<String> = conn
+        .query_row("SELECT expires_at FROM mailbox WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .expect("expires_at exists");
+    assert_eq!(expires, None);
     // A table that is not there yet is left for the schema to create.
     ensure_blob_columns(sql).expect("device_mailbox is absent");
 }

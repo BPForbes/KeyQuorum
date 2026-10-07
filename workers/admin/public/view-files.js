@@ -1,6 +1,6 @@
 import { api } from "./api.js";
 import { commit, operation } from "./confirm.js";
-import { MAX_FILE_BYTES, PRIVATE_NAME_NOTE, classify, fromBase64, isPrivateName, readEnrollment, readPackage } from "./files.js";
+import { MAX_FILE_BYTES, PRIVATE_NAME_NOTE, classify, fromBase64, readEnrollment, readPackage, refusedName } from "./files.js";
 import { formatTime } from "./format.js";
 import { stash } from "./stash.js";
 import { badge, clear, h, notice, section } from "./ui.js";
@@ -42,10 +42,10 @@ function providerPackage() {
 }
 
 async function describe(file) {
-  if (isPrivateName(file.name)) {
+  const refused = refusedName(file.name);
+  if (refused) {
     // Refused from the name alone: the file is never read into the page.
-    const found = { accepted: false, kind: "refused", label: "Private key material", visibility: null, action: null, note: PRIVATE_NAME_NOTE };
-    return { name: file.name, found, body: [notice("bad", PRIVATE_NAME_NOTE)] };
+    return { name: file.name, found: refused, body: [notice("bad", refused.note)] };
   }
   if (file.size > MAX_FILE_BYTES) {
     return { name: file.name, found: classify(new Uint8Array(0), file.name), body: [notice("bad", "The file is too large for this console, so it was not read.")] };

@@ -49,7 +49,7 @@ kind bytes are wire format: append, never renumber.
 `keyquorum setup <file.kqpkg> --device DIR --label NAME` (`src/cli/setup_package.rs`, a native
 everyday command) opens one: it decodes, checks the validity window and that the signer is the
 relay a root-verified, unrevoked certificate names, and that no file it would write conflicts,
-all before any write; without `--yes` it prints the plan and changes nothing. With `--yes` it
+all before any write; without `--yes` it prints the plan and changes nothing; for a manifest package the plan first opens every sealed key with the slot (`precheck_key_component`), so a key that cannot install stops it before anything is written. With `--yes` it
 runs `setup`'s identity steps, places the certificate as `provider.kqcert` beside the container
 (identical bytes are kept, different bytes refused) and installs each sealed key through
 `install_key_component`, the path `loadkey --bundle` and `inbox open` use. It is refused where

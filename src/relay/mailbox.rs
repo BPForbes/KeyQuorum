@@ -363,8 +363,8 @@ pub fn summaries(conn: &dyn Sql, limit: i64) -> Result<(i64, Vec<LetterSummary>)
     summaries_in(conn, MailTable::Inbox, limit)
 }
 
-/// Adds the held-letter columns to a mailbox table that was created before
-/// they existed. `CREATE TABLE IF NOT EXISTS` never adds a column, and a
+/// Adds the columns a mailbox table created before them lacks (`expires_at`,
+/// `blob_len`, `blob_ready`). `CREATE TABLE IF NOT EXISTS` never adds a column, and a
 /// Durable Object cannot run [`super::migrate`] (it takes a `Connection`), so
 /// the Durable Object core calls this after the schema. A table that does not
 /// exist yet, or already has the columns, is left alone.
@@ -377,6 +377,12 @@ pub fn ensure_blob_columns(conn: &dyn Sql) -> Result<()> {
         })?;
         if names.is_empty() {
             continue;
+        }
+        if !names.iter().any(|name| name == "expires_at") {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN expires_at TEXT"),
+                &[],
+            )?;
         }
         if !names.iter().any(|name| name == "blob_len") {
             conn.execute(

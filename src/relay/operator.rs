@@ -532,8 +532,9 @@ fn run(
                 confirm_fingerprint.as_deref(),
             )
             .map_err(|e| failure(&e))?;
-            // Everything the package needs is checked before the keys are
-            // minted, so a package cannot fail once they exist.
+            // What a package needs is checked before the keys are minted, so a
+            // package cannot fail once they exist. Without an enrollment there
+            // is no package, and the certificate is only embedded in each bundle.
             let issued_at = crate::provider::unix_from_utc(now).map_err(|e| failure(&e))?;
             if enrolled {
                 crate::provider::parse_certificate(&identity.certificate)

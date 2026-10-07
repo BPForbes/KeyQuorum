@@ -135,6 +135,8 @@ client sees a reply, and they are hidden from the OpenAPI schema.
 * No backup of the letters bucket (the backups in `r2-backups.md` cover the
   database, not the objects), and nothing off Cloudflare (the single-vendor risk
   in `relay-hosting.md` is unchanged).
-* Migration: an existing Durable Object database would need the two new columns;
-  none exists yet (nothing is deployed), and the native file gets them in
-  `relay::migrate`.
+* Migration: the Durable Object adds `expires_at`, `blob_len` and `blob_ready` to
+  an existing `mailbox` or `device_mailbox` table each time it opens
+  (`mailbox::ensure_blob_columns`, called from `RelayCore::new`); the native file
+  gets the same in `relay::migrate`. Nothing is deployed, so no existing Durable
+  Object has been through it.

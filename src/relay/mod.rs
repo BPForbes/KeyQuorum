@@ -172,30 +172,8 @@ fn table_has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::R
 /// table. Mailboxes from before envelope TTL need `expires_at`, and device
 /// letters stored before device retention get the same TTL from `created_at`.
 fn migrate(conn: &Connection) -> Result<()> {
-    if !table_has_column(conn, "mailbox", "expires_at")? {
-        conn.execute("ALTER TABLE mailbox ADD COLUMN expires_at TEXT", [])?;
-    }
-    for table in ["mailbox", "device_mailbox"] {
-        if table_sql(conn, table)?.is_none() {
-            continue;
-        }
-        if !table_has_column(conn, table, "blob_len")? {
-            conn.execute(
-                &format!("ALTER TABLE {table} ADD COLUMN blob_len INTEGER"),
-                [],
-            )?;
-        }
-        if !table_has_column(conn, table, "blob_ready")? {
-            conn.execute(
-                &format!("ALTER TABLE {table} ADD COLUMN blob_ready INTEGER NOT NULL DEFAULT 1"),
-                [],
-            )?;
-        }
-    }
+    mailbox::ensure_blob_columns(conn)?;
     if table_sql(conn, "device_mailbox")?.is_some() {
-        if !table_has_column(conn, "device_mailbox", "expires_at")? {
-            conn.execute("ALTER TABLE device_mailbox ADD COLUMN expires_at TEXT", [])?;
-        }
         device_mail::backfill_expiry(conn)?;
     }
     widen_api_key_scopes(conn)?;

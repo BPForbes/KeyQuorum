@@ -36,6 +36,13 @@ export function isPrivateName(name) {
   return PRIVATE_NAME.test(String(name ?? ""));
 }
 
+// What a file refused from its name alone reports, or null for any other name.
+export function refusedName(name) {
+  return isPrivateName(name)
+    ? { accepted: false, kind: "refused", label: "Private key material", visibility: null, action: null, note: PRIVATE_NAME_NOTE }
+    : null;
+}
+
 export function magicOf(bytes) {
   return bytes.length >= 4 ? String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]) : "";
 }

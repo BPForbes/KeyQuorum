@@ -536,7 +536,10 @@ fn a_key_bound_to_another_drive_stops_a_manifest_setup_before_any_write() {
     put_package(&mut env, &bytes);
 
     let (result, _) = env.keyquorum(&format!("{SETUP} --yes"));
-    assert!(result.is_err(), "a key for another drive");
+    assert!(
+        matches!(result, Err(Error::KeyIssueDeviceMismatch)),
+        "a key for another drive is refused"
+    );
     assert!(!env.fs.exists(Path::new(CERTIFICATE)));
     assert!(stored_key(&env).is_none());
 }

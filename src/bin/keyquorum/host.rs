@@ -753,6 +753,15 @@ fn run_identity(command: IdentityCommand) -> Result<()> {
 /// touches a running relay: the keypair is made here, and a backup is read from a
 /// directory the operator downloaded it to.
 fn run_backup(command: BackupCommand) -> Result<()> {
+    // The restore reports through tracing like the rest of the host, so it
+    // needs a subscriber of its own (INFO unless RUST_LOG says otherwise).
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
+        .try_init();
     match command {
         BackupCommand::Keygen {
             public_key_out,
