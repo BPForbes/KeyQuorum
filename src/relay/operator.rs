@@ -563,9 +563,24 @@ fn run(
                 // names them and carries no second copy.
                 let sealed: Vec<&[u8]> =
                     issued.bundles.iter().map(|b| b.bundle.as_slice()).collect();
+                let recipient: [u8; 32] = hex::decode(&recipient_public_key)
+                    .ok()
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .ok_or_else(|| failure(&Error::InvalidPublicKey))?;
+                let device: Option<[u8; 16]> = match device_id.as_deref() {
+                    None => None,
+                    Some(text) => Some(
+                        hex::decode(text)
+                            .ok()
+                            .and_then(|bytes| bytes.try_into().ok())
+                            .ok_or_else(|| failure(&Error::InvalidDevice))?,
+                    ),
+                };
                 let package = crate::package::issue_client_package(
                     identity,
                     &sealed,
+                    &recipient,
+                    device,
                     issued_at,
                     PACKAGE_VALID_DAYS,
                 )

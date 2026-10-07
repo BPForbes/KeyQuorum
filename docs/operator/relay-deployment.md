@@ -620,7 +620,17 @@ the relay key, and is written inside the key's transaction, so a failed write
 leaves no key. It is created owner-only and never overwritten. Hand the file to
 the client; they run `keyquorum setup NAME.kqpkg --device DIR --label NAME` to
 see the plan and add `--yes` to apply it. The fingerprint is the only thing that
-ties the request to the person, so never skip the call. Not built: a console
+ties the request to the person, so never skip the call.
+
+The package also carries a **setup manifest** (`KQXB` type 6, `src/setup_manifest.rs`):
+the steps `setup` runs, as a closed list of typed operations (`ensure_identity`,
+`install_certificate`, `install_key`, `use_relay`), never shell text. The relay
+signs it over a domain-separated preimage with its certificate embedded, and it
+is sealed to the person, so only that slot can read it; it names every other part
+by SHA-256 and each part must be used by exactly one step. It is bound to the
+package id, purpose, recipient, device and expiry, so a copy for another person,
+drive or package is refused before any write. A package without a manifest still
+installs by the fixed plan. Not built: a console
 button for this, a resume ledger, and a recovery package for a lost relay key.
 
 ### From the console

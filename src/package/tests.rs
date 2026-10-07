@@ -2,6 +2,10 @@ use super::*;
 use crate::keys::generate_signing_keypair;
 use crate::provider::test_helpers::{empty_revoked, issued_identity};
 
+fn recipient() -> [u8; 32] {
+    crate::keys::generate_encryption_keypair().1
+}
+
 const NOW: &str = "2026-10-07 00:00:00";
 const ISSUED: u64 = 1_000;
 const EXPIRES: u64 = 2_000;
@@ -344,16 +348,38 @@ fn issue_client_package_signs_the_relays_certificate_and_sealed_key() {
         certificate: identity.certificate.clone(),
         relay_private_key: identity.relay_private.clone(),
     };
-    let bytes = issue_client_package(&relay, &[&key_bundle()], ISSUED, 30).expect("issue");
+    let bytes = issue_client_package(
+        &relay,
+        &[&key_bundle()],
+        &recipient(),
+        Some([1u8; 16]),
+        ISSUED,
+        30,
+    )
+    .expect("issue");
     let package = decode(&bytes).expect("decode");
     assert_eq!(package.purpose, Purpose::ClientSetup);
     assert_eq!(package.expires_at, ISSUED + 30 * 86_400);
-    assert_eq!(package.components.len(), 2);
+    assert_eq!(
+        package.components.len(),
+        3,
+        "certificate, key and setup manifest"
+    );
     package
         .verify_issuer(&identity.root_public, NOW, &empty_revoked())
         .expect("issuer");
-    let again = decode(&issue_client_package(&relay, &[&key_bundle()], ISSUED, 30).expect("issue"))
-        .expect("decode");
+    let again = decode(
+        &issue_client_package(
+            &relay,
+            &[&key_bundle()],
+            &recipient(),
+            Some([1u8; 16]),
+            ISSUED,
+            30,
+        )
+        .expect("issue"),
+    )
+    .expect("decode");
     assert_ne!(package.id, again.id, "each package has its own id");
 }
 
@@ -366,12 +392,26 @@ fn issue_client_package_refuses_a_bad_window_or_an_unsupported_key() {
     };
     for days in [0, 366] {
         assert!(matches!(
-            issue_client_package(&relay, &[&key_bundle()], ISSUED, days),
+            issue_client_package(
+                &relay,
+                &[&key_bundle()],
+                &recipient(),
+                Some([1u8; 16]),
+                ISSUED,
+                days
+            ),
             Err(Error::InvalidKqpkg)
         ));
     }
     assert!(matches!(
-        issue_client_package(&relay, &[b"KQTF...."], ISSUED, 30),
+        issue_client_package(
+            &relay,
+            &[b"KQTF...."],
+            &recipient(),
+            Some([1u8; 16]),
+            ISSUED,
+            30
+        ),
         Err(Error::KqpkgComponentRejected)
     ));
 }
@@ -414,12 +454,28 @@ fn a_client_package_carries_every_key_it_is_given() {
         certificate: identity.certificate.clone(),
         relay_private_key: identity.relay_private.clone(),
     };
-    let (one, two) = (key_bundle(), key_bundle());
-    let package = decode(&issue_client_package(&relay, &[&one, &two], ISSUED, 30).expect("issue"))
-        .expect("decode");
-    assert_eq!(package.components.len(), 3);
+    let one = key_bundle();
+    let mut two = key_bundle();
+    *two.last_mut().expect("bytes") ^= 1; // a different sealed key
+    let package = decode(
+        &issue_client_package(
+            &relay,
+            &[&one, &two],
+            &recipient(),
+            Some([1u8; 16]),
+            ISSUED,
+            30,
+        )
+        .expect("issue"),
+    )
+    .expect("decode");
+    assert_eq!(
+        package.components.len(),
+        4,
+        "certificate, two keys and the manifest"
+    );
     assert!(matches!(
-        issue_client_package(&relay, &[], ISSUED, 30),
-        Err(Error::KqpkgComponentRejected)
+        issue_client_package(&relay, &[], &recipient(), Some([1u8; 16]), ISSUED, 30),
+        Err(Error::InvalidKqpkg)
     ));
 }

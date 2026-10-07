@@ -11,7 +11,7 @@
 //!
 //! Dispatch is by the component's own magic, version and kind byte, never by
 //! a file name or by the kind the package claims for it ([`classify`]); a
-//! claim that disagrees with the bytes is refused. Version 1 knows five
+//! claim that disagrees with the bytes is refused. Version 1 knows six
 //! components. Everything else (`.kqenc`, `.kqtf`, `.kqhs`, `.kqbs`,
 //! `.kqbn`, raw `KQTX`, generic `KQXB` types, other `KQPB` kinds) fails
 //! before anything is accepted, as does a component the purpose does not
@@ -32,6 +32,7 @@ use crate::envelope::{self, push_len_prefixed_u32, take_array, take_len_prefixed
 use crate::error::{Error, Result};
 use crate::export;
 use crate::provider::{self, policy};
+use crate::setup_manifest;
 use crate::signing;
 use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha256};
@@ -141,6 +142,9 @@ pub enum ComponentKind {
     ApiKeyBundle,
     /// A recipient-sealed relay API key letter (`KQPB` kind 20).
     ApiKeyLetter,
+    /// The package's typed setup steps (`KQXB` type 6, `setup_manifest`): sealed
+    /// to the recipient, signed by the relay, bound to this package.
+    SetupManifest,
 }
 
 impl ComponentKind {
@@ -151,6 +155,7 @@ impl ComponentKind {
             Self::Policy => 3,
             Self::ApiKeyBundle => 4,
             Self::ApiKeyLetter => 5,
+            Self::SetupManifest => 6,
         }
     }
 
@@ -161,6 +166,7 @@ impl ComponentKind {
             3 => Self::Policy,
             4 => Self::ApiKeyBundle,
             5 => Self::ApiKeyLetter,
+            6 => Self::SetupManifest,
             _ => return Err(Error::KqpkgComponentRejected),
         })
     }
@@ -176,7 +182,7 @@ impl ComponentKind {
         match self {
             Self::Certificate => true,
             Self::RevocationList | Self::Policy => !purpose.is_client(),
-            Self::ApiKeyBundle | Self::ApiKeyLetter => purpose.is_client(),
+            Self::ApiKeyBundle | Self::ApiKeyLetter | Self::SetupManifest => purpose.is_client(),
         }
     }
 }
@@ -228,6 +234,7 @@ pub fn classify(bytes: &[u8]) -> Result<ComponentKind> {
                 .map_err(|_| Error::KqpkgComponentRejected)?
             {
                 (export::BUNDLE_TYPE_API_KEY, _, _) => Ok(ComponentKind::ApiKeyBundle),
+                (export::BUNDLE_TYPE_SETUP_MANIFEST, _, _) => Ok(ComponentKind::SetupManifest),
                 _ => Err(Error::KqpkgComponentRejected),
             }
         }
@@ -372,25 +379,60 @@ pub fn decode(bytes: &[u8]) -> Result<Package> {
     })
 }
 
-/// A `ClientSetup` package for `.kqkey` bundles the relay just sealed: the relay's own
-/// certificate and the sealed keys (at least one, at most fifteen), signed
-/// with the relay key, valid for `valid_days` (1 to 365) from `issued_at`,
-/// under a fresh random id. The sealed keys are not opened or altered, and
-/// the package holds no bearer in the clear.
+/// A `ClientSetup` package for `.kqkey` bundles the relay just sealed: the
+/// relay's own certificate, the sealed keys (at least one, at most fourteen) and
+/// the setup manifest that says what `keyquorum setup` does with them
+/// ([`setup_manifest`]), signed with the relay key, valid for `valid_days` (1 to
+/// 365) from `issued_at`, under a fresh random id. The manifest is sealed to
+/// `recipient` and bound to this package's id, to that recipient and to
+/// `device_id`. The sealed keys are not opened or altered, and the package holds
+/// no bearer in the clear.
 pub fn issue_client_package(
     identity: &crate::relay::ProviderIdentity,
     sealed_keys: &[&[u8]],
+    recipient: &[u8; 32],
+    device_id: Option<[u8; 16]>,
     issued_at: u64,
     valid_days: u64,
 ) -> Result<Vec<u8>> {
-    let mut components = vec![certificate_component(identity)];
+    if !(1..=365).contains(&valid_days) || sealed_keys.is_empty() {
+        return Err(Error::InvalidKqpkg);
+    }
+    let mut id = [0u8; 16];
+    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut id);
+    let expires_at = issued_at + valid_days * 86_400;
+    let certificate = certificate_component(identity);
+    let certificate_hash = setup_manifest::hash_of(&certificate.bytes);
+    let key_hashes: Vec<String> = sealed_keys
+        .iter()
+        .map(|sealed| setup_manifest::hash_of(sealed))
+        .collect();
+    let manifest = setup_manifest::seal(
+        identity,
+        recipient,
+        &setup_manifest::Body {
+            version: setup_manifest::VERSION,
+            package_id: hex::encode(id),
+            purpose: Purpose::ClientSetup.name().to_string(),
+            recipient: hex::encode(recipient),
+            device_id: device_id.map(hex::encode),
+            expires_at,
+            operations: setup_manifest::standard_operations(&certificate_hash, &key_hashes),
+        },
+    )?;
+    let mut components = vec![certificate];
     components.extend(sealed_keys.iter().map(|sealed| Component {
         kind: ComponentKind::ApiKeyBundle,
         bytes: sealed.to_vec(),
     }));
-    issue(
+    components.push(Component {
+        kind: ComponentKind::SetupManifest,
+        bytes: manifest,
+    });
+    issue_with_id(
         identity,
         Purpose::ClientSetup,
+        id,
         components,
         issued_at,
         valid_days,
@@ -428,12 +470,23 @@ fn issue(
     issued_at: u64,
     valid_days: u64,
 ) -> Result<Vec<u8>> {
+    let mut id = [0u8; 16];
+    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut id);
+    issue_with_id(identity, purpose, id, components, issued_at, valid_days)
+}
+
+fn issue_with_id(
+    identity: &crate::relay::ProviderIdentity,
+    purpose: Purpose,
+    id: [u8; 16],
+    components: Vec<Component>,
+    issued_at: u64,
+    valid_days: u64,
+) -> Result<Vec<u8>> {
     if !(1..=365).contains(&valid_days) {
         return Err(Error::InvalidKqpkg);
     }
     let certificate = provider::parse_certificate(&identity.certificate)?;
-    let mut id = [0u8; 16];
-    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut id);
     encode(
         &Package {
             purpose,

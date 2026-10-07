@@ -24,6 +24,7 @@ use super::{profile, revocation_list, setup, usage};
 use crate::error::Result;
 use crate::package::{self, Component, ComponentKind, Package, Purpose};
 use crate::provider;
+use crate::setup_manifest::{self, Operation};
 use rusqlite::Connection;
 use std::path::Path;
 
@@ -38,6 +39,9 @@ struct Plan {
     certificate: Vec<u8>,
     /// The certificate is already on the drive, byte for byte.
     certificate_present: bool,
+    /// The steps of the package's own setup manifest, in order, when it carries
+    /// one. Without a manifest the plan is the fixed one for its purpose.
+    steps: Option<Vec<Operation>>,
 }
 
 #[inline(never)]
@@ -51,7 +55,7 @@ pub(super) fn run(
     if !env::package_setup() {
         return Err(usage("setup with a package is not available here"));
     }
-    let plan = plan(package_path, device)?;
+    let plan = plan(package_path, device, label)?;
     show(&plan, device, label);
     match plan.package.purpose {
         Purpose::ClientSetup | Purpose::ClientUpdate => {}
@@ -68,7 +72,7 @@ pub(super) fn run(
 }
 
 /// Read, verify and plan. Writes nothing.
-fn plan(package_path: &Path, device: &Path) -> Result<Plan> {
+fn plan(package_path: &Path, device: &Path, label: &str) -> Result<Plan> {
     let bytes = env::read(package_path)?;
     let package = package::decode(&bytes)?;
     let now = env::now_utc()?;
@@ -81,6 +85,16 @@ fn plan(package_path: &Path, device: &Path) -> Result<Plan> {
             "a provider recovery package is installed on the provider host, not by setup",
         ));
     }
+    let steps = match package
+        .components
+        .iter()
+        .position(|component| component.kind == ComponentKind::SetupManifest)
+    {
+        Some(at) => Some(read_manifest(
+            &package, at, device, label, &now, &root, &revoked,
+        )?),
+        None => None,
+    };
     let certificate = certificate_of(&package)?.bytes.clone();
     let parsed = provider::parse_certificate(&certificate)?;
     let target = device.join(CERTIFICATE_NAME);
@@ -102,7 +116,52 @@ fn plan(package_path: &Path, device: &Path) -> Result<Plan> {
         certificate_expires: parsed.expires_at,
         certificate,
         certificate_present,
+        steps,
     })
+}
+
+/// The package's setup manifest, opened with this slot and held against the
+/// package, the person and the drive. The manifest is sealed to the recipient, so
+/// reading it takes the slot's passphrase; the slot must therefore exist
+/// already (the provider sealed to it). A manifest that is not for this slot,
+/// this drive or this package, that names a step this version does not know, or
+/// that leaves a part of the package unused, is refused before anything is
+/// written.
+fn read_manifest(
+    package: &Package,
+    at: usize,
+    device: &Path,
+    label: &str,
+    now: &str,
+    root: &[u8; 32],
+    revoked: &std::collections::HashSet<String>,
+) -> Result<Vec<Operation>> {
+    let container = env::fs(|fs| crate::device::open_in(fs, device)).map_err(|_| {
+        usage(
+            "this package's setup steps are sealed to your slot, which must exist first: run \
+             `keyquorum setup --device DIR --label NAME --enroll-out FILE`, send the file to your \
+             provider, and open the package they send you",
+        )
+    })?;
+    let secrets = super::open_slot_secrets(&format!("{}={label}", device.display()))?;
+    let opened = setup_manifest::open(
+        &package.components[at].bytes,
+        &secrets.encryption_secret,
+        root,
+        now,
+        revoked,
+    )?;
+    if opened.relay_public_key != package.issuer {
+        return Err(crate::error::Error::KqpkgIssuerUntrusted);
+    }
+    opened.body.check_against(
+        package,
+        at,
+        &secrets.encryption_public,
+        container.device_id(),
+        provider::unix_from_utc(now)?,
+    )?;
+    Ok(opened.body.operations)
 }
 
 fn certificate_of(package: &Package) -> Result<&Component> {
@@ -120,6 +179,7 @@ fn kind_name(kind: ComponentKind) -> &'static str {
         ComponentKind::Policy => "hardware-authority policy",
         ComponentKind::ApiKeyBundle => "sealed API key (.kqkey)",
         ComponentKind::ApiKeyLetter => "sealed API key letter",
+        ComponentKind::SetupManifest => "setup steps (sealed to you, signed by the relay)",
     }
 }
 
@@ -140,24 +200,91 @@ fn show(plan: &Plan, device: &Path, label: &str) {
     for component in &plan.package.components {
         outln!("  contains: {}", kind_name(component.kind));
     }
-    if matches!(
+    if !matches!(
         plan.package.purpose,
         Purpose::ClientSetup | Purpose::ClientUpdate
     ) {
-        outln!(
-            "Plan for slot {label} on {}: set up the drive identity if missing, {} the relay \
-             certificate, install each sealed key after the relay proves itself.",
-            device.display(),
-            if plan.certificate_present {
-                "keep"
-            } else {
-                "write"
-            }
-        );
+        return;
     }
+    if let Some(steps) = &plan.steps {
+        outln!(
+            "Steps for slot {label} on {}, in this order:",
+            device.display()
+        );
+        for (number, step) in steps.iter().enumerate() {
+            outln!("  {}. {}", number + 1, step.describe());
+        }
+        return;
+    }
+    outln!(
+        "Plan for slot {label} on {}: set up the drive identity if missing, {} the relay \
+         certificate, install each sealed key after the relay proves itself.",
+        device.display(),
+        if plan.certificate_present {
+            "keep"
+        } else {
+            "write"
+        }
+    );
+}
+
+/// Runs the manifest's steps in the order it lists them (which validation
+/// made the dependency order). Each step is one fixed handler; none is text.
+fn apply_steps(
+    conn: &Connection,
+    plan: &Plan,
+    steps: &[Operation],
+    device: &Path,
+    label: &str,
+) -> Result<()> {
+    let slot = format!("{}={label}", device.display());
+    let mut relays: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+    let part = |hash: &str| {
+        plan.package
+            .components
+            .iter()
+            .find(|component| setup_manifest::hash_of(&component.bytes) == hash)
+            .ok_or(crate::error::Error::KqpkgComponentRejected)
+    };
+    for (number, step) in steps.iter().enumerate() {
+        outln!("Step {}/{}: {}", number + 1, steps.len(), step.describe());
+        match step {
+            Operation::EnsureIdentity { .. } => setup::ensure_identity(conn, device, label)?,
+            Operation::InstallCertificate { .. } => {
+                if !plan.certificate_present {
+                    let target = device.join(CERTIFICATE_NAME);
+                    env::write_new(&target, &plan.certificate)?;
+                    outln!("Wrote relay certificate {}", target.display());
+                }
+            }
+            Operation::InstallKey { component, .. } => {
+                let url = super::install_key_component(conn, &part(component)?.bytes, &slot)?;
+                relays.insert(component, url);
+            }
+            Operation::UseRelay { key, .. } => {
+                profile::run_use(
+                    conn,
+                    profile::UseOpts {
+                        label: Some(label.to_string()),
+                        slot: Some(label.to_string()),
+                        device: Some(device.to_path_buf()),
+                        url: relays.get(key.as_str()).cloned(),
+                        cache: None,
+                        show: false,
+                        clear: false,
+                    },
+                )?;
+            }
+        }
+    }
+    outln!("Setup from the package is complete.");
+    Ok(())
 }
 
 fn apply(conn: &Connection, plan: &Plan, device: &Path, label: &str) -> Result<()> {
+    if let Some(steps) = &plan.steps {
+        return apply_steps(conn, plan, steps, device, label);
+    }
     setup::ensure_identity(conn, device, label)?;
     if !plan.certificate_present {
         let target = device.join(CERTIFICATE_NAME);

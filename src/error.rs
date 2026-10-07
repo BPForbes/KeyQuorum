@@ -145,6 +145,9 @@ pub enum Error {
     /// A relay database backup (a chunk or its manifest) is malformed, altered,
     /// not sealed to this key, or its relay signature does not verify.
     InvalidBackup,
+    /// A package's setup manifest is malformed, altered, not for this key,
+    /// names a step this version does not know, or does not match its package.
+    InvalidSetupManifest,
     /// A relay database is larger than a backup in one pass may hold.
     BackupTooLarge,
     /// A backup is restored only into an empty relay database of the same shape.
@@ -270,6 +273,10 @@ impl fmt::Display for Error {
                 "API key letter is malformed or its relay signature does not verify"
             ),
             Error::KeyIssueExpired => write!(f, "API key letter has expired"),
+            Error::InvalidSetupManifest => write!(
+                f,
+                "setup manifest is malformed, not for this key, or does not match its package"
+            ),
             Error::InvalidBackup => write!(
                 f,
                 "backup is malformed, altered, not for this key, or its signature does not verify"

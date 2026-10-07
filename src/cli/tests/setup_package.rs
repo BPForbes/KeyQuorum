@@ -377,3 +377,124 @@ fn enroll_out_never_overwrites_a_file() {
         "nothing else was done"
     );
 }
+
+/// A package the way the console issues it: the relay signs the setup manifest
+/// and seals it, with the key, to alice's slot and drive.
+fn manifest_package(env: &MemoryEnv) -> Vec<u8> {
+    let relay = env.relay.as_ref().expect("a relay");
+    let recipient = alice_recipient(env);
+    let key = sealed_key(env);
+    package::issue_client_package(
+        &relay.identity,
+        &[key.as_slice()],
+        &recipient.public_key,
+        recipient.device_id,
+        unix("2026-10-01 00:00"),
+        30,
+    )
+    .expect("issue_client_package")
+}
+
+#[test]
+fn a_package_with_a_manifest_runs_its_steps_in_order() {
+    let mut env = alice();
+    let bytes = manifest_package(&env);
+    put_package(&mut env, &bytes);
+
+    let (result, preview) = env.keyquorum(SETUP);
+    assert!(result.is_ok(), "setup <package> without --yes");
+    assert!(preview.contains("in this order"), "{preview}");
+    assert!(!env.fs.exists(Path::new(CERTIFICATE)));
+
+    let (result, out) = env.keyquorum(&format!("{SETUP} --yes"));
+    assert!(result.is_ok(), "setup <package> --yes");
+    let first = out.find("Step 1/").expect("step 1");
+    let second = out.find("Step 2/").expect("step 2");
+    assert!(first < second, "{out}");
+    assert!(out.contains("Setup from the package is complete."), "{out}");
+    assert!(!out.contains("kq_"), "a bearer reached stdout");
+    assert!(env.fs.exists(Path::new(CERTIFICATE)));
+    assert!(stored_key(&env).is_some());
+}
+
+#[test]
+fn a_manifest_sealed_for_another_drive_writes_nothing() {
+    let mut env = alice();
+    let relay = env.relay.as_ref().expect("a relay");
+    let recipient = alice_recipient(&env);
+    let key = sealed_key(&env);
+    let bytes = package::issue_client_package(
+        &relay.identity,
+        &[key.as_slice()],
+        &recipient.public_key,
+        Some([9u8; 16]),
+        unix("2026-10-01 00:00"),
+        30,
+    )
+    .expect("issue_client_package");
+    put_package(&mut env, &bytes);
+
+    let (result, _) = env.keyquorum(&format!("{SETUP} --yes"));
+    assert!(result.is_err(), "a manifest bound to another drive");
+    assert!(!env.fs.exists(Path::new(CERTIFICATE)));
+    assert!(stored_key(&env).is_none());
+}
+
+#[test]
+fn a_manifest_for_someone_else_is_refused_before_any_write() {
+    let mut env = alice();
+    let relay = env.relay.as_ref().expect("a relay");
+    let key = sealed_key(&env);
+    let bytes = package::issue_client_package(
+        &relay.identity,
+        &[key.as_slice()],
+        &[7u8; 32],
+        None,
+        unix("2026-10-01 00:00"),
+        30,
+    )
+    .expect("issue_client_package");
+    put_package(&mut env, &bytes);
+
+    let (result, _) = env.keyquorum(&format!("{SETUP} --yes"));
+    assert!(result.is_err(), "a manifest sealed to another person");
+    assert!(!env.fs.exists(Path::new(CERTIFICATE)));
+    assert!(stored_key(&env).is_none());
+}
+
+#[test]
+fn a_part_no_step_uses_is_refused_before_any_write() {
+    let mut env = alice();
+    let good = package::decode(&manifest_package(&env)).expect("decode");
+    let mut package = good;
+    package.components.push(key_component(&env));
+    let relay = env.relay.as_ref().expect("a relay");
+    let bytes = package::encode(&package, &relay.identity.relay_private_key).expect("encode");
+    put_package(&mut env, &bytes);
+
+    let (result, _) = env.keyquorum(&format!("{SETUP} --yes"));
+    assert!(result.is_err(), "an unreferenced key");
+    assert!(!env.fs.exists(Path::new(CERTIFICATE)));
+    assert!(stored_key(&env).is_none());
+}
+
+#[test]
+fn two_manifests_or_one_in_an_information_package_are_refused() {
+    let env = alice();
+    let relay = env.relay.as_ref().expect("a relay");
+    let mut doubled = package::decode(&manifest_package(&env)).expect("decode");
+    let manifest = doubled
+        .components
+        .iter()
+        .find(|component| component.kind == ComponentKind::SetupManifest)
+        .expect("manifest")
+        .clone();
+    doubled.components.push(manifest.clone());
+    assert!(package::encode(&doubled, &relay.identity.relay_private_key)
+        .and_then(|bytes| package::decode(&bytes))
+        .is_err());
+
+    let mut info = package::decode(&package_for(&env, Purpose::ProviderInfo, vec![])).unwrap();
+    info.components.push(manifest);
+    assert!(package::encode(&info, &relay.identity.relay_private_key).is_err());
+}

@@ -65,6 +65,9 @@ export function classify(bytes, name = "") {
     if (magic === "KQXB" && kind === 4) {
       return { accepted: true, kind: "sealed_key", label: "Sealed API key (.kqkey)", visibility: "sealed", action: "inspect", note: "Sealed to its recipient. It is not stored by the console." };
     }
+    if (magic === "KQXB" && kind === 6) {
+      return { accepted: true, kind: "setup_manifest", label: "Sealed setup steps (.kqxb, type 6)", visibility: "sealed", action: "inspect", note: "Sealed to its recipient and signed by the relay. It is not stored by the console." };
+    }
     if (magic === "KQPB" && kind === 20) {
       return { accepted: true, kind: "sealed_key_letter", label: "Sealed API key letter (.kqpb, kind 20)", visibility: "sealed", action: "inspect", note: "Sealed to its recipient. It is not stored by the console." };
     }
@@ -87,6 +90,7 @@ const COMPONENTS = {
   3: "hardware-authority policy",
   4: "sealed API key (.kqkey)",
   5: "sealed API key letter",
+  6: "setup steps (sealed, signed)",
 };
 
 const hex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");

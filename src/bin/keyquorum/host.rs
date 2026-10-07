@@ -284,6 +284,8 @@ fn run_keys(store: &dyn RelayStore, command: KeysCommand) -> Result<()> {
                             let package = keyquorum::package::issue_client_package(
                                 &identity,
                                 &[sealed],
+                                &request.encryption_public,
+                                Some(request.device_id),
                                 issued_at,
                                 package_valid_days,
                             )?;
