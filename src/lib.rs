@@ -22,6 +22,7 @@ pub mod crypto;
 pub mod db;
 pub mod device;
 pub mod device_relay;
+pub mod enrollment;
 pub mod envelope;
 pub mod error;
 pub mod export;

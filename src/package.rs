@@ -332,6 +332,45 @@ pub fn decode(bytes: &[u8]) -> Result<Package> {
     })
 }
 
+/// A `ClientSetup` package for a key the relay just sealed: the relay's own
+/// certificate and the sealed key, signed with the relay key, valid for
+/// `valid_days` (1 to 365) from `issued_at`, under a fresh random id. The
+/// sealed key is not opened or altered, and the package holds no bearer in
+/// the clear.
+pub fn issue_client_package(
+    identity: &crate::relay::ProviderIdentity,
+    sealed_key: &[u8],
+    issued_at: u64,
+    valid_days: u64,
+) -> Result<Vec<u8>> {
+    if !(1..=365).contains(&valid_days) {
+        return Err(Error::InvalidKqpkg);
+    }
+    let certificate = provider::parse_certificate(&identity.certificate)?;
+    let mut id = [0u8; 16];
+    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut id);
+    encode(
+        &Package {
+            purpose: Purpose::ClientSetup,
+            id,
+            issued_at,
+            expires_at: issued_at + valid_days * 86_400,
+            issuer: certificate.relay_public_key,
+            components: vec![
+                Component {
+                    kind: ComponentKind::Certificate,
+                    bytes: identity.certificate.clone(),
+                },
+                Component {
+                    kind: ComponentKind::ApiKeyBundle,
+                    bytes: sealed_key.to_vec(),
+                },
+            ],
+        },
+        &identity.relay_private_key,
+    )
+}
+
 impl Package {
     /// The package is inside its validity window at `now` (Unix seconds).
     pub fn check_valid_at(&self, now: u64) -> Result<()> {

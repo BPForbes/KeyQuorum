@@ -292,3 +292,88 @@ fn an_information_package_installs_nothing_even_with_yes() {
     assert!(out.contains("information only"), "{out}");
     assert!(!env.fs.exists(Path::new(CERTIFICATE)));
 }
+
+#[test]
+fn enroll_out_writes_a_signed_public_request_and_the_provider_can_read_it() {
+    let mut env = MemoryEnv::with_relay();
+    env.now = Some("2026-10-04 12:00".into());
+    let line = format!(
+        "{ALICE} setup --device /usb/alice --label alice --enroll-out /home/alice/alice.kqreq"
+    );
+    let (result, out) = env.keyquorum(&line);
+    assert!(result.is_ok(), "setup --enroll-out");
+    assert!(out.contains("Fingerprint (tell your provider"), "{out}");
+    let bytes = env
+        .fs
+        .read(Path::new("/home/alice/alice.kqreq"))
+        .expect("file");
+    let request = crate::enrollment::decode(&bytes).expect("a valid request");
+    assert_eq!(request.label, "alice");
+    let recipient = alice_recipient(&env);
+    assert_eq!(request.encryption_public, recipient.public_key);
+    assert_eq!(Some(request.device_id), recipient.device_id);
+    assert!(
+        out.contains(&request.fingerprint().expect("fingerprint")),
+        "the printed fingerprint is the request's"
+    );
+
+    // A package sealed to what the request says installs, end to end.
+    let relay = env.relay.as_ref().expect("a relay");
+    let mut sealed = Vec::new();
+    key_delivery::create_as_bundle(
+        &*relay.store.connection(),
+        &relay.identity,
+        &NewApiKey {
+            scope: ApiKeyScope::InboxPull,
+            recipient_fingerprint: None,
+            label: Some("alice".into()),
+            ttl_seconds: None,
+        },
+        &Recipient {
+            public_key: request.encryption_public,
+            relay_url: format!("{RELAY_URL}/"),
+            device_id: Some(request.device_id),
+            licence: None,
+        },
+        |bytes| {
+            sealed = bytes.to_vec();
+            Ok(())
+        },
+    )
+    .expect("create_as_bundle");
+    let package = package_for(
+        &env,
+        Purpose::ClientSetup,
+        vec![Component {
+            kind: ComponentKind::ApiKeyBundle,
+            bytes: sealed,
+        }],
+    );
+    put_package(&mut env, &package);
+    let (result, _) = env.keyquorum(&format!("{SETUP} --yes"));
+    assert!(result.is_ok(), "setup <package> --yes");
+    assert!(stored_key(&env).is_some());
+}
+
+#[test]
+fn enroll_out_never_overwrites_a_file() {
+    let mut env = MemoryEnv::default();
+    env.fs
+        .write_new(Path::new("/home/alice/alice.kqreq"), b"mine")
+        .expect("pre-existing file");
+    let line = format!(
+        "{ALICE} setup --device /usb/alice --label alice --enroll-out /home/alice/alice.kqreq"
+    );
+    let (result, _) = env.keyquorum(&line);
+    assert!(result.is_err());
+    assert_eq!(
+        env.fs
+            .read(Path::new("/home/alice/alice.kqreq"))
+            .expect("file"),
+        b"mine"
+    );
+    assert!(
+        !env.fs.exists(Path::new("/usb/alice")),
+        "nothing else was done"
+    );
+}

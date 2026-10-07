@@ -41,7 +41,14 @@ runs `setup`'s identity steps, places the certificate as `provider.kqcert` besid
 (identical bytes are kept, different bytes refused) and installs each sealed key through
 `install_key_component`, the path `loadkey --bundle` and `inbox open` use. It is refused where
 `Env::package_setup` is false: the browser lab says no, and the lab must not offer or document
-it. `ProviderRecovery` packages are not installed by `setup`. The provider
+it. `ProviderRecovery` packages are not installed by `setup`.
+`keyquorum setup --enroll-out FILE` writes `.kqreq` (`KQRQ` v1, `src/enrollment.rs`), the client's
+public request: device id, label and the slot's public keys, signed by the slot's signing key,
+no secret. The provider verifies it, compares its fingerprint with the client out of band
+(`host keys create --enrollment FILE --confirm-fingerprint ...`, hidden `host`, never in
+customer docs) and the key is minted, sealed to that request and device, and written into a
+`.kqpkg` inside the key's own transaction (`package::issue_client_package`), so a package that
+cannot be written leaves no key. Like package setup it is refused in the lab. The provider
 `KQPC`/`KQRL`/`KQPL` blobs are signed certificates, not envelopes, and
 keep their own offset-cursor parsers and error variants.
 `src/org_update.rs` adds the two authenticated update

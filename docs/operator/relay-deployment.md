@@ -596,3 +596,29 @@ checkpoint bounds backdating to the time since it was taken; a leaked relay
 key can sign anchors and mint keys until its serial is revoked; and a
 customer's loaded bearer is in their own store, not on the relay. There is
 no remote kill switch for a running relay other than revoking its serial.
+
+## Issuing a package to a client (`.kqpkg`)
+
+A client who has no key yet enrolls first, so the key can be sealed to them and
+to their drive. They run `keyquorum setup --device DIR --label NAME --enroll-out
+NAME.kqreq`, send you the file (it holds only public keys and the device id) and
+read you its fingerprint over a different channel, such as a call. You then
+issue from the relay host:
+
+```sh
+keyquorum host keys create --scope inbox.pull --enrollment NAME.kqreq \
+  --confirm-fingerprint "<what they read out>" \
+  --package-relay-url https://keyquorum.dev/relay \
+  --package-out NAME.kqpkg [--package-licence-file licence.txt] \
+  [--package-valid-days 30] \
+  --cert provider.kqcert --relay-key relay.key
+```
+
+The key is sealed to the enrollment's encryption key and bound to its device;
+the `.kqpkg` holds the relay's own certificate and that sealed key, signed with
+the relay key, and is written inside the key's transaction, so a failed write
+leaves no key. It is created owner-only and never overwritten. Hand the file to
+the client; they run `keyquorum setup NAME.kqpkg --device DIR --label NAME` to
+see the plan and add `--yes` to apply it. The fingerprint is the only thing that
+ties the request to the person, so never skip the call. Not built: a console
+button for this, a resume ledger, and a recovery package for a lost relay key.

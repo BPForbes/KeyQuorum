@@ -29,6 +29,10 @@ pub struct SetupOpts {
     /// Your label: the slot's name and the label its keys are registered under
     #[arg(long, required_unless_present = "package")]
     pub label: Option<String>,
+    /// Write your public enrollment request (`.kqreq`) here, for a provider
+    /// to seal a package to; share its fingerprint with them out of band
+    #[arg(long, value_name = "FILE", conflicts_with = "package")]
+    pub enroll_out: Option<PathBuf>,
     /// Apply the package's plan after showing it
     #[arg(long, requires = "package")]
     pub yes: bool,
@@ -139,6 +143,7 @@ pub(crate) fn run(conn: &Connection, opts: SetupOpts) -> Result<()> {
         url,
         api_key,
         yes,
+        enroll_out,
     } = opts;
     if let Some(package) = package {
         let (Some(path), Some(label)) = (path, label) else {
@@ -157,7 +162,13 @@ pub(crate) fn run(conn: &Connection, opts: SetupOpts) -> Result<()> {
             relay::validate_relay_url(&url).map(|_| url)
         })
         .transpose()?;
+    if let Some(out) = &enroll_out {
+        super::setup_package::check_enrollment_target(out)?;
+    }
     ensure_identity(conn, &path, &label)?;
+    if let Some(out) = &enroll_out {
+        super::setup_package::write_enrollment(&path, &label, out)?;
+    }
 
     super::profile::run_use(
         conn,

@@ -191,3 +191,42 @@ fn apply(conn: &Connection, plan: &Plan, device: &Path, label: &str) -> Result<(
     outln!("Installed {installed} sealed key(s). Setup from the package is complete.");
     Ok(())
 }
+
+/// Refuses, before any change, an enrollment file that cannot be written: the
+/// request is never written over another file, and the lab has no honest
+/// equivalent.
+pub(super) fn check_enrollment_target(out: &Path) -> Result<()> {
+    if !env::package_setup() {
+        return Err(usage("setup --enroll-out is not available here"));
+    }
+    if env::exists(out) {
+        return Err(usage(&format!(
+            "{} already exists; setup will not overwrite it",
+            out.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Writes the signed public enrollment request for the slot and prints the
+/// fingerprint to compare with the provider. The slot's passphrase is asked
+/// for once, to sign; nothing secret is written.
+pub(super) fn write_enrollment(device: &Path, label: &str, out: &Path) -> Result<()> {
+    let container = env::fs(|fs| crate::device::open_in(fs, device))?;
+    let secrets = super::open_slot_secrets(&format!("{}={label}", device.display()))?;
+    let request = crate::enrollment::Request {
+        device_id: *container.device_id(),
+        created_at: provider::unix_from_utc(&env::now_utc()?)?,
+        label: label.to_string(),
+        encryption_public: secrets.encryption_public,
+        signing_public: secrets.signing_public,
+    };
+    let bytes = crate::enrollment::encode(&request, &secrets.signing_secret)?;
+    env::write_new(out, &bytes)?;
+    outln!("Wrote enrollment request {}", out.display());
+    outln!(
+        "Fingerprint (tell your provider, out of band): {}",
+        request.fingerprint()?
+    );
+    Ok(())
+}

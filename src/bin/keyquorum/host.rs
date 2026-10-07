@@ -229,6 +229,12 @@ fn run_keys(store: &dyn RelayStore, command: KeysCommand) -> Result<()> {
             relay_url,
             device_id,
             licence_file,
+            enrollment,
+            package_out,
+            confirm_fingerprint,
+            package_relay_url,
+            package_licence_file,
+            package_valid_days,
         } => {
             let identity = authorize_mint(
                 store,
@@ -247,8 +253,51 @@ fn run_keys(store: &dyn RelayStore, command: KeysCommand) -> Result<()> {
                 label,
                 ttl_seconds,
             };
-            match (recipient_key, out) {
-                (Some(recipient_key), Some(out)) => {
+            match (enrollment, recipient_key, out) {
+                (Some(enrollment), _, _) => {
+                    let package_out = package_out.ok_or_else(|| {
+                        Error::Usage("--package-out is required with --enrollment".into())
+                    })?;
+                    let typed = confirm_fingerprint.ok_or_else(|| {
+                        Error::Usage(
+                            "--confirm-fingerprint is required with --enrollment: read it from the client, not from the file".into(),
+                        )
+                    })?;
+                    let request = keyquorum::enrollment::decode_file(&enrollment)?;
+                    request.confirm_fingerprint(&typed)?;
+                    let recipient = Recipient {
+                        public_key: request.encryption_public,
+                        device_id: Some(request.device_id),
+                        ..recipient_from(
+                            &hex::encode(request.encryption_public),
+                            package_relay_url,
+                            None,
+                            package_licence_file,
+                        )?
+                    };
+                    let issued_at = provider::unix_from_utc(&provider::system_now_utc()?)?;
+                    // The package is written inside the key's own transaction, so a
+                    // package that cannot be built or written leaves no key behind.
+                    let delivered = into_file(&package_out, |write| {
+                        store.mint_key_as_bundle(&identity, &new, &recipient, &mut |sealed| {
+                            let package = keyquorum::package::issue_client_package(
+                                &identity,
+                                sealed,
+                                issued_at,
+                                package_valid_days,
+                            )?;
+                            write(&package)
+                        })
+                    })?;
+                    println!("Created API key {}", delivered.info.id);
+                    println!("scope: {}", delivered.info.scope);
+                    println!("sealed to: {}", delivered.recipient_fingerprint);
+                    println!("wrote {}", package_out.display());
+                    println!(
+                        "hand it to the customer for `keyquorum setup FILE --device DIR --label NAME`; it is never printed"
+                    );
+                }
+                (None, Some(recipient_key), Some(out)) => {
                     let recipient =
                         recipient_from(&recipient_key, relay_url, device_id, licence_file)?;
                     let delivered = into_file(&out, |write| {

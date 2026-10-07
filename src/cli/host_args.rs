@@ -201,6 +201,30 @@ pub enum KeysCommand {
         /// A UTF-8 licence statement to carry inside the sealed bundle
         #[arg(long, requires = "recipient_key")]
         licence_file: Option<PathBuf>,
+        /// The customer's enrollment request (`.kqreq`, from `keyquorum setup
+        /// --enroll-out`): seal the key to it, bound to its device, and write a
+        /// `.kqpkg` at --package-out instead of a bare bundle
+        #[arg(
+            long,
+            requires_all = ["package_out", "confirm_fingerprint", "package_relay_url"],
+            conflicts_with_all = ["recipient_key", "out", "relay_url", "device_id", "licence_file"]
+        )]
+        enrollment: Option<PathBuf>,
+        /// Where to write the package (created owner-only, never overwritten)
+        #[arg(long, requires = "enrollment")]
+        package_out: Option<PathBuf>,
+        /// The fingerprint the customer read out from their own `setup --enroll-out`
+        #[arg(long, requires = "enrollment")]
+        confirm_fingerprint: Option<String>,
+        /// The relay URL the customer loads the key for, carried inside the key
+        #[arg(long, requires = "enrollment")]
+        package_relay_url: Option<String>,
+        /// A UTF-8 licence statement to carry inside the sealed key
+        #[arg(long, requires = "enrollment")]
+        package_licence_file: Option<PathBuf>,
+        /// How many days the package stays valid (1 to 365)
+        #[arg(long, requires = "enrollment", default_value_t = 30)]
+        package_valid_days: u64,
     },
     List,
     /// Print the API-key lifecycle audit trail (created, rotated, revoked).

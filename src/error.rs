@@ -139,6 +139,11 @@ pub enum Error {
     /// A relay-issued API key names a relay other than the one it was
     /// loaded for.
     KeyIssueRelayMismatch,
+    /// An enrollment request (`.kqreq`) is malformed, altered, or its
+    /// signature does not verify.
+    InvalidEnrollment,
+    /// The fingerprint a provider typed does not match the enrollment request.
+    EnrollmentFingerprintMismatch,
     /// A `.kqpkg` is malformed, oversized, altered, or its signature does
     /// not verify.
     InvalidKqpkg,
@@ -258,6 +263,14 @@ impl fmt::Display for Error {
                 "API key letter is malformed or its relay signature does not verify"
             ),
             Error::KeyIssueExpired => write!(f, "API key letter has expired"),
+            Error::InvalidEnrollment => write!(
+                f,
+                "enrollment request is malformed or its signature does not verify"
+            ),
+            Error::EnrollmentFingerprintMismatch => write!(
+                f,
+                "the fingerprint does not match this enrollment request"
+            ),
             Error::InvalidKqpkg => write!(
                 f,
                 "KeyQuorum package is malformed or its signature does not verify"
