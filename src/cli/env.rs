@@ -58,6 +58,12 @@ pub trait Env: Any {
     fn interactive(&self) -> bool {
         false
     }
+    /// Whether `keyquorum setup <package>` may run here. It installs a
+    /// provider's package onto a real drive and store, which the browser lab
+    /// has no honest equivalent of, so the lab says no.
+    fn package_setup(&self) -> bool {
+        true
+    }
 }
 
 /// The real process: terminal, `std::fs`, and SQLite files on disk.
@@ -411,6 +417,10 @@ impl RelayTransport for EnvRelay {
     fn send(&self, request: RelayHttpRequest) -> Result<RelayHttpResponse> {
         with(|env| env.relay_send(request))
     }
+}
+
+pub fn package_setup() -> bool {
+    with(|env| env.package_setup())
 }
 
 pub fn provider_root() -> [u8; 32] {

@@ -416,6 +416,12 @@ impl Storage for LabVm {
 }
 
 impl Env for LabVm {
+    /// `keyquorum setup <package>` installs onto a real drive and store; the
+    /// lab is not one and does not offer it.
+    fn package_setup(&self) -> bool {
+        false
+    }
+
     fn stdout(&mut self) -> &mut dyn Write {
         &mut self.stdout
     }

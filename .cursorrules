@@ -32,7 +32,16 @@ Components are dispatched by their own magic and kind, never by a name or the pa
 and anything else, or anything the purpose does not allow, is refused before any write. It
 decodes, bounds and authenticates only; the wizard, enrollment and the console generator are
 later slices, and the outer signature never replaces a component's own checks. Purpose and
-kind bytes are wire format: append, never renumber. The provider
+kind bytes are wire format: append, never renumber.
+`keyquorum setup <file.kqpkg> --device DIR --label NAME` (`src/cli/setup_package.rs`, a native
+everyday command) opens one: it decodes, checks the validity window and that the signer is the
+relay a root-verified, unrevoked certificate names, and that no file it would write conflicts,
+all before any write; without `--yes` it prints the plan and changes nothing. With `--yes` it
+runs `setup`'s identity steps, places the certificate as `provider.kqcert` beside the container
+(identical bytes are kept, different bytes refused) and installs each sealed key through
+`install_key_component`, the path `loadkey --bundle` and `inbox open` use. It is refused where
+`Env::package_setup` is false: the browser lab says no, and the lab must not offer or document
+it. `ProviderRecovery` packages are not installed by `setup`. The provider
 `KQPC`/`KQRL`/`KQPL` blobs are signed certificates, not envelopes, and
 keep their own offset-cursor parsers and error variants.
 `src/org_update.rs` adds the two authenticated update

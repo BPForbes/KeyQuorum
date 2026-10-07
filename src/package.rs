@@ -125,7 +125,8 @@ impl ComponentKind {
         })
     }
 
-    fn is_key_carrier(self) -> bool {
+    /// A sealed customer API key, installed through the verified key path.
+    pub fn carries_key(self) -> bool {
         matches!(self, Self::ApiKeyBundle | Self::ApiKeyLetter)
     }
 
@@ -210,7 +211,7 @@ fn check_components(purpose: Purpose, components: &[Component]) -> Result<()> {
         if classify(&component.bytes)? != component.kind || !component.kind.allowed_in(purpose) {
             return Err(Error::KqpkgComponentRejected);
         }
-        if component.kind.is_key_carrier() {
+        if component.kind.carries_key() {
             keys += 1;
         } else if !seen.insert(component.kind) {
             return Err(Error::KqpkgComponentRejected);

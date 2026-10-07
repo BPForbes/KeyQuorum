@@ -49,6 +49,7 @@ pub mod host_args;
 pub mod host_env;
 mod send;
 mod setup;
+mod setup_package;
 mod transfer_cmd;
 
 /// How long a "one-time" PIN unlock stays valid before the PIN is needed
@@ -2943,6 +2944,21 @@ pub(crate) fn install_key_letter(
         Some(&db::relay_credential::normalize_url(url)),
         Some(device_id),
     )
+}
+
+/// A relay key carried inside a `.kqpkg`: the same open, verify and install
+/// a typed `--bundle` or an inbox letter goes through, from bytes already in
+/// memory, with no bootstrap file left on the drive. The issue's own relay is
+/// the one loaded for; the container named by `slot` (`container=label`)
+/// opens it and is the only device a device-bound issue loads on. Returns the
+/// relay URL the key was stored for.
+#[inline(never)]
+pub(crate) fn install_key_component(conn: &Connection, bytes: &[u8], slot: &str) -> Result<String> {
+    let secret = encryption_secret_from(None, Some(slot))?;
+    let device_id = device_id_of_slot(slot)?;
+    let opened = open_key_issue(bytes, &secret)?;
+    install_key_issue(conn, &opened, None, Some(device_id))?;
+    Ok(db::relay_credential::normalize_url(&opened.issue.relay_url))
 }
 
 /// Open and verify a key letter or bundle against this environment's

@@ -218,3 +218,28 @@ fn issue_rejects_empty_fields() {
     .unwrap_err();
     assert!(matches!(err, Error::InvalidProviderCertificate));
 }
+
+#[test]
+fn unix_from_utc_inverts_unix_to_utc_minute_and_refuses_junk() {
+    for secs in [0u64, 60, 86_400, 951_782_400, 1_791_331_200, 4_102_444_800] {
+        let text = unix_to_utc_minute(secs);
+        assert_eq!(unix_from_utc(&text).expect("a time"), secs, "{text}");
+    }
+    assert_eq!(
+        unix_from_utc("2026-10-07 00:00:30.250").expect("seconds"),
+        unix_from_utc("2026-10-07 00:00").expect("minute") + 30
+    );
+    for junk in [
+        "",
+        "2026-10-07",
+        "2026-13-07 00:00",
+        "2026-10-32 00:00",
+        "2026-10-07 24:00",
+        "2026-10-07 00:60",
+        "1969-12-31 23:59",
+        "2026-10-07 00:00:00:00",
+        "x-y-z 00:00",
+    ] {
+        assert!(unix_from_utc(junk).is_err(), "{junk:?}");
+    }
+}

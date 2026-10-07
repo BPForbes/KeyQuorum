@@ -183,7 +183,9 @@ which flags conflict with or require others.
 \midrule
 \code{setup} & Create the device container, provision your slot, register
   and bind its keys, optionally load a relay key, and store the defaults.
-  Safe to run again. \\
+  Safe to run again. \code{setup FILE.kqpkg --device DIR --label NAME} opens a
+  provider's package: it verifies it, shows the plan and, with \flag{--yes},
+  carries it out (see Getting started). \\
 \code{doctor} & Read-only check of what is missing before a task will work,
   with the command that fixes each thing. \\
 \code{use} & Set, change, show (\flag{--show}) or clear (\flag{--clear}) the
