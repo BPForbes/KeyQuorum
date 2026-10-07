@@ -70,3 +70,12 @@ test("the guide keeps the relay's identity apart from a personal .kqkey and puts
   assert.match(guide, /npx wrangler secret put RELAY_PRIVATE_KEY < relay\.key/);
   assert.match(guide, /base64 < provider\.kqcert \| tr -d '\\\\n' \| npx wrangler secret put RELAY_CERTIFICATE/);
 });
+
+test("the guide generates the relay's key pair before the certificate that names its public key", () => {
+  const guide = read("view-setup.js");
+  const generate = guide.indexOf("host identity generate");
+  const certify = guide.indexOf("host certify");
+  assert.ok(generate !== -1 && certify !== -1);
+  assert.ok(generate < certify, "relay.pub must exist before host certify reads it");
+  assert.equal(guide.split("host identity generate").length - 1, 1, "the key pair is made once");
+});

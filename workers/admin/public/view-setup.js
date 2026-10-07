@@ -45,10 +45,10 @@ export function setupGuide(overview, lockPanel) {
         "The offline provider-root ceremony",
         root.status,
         h("p", {
-          text: "KeyQuorum's provider-root private key stays on an offline machine. It never goes to this relay, this console or any Worker. It signs one certificate (provider.kqcert) naming your relay's public key, a provider id, a serial you can revoke later and an expiry. You carry your relay's public key (relay.pub, made by the first command in step 2) to the offline machine and bring provider.kqcert back.",
+          text: "KeyQuorum's provider-root private key stays on an offline machine. It never goes to this relay, this console or any Worker. It signs one certificate (provider.kqcert) naming your relay's public key, a provider id, a serial you can revoke later and an expiry. Make the relay's key pair first (the first command below), carry only relay.pub to the offline machine, and bring provider.kqcert back.",
         }),
         command(
-          "keyquorum host certify --root-key /path/to/root.key --relay-public-key relay.pub \\\n  --provider-id \"<your provider id>\" --serial <serial> \\\n  --expires-at \"<expiry>\" --out provider.kqcert",
+          "# on your own machine: make the relay's key pair (relay.key never leaves it except as the secret in step 2)\nkeyquorum host identity generate --public-key-out relay.pub --private-key-out relay.key\n\n# on the offline machine, with relay.pub carried over:\nkeyquorum host certify --root-key /path/to/root.key --relay-public-key relay.pub \\\n  --provider-id \"<your provider id>\" --serial <serial> \\\n  --expires-at \"<expiry>\" --out provider.kqcert",
         ),
         h("p", { class: "note", text: "This page cannot see that ceremony, only its result: the certificate you install in step 2." }),
       ),
@@ -60,7 +60,7 @@ export function setupGuide(overview, lockPanel) {
           text: "The relay signs on its own, with no one present, so its identity is a pair of Worker secrets set on the relay Worker (not the admin Worker). It is not a personal .kqkey: a .kqkey is sealed to one person's key and opened with their passphrase, which a service cannot supply.",
         }),
         command(
-          "keyquorum host identity generate --public-key-out relay.pub --private-key-out relay.key\n\n# after step 1 returns provider.kqcert, in the workers/ directory:\nnpx wrangler secret put RELAY_PRIVATE_KEY < relay.key\nbase64 < provider.kqcert | tr -d '\\n' | npx wrangler secret put RELAY_CERTIFICATE\n# add --env staging for the staging Worker",
+          "# after step 1 returns provider.kqcert, in the workers/ directory:\nnpx wrangler secret put RELAY_PRIVATE_KEY < relay.key\nbase64 < provider.kqcert | tr -d '\\n' | npx wrangler secret put RELAY_CERTIFICATE\n# add --env staging for the staging Worker",
         ),
         h("p", {
           class: "note",

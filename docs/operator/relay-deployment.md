@@ -418,8 +418,9 @@ page opens with a four-step guide (issue #102), each step with its own status
 or, for step 1, `offline, not visible from here`). The steps are distinct on
 purpose:
 
-1. **The offline provider-root ceremony** (`host certify`, "Offline provider
-   certificate issuance"). It happens off the page and leaves only its result,
+1. **The offline provider-root ceremony**: first `host identity generate` on
+   your own machine ("Host identity"), then `host certify` offline ("Offline
+   provider certificate issuance"). It happens off the page and leaves only its result,
    `provider.kqcert`. The guide marks it done once the relay holds an identity.
 2. **The relay's identity**, a service credential: the Worker secrets
    `RELAY_PRIVATE_KEY` and `RELAY_CERTIFICATE` ("Secret provisioning"). It is
