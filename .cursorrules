@@ -76,6 +76,14 @@ registry (`active_keys_for`, `get_or_register`, `revoke_superseded`,
 module that owns the table it reads or writes, not in `org_update.rs`,
 even when `org_update.rs` is its only caller today.
 
+The operator console (`workers/admin/`) issues the same package: `issue` accepts an `enrollment` (base64 `.kqreq`) and
+`confirm_fingerprint` in place of a public key and device id, and returns one `ClientSetup` `.kqpkg` and key metadata, no loose
+bundle (`relay::operator`, `resolve_recipient`, `package::issue_client_package`); `provider_package` (a POST that takes no lock,
+like `checkpoint`) returns a `ProviderInfo` package and the relay certificate, which the page zips. `package::UserType`
+(`CLIENT` or `PROVIDER`) is derived from `Purpose`, never stored. The page's file tool (`files.js`) only reads public framing
+and refuses private key material, key-looking text and key file names unread; no private file is ever uploaded. Storing public
+files online, and operator actions by signed letter (`docs/operator/admin-letters.md`, a design only), are not built.
+
 The mailbox relay (`src/relay/`) stores opaque `.kqpb` envelopes and
 the canonical *public* split-tree as JSON documents (full context). It must never
 unseal envelopes or hold wrapped shares or private keys. `relay push` merges

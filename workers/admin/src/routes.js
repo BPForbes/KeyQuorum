@@ -51,6 +51,9 @@ export const ROUTES = [
   // The signed checkpoint is produced on request, so it is a POST, but it
   // changes nothing in the relay and needs no lock.
   ["POST", "/api/checkpoints", { op: "checkpoint" }],
+  // The provider's own public package (PROVIDER): signed with the relay key on
+  // request, changes nothing in the relay and needs no lock, like a checkpoint.
+  ["POST", "/api/provider-package", { op: "provider_package" }],
   // Changes.
   ["POST", "/api/users", { op: "create_customer", change: true }],
   ["POST", `/api/users/${ID}/licenses`, { op: "create_licence", change: true, path: ["customer_id"] }],

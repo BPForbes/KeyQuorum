@@ -344,7 +344,7 @@ fn issue_client_package_signs_the_relays_certificate_and_sealed_key() {
         certificate: identity.certificate.clone(),
         relay_private_key: identity.relay_private.clone(),
     };
-    let bytes = issue_client_package(&relay, &key_bundle(), ISSUED, 30).expect("issue");
+    let bytes = issue_client_package(&relay, &[&key_bundle()], ISSUED, 30).expect("issue");
     let package = decode(&bytes).expect("decode");
     assert_eq!(package.purpose, Purpose::ClientSetup);
     assert_eq!(package.expires_at, ISSUED + 30 * 86_400);
@@ -352,7 +352,7 @@ fn issue_client_package_signs_the_relays_certificate_and_sealed_key() {
     package
         .verify_issuer(&identity.root_public, NOW, &empty_revoked())
         .expect("issuer");
-    let again = decode(&issue_client_package(&relay, &key_bundle(), ISSUED, 30).expect("issue"))
+    let again = decode(&issue_client_package(&relay, &[&key_bundle()], ISSUED, 30).expect("issue"))
         .expect("decode");
     assert_ne!(package.id, again.id, "each package has its own id");
 }
@@ -366,12 +366,60 @@ fn issue_client_package_refuses_a_bad_window_or_an_unsupported_key() {
     };
     for days in [0, 366] {
         assert!(matches!(
-            issue_client_package(&relay, &key_bundle(), ISSUED, days),
+            issue_client_package(&relay, &[&key_bundle()], ISSUED, days),
             Err(Error::InvalidKqpkg)
         ));
     }
     assert!(matches!(
-        issue_client_package(&relay, b"KQTF....", ISSUED, 30),
+        issue_client_package(&relay, &[b"KQTF...."], ISSUED, 30),
+        Err(Error::KqpkgComponentRejected)
+    ));
+}
+
+#[test]
+fn the_user_type_follows_the_purpose_and_cannot_disagree_with_it() {
+    for (purpose, user) in [
+        (Purpose::ClientSetup, UserType::Client),
+        (Purpose::ClientUpdate, UserType::Client),
+        (Purpose::ProviderInfo, UserType::Provider),
+        (Purpose::ProviderRecovery, UserType::Provider),
+    ] {
+        assert_eq!(purpose.user_type(), user);
+    }
+    assert_eq!(UserType::Client.as_str(), "CLIENT");
+    assert_eq!(UserType::Provider.as_str(), "PROVIDER");
+}
+
+#[test]
+fn a_provider_info_package_is_public_only_and_verifies() {
+    let identity = issued_identity("2099-01-01 00:00:00");
+    let relay = crate::relay::ProviderIdentity {
+        certificate: identity.certificate.clone(),
+        relay_private_key: identity.relay_private.clone(),
+    };
+    let package =
+        decode(&issue_provider_info_package(&relay, ISSUED, 30).expect("issue")).expect("decode");
+    assert_eq!(package.purpose.user_type(), UserType::Provider);
+    assert_eq!(package.components.len(), 1);
+    assert_eq!(package.components[0].kind, ComponentKind::Certificate);
+    package
+        .verify_issuer(&identity.root_public, NOW, &empty_revoked())
+        .expect("issuer");
+}
+
+#[test]
+fn a_client_package_carries_every_key_it_is_given() {
+    let identity = issued_identity("2099-01-01 00:00:00");
+    let relay = crate::relay::ProviderIdentity {
+        certificate: identity.certificate.clone(),
+        relay_private_key: identity.relay_private.clone(),
+    };
+    let (one, two) = (key_bundle(), key_bundle());
+    let package = decode(&issue_client_package(&relay, &[&one, &two], ISSUED, 30).expect("issue"))
+        .expect("decode");
+    assert_eq!(package.components.len(), 3);
+    assert!(matches!(
+        issue_client_package(&relay, &[], ISSUED, 30),
         Err(Error::KqpkgComponentRejected)
     ));
 }

@@ -109,3 +109,33 @@ fn the_fingerprint_is_confirmed_in_any_case_and_spacing_and_nothing_else() {
         .confirm_fingerprint(&other.fingerprint().unwrap())
         .is_err());
 }
+
+/// A fixed request, so the console's JavaScript reader and this code are held
+/// to the same bytes and the same fingerprint (`workers/admin/src/files.test.mjs`
+/// carries the same two values).
+const VECTOR: &str = "4b5152510103030303030303030303030303030303000000006ab13b800005616c6963650909090909090909090909090909090909090909090909090909090909090909ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22ca62aa7c55be83e8a5f1ac1242dfbe358318c44b445d1d2b022bcc3a987d2f4610c3852bee70f88f85ea6ceb087d2ad9e62bdd14cf54841778330a03a42b53002";
+const VECTOR_FINGERPRINT: &str =
+    "704c1175 74c5821a 1d26faf2 001ba951 b4df212c e32f5e24 52bf7e58 82456c3c";
+
+#[test]
+fn the_fixed_vector_decodes_and_has_the_published_fingerprint() {
+    let signing_secret = [7u8; 32];
+    let signing_public = ed25519_dalek::SigningKey::from_bytes(&signing_secret)
+        .verifying_key()
+        .to_bytes();
+    let request = Request {
+        device_id: [3u8; 16],
+        created_at: 1_790_000_000,
+        label: "alice".into(),
+        encryption_public: [9u8; 32],
+        signing_public,
+    };
+    let bytes = hex::decode(VECTOR).expect("hex");
+    assert_eq!(encode(&request, &signing_secret).expect("encode"), bytes);
+    let decoded = decode(&bytes).expect("decode");
+    assert_eq!(decoded, request);
+    assert_eq!(
+        decoded.fingerprint().expect("fingerprint"),
+        VECTOR_FINGERPRINT
+    );
+}

@@ -1,7 +1,9 @@
 import { ApiError, api, get } from "./api.js";
-import { bundleList } from "./bundles.js";
+import { bundleList, packageResult } from "./bundles.js";
 import { commit, operation } from "./confirm.js";
+import { classify, readEnrollment, toBase64 } from "./files.js";
 import { isHex, scopeLabel } from "./format.js";
+import { stash } from "./stash.js";
 import { issuanceBlock } from "./setup-state.js";
 import { clear, field, h, lockField, notice, section } from "./ui.js";
 
@@ -69,6 +71,65 @@ export default async function issue(ctx) {
   const publicKey = h("input", { type: "text", class: "mono", autocomplete: "off", spellcheck: "false", minlength: "64", maxlength: "64" });
   const relayUrl = h("input", { type: "url", autocomplete: "off", value: ctx.config.relayUrl ?? "" });
   const deviceId = h("input", { type: "text", class: "mono", autocomplete: "off", spellcheck: "false", maxlength: "32" });
+  // How the client is identified: by the enrollment request they made with
+  // `keyquorum setup --enroll-out` (recommended: it also binds their drive and
+  // returns one package), or by their public key alone.
+  const how = h(
+    "select",
+    {},
+    h("option", { value: "enrollment", text: "Their enrollment request (recommended)" }),
+    h("option", { value: "key", text: "Their public key only" }),
+  );
+  let enrolled = stash.take();
+  const enrollFile = h("input", { type: "file", accept: ".kqreq" });
+  const enrollSummary = h("div", { class: "status" });
+  const confirmPrint = h("input", { type: "text", class: "mono", autocomplete: "off", spellcheck: "false", maxlength: "100" });
+  const showEnrolled = () => {
+    clear(enrollSummary);
+    if (enrolled) {
+      enrollSummary.append(
+        h("p", {}, "Request ", h("code", { text: enrolled.name }), ": slot ", h("code", { text: enrolled.label }), ", device ", h("code", { text: enrolled.deviceId }), "."),
+        h("p", {}, "Fingerprint: ", h("code", { text: enrolled.fingerprint })),
+      );
+    }
+  };
+  enrollFile.addEventListener("change", async () => {
+    const file = enrollFile.files[0];
+    enrolled = null;
+    clear(enrollSummary);
+    if (!file) return;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (classify(bytes, file.name).kind !== "enrollment") {
+      enrollSummary.append(notice("bad", "That is not an enrollment request."));
+      return;
+    }
+    try {
+      enrolled = { name: file.name, bytes, ...(await readEnrollment(bytes)) };
+      showEnrolled();
+    } catch (error) {
+      enrollSummary.append(notice("bad", `Could not read it: ${error.message}.`));
+    }
+  });
+  const enrollmentPanel = h(
+    "div",
+    {},
+    field("Their enrollment request", enrollFile, "The .kqreq file they sent. It holds only public keys and their device id. You can also drop it in Files and choose Use to issue keys."),
+    enrollSummary,
+    field("The fingerprint they read out to you", confirmPrint, "Ask them to read it out by another channel, such as a call, and type it here. The keys are issued only if it matches the file."),
+  );
+  const keyPanel = h(
+    "div",
+    {},
+    field("Their public key", publicKey, "Their slot's public key, 64 hexadecimal characters (they read it with keyquorum device list). Every file is sealed to it, so only they can open it."),
+    field("Device id (optional)", deviceId, "32 hexadecimal characters. Binds the keys to one device container."),
+  );
+  const syncHow = () => {
+    enrollmentPanel.hidden = how.value !== "enrollment";
+    keyPanel.hidden = how.value !== "key";
+  };
+  how.addEventListener("change", syncHow);
+  showEnrolled();
+
   const submit = h("button", { type: "submit", text: "Issue sealed keys" });
 
   const form = h(
@@ -78,9 +139,10 @@ export default async function issue(ctx) {
     field("Licence", mode),
     newOnly,
     scopeSet,
-    field("Their public key", publicKey, "Their slot's public key, 64 hexadecimal characters (they read it with keyquorum device list). Every file is sealed to it, so only they can open it."),
+    field("Identify the client by", how),
+    enrollmentPanel,
+    keyPanel,
     field("Relay address", relayUrl, "The address they load these keys for."),
-    field("Device id (optional)", deviceId, "32 hexadecimal characters. Binds the keys to one device container."),
     lock.node,
     h("p", { class: "note" }, "Operation ", h("code", { text: op.id })),
     h("div", { class: "actions" }, submit),
@@ -93,8 +155,13 @@ export default async function issue(ctx) {
     const problems = [];
     const scopes = checks.filter((c) => c.box.checked).map((c) => c.scope);
     if (scopes.length === 0) problems.push("Choose at least one thing the keys allow.");
-    if (!isHex(publicKey.value, 64)) problems.push("Their public key must be 64 hexadecimal characters.");
-    if (deviceId.value.trim() !== "" && !isHex(deviceId.value, 32)) problems.push("The device id must be 32 hexadecimal characters.");
+    if (how.value === "enrollment") {
+      if (!enrolled) problems.push("Choose their enrollment request.");
+      if (!confirmPrint.value.trim()) problems.push("Type the fingerprint they read out to you.");
+    } else {
+      if (!isHex(publicKey.value, 64)) problems.push("Their public key must be 64 hexadecimal characters.");
+      if (deviceId.value.trim() !== "" && !isHex(deviceId.value, 32)) problems.push("The device id must be 32 hexadecimal characters.");
+    }
     if (!relayUrl.value.trim()) problems.push("Enter the relay address.");
     if (!known && !name.value.trim()) problems.push("Enter the user's name.");
     if (!lock.read()) problems.push("Enter the operator lock.");
@@ -105,9 +172,13 @@ export default async function issue(ctx) {
     }
     const keyFields = {
       scopes,
-      recipient_public_key: publicKey.value.trim(),
       relay_url: relayUrl.value.trim(),
-      ...(deviceId.value.trim() ? { device_id: deviceId.value.trim() } : {}),
+      ...(how.value === "enrollment"
+        ? { enrollment: toBase64(enrolled.bytes), confirm_fingerprint: confirmPrint.value.trim() }
+        : {
+            recipient_public_key: publicKey.value.trim(),
+            ...(deviceId.value.trim() ? { device_id: deviceId.value.trim() } : {}),
+          }),
       ...(mode.value === "new"
         ? {
             ...(terms.value.trim() ? { terms: terms.value.trim() } : {}),
@@ -146,7 +217,7 @@ export default async function issue(ctx) {
       result.append(
         section(
           `Licence #${issued.licence.id} for ${issued.customer.name}`,
-          bundleList(issued.bundles),
+          issued.package ? packageResult(issued) : bundleList(issued.bundles),
           h("div", { class: "actions" }, h("a", { class: "button", href: `#user?id=${issued.customer.id}`, text: "Open the user's page" })),
         ),
       );
@@ -160,6 +231,7 @@ export default async function issue(ctx) {
   });
 
   sync();
+  syncHow();
   return h(
     "div",
     {},

@@ -282,7 +282,7 @@ fn run_keys(store: &dyn RelayStore, command: KeysCommand) -> Result<()> {
                         store.mint_key_as_bundle(&identity, &new, &recipient, &mut |sealed| {
                             let package = keyquorum::package::issue_client_package(
                                 &identity,
-                                sealed,
+                                &[sealed],
                                 issued_at,
                                 package_valid_days,
                             )?;

@@ -82,6 +82,9 @@ pub struct Reply {
     pub changed: bool,
 }
 
+// `Issue` carries the most fields of any request; boxing it would only move
+// them, and a request lives for one call.
+#[allow(clippy::large_enum_variant)]
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
@@ -136,10 +139,17 @@ enum Request {
         expires_at: Option<String>,
         replaces_licence_id: Option<i64>,
         scopes: Vec<String>,
-        recipient_public_key: String,
+        /// The client's X25519 public key (hex); or, instead, `enrollment`.
+        recipient_public_key: Option<String>,
         relay_url: String,
         device_id: Option<String>,
+        /// A client's enrollment request (`.kqreq`, base64) in place of a key
+        /// and device id; the keys are then returned inside one `.kqpkg`.
+        enrollment: Option<String>,
+        /// The fingerprint the client read out, required with `enrollment`.
+        confirm_fingerprint: Option<String>,
     },
+    ProviderPackage {},
     CreateLicence {
         operation_id: Option<String>,
         customer_id: i64,
@@ -194,6 +204,8 @@ fn failure(error: &Error) -> Reply {
         Error::InvalidLicence
         | Error::InvalidApiKeyRequest
         | Error::InvalidPublicKey
+        | Error::InvalidEnrollment
+        | Error::EnrollmentFingerprintMismatch
         | Error::InvalidDevice => refuse(400, "invalid", &error.to_string()),
         Error::RelayRequest(_) => refuse(400, "invalid", "the relay URL is not valid"),
         Error::LicenceNotFound | Error::CustomerNotFound | Error::ApiKeyNotFound => {
@@ -259,6 +271,7 @@ pub fn operate(
             | Request::Letters {}
             | Request::Trees {}
             | Request::Checkpoint {}
+            | Request::ProviderPackage {}
             | Request::Bootstrap {}
             | Request::RotateLock {}
             | Request::ConfirmLock {}
@@ -397,6 +410,7 @@ fn run(
             identity_check(identity, &KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY, now),
         ),
         Request::Status {} => status(store, identity, now),
+        Request::ProviderPackage {} => provider_package(identity, now),
         Request::Users {
             search,
             status,
@@ -501,6 +515,8 @@ fn run(
             recipient_public_key,
             relay_url,
             device_id,
+            enrollment,
+            confirm_fingerprint,
         } => {
             let subject = match (customer_id, &name) {
                 (Some(id), _) => format!("customer {id}"),
@@ -508,6 +524,18 @@ fn run(
                 (None, None) => String::new(),
             };
             let identity = need_identity(identity)?;
+            let enrolled = enrollment.is_some();
+            let (recipient_public_key, device_id) = resolve_recipient(
+                recipient_public_key,
+                device_id,
+                enrollment.as_deref(),
+                confirm_fingerprint.as_deref(),
+            )
+            .map_err(|e| failure(&e))?;
+            // Everything the package needs is checked before the keys are
+            // minted, so a package cannot fail once they exist.
+            let issued_at = crate::provider::unix_from_utc(now).map_err(|e| failure(&e))?;
+            crate::provider::parse_certificate(&identity.certificate).map_err(|e| failure(&e))?;
             let request = build_issuance(
                 customer_id,
                 name,
@@ -530,6 +558,38 @@ fn run(
                 operation_id.as_deref(),
                 |note| store.issue_licensed_bundles(identity, &request, Some(note)),
             )?;
+            if enrolled {
+                // The sealed keys travel only inside the package; the reply
+                // names them and carries no second copy.
+                let sealed: Vec<&[u8]> =
+                    issued.bundles.iter().map(|b| b.bundle.as_slice()).collect();
+                let package = crate::package::issue_client_package(
+                    identity,
+                    &sealed,
+                    issued_at,
+                    PACKAGE_VALID_DAYS,
+                )
+                .map_err(|e| failure(&e))?;
+                let keys: Vec<Value> = issued
+                    .bundles
+                    .iter()
+                    .map(|b| {
+                        json!({
+                            "key_id": b.info.id,
+                            "scope": b.info.scope,
+                            "expires_at": b.info.expires_at,
+                            "recipient_fingerprint": b.recipient_fingerprint,
+                        })
+                    })
+                    .collect();
+                return changed(json!({
+                    "customer": customer_view(&issued.customer),
+                    "licence": licence_summary(&issued.licence),
+                    "keys": keys,
+                    "package": package_view(&issued.customer.name, &package),
+                    "voided_licence_id": issued.voided.as_ref().map(|v| v.licence_id),
+                }));
+            }
             let bundles: Vec<Value> = issued
                 .bundles
                 .iter()
@@ -769,6 +829,78 @@ fn bootstrap(
     });
     let _ = store.record_operator_action(ctx.operator, "bootstrap", Some("operator lock"), true);
     changed(json!({ "operator_lock": staged.token.as_str(), "pending": true }))
+}
+
+/// How long a package the console writes stays valid.
+const PACKAGE_VALID_DAYS: u64 = 30;
+/// The largest enrollment request, base64 included, the console reads.
+const MAX_ENROLLMENT_BASE64: usize = 2048;
+
+/// The recipient key and device id an issue is sealed to: given directly, or
+/// read out of a client's enrollment request after its signature and the
+/// fingerprint the client read out both check. Both at once, or an
+/// enrollment without its fingerprint, is refused.
+fn resolve_recipient(
+    key: Option<String>,
+    device_id: Option<String>,
+    enrollment: Option<&str>,
+    confirm: Option<&str>,
+) -> crate::error::Result<(String, Option<String>)> {
+    match (key, enrollment) {
+        (Some(key), None) if confirm.is_none() => Ok((key, device_id)),
+        (None, Some(encoded)) if device_id.is_none() => {
+            let confirm = confirm.ok_or(Error::InvalidApiKeyRequest)?;
+            if encoded.len() > MAX_ENROLLMENT_BASE64 {
+                return Err(Error::InvalidEnrollment);
+            }
+            let bytes = STANDARD
+                .decode(encoded.trim())
+                .map_err(|_| Error::InvalidEnrollment)?;
+            let request = crate::enrollment::decode(&bytes)?;
+            request.confirm_fingerprint(confirm)?;
+            Ok((
+                hex::encode(request.encryption_public),
+                Some(hex::encode(request.device_id)),
+            ))
+        }
+        _ => Err(Error::InvalidApiKeyRequest),
+    }
+}
+
+/// What the console is told about a package it was just handed: the bytes
+/// (sealed keys inside stay sealed) and the facts the page may show.
+fn package_view(name: &str, package: &[u8]) -> Value {
+    let decoded = crate::package::decode(package).ok();
+    json!({
+        "filename": format!("{}.kqpkg", slug(name)),
+        "package_base64": STANDARD.encode(package),
+        "user_type": decoded.as_ref().map(|p| p.purpose.user_type().as_str()),
+        "purpose": decoded.as_ref().map(|p| p.purpose.name()),
+        "id": decoded.as_ref().map(|p| hex::encode(p.id)),
+        "expires_at_unix": decoded.as_ref().map(|p| p.expires_at),
+    })
+}
+
+/// The provider's own public package and the public files it is made of, for
+/// the console to download as one zip. Signed with the relay key; nothing in
+/// it is secret, and it changes nothing in the relay.
+fn provider_package(identity: Option<&ProviderIdentity>, now: &str) -> Outcome2 {
+    let identity = need_identity(identity)?;
+    let issued_at = seen(crate::provider::unix_from_utc(now))?;
+    let package = seen(crate::package::issue_provider_info_package(
+        identity,
+        issued_at,
+        PACKAGE_VALID_DAYS,
+    ))?;
+    ok(json!({
+        "user_type": crate::package::UserType::Provider.as_str(),
+        "package": package_view("provider", &package),
+        "files": [{
+            "name": "provider.kqcert",
+            "kind": "relay certificate",
+            "base64": STANDARD.encode(&identity.certificate),
+        }],
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -86,6 +86,46 @@ impl Purpose {
     fn is_client(self) -> bool {
         matches!(self, Self::ClientSetup | Self::ClientUpdate)
     }
+
+    /// The purpose as the console and reports spell it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::ClientSetup => "client_setup",
+            Self::ClientUpdate => "client_update",
+            Self::ProviderInfo => "provider_info",
+            Self::ProviderRecovery => "provider_recovery",
+        }
+    }
+
+    /// Whose package this purpose is.
+    pub fn user_type(self) -> UserType {
+        if self.is_client() {
+            UserType::Client
+        } else {
+            UserType::Provider
+        }
+    }
+}
+
+/// Who a package is for, derived from its authenticated purpose and never
+/// stored apart from it, so the two cannot disagree. An enum rather than a
+/// flag so a later kind of user is a new variant, not a second boolean.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UserType {
+    /// An enrolled customer: installs a licence and credentials.
+    Client,
+    /// The provider: public information, or restoring its own identity.
+    Provider,
+}
+
+impl UserType {
+    /// The name the console and reports use.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Client => "CLIENT",
+            Self::Provider => "PROVIDER",
+        }
+    }
 }
 
 /// A component a version 1 package may hold, named by what its bytes are.
@@ -332,14 +372,59 @@ pub fn decode(bytes: &[u8]) -> Result<Package> {
     })
 }
 
-/// A `ClientSetup` package for a key the relay just sealed: the relay's own
-/// certificate and the sealed key, signed with the relay key, valid for
-/// `valid_days` (1 to 365) from `issued_at`, under a fresh random id. The
-/// sealed key is not opened or altered, and the package holds no bearer in
-/// the clear.
+/// A `ClientSetup` package for `.kqkey` bundles the relay just sealed: the relay's own
+/// certificate and the sealed keys (at least one, at most fifteen), signed
+/// with the relay key, valid for `valid_days` (1 to 365) from `issued_at`,
+/// under a fresh random id. The sealed keys are not opened or altered, and
+/// the package holds no bearer in the clear.
 pub fn issue_client_package(
     identity: &crate::relay::ProviderIdentity,
-    sealed_key: &[u8],
+    sealed_keys: &[&[u8]],
+    issued_at: u64,
+    valid_days: u64,
+) -> Result<Vec<u8>> {
+    let mut components = vec![certificate_component(identity)];
+    components.extend(sealed_keys.iter().map(|sealed| Component {
+        kind: ComponentKind::ApiKeyBundle,
+        bytes: sealed.to_vec(),
+    }));
+    issue(
+        identity,
+        Purpose::ClientSetup,
+        components,
+        issued_at,
+        valid_days,
+    )
+}
+
+/// A `ProviderInfo` package: the relay's own certificate and nothing else
+/// from this relay (it holds no revocation list or policy to add). Public
+/// information, signed with the relay key.
+pub fn issue_provider_info_package(
+    identity: &crate::relay::ProviderIdentity,
+    issued_at: u64,
+    valid_days: u64,
+) -> Result<Vec<u8>> {
+    issue(
+        identity,
+        Purpose::ProviderInfo,
+        vec![certificate_component(identity)],
+        issued_at,
+        valid_days,
+    )
+}
+
+fn certificate_component(identity: &crate::relay::ProviderIdentity) -> Component {
+    Component {
+        kind: ComponentKind::Certificate,
+        bytes: identity.certificate.clone(),
+    }
+}
+
+fn issue(
+    identity: &crate::relay::ProviderIdentity,
+    purpose: Purpose,
+    components: Vec<Component>,
     issued_at: u64,
     valid_days: u64,
 ) -> Result<Vec<u8>> {
@@ -351,21 +436,12 @@ pub fn issue_client_package(
     rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut id);
     encode(
         &Package {
-            purpose: Purpose::ClientSetup,
+            purpose,
             id,
             issued_at,
             expires_at: issued_at + valid_days * 86_400,
             issuer: certificate.relay_public_key,
-            components: vec![
-                Component {
-                    kind: ComponentKind::Certificate,
-                    bytes: identity.certificate.clone(),
-                },
-                Component {
-                    kind: ComponentKind::ApiKeyBundle,
-                    bytes: sealed_key.to_vec(),
-                },
-            ],
+            components,
         },
         &identity.relay_private_key,
     )

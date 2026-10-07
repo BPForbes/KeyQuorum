@@ -622,3 +622,25 @@ the client; they run `keyquorum setup NAME.kqpkg --device DIR --label NAME` to
 see the plan and add `--yes` to apply it. The fingerprint is the only thing that
 ties the request to the person, so never skip the call. Not built: a console
 button for this, a resume ledger, and a recovery package for a lost relay key.
+
+### From the console
+
+`Issue keys` in `/relay/admin` does the same from a browser: choose *Their
+enrollment request*, pick the `.kqreq` (or drop it in **Files** and choose *Use
+to issue keys*), type the fingerprint the client read out, and the console
+returns one `.kqpkg` (the relay's certificate and the sealed keys, bound to
+their drive) in place of loose `.kqkey` files. It is written once and not
+retained: a lost package is replaced by replacing its keys. Choosing *Their
+public key only* still gives the original `.kqkey` files.
+
+**Files** also downloads *the provider package*: a zip of the relay's public
+files (`provider.kqpkg`, `provider.kqcert`, a README), with `USR_TYPE:
+PROVIDER`. No key is in it and no operator lock is needed. The file tool reads a
+dropped or chosen file's public framing in the page, says what it is and which
+actions apply, and refuses private key material (key files, hex or PEM keys)
+unread. Nothing is uploaded until an action is taken on a file, and storing
+public files online for an account is not built. `USR_TYPE` is `CLIENT` or
+`PROVIDER`, derived from the package's signed purpose, never stored apart from
+it. Operator actions by signed letter are a design only
+(`admin-letters.md`).
+

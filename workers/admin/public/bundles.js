@@ -4,7 +4,7 @@
 // channel; the bearer inside is never shown here.
 import { downloadBase64 } from "./api.js";
 import { formatTime, scopeLabel } from "./format.js";
-import { h, notice, table } from "./ui.js";
+import { badge, h, notice, table } from "./ui.js";
 
 export function bundleList(bundles) {
   const rows = table(
@@ -35,6 +35,29 @@ export function bundleList(bundles) {
     ),
     rows,
     h("p", { class: "note", text: "The files are not stored by this page or the relay: download them now. A lost file is replaced by replacing its key." }),
+  );
+}
+
+// What the console shows after an issue from an enrollment: one package,
+// sealed keys inside it, to send to the client. USR_TYPE is the package's own,
+// derived from its signed purpose.
+export function packageResult(issued) {
+  const view = issued.package;
+  return h(
+    "div",
+    {},
+    notice("good", "Issued. One package holds the relay's certificate and the sealed keys, sealed to this client's drive. Send it by any channel."),
+    h("p", {}, badge(`USR_TYPE: ${view.user_type}`, "plain"), " ", h("code", { text: view.filename })),
+    table(
+      [
+        { label: "Allows", cell: (k) => scopeLabel(k.scope) },
+        { label: "Key", cell: (k) => `#${k.key_id}` },
+        { label: "Ends", cell: (k) => formatTime(k.expires_at) },
+      ],
+      issued.keys,
+    ),
+    h("div", { class: "actions" }, h("button", { type: "button", text: "Download the package", on: { click: () => downloadBase64(view.filename, view.package_base64) } })),
+    h("p", { class: "note", text: "They open it with: keyquorum setup FILE --device DIR --label NAME (add --yes to apply the plan it shows). The package is not stored by this page or the relay: download it now. A lost one is replaced by replacing its keys." }),
   );
 }
 

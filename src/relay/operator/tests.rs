@@ -1398,3 +1398,170 @@ mod identity_trust {
         }
     }
 }
+
+/// A client's enrollment request, as `setup --enroll-out` writes it, and the
+/// fingerprint they would read out.
+fn enrollment() -> (zeroize::Zeroizing<[u8; 32]>, String, String) {
+    let (encryption_secret, encryption_public) = keys::generate_encryption_keypair();
+    let (signing_secret, signing_public) = keys::generate_signing_keypair();
+    let request = crate::enrollment::Request {
+        device_id: [8u8; 16],
+        created_at: 1_790_000_000,
+        label: "alice".into(),
+        encryption_public,
+        signing_public,
+    };
+    let bytes = crate::enrollment::encode(&request, &signing_secret).expect("encode");
+    (
+        encryption_secret,
+        STANDARD.encode(bytes),
+        request.fingerprint().expect("fingerprint"),
+    )
+}
+
+fn issue_from_enrollment(c: &Console, lock: &str, encoded: &str, confirm: &str) -> (u16, Value) {
+    c.change(
+        json!({
+            "op": "issue", "name": "Acme Ltd", "terms": "Five seats.",
+            "expires_at": "2999-01-01", "scopes": ["inbox.pull"],
+            "relay_url": "https://relay.example.test",
+            "enrollment": encoded, "confirm_fingerprint": confirm,
+        }),
+        lock,
+    )
+}
+
+#[test]
+fn issuing_from_an_enrollment_returns_one_client_package_and_no_loose_bundle() {
+    let c = console();
+    let lock = c.lock();
+    let (secret, encoded, fingerprint) = enrollment();
+    let (status, body) = issue_from_enrollment(&c, &lock, &encoded, &fingerprint);
+    assert_eq!(status, 200, "issue from an enrollment");
+    assert!(
+        body.get("bundles").is_none(),
+        "the keys travel in the package only"
+    );
+    assert_eq!(body["keys"].as_array().expect("keys").len(), 1);
+    let view = &body["package"];
+    assert_eq!(view["user_type"], "CLIENT");
+    assert_eq!(view["purpose"], "client_setup");
+    assert_eq!(view["filename"], "acme-ltd.kqpkg");
+
+    let bytes = STANDARD
+        .decode(view["package_base64"].as_str().expect("b64"))
+        .expect("base64");
+    let package = crate::package::decode(&bytes).expect("a valid package");
+    assert_eq!(package.purpose, crate::package::Purpose::ClientSetup);
+    package
+        .verify_issuer(&c.root, "2026-10-06 12:00:00", &empty_revoked())
+        .expect("signed by the certified relay key");
+    let key = package
+        .components
+        .iter()
+        .find(|component| component.kind == crate::package::ComponentKind::ApiKeyBundle)
+        .expect("the sealed key");
+    let opened = open_bundle(&c, &secret, &STANDARD.encode(&key.bytes));
+    assert_eq!(
+        opened.issue.device_id,
+        Some([8u8; 16]),
+        "bound to the enrolled device"
+    );
+    assert!(
+        !body.to_string().contains(opened.issue.token.as_str()),
+        "no bearer outside the sealed key"
+    );
+}
+
+#[test]
+fn an_enrollment_issues_only_with_the_fingerprint_the_client_read_out() {
+    let c = console();
+    let lock = c.lock();
+    let (_, encoded, fingerprint) = enrollment();
+    let (_, _, other) = enrollment();
+    for confirm in [other.as_str(), ""] {
+        let (status, _) = issue_from_enrollment(&c, &lock, &encoded, confirm);
+        assert_eq!(status, 400, "a wrong fingerprint is refused");
+    }
+    // No fingerprint at all, a key beside an enrollment, a device id beside
+    // one, and a fingerprint with no enrollment are all refused.
+    let base = |extra: Value| {
+        let mut request = json!({
+            "op": "issue", "name": "Acme Ltd", "terms": "Five seats.",
+            "expires_at": "2999-01-01", "scopes": ["inbox.pull"],
+            "relay_url": "https://relay.example.test",
+        });
+        for (name, value) in extra.as_object().expect("object") {
+            request[name] = value.clone();
+        }
+        c.change(request, &lock)
+    };
+    let (_, public) = client();
+    assert_eq!(base(json!({ "enrollment": encoded })).0, 400);
+    assert_eq!(
+        base(
+            json!({ "enrollment": encoded, "confirm_fingerprint": fingerprint,
+            "recipient_public_key": hex::encode(public) })
+        )
+        .0,
+        400
+    );
+    assert_eq!(
+        base(
+            json!({ "enrollment": encoded, "confirm_fingerprint": fingerprint,
+            "device_id": hex::encode([8u8; 16]) })
+        )
+        .0,
+        400
+    );
+    assert_eq!(
+        base(json!({ "recipient_public_key": hex::encode(public),
+            "confirm_fingerprint": fingerprint }))
+        .0,
+        400
+    );
+    assert_eq!(
+        base(json!({ "enrollment": "not base64 !!", "confirm_fingerprint": fingerprint })).0,
+        400
+    );
+    assert_eq!(
+        c.store.customer_count().expect("count"),
+        0,
+        "nothing was issued"
+    );
+}
+
+#[test]
+fn the_provider_package_is_public_provider_only_and_needs_no_lock() {
+    let c = console();
+    let (status, body) = c.ask(json!({ "op": "provider_package" }), None);
+    assert_eq!(status, 200, "provider_package");
+    assert_eq!(body["user_type"], "PROVIDER");
+    assert_eq!(body["package"]["purpose"], "provider_info");
+    let bytes = STANDARD
+        .decode(body["package"]["package_base64"].as_str().expect("b64"))
+        .expect("base64");
+    let package = crate::package::decode(&bytes).expect("a valid package");
+    assert_eq!(
+        package.purpose.user_type(),
+        crate::package::UserType::Provider
+    );
+    package
+        .verify_issuer(&c.root, "2026-10-06 12:00:00", &empty_revoked())
+        .expect("issuer");
+    let files = body["files"].as_array().expect("files");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0]["name"], "provider.kqcert");
+    assert_eq!(
+        STANDARD
+            .decode(files[0]["base64"].as_str().expect("b64"))
+            .expect("base64"),
+        c.identity.certificate
+    );
+    let text = body.to_string();
+    assert!(!text.contains(&hex::encode(*c.identity.relay_private_key)));
+    let (status, _) = c.ask_as(OPERATOR, json!({ "op": "provider_package" }), None, false);
+    assert_eq!(status, 503, "no relay identity, no package");
+    let (status, _) = c.ask(json!({ "op": "provider_package", "extra": 1 }), None);
+    assert_eq!(status, 400, "no fields beyond the op");
+}
