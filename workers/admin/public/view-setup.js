@@ -66,7 +66,7 @@ export function setupGuide(overview, lockPanel) {
         identityState(overview) === "untrusted" && root.status === "failed"
           ? notice("bad", untrustedReason(overview))
           : null,
-        h("p", { class: "note", text: "This page cannot see the ceremony, only whether its result checks out: it is done here only when the relay confirms the certificate it holds is signed by the root it pins, has not expired and names its own key." }),
+        h("p", { class: "note", text: "This page cannot see the ceremony, only whether its result checks out: it is done here only when the relay confirms the certificate it holds is signed by the root it pins, has not expired and grants the provider capabilities. Whether the relay's key matches the certificate is judged at step 2." }),
       ),
       step(
         2,
@@ -80,7 +80,7 @@ export function setupGuide(overview, lockPanel) {
         ),
         h("p", {
           class: "note",
-          text: "Set both together. Keep relay.key out of chat, tickets and version control, and delete the local copy once it is stored. Then reload this page: this step clears when the relay holds both, and step 1 clears when the certificate checks out. The Status page shows the certificate's serial and expiry.",
+          text: "Set both together. Keep relay.key out of chat, tickets and version control, and delete the local copy once it is stored. Then reload this page. Step 2 clears when the relay's identity checks out. If the certificate is expired, or not signed by the pinned root, step 1 shows what to fix instead; if the key and the certificate do not match, this step does. The Status page shows the certificate's serial and expiry.",
         }),
         identity.status === "failed" ? notice("bad", untrustedReason(overview)) : null,
       ),

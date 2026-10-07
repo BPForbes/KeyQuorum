@@ -427,24 +427,33 @@ purpose:
    (`KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`, `src/provider.rs`), and the repository
    ships a placeholder. Replace it with the public half of your root
    (`root.pub`) and rebuild the relay (the WebAssembly core) and the clients; a
-   certificate under any other root is refused by every client. The guide marks
-   this step done **only when the relay confirms its identity checks out**, the
-   way a client checks it (`provider::self_check`): the certificate is signed by
-   the root the relay pins, has not expired, grants the provider capabilities
-   and names the key the relay holds. Holding both Worker secrets is not that.
-   If the check fails the step reads "needs attention" with the reason
-   (`certificate_not_signed_by_pinned_root`, `certificate_expired`,
-   `capabilities_missing` or `key_does_not_match_certificate`), and the console
-   shows the root the relay pins (a public value, 64 hexadecimal characters) so
-   you can compare it with `root.pub`. The Cloudflare relay reads no revocation
-   list, so a revoked certificate is not caught by this check.
+   certificate under any other root is refused by every client. The relay checks
+   its identity the way a client does (`provider::self_check`): the certificate
+   is signed by the root the relay pins, has not expired, grants the provider
+   capabilities and names the key the relay holds. The guide marks this step done
+   **only when the certificate part of that check passes** (signed by the pinned
+   root, unexpired, capabilities); holding both Worker secrets is not that. Whether
+   the key matches the certificate is judged at step 2.
+   If the check fails because of the certificate or the pinned root
+   (`certificate_not_signed_by_pinned_root`, `certificate_expired` or
+   `capabilities_missing`) this step reads "needs attention" with the reason. If
+   it fails only because the relay key does not match the certificate
+   (`key_does_not_match_certificate`), the certificate itself verified, so this
+   step stays done and step 2 is the one that reads "needs attention". The
+   console shows the root the relay pins (a public value, 64 hexadecimal
+   characters) so you can compare it with `root.pub`. The Cloudflare relay reads
+   no revocation list, so a revoked certificate is not caught by this check.
 2. **The relay's identity**, a service credential: the Worker secrets
    `RELAY_PRIVATE_KEY` and `RELAY_CERTIFICATE` ("Secret provisioning"). It is
    not a personal `.kqkey` (those are sealed to one person and opened with their
    passphrase; a service signing unattended has neither), and it is never sealed
    into a bundle ("Why the relay key is not a `.kq*` file" in `relay-secrets.md`).
-   This step is done when the relay holds both; it reads "needs attention" if
-   the relay key and the certificate are from different key pairs.
+   This step is done only when the relay's identity checks out, not merely when
+   it holds both. Until an identity exists it reads "do this next"; it reads
+   "needs attention" if the relay key and the certificate are from different key
+   pairs; and it reads "waits for an earlier step" while step 1 needs attention
+   (for example an expired certificate), because the fault is then in the
+   certificate or the pinned root, not in what was installed.
 3. **The operator lock**, your own authority to change anything (below). The
    relay refuses to create it without an identity, and the guide waits until
    that identity checks out (the relay itself requires only that one exists), so
@@ -467,7 +476,8 @@ unchanged.
    identity and certificate (and its expiry), the housekeeping alarm, storage
    and the deployed version. Fix anything it shows as missing before issuing.
 2. **Create the operator lock** (once, on the *Overview* page, which offers it
-   once the relay has an identity and while no lock exists). The console stages a `kql_…` lock and shows it
+   once the relay has a trusted identity and while no lock exists). The console
+   stages a `kql_…` lock and shows it
    **once**: copy it into your password manager or a file only you can read. It
    is not yet the lock. Paste it back and confirm; only then does it take
    effect. If the response was lost, or you did not save the value, repeat the

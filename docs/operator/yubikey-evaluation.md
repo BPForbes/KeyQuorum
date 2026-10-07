@@ -88,10 +88,11 @@ How it would work, in the browser only:
 
 1. **Enrolment** during the existing two-step lock ceremony: the console asks
    the browser for a WebAuthn credential (user verification required) and
-   stages it with the new lock. It becomes active only when the operator
-   presents an assertion from that same key back at the confirm step, the way
-   `confirm_lock` already promotes a staged lock. Register at least **two**
-   keys (a primary and a spare).
+   stores it as a **pending** credential record (below) next to the staged
+   lock. It becomes **active** only when the operator presents an assertion from
+   that same credential back at the confirm step, the way `confirm_lock` already
+   promotes a staged lock. Register at least **two** keys (a primary and a
+   spare).
 2. **Per change**, in two requests. First the console asks the Worker for a
    challenge for a named operation. The Worker draws **at least 32 fresh random
    bytes** from the Web Crypto random source for that attempt (never derived
@@ -101,11 +102,19 @@ How it would work, in the browser only:
    request body, and an **expiry of 60 seconds**. The challenge the key signs is
    `SHA-256(nonce ‖ environment ‖ operation ‖ operation id ‖ body hash)`. Then
    the console sends the change with the assertion. The Worker recomputes that
-   hash from the request it actually received and the nonce it stored, verifies
-   the signature with Web Crypto (Workers supports ECDSA and Ed25519
-   verification), and checks that the assertion's origin and relying-party id
-   match, that user verification was set, and that the stored challenge belongs
-   to this operator, this environment and this operation and has not expired.
+   hash from the request it actually received and the nonce it stored, then
+   parses the assertion's `clientDataJSON` and requires, in this order, that its
+   `type` is exactly `webauthn.get`, that its `challenge` **equals the base64url
+   encoding of the recomputed challenge** (an assertion over any other challenge
+   is refused even if its signature is valid, because this is what ties the
+   signature to the operation and the request body), and that its `origin`
+   matches. It then checks the relying-party id hash in the authenticator data,
+   that user presence and user verification were both set, verifies the
+   signature over `authenticatorData ‖ SHA-256(clientDataJSON)` with Web Crypto
+   (Workers supports ECDSA and Ed25519 verification) under the public key of an
+   **active** credential record for this operator and environment, applies the
+   signature-counter rule below, and checks that the stored challenge belongs to
+   this operator, this environment and this operation and has not expired.
    The nonce is **single-use**: it is deleted on the first attempt to use it,
    whether the verification succeeds or not, and an expired or unknown one is
    refused. The randomness gives freshness, the expiry bounds how long a captured
@@ -115,6 +124,33 @@ How it would work, in the browser only:
    is a schema change and carries a migration when built.
 3. The change is recorded with which key authorized it (its credential id
    only) in `operator_actions`, never a signature or key material.
+
+**The credential record.** What the Worker keeps for a key is a record, separate
+from the audit row in step 3 (WebAuthn Level 3 requires a relying party to
+store some properties of each registered credential and recommends the type, id,
+public key, signature counter and transports; this one stores what it needs):
+
+| Field | Why |
+| --- | --- |
+| credential id | Names the key in the challenge request and in `operator_actions`; unique. |
+| public key and algorithm | Verifies assertions; the public half only, never anything secret. |
+| RP id | Pins the record to `keyquorum.dev`, the origin the assertion must carry. |
+| operator and environment | The verified Access identity that enrolled it and the mount path it belongs to, so a staging credential never authorizes production and one operator's key never authorizes another's. |
+| label | A name the operator chose, for telling the primary from the spare. |
+| state | `pending`, `active` or `revoked`. |
+| created, confirmed and revoked times | Evidence of the lifecycle. |
+| transports and `uvInitialized` | As reported at registration; the Worker refuses a credential whose registration did not have user verification. |
+| last signature counter | See below. |
+
+Lifecycle: a record is created `pending` at enrolment; it becomes `active` only
+on a confirming assertion from the same credential over a fresh challenge, and
+only `active` records are ever used to verify a change. Revocation sets
+`revoked` (or deletes the record) in a gated change, and a revoked record never
+authorizes again. **Signature counter:** when the authenticator reports a
+non-zero counter, an assertion whose counter is not greater than the stored one
+is refused and recorded as a possible cloned key, and the stored value is
+updated after each accepted assertion; a counter that is zero both times means
+the key does not count, which is accepted (as WebAuthn allows) and noted.
 
 Three problems the design must solve before anything is built:
 
@@ -222,3 +258,4 @@ Re-verify before relying on a number.
 | A WebAuthn assertion signs `authenticatorData` with the hash of `clientDataJSON`, which carries the challenge and origin; user verification is bit 2 of the flags | https://developers.yubico.com/WebAuthn/WebAuthn_Developer_Guide/WebAuthn_Client_Authentication.html and https://developer.mozilla.org/en-US/docs/Web/API/Web_Authentication_API/Attestation_and_Assertion |
 | Signing arbitrary data through the challenge is a recognised pattern, with limits | https://developers.yubico.com/WebAuthn/Concepts/Using_WebAuthn_for_Signing.html |
 | Workers Web Crypto verifies ECDSA and Ed25519 signatures | https://developers.cloudflare.com/workers/runtime-apis/web-crypto/ |
+| WebAuthn Level 3 (assertion verification): `clientDataJSON.challenge` must equal the base64url encoding of the challenge the relying party issued; user presence is required; a relying party must store some properties of each registered credential (recommended: type, id, public key, signature counter, transports, `uvInitialized`) | https://www.w3.org/TR/webauthn-3/ (sections "Verifying an Authentication Assertion" and "Credential Records"); the wording comes from search summaries quoted in a code review of this document, not a page fetched here |
