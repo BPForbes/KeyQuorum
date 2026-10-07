@@ -1,4 +1,4 @@
-import { setupSteps } from "./setup-state.js";
+import { identityState, setupSteps, untrustedReason } from "./setup-state.js";
 import { badge, h, notice, section } from "./ui.js";
 
 // The first-time setup guide on the Overview page. It explains four distinct
@@ -12,10 +12,19 @@ const LABEL = {
   pending: ["started, not confirmed", "warn"],
   waiting: ["waits for an earlier step", "plain"],
   offline: ["offline, not visible from here", "plain"],
+  failed: ["needs attention", "bad"],
 };
 
 function command(text) {
   return h("pre", {}, h("code", { text }));
+}
+
+// The root public key this relay pins, a public value, for the operator to
+// compare with the one their ceremony recorded.
+function pinnedRoot(overview) {
+  const root = overview.identity_check?.pinned_root;
+  if (typeof root !== "string" || !/^[0-9a-f]{64}$/.test(root)) return null;
+  return h("p", {}, "This relay pins: ", h("code", { text: root }), ". Compare it character for character with root.pub.");
 }
 
 function step(number, title, status, ...body) {
@@ -42,15 +51,22 @@ export function setupGuide(overview, lockPanel) {
       { class: "setup-steps" },
       step(
         1,
-        "The offline provider-root ceremony",
+        "The offline provider-root ceremony, and pinning the root",
         root.status,
         h("p", {
-          text: "KeyQuorum's provider-root private key stays on an offline machine. It never goes to this relay, this console or any Worker. It signs one certificate (provider.kqcert) naming your relay's public key, a provider id, a serial you can revoke later and an expiry. Make the relay's key pair first (the first command below), carry only relay.pub to the offline machine, and bring provider.kqcert back.",
+          text: "KeyQuorum's provider-root private key stays on an offline machine. It never goes to this relay, this console or any Worker. It signs one certificate (provider.kqcert) naming your relay's public key, a provider id, a serial you can revoke later and an expiry. Make the relay's key pair first (the second command below), carry only relay.pub to the offline machine, and bring provider.kqcert back.",
         }),
         command(
-          "# on your own machine: make the relay's key pair (relay.key never leaves it except as the secret in step 2)\nkeyquorum host identity generate --public-key-out relay.pub --private-key-out relay.key\n\n# on the offline machine, with relay.pub carried over:\nkeyquorum host certify --root-key /path/to/root.key --relay-public-key relay.pub \\\n  --provider-id \"<your provider id>\" --serial <serial> \\\n  --expires-at \"<expiry>\" --out provider.kqcert",
+          "# offline, once, the first time only: make the root (root.key stays offline; root.pub is public)\nkeyquorum host root generate --public-key-out root.pub --private-key-out root.key\n\n# on your own machine: make the relay's key pair (relay.key never leaves it except as the secret in step 2)\nkeyquorum host identity generate --public-key-out relay.pub --private-key-out relay.key\n\n# on the offline machine, with relay.pub carried over:\nkeyquorum host certify --root-key /path/to/root.key --relay-public-key relay.pub \\\n  --provider-id \"<your provider id>\" --serial <serial> \\\n  --expires-at \"<expiry>\" --out provider.kqcert",
         ),
-        h("p", { class: "note", text: "This page cannot see that ceremony, only its result: the certificate you install in step 2." }),
+        h("p", {
+          text: "Pin the root. This relay and every official client trust exactly one root key, compiled in (KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY in src/provider.rs). The repository ships a placeholder. Before production, replace it with the public half of your root (root.pub) and rebuild the relay and the clients; a certificate under any other root is refused by every client.",
+        }),
+        pinnedRoot(overview),
+        identityState(overview) === "untrusted" && root.status === "failed"
+          ? notice("bad", untrustedReason(overview))
+          : null,
+        h("p", { class: "note", text: "This page cannot see the ceremony, only whether its result checks out: it is done here only when the relay confirms the certificate it holds is signed by the root it pins, has not expired and names its own key." }),
       ),
       step(
         2,
@@ -64,8 +80,9 @@ export function setupGuide(overview, lockPanel) {
         ),
         h("p", {
           class: "note",
-          text: "Set both together. Keep relay.key out of chat, tickets and version control, and delete the local copy once it is stored. Then reload this page: the warning clears when the relay reports an identity. The Status page shows the certificate's serial and expiry.",
+          text: "Set both together. Keep relay.key out of chat, tickets and version control, and delete the local copy once it is stored. Then reload this page: this step clears when the relay holds both, and step 1 clears when the certificate checks out. The Status page shows the certificate's serial and expiry.",
         }),
+        identity.status === "failed" ? notice("bad", untrustedReason(overview)) : null,
       ),
       step(
         3,
@@ -75,7 +92,7 @@ export function setupGuide(overview, lockPanel) {
           text: "Signing in through Cloudflare Access proves who you are. The operator lock is a second thing only you hold, presented with every issue, replacement and revocation. It is made here in two steps and shown once.",
         }),
         lock.status === "waiting"
-          ? notice("warn", "The relay refuses to make a lock until it has an identity. Finish step 2 first.")
+          ? notice("warn", "The relay will not make a lock without an identity, and this guide waits until that identity checks out. Finish steps 1 and 2 first.")
           : lock.status === "done"
             ? h("p", { text: "The lock exists." })
             : lockPanel,
@@ -88,7 +105,7 @@ export function setupGuide(overview, lockPanel) {
           text: "A person's first credential is a sealed .kqkey file, sealed to that person's own slot public key and opened only with their passphrase. Never reuse one person's file for another: it opens for nobody else. Later rotations of their key can arrive as a sealed letter in their inbox, as long as they hold a live key that can pull it.",
         }),
         issue.status === "waiting"
-          ? notice("warn", "Issuing stays blocked until steps 2 and 3 are done.")
+          ? notice("warn", "Issuing stays blocked here until steps 1 to 3 are done. The relay itself requires the identity and the lock.")
           : h("p", {}, h("a", { href: "#issue", text: "Issue the first keys" }), "."),
       ),
     ),

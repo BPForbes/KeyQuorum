@@ -15,7 +15,8 @@ Read first: `relay-deployment.md` ("Secret provisioning", "Operator console"),
   the console's per-change **operator lock**, in the browser, with no local
   helper (WebAuthn, design A below). That is the one hardware option this
   document recommends evaluating further, as an addition to the lock, not a
-  replacement.
+  replacement: once enforced, both are required, and there is no lock-only
+  fallback.
 - A YubiKey **cannot** hold the **relay's signing key**: the relay signs
   unattended, on every request, from a Worker. That key stays a Worker secret.
 - A YubiKey **can** hold the offline **provider-root** key (Ed25519 in the PIV
@@ -77,9 +78,11 @@ unattended.
 
 What it protects: the same operations the operator lock already gates (issue,
 replace, void a key, void a licence, replace the lock). What it replaces:
-nothing at first. The lock stays; the key is required **in addition**. A
-possible later step, a decision for the owner and not part of this evaluation,
-would let a registered key stand in for pasting the lock.
+nothing. The lock stays, and once enforcement is on (see "Enforcement and
+recovery" below) the key is required **in addition**: every gated change needs
+both, and neither alone is enough. A design in which a registered key stands in
+for pasting the lock is not part of this evaluation; it would have to be argued
+separately, because it changes what a lost key means.
 
 How it would work, in the browser only:
 
@@ -89,14 +92,27 @@ How it would work, in the browser only:
    presents an assertion from that same key back at the confirm step, the way
    `confirm_lock` already promotes a staged lock. Register at least **two**
    keys (a primary and a spare).
-2. **Per change**: the server, not the page, builds the challenge: a hash over
-   the environment (the mount path), the operation name, the operation id (the
-   `Idempotency-Key`) and a hash of the request body. The browser obtains an
-   assertion over it; the Worker verifies the signature with Web Crypto
-   (Workers supports ECDSA and Ed25519 verification), checks that the
-   assertion's origin and relying-party id match, that user verification was
-   set, and that the challenge is the one the server built for this exact
-   request. A challenge is used once.
+2. **Per change**, in two requests. First the console asks the Worker for a
+   challenge for a named operation. The Worker draws **at least 32 fresh random
+   bytes** from the Web Crypto random source for that attempt (never derived
+   from the request, never reused, never chosen by the page) and keeps them
+   server-side, with the verified operator, the environment (the mount path),
+   the operation name, the operation id (the `Idempotency-Key`), a hash of the
+   request body, and an **expiry of 60 seconds**. The challenge the key signs is
+   `SHA-256(nonce ‖ environment ‖ operation ‖ operation id ‖ body hash)`. Then
+   the console sends the change with the assertion. The Worker recomputes that
+   hash from the request it actually received and the nonce it stored, verifies
+   the signature with Web Crypto (Workers supports ECDSA and Ed25519
+   verification), and checks that the assertion's origin and relying-party id
+   match, that user verification was set, and that the stored challenge belongs
+   to this operator, this environment and this operation and has not expired.
+   The nonce is **single-use**: it is deleted on the first attempt to use it,
+   whether the verification succeeds or not, and an expired or unknown one is
+   refused. The randomness gives freshness, the expiry bounds how long a captured
+   assertion could matter, and the hash over the operation makes a swapped
+   operation fail. This needs a small table for outstanding challenges (the
+   operator, the nonce, its context hash and expiry), swept as they expire, which
+   is a schema change and carries a migration when built.
 3. The change is recorded with which key authorized it (its credential id
    only) in `operator_actions`, never a signature or key material.
 
@@ -149,12 +165,34 @@ sealed credentials are theirs and are not part of the operator's setup.
 
 | Topic | Rule proposed |
 | --- | --- |
-| Enrolment | Staged with the lock, confirmed by an assertion from the same key, at least two keys, each labelled by the operator. A registration alone changes nothing. |
+| Enrolment | Staged with the lock, confirmed by an assertion from the same key (over a fresh, expiring, single-use challenge like any other), at least two keys, each labelled by the operator. A registration alone changes nothing, and enforcement stays off until at least two keys have each confirmed. |
 | Explicit confirmation | Every authorized change needs user verification (PIN) and a touch, on the exact operation the server built the challenge for. Never "a key is plugged in". |
-| Lost or damaged key | Use the spare. If every key is lost, the operator lock remains as the fallback until the operator deliberately retires it; the relay holds no other recovery. |
-| Lost operator lock | Not solved today and not claimed: a lost lock on the Cloudflare relay has no recovery path (`relay-deployment.md`, "Operator console", "Lost operator lock"). A hardware key does not fix that. |
-| Revocation | Removing a key is itself a gated change (lock plus a remaining key), recorded in `operator_actions` with the credential id. A removed credential never authorizes again. |
+| Lost or damaged key | While enforcing, use the spare. If every key is lost there is **no lock-only fallback**: one would let anyone holding the lock defeat the key. The way out is the same unbuilt, untested recovery as a lost lock (below), which clears the enrolled keys and returns to lock-only. Enrol at least two keys and keep them apart (three if one site could be lost). |
+| Lost operator lock | Not solved today and not claimed: a lost lock on the Cloudflare relay has no recovery path (`relay-deployment.md`, "Operator console", "Lost operator lock"). A hardware key does not fix that, and enforcement makes the gap matter more, because a lost key and a lost lock are both unrecoverable from the console. |
+| Revocation | Removing a key is itself a gated change (lock plus a remaining key), recorded in `operator_actions` with the credential id. A removed credential never authorizes again. Removing the last enrolled key, or turning enforcement off, is also gated by the lock **and** a working key, so a stolen lock alone cannot downgrade it. |
 | Backup | A FIDO2 credential cannot be exported from the key. The backup is the second enrolled key, kept apart from the first. |
+
+### Enforcement and recovery
+
+Two states, and the transitions between them are explicit, so recovery is never a
+bypass:
+
+1. **Lock only** (today, and the state of an operator who has enrolled nothing).
+   Every gated change needs the lock.
+2. **Enforcing.** Every gated change needs the lock **and** a fresh assertion
+   from an enrolled key. There is no third path in which the lock alone, or a key
+   alone, is enough.
+
+Moving from 1 to 2 is itself a gated change, allowed only once at least two keys
+are enrolled and each has produced a confirming assertion. Moving from 2 to 1 (or
+removing the last key) needs the lock and a working key, so downgrading is no
+easier than acting. The only road from 2 back to 1 without a working key is the
+recovery for a lost lock: restore the Durable Object's storage from a backup, or
+apply a reviewed migration that clears the lock and the enrolled keys, then
+repeat the setup. **That procedure is not built or tested** (`relay-deployment.md`
+says the same for the lock), so a mandatory hardware requirement should not be
+switched on until it is, or until the owner has accepted that losing every key
+means a recovery by hand.
 | Offline root | Unchanged. No part of A reaches the root key or the root ceremony. |
 
 ## What stays true if A is ever built
@@ -164,8 +202,8 @@ sealed credentials are theirs and are not part of the operator's setup.
 - No private root key, relay private key, token or operator-lock value appears
   in a screenshot, log, commit or issue; the assertion and the credential id
   are not secrets, but the lock still is.
-- Issuance remains blocked until the relay has an identity and the lock exists
-  (`setup-state.js`, enforced again by the relay).
+- Issuance remains blocked until the relay has a trusted identity and the lock
+  exists (`setup-state.js`; the relay itself enforces the identity and the lock).
 - Tests live in their own files, the wire and storage changes carry a
   migration, and this document and `soc2-controls.md` are updated in the same
   change.

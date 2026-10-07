@@ -418,24 +418,45 @@ page opens with a four-step guide (issue #102), each step with its own status
 or, for step 1, `offline, not visible from here`). The steps are distinct on
 purpose:
 
-1. **The offline provider-root ceremony**: first `host identity generate` on
-   your own machine ("Host identity"), then `host certify` offline ("Offline
-   provider certificate issuance"). It happens off the page and leaves only its result,
-   `provider.kqcert`. The guide marks it done once the relay holds an identity.
+1. **The offline provider-root ceremony, and pinning the root**: `host root
+   generate` once, offline (the first time only); `host identity generate` on
+   your own machine ("Host identity"); then `host certify` offline ("Offline
+   provider certificate issuance"). It leaves only its result,
+   `provider.kqcert`. **Pin the root before production:** the relay and every
+   official client trust exactly one root public key, compiled in
+   (`KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`, `src/provider.rs`), and the repository
+   ships a placeholder. Replace it with the public half of your root
+   (`root.pub`) and rebuild the relay (the WebAssembly core) and the clients; a
+   certificate under any other root is refused by every client. The guide marks
+   this step done **only when the relay confirms its identity checks out**, the
+   way a client checks it (`provider::self_check`): the certificate is signed by
+   the root the relay pins, has not expired, grants the provider capabilities
+   and names the key the relay holds. Holding both Worker secrets is not that.
+   If the check fails the step reads "needs attention" with the reason
+   (`certificate_not_signed_by_pinned_root`, `certificate_expired`,
+   `capabilities_missing` or `key_does_not_match_certificate`), and the console
+   shows the root the relay pins (a public value, 64 hexadecimal characters) so
+   you can compare it with `root.pub`. The Cloudflare relay reads no revocation
+   list, so a revoked certificate is not caught by this check.
 2. **The relay's identity**, a service credential: the Worker secrets
    `RELAY_PRIVATE_KEY` and `RELAY_CERTIFICATE` ("Secret provisioning"). It is
    not a personal `.kqkey` (those are sealed to one person and opened with their
    passphrase; a service signing unattended has neither), and it is never sealed
    into a bundle ("Why the relay key is not a `.kq*` file" in `relay-secrets.md`).
-   The warning clears when the relay reports an identity.
+   This step is done when the relay holds both; it reads "needs attention" if
+   the relay key and the certificate are from different key pairs.
 3. **The operator lock**, your own authority to change anything (below). The
-   relay refuses to create it without an identity, and the guide says so instead
-   of offering a button that would fail.
+   relay refuses to create it without an identity, and the guide waits until
+   that identity checks out (the relay itself requires only that one exists), so
+   it never offers a button that would fail or that seals for an identity clients
+   would refuse.
 4. **Issuing each person's keys.** The first credential is a sealed `.kqkey`
    for that person's own slot key; later rotations can arrive as a `.kqpb`
    letter. A bundle is never reused for someone else. The *Issue keys* page shows
-   which step is missing and no form until steps 2 and 3 are done; the relay
-   enforces the same rule itself.
+   which step is missing and no form until steps 1 to 3 are done. The relay
+   itself requires an identity and the lock; the added requirement that the
+   identity is trusted is the page's, because a key sealed under an identity
+   clients refuse is useless, not unsafe.
 
 None of the guide's commands holds a value, and it asks for nothing secret. A
 YubiKey option for the lock is evaluated, not built, in

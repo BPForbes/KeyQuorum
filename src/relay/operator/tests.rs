@@ -1278,3 +1278,123 @@ fn a_licence_is_recorded_for_a_customer_without_keys_and_a_replacement_voids_the
     );
     assert_eq!(c.change(json!({ "op": "create_licence", "customer_id": customer_id, "expires_at": "2000-01-01" }), &lock).0, 400);
 }
+
+// What the relay says about its own identity is whether an official client
+// would trust it, not whether two secrets are present.
+mod identity_trust {
+    use super::*;
+    use crate::provider::test_helpers::issued_identity_with_caps;
+    use crate::provider::{CAP_PROVIDER, CAP_RELAY, KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY};
+
+    const BEFORE_EXPIRY: &str = "2026-10-07 03:00:00.000";
+
+    fn identity_of(
+        issued: crate::provider::test_helpers::IssuedIdentity,
+    ) -> (ProviderIdentity, [u8; 32]) {
+        (
+            ProviderIdentity {
+                certificate: issued.certificate,
+                relay_private_key: issued.relay_private,
+            },
+            issued.root_public,
+        )
+    }
+
+    #[test]
+    fn a_certificate_from_the_pinned_root_for_the_held_key_is_trusted() {
+        let (identity, root) = identity_of(issued_identity_with_caps(
+            "2099-01-01 00:00:00",
+            CAP_PROVIDER,
+        ));
+        let check = identity_check(Some(&identity), &root, BEFORE_EXPIRY);
+        assert_eq!(check["state"], "trusted");
+        assert_eq!(check["pinned_root"], hex::encode(root));
+        assert!(check.get("reason").is_none());
+    }
+
+    #[test]
+    fn no_identity_is_missing_and_still_names_the_pinned_root() {
+        let check = identity_check(None, &[7u8; 32], BEFORE_EXPIRY);
+        assert_eq!(
+            check,
+            json!({ "state": "missing", "pinned_root": hex::encode([7u8; 32]) })
+        );
+    }
+
+    #[test]
+    fn each_way_an_identity_is_configured_but_untrusted_names_its_own_reason() {
+        let (identity, root) = identity_of(issued_identity_with_caps(
+            "2099-01-01 00:00:00",
+            CAP_PROVIDER,
+        ));
+        let reason = |identity: &ProviderIdentity, root: &[u8; 32], now: &str| {
+            let check = identity_check(Some(identity), root, now);
+            assert_eq!(check["state"], "untrusted");
+            check["reason"].as_str().expect("a reason").to_string()
+        };
+        // Signed by some other root than the one pinned.
+        assert_eq!(
+            reason(&identity, &[9u8; 32], BEFORE_EXPIRY),
+            "certificate_not_signed_by_pinned_root"
+        );
+        // Not a certificate at all.
+        let garbage = ProviderIdentity {
+            certificate: vec![1, 2, 3],
+            relay_private_key: identity.relay_private_key.clone(),
+        };
+        assert_eq!(
+            reason(&garbage, &root, BEFORE_EXPIRY),
+            "certificate_not_signed_by_pinned_root"
+        );
+        // Past its expiry.
+        assert_eq!(
+            reason(&identity, &root, "2100-01-01 00:00:00.000"),
+            "certificate_expired"
+        );
+        // A key that is not the one the certificate names.
+        let other = issued_identity_with_caps("2099-01-01 00:00:00", CAP_PROVIDER);
+        let swapped = ProviderIdentity {
+            certificate: identity.certificate.clone(),
+            relay_private_key: other.relay_private,
+        };
+        assert_eq!(
+            reason(&swapped, &root, BEFORE_EXPIRY),
+            "key_does_not_match_certificate"
+        );
+        // A certificate that does not grant what a provider relay needs.
+        let (thin, thin_root) =
+            identity_of(issued_identity_with_caps("2099-01-01 00:00:00", CAP_RELAY));
+        assert_eq!(
+            reason(&thin, &thin_root, BEFORE_EXPIRY),
+            "capabilities_missing"
+        );
+    }
+
+    #[test]
+    fn the_overview_and_status_report_the_check_and_leak_no_secret() {
+        // The console's test identity is signed by a throwaway root, not the one
+        // compiled in, which is exactly an operator who has not pinned theirs.
+        let c = console();
+        let key_hex = hex::encode(*c.identity.relay_private_key);
+        let (_, overview) = c.ask(json!({ "op": "overview" }), None);
+        assert_eq!(overview["identity_configured"], true);
+        assert_eq!(overview["identity_check"]["state"], "untrusted");
+        assert_eq!(
+            overview["identity_check"]["reason"],
+            "certificate_not_signed_by_pinned_root"
+        );
+        assert_eq!(
+            overview["identity_check"]["pinned_root"],
+            hex::encode(KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY)
+        );
+        let (_, status) = c.ask(json!({ "op": "status" }), None);
+        assert_eq!(status["identity_check"], overview["identity_check"]);
+        for reply in [&overview, &status] {
+            let text = reply.to_string();
+            assert!(
+                !text.contains(&key_hex),
+                "the relay key never appears in a reply"
+            );
+        }
+    }
+}
