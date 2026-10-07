@@ -12,6 +12,7 @@
 pub mod activity;
 mod api_key;
 pub mod audit;
+pub mod blob;
 mod client;
 pub mod customer;
 mod device_directory;
@@ -64,7 +65,8 @@ pub use device_mail::{
 };
 pub use mailbox::{
     list_after, purge_expired as purge_expired_envelopes, store, store_until, LetterSummary,
-    MailboxPage, StoredEnvelope, DEFAULT_INBOX_PAGE, MAX_INBOX_PAGE, MAX_INBOX_PAGE_BYTES,
+    MailTable, MailboxPage, StoredEnvelope, DEFAULT_INBOX_PAGE, MAX_INBOX_PAGE,
+    MAX_INBOX_PAGE_BYTES,
 };
 pub use org_tree::{
     context_for_fingerprint, contexts_for_fingerprint, get_public_tree, list_public_trees,
@@ -171,6 +173,23 @@ fn table_has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::R
 fn migrate(conn: &Connection) -> Result<()> {
     if !table_has_column(conn, "mailbox", "expires_at")? {
         conn.execute("ALTER TABLE mailbox ADD COLUMN expires_at TEXT", [])?;
+    }
+    for table in ["mailbox", "device_mailbox"] {
+        if table_sql(conn, table)?.is_none() {
+            continue;
+        }
+        if !table_has_column(conn, table, "blob_len")? {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN blob_len INTEGER"),
+                [],
+            )?;
+        }
+        if !table_has_column(conn, table, "blob_ready")? {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN blob_ready INTEGER NOT NULL DEFAULT 1"),
+                [],
+            )?;
+        }
     }
     if table_sql(conn, "device_mailbox")?.is_some() {
         if !table_has_column(conn, "device_mailbox", "expires_at")? {

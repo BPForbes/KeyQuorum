@@ -45,6 +45,17 @@ class_name = "RelayObject"
 tag = "v1"
 new_sqlite_classes = ["RelayObject"]
 
+# Large sealed letters are held in this bucket instead of the Durable Object's
+# table (docs/operator/r2-blobs.md). The relay never opens a letter, so the
+# bucket holds only bytes that are sealed to their recipients. It is created by
+# deploy/cloudflare/terraform (`letters_bucket_name`) before the first deploy,
+# is private (no public access, no custom domain), and is bound to this Worker
+# only: not to the admin Worker, not to a Preview, and staging has its own.
+# Nothing is held out while the binding is absent.
+[[r2_buckets]]
+binding = "LETTERS"
+bucket_name = "keyquorum-letters"
+
 # Per-client limit on customer routes, keyed on CF-Connecting-IP in the Worker,
 # beside the zone's rate-limit rule (deploy/cloudflare/terraform/rules.tf). Not
 # inherited by an environment, so staging repeats it. A namespace_id is an
@@ -63,6 +74,9 @@ binding = "CF_VERSION_METADATA"
 # Not secret: the hostname(s) this Worker answers, filled by the deploy job.
 [vars]
 ALLOWED_HOSTS = ""
+# Not secret: letters of at least this many bytes are held in the R2 bucket (at
+# least 4096; smaller ones stay in their row, atomic with everything else).
+HOLD_LETTERS_FROM = "65536"
 # Not secret: the path this Worker is mounted under on its host (src/mount.js).
 # The deploy job sets it from the path of the environment's RELAY_URL; a value
 # that is not `/relay` or `/relay/<name>` leaves the Worker unconfigured.
@@ -91,6 +105,10 @@ class_name = "RelayObject"
 tag = "v1"
 new_sqlite_classes = ["RelayObject"]
 
+[[env.staging.r2_buckets]]
+binding = "LETTERS"
+bucket_name = "keyquorum-letters-staging"
+
 [[env.staging.ratelimits]]
 name = "RATE_LIMITER"
 namespace_id = "4702"
@@ -101,5 +119,6 @@ binding = "CF_VERSION_METADATA"
 
 [env.staging.vars]
 ALLOWED_HOSTS = ""
+HOLD_LETTERS_FROM = "65536"
 # The staging relay shares the production hostname, under its own path.
 MOUNT_PATH = "/relay/staging-user"

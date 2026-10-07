@@ -89,6 +89,13 @@ like `checkpoint`) returns a `ProviderInfo` package and the relay certificate, w
 (`CLIENT` or `PROVIDER`) is derived from `Purpose`, never stored. The page's file tool (`files.js`) only reads public framing
 and refuses private key material, key-looking text and key file names unread; no private file is ever uploaded. Storing public
 files online, and operator actions by signed letter (`docs/operator/admin-letters.md`, a design only), are not built.
+Large sealed letters can be held in a private R2 bucket (`LETTERS`) instead of their row (`docs/operator/r2-blobs.md`, built, not
+deployed or run end to end): the core (`relay::blob`, `SqlRelayStore::with_blob_threshold`) authenticates, validates and inserts the
+row not ready with only the 42-byte header and the true length, the Durable Object's `workers/src/blobs.js` then stores the bytes (checked
+against the SHA-256 in the key) and marks it ready or aborts it, a pull puts held letters back and refuses to return a header-only one, and
+a trigger tombstones every dropped held row for the sweep. Native hosts, and a Worker without the binding, hold nothing out. Only the
+public Worker may bind R2; the guard refuses it in the admin Worker, in a Preview, under another name, and a staging bucket shared with
+production.
 
 The mailbox relay (`src/relay/`) stores opaque `.kqpb` envelopes and
 the canonical *public* split-tree as JSON documents (full context). It must never

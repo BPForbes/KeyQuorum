@@ -107,6 +107,14 @@ pub struct RelayCore {
     identity: Option<ProviderIdentity>,
 }
 
+fn mail_table(name: &str) -> Result<crate::relay::MailTable, JsError> {
+    match name {
+        "inbox" => Ok(crate::relay::MailTable::Inbox),
+        "device" => Ok(crate::relay::MailTable::Devices),
+        _ => Err(JsError::new("unknown mailbox")),
+    }
+}
+
 fn js_error(error: impl std::fmt::Display) -> JsError {
     JsError::new(&error.to_string())
 }
@@ -245,6 +253,52 @@ impl RelayCore {
             .map_err(js_error)
     }
 
+    /// From now on, hold letters of at least `bytes` out of their rows: the
+    /// caller (the Durable Object, with an R2 bucket bound) stores each one's
+    /// bytes in the bucket and then calls [`Self::blob_ready`], or
+    /// [`Self::blob_abort`] if it cannot. Never called when no bucket is bound,
+    /// so without one nothing is held out. `bytes` is at least 4096.
+    pub fn hold_letters_from(&mut self, bytes: u32) {
+        self.store.set_blob_threshold(bytes.max(4096) as usize);
+    }
+
+    /// The bytes of held letter `id` of `table` (`"inbox"` or `"device"`) are
+    /// stored: make it ready. False when there was nothing to make ready.
+    pub fn blob_ready(&self, table: &str, id: f64) -> Result<bool, JsError> {
+        self.store
+            .blob_ready(mail_table(table)?, id as i64)
+            .map_err(js_error)
+    }
+
+    /// The bytes could not be stored: drop the not-ready row, so the sender's
+    /// retry starts clean. A ready row is never dropped.
+    pub fn blob_abort(&self, table: &str, id: f64) -> Result<bool, JsError> {
+        self.store
+            .blob_abort(mail_table(table)?, id as i64)
+            .map_err(js_error)
+    }
+
+    /// Keys of objects to delete from the bucket, as a JSON array of strings:
+    /// dropped, and named by no live row. At most `limit`.
+    pub fn blob_tombstones(&self, limit: u32) -> Result<String, JsError> {
+        let keys = self
+            .store
+            .blob_tombstones(i64::from(limit))
+            .map_err(js_error)?;
+        serde_json::to_string(&keys).map_err(js_error)
+    }
+
+    /// The objects named by `keys` (a JSON array of strings) are deleted:
+    /// forget their tombstones. Returns how many were forgotten.
+    pub fn blob_tombstones_done(&self, keys: &str) -> Result<u32, JsError> {
+        let keys: Vec<String> = serde_json::from_str(keys).map_err(js_error)?;
+        if keys.len() > 1000 {
+            return Err(JsError::new("too many keys"));
+        }
+        let done = self.store.blob_tombstones_done(&keys).map_err(js_error)?;
+        Ok(u32::try_from(done).unwrap_or(u32::MAX))
+    }
+
     /// Whether the store answers (the readiness probe).
     pub fn ready(&self) -> bool {
         self.store.ping().is_ok()
@@ -259,6 +313,9 @@ impl RelayCore {
                 .purge_expired_device_packages()
                 .map_err(js_error)?;
         let purged = purged + self.store.purge_old_activity().map_err(js_error)?;
+        // A held letter whose bytes were never confirmed (a crash between the
+        // two steps) is dropped after an hour and its key tombstoned.
+        let purged = purged + self.store.blob_drop_stale(60).map_err(js_error)?;
         if let Some(identity) = &self.identity {
             self.store.anchor_audit(identity, now).map_err(js_error)?;
         }

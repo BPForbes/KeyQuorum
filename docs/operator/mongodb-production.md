@@ -1,6 +1,6 @@
 # MongoDB as the production store: decision record and plan for approval
 
-Status: **proposed. Nothing is built.** The owner asked (2026-10-07) for MongoDB,
+Status: **not pursued: on 2026-10-07 the owner chose the Durable Object plus R2 for sealed blobs instead (`r2-blobs.md`).** Kept as the record of why the old MongoDB backend cannot be restored and what a MongoDB store would need, should it be reopened. Nothing here is built. The owner asked (2026-10-07) for MongoDB,
 through the official `mongodb` Rust driver, to be the production store for the
 relay's data and for the REST delivery of `.kq*` file data. That reopens the
 Cloudflare-only decision (#88, `relay-hosting.md`, "MongoDB"). This records what

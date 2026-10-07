@@ -80,3 +80,15 @@ variable "archive_bucket_name" {
   type        = string
   default     = ""
 }
+
+variable "letters_bucket_name" {
+  description = "Name of the production R2 bucket for sealed letters; the Worker binds it as LETTERS (workers/wrangler.toml names keyquorum-letters). Leave empty to create none."
+  type        = string
+  default     = ""
+}
+
+variable "letters_bucket_name_staging" {
+  description = "Name of the staging R2 bucket for sealed letters (workers/wrangler.toml names keyquorum-letters-staging). Never the production bucket. Leave empty to create none."
+  type        = string
+  default     = ""
+}

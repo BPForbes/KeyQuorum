@@ -5,6 +5,8 @@
 //! kind are refused here so this table never becomes a second bridge inbox
 //! and never holds an unsealed transfer package.
 
+use super::blob::{self, BlobRef};
+use super::mailbox::{MailTable, Stored};
 use super::sql::{params, Sql};
 use crate::envelope::{self, routing_public_key};
 use crate::error::{Error, Result};
@@ -23,7 +25,11 @@ pub const DEVICE_PACKAGE_TTL_DAYS: i64 = 30;
 pub struct StoredDevicePackage {
     pub id: i64,
     pub recipient_fingerprint: String,
+    /// The sealed letter, or only its outer header when it is held in object
+    /// storage (see [`super::blob`]).
     pub bytes: Vec<u8>,
+    /// Where the rest is, for a held letter.
+    pub blob: Option<BlobRef>,
 }
 
 #[derive(Clone, Debug)]
@@ -53,27 +59,67 @@ pub(crate) fn check_package(package: &[u8]) -> Result<(String, String)> {
 }
 
 pub fn store(conn: &dyn Sql, package: &[u8]) -> Result<(i64, String, bool)> {
+    let stored = store_held(conn, package, None)?;
+    Ok((stored.id, stored.recipient_fingerprint, stored.duplicate))
+}
+
+/// [`store`], holding the letter out of its row when it is at least
+/// `hold_from` bytes. See [`super::mailbox::store_until_held`].
+pub fn store_held(conn: &dyn Sql, package: &[u8], hold_from: Option<usize>) -> Result<Stored> {
     let (fingerprint, content_hash) = check_package(package)?;
+    let held = hold_from.is_some_and(|threshold| package.len() >= threshold);
 
     purge_expired(conn)?;
-    conn.execute(
-        "INSERT OR IGNORE INTO device_mailbox
-            (recipient_fingerprint, package, content_hash, expires_at)
-         VALUES (?1, ?2, ?3, datetime('now', ?4))",
-        params![&fingerprint, package, &content_hash, ttl_modifier()],
-    )?;
+    if held {
+        conn.execute(
+            "INSERT OR IGNORE INTO device_mailbox
+                (recipient_fingerprint, package, content_hash, expires_at, blob_len, blob_ready)
+             VALUES (?1, ?2, ?3, datetime('now', ?4), ?5, 0)",
+            params![
+                &fingerprint,
+                blob::header_of(package),
+                &content_hash,
+                ttl_modifier(),
+                package.len() as i64
+            ],
+        )?;
+    } else {
+        conn.execute(
+            "INSERT OR IGNORE INTO device_mailbox
+                (recipient_fingerprint, package, content_hash, expires_at)
+             VALUES (?1, ?2, ?3, datetime('now', ?4))",
+            params![&fingerprint, package, &content_hash, ttl_modifier()],
+        )?;
+    }
 
     if conn.changes()? == 1 {
-        Ok((conn.last_insert_rowid()?, fingerprint, false))
-    } else {
-        let id: i64 = conn.query_row(
-            "SELECT id FROM device_mailbox
-             WHERE recipient_fingerprint = ?1 AND content_hash = ?2",
-            params![&fingerprint, &content_hash],
-            |row| row.get(0),
-        )?;
-        Ok((id, fingerprint, true))
+        return Ok(Stored {
+            id: conn.last_insert_rowid()?,
+            recipient_fingerprint: fingerprint,
+            duplicate: false,
+            blob: held.then(|| BlobRef {
+                key: blob::key_of(MailTable::Devices, &content_hash),
+                len: package.len(),
+            }),
+        });
     }
+    let (id, blob_len, ready): (i64, Option<i64>, i64) = conn.query_row(
+        "SELECT id, blob_len, blob_ready FROM device_mailbox
+         WHERE recipient_fingerprint = ?1 AND content_hash = ?2",
+        params![&fingerprint, &content_hash],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let pending = blob_len.is_some() && ready == 0;
+    Ok(Stored {
+        id,
+        recipient_fingerprint: fingerprint,
+        duplicate: !pending,
+        blob: if pending {
+            blob::ref_from(MailTable::Devices, &content_hash, blob_len)
+        } else {
+            None
+        },
+    })
 }
 
 pub fn list_after(
@@ -88,23 +134,25 @@ pub fn list_after(
     purge_expired(conn)?;
     let (packages, next_after) = super::mailbox::read_page(
         conn,
-        "SELECT id, recipient_fingerprint, package
+        "SELECT id, recipient_fingerprint, package, content_hash, blob_len
          FROM device_mailbox
-         WHERE recipient_fingerprint = ?1 AND id > ?2
+         WHERE recipient_fingerprint = ?1 AND id > ?2 AND blob_ready = 1
            AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
          ORDER BY id ASC
          LIMIT ?3",
         params![fingerprint, after, fetch],
         page,
         |row| {
+            let content_hash: String = row.get(3)?;
             Ok(StoredDevicePackage {
                 id: row.get(0)?,
                 recipient_fingerprint: row.get(1)?,
                 bytes: row.get(2)?,
+                blob: blob::ref_from(MailTable::Devices, &content_hash, row.get(4)?),
             })
         },
         |item| item.id,
-        |item| item.bytes.len(),
+        |item| item.blob.as_ref().map_or(item.bytes.len(), |held| held.len),
     )?;
     Ok(DeviceMailPage {
         packages,

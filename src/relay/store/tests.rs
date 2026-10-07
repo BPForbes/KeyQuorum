@@ -160,3 +160,40 @@ fn a_store_reports_the_backend_name_it_was_given() {
     assert_eq!(RelayStore::backend(&store), "host-transactions");
     RelayStore::ping(&store).expect("ping");
 }
+
+#[test]
+fn held_letters_work_over_an_executor_that_refuses_transaction_statements() {
+    // The Durable Object's shape: a unit of work is the host's transaction,
+    // never a BEGIN. A held letter is accepted not ready, becomes ready, lists
+    // with its reference and is tombstoned when its row goes.
+    let store = host_transactions().with_blob_threshold(4096);
+    let (_, public) = crate::keys::generate_encryption_keypair();
+    let fingerprint = crate::keys::fingerprint(&public);
+    let big = crate::envelope::seal(
+        crate::envelope::PACKAGE,
+        crate::envelope::KIND_INVITE,
+        &public,
+        &vec![7u8; 20_000],
+    )
+    .expect("seal");
+    let stored = store.inbox_push(&[], &big, None).expect("push");
+    let held = stored.blob.clone().expect("held");
+    assert_eq!(held.len, big.len());
+    assert!(store
+        .list_envelopes_after(&fingerprint, None, None)
+        .expect("list")
+        .envelopes
+        .is_empty());
+    assert!(store
+        .blob_ready(crate::relay::MailTable::Inbox, stored.id)
+        .expect("ready"));
+    let listed = store
+        .list_envelopes_after(&fingerprint, None, None)
+        .expect("list");
+    assert_eq!(listed.envelopes[0].blob, Some(held.clone()));
+    store
+        .executor()
+        .execute("DELETE FROM mailbox", crate::relay::sql::params![])
+        .expect("delete");
+    assert_eq!(store.blob_tombstones(10).expect("keys"), vec![held.key]);
+}

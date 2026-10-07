@@ -6,7 +6,7 @@
   "scripts": {
     "test": "node --test \"scripts/*.test.mjs\" \"admin/src/*.test.mjs\" \"test/*.test.mjs\"",
     "build:relay-wasm": "node scripts/build-relay-wasm.mjs",
-    "guard": "node scripts/guard.mjs wrangler.toml --allow-preview-urls && node scripts/guard.mjs admin/wrangler.toml && node scripts/guard.mjs spike/wrangler.toml",
+    "guard": "node scripts/guard.mjs wrangler.toml --allow-preview-urls --allow-r2 && node scripts/guard.mjs admin/wrangler.toml && node scripts/guard.mjs spike/wrangler.toml",
     "build": "wrangler deploy --dry-run --outdir dist --env=\"\" && wrangler deploy --dry-run --outdir dist/staging --env staging && wrangler deploy --dry-run --outdir dist/admin --env=\"\" -c admin/wrangler.toml && wrangler deploy --dry-run --outdir dist/admin-staging --env staging -c admin/wrangler.toml",
     "guard:bundle": "node scripts/guard.mjs --bundle dist --max-gzip-bytes 3145728",
     "builds:build": "node scripts/ensure-relay-wasm.mjs",

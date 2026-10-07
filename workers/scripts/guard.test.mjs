@@ -102,12 +102,16 @@ test("ROOT_REDIRECT may be on in a Preview only: the root of a real domain is no
 test("the real configuration passes, and its production Worker serves no wildcard", async () => {
   const { readFileSync } = await import("node:fs");
   const text = readFileSync(new URL("../wrangler.toml", import.meta.url), "utf8");
-  assert.deepEqual(checkConfig("wrangler.toml", text, { allowPreviewUrls: true }), []);
+  assert.deepEqual(checkConfig("wrangler.toml", text, { allowPreviewUrls: true, allowR2: true }), []);
+  assert.match(text, /\[\[r2_buckets\]\]\s*\nbinding = "LETTERS"/);
+  assert.doesNotMatch(text, /previews\.r2_buckets/);
   assert.match(text, /\[previews\.vars\]\s*\nALLOWED_HOSTS = "\*"/);
   assert.match(text, /\nROOT_REDIRECT = "1"/);
   assert.doesNotMatch(text.split("[previews.vars]")[0], /ROOT_REDIRECT\s*=/);
   assert.match(text, /\n\[vars\]\s*\nALLOWED_HOSTS = ""/);
   assert.match(text, /\[env\.staging\.vars\]\s*\nALLOWED_HOSTS = ""/);
+  const admin = readFileSync(new URL("../admin/wrangler.toml", import.meta.url), "utf8");
+  assert.doesNotMatch(admin, /r2_buckets/, "the admin Worker binds no bucket");
 });
 
 test("a harmless [vars] name is allowed", () => {
@@ -262,4 +266,44 @@ test("the admin configuration passes the guard and binds the relay of its own en
   assert.match(text, /script_name = "keyquorum-relay"/);
   assert.match(text, /script_name = "keyquorum-relay-staging"/);
   assert.ok(!/migrations/.test(text.replace(/#.*$/gm, "")), "the admin Worker owns no class");
+});
+
+const R2 = (extra = "") => `${CLEAN}\n[[r2_buckets]]\nbinding = "LETTERS"\nbucket_name = "letters"\n${extra}`;
+
+test("the public Worker may bind the LETTERS bucket, and its staging environment its own", () => {
+  const text = `${R2()}\n[[env.staging.r2_buckets]]\nbinding = "LETTERS"\nbucket_name = "letters-staging"\n`;
+  assert.deepEqual(checkConfig("wrangler.toml", text, { allowR2: true }), []);
+});
+
+test("R2 is refused in any file that is not the public Worker's", () => {
+  const problems = checkConfig("admin/wrangler.toml", R2());
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /only the public Worker's file/);
+  assert.equal(checkConfig("admin/wrangler.toml", `${CLEAN}\nr2_buckets = [{ binding = "LETTERS", bucket_name = "x" }]\n`).length, 1);
+});
+
+test("the only R2 binding is LETTERS, and it names a bucket", () => {
+  const renamed = checkConfig("wrangler.toml", R2().replace('"LETTERS"', '"ARCHIVE"'), { allowR2: true });
+  assert.equal(renamed.length, 1);
+  assert.match(renamed[0], /ARCHIVE/);
+  const nameless = checkConfig("wrangler.toml", `${CLEAN}\n[[r2_buckets]]\nbinding = "LETTERS"\n`, { allowR2: true });
+  assert.equal(nameless.length, 1);
+  assert.match(nameless[0], /bucket_name/);
+});
+
+test("a Worker Preview never gets a bucket, whatever the file allows", () => {
+  for (const table of ["previews.r2_buckets", "env.staging.previews.r2_buckets"]) {
+    const problems = checkConfig("wrangler.toml", `${CLEAN}\n[[${table}]]\nbinding = "LETTERS"\nbucket_name = "x"\n`, { allowR2: true });
+    assert.equal(problems.length, 1, table);
+    assert.match(problems[0], /Preview/);
+  }
+  const inline = checkConfig("wrangler.toml", `${CLEAN}\npreviews = { r2_buckets = [{ binding = "LETTERS", bucket_name = "x" }] }\n`, { allowR2: true });
+  assert.equal(inline.length, 1);
+});
+
+test("staging never shares production's bucket", () => {
+  const text = `${R2()}\n[[env.staging.r2_buckets]]\nbinding = "LETTERS"\nbucket_name = "letters"\n`;
+  const problems = checkConfig("wrangler.toml", text, { allowR2: true });
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /own/);
 });

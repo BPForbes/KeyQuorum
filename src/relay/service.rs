@@ -242,6 +242,7 @@ pub fn inbox_push(
         InboxAccepted {
             id: stored.id,
             recipient_fingerprint: stored.recipient_fingerprint,
+            blob: stored.blob,
         },
         stored.duplicate,
     ))
@@ -266,6 +267,7 @@ pub fn inbox_pull(
                 id: item.id,
                 recipient_fingerprint: item.recipient_fingerprint,
                 bytes: STANDARD.encode(&item.bytes),
+                blob: item.blob,
             })
             .collect(),
         trees,
@@ -349,6 +351,7 @@ pub fn device_push(
         InboxAccepted {
             id: stored.id,
             recipient_fingerprint: stored.recipient_fingerprint,
+            blob: stored.blob,
         },
         stored.duplicate,
     ))
@@ -372,6 +375,7 @@ pub fn device_pull(
                 id: item.id,
                 recipient_fingerprint: item.recipient_fingerprint,
                 bytes: STANDARD.encode(&item.bytes),
+                blob: item.blob,
             })
             .collect(),
         next_after: page.next_after,
