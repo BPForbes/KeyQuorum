@@ -139,6 +139,16 @@ pub enum Error {
     /// A relay-issued API key names a relay other than the one it was
     /// loaded for.
     KeyIssueRelayMismatch,
+    /// A `.kqpkg` is malformed, oversized, altered, or its signature does
+    /// not verify.
+    InvalidKqpkg,
+    /// A `.kqpkg` holds a component its purpose does not allow, or one
+    /// this version has no handler for.
+    KqpkgComponentRejected,
+    /// A `.kqpkg` is past its expiry or not yet valid.
+    KqpkgExpired,
+    /// A `.kqpkg`'s signer is not the one its purpose requires.
+    KqpkgIssuerUntrusted,
     /// A relay-issued API key is bound to a device other than the one
     /// opening it.
     KeyIssueDeviceMismatch,
@@ -248,6 +258,19 @@ impl fmt::Display for Error {
                 "API key letter is malformed or its relay signature does not verify"
             ),
             Error::KeyIssueExpired => write!(f, "API key letter has expired"),
+            Error::InvalidKqpkg => write!(
+                f,
+                "KeyQuorum package is malformed or its signature does not verify"
+            ),
+            Error::KqpkgComponentRejected => write!(
+                f,
+                "KeyQuorum package holds a component its purpose does not allow"
+            ),
+            Error::KqpkgExpired => write!(f, "KeyQuorum package is expired or not yet valid"),
+            Error::KqpkgIssuerUntrusted => write!(
+                f,
+                "KeyQuorum package is not signed by the issuer its purpose requires"
+            ),
             Error::KeyIssueRelayMismatch => {
                 write!(f, "API key letter names a different relay")
             }

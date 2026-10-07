@@ -17,8 +17,8 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zeroize::Zeroizing;
 
-const CERT_MAGIC: &[u8; 4] = b"KQPC";
-const KRL_MAGIC: &[u8; 4] = b"KQRL";
+pub(crate) const CERT_MAGIC: &[u8; 4] = b"KQPC";
+pub(crate) const KRL_MAGIC: &[u8; 4] = b"KQRL";
 const FORMAT_VERSION: u8 = 1;
 const CERT_DOMAIN: &[u8] = b"KQPROVIDER-CERT-v1";
 const CHALLENGE_DOMAIN: &[u8] = b"KQPROVIDER-CHALLENGE-v1";

@@ -34,6 +34,7 @@ pub mod lab;
 pub mod locked_files;
 pub mod org_update;
 pub mod outbox;
+pub mod package;
 pub mod pin;
 pub mod private_bridge;
 pub mod provider;

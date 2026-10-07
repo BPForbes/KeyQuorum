@@ -29,7 +29,16 @@ Those bytes are wire format. `.kqbn` eviction notices, the `KQBS` signature arti
 (`KQDV`), slot tokens (`KQST`), and transfer packages (`KQTX`) have their
 own magic and version because they are not sealed envelopes, and
 `key_tree`/`private_bridge` seal raw blobs into database columns with no
-header at all; none of those belong in `envelope.rs`. The provider
+header at all; none of those belong in `envelope.rs`.
+`src/package.rs` is `.kqpkg` (`KQPK` v1, issue #104), a signed setup package, and is not a
+sealed envelope either: an issuer signature over a purpose (`ClientSetup`, `ClientUpdate`,
+`ProviderInfo`, `ProviderRecovery`), a validity window and components that are the unchanged
+bytes of artifacts other modules own (`KQPC`, `KQRL`, `KQPL`, `KQXB` type 4, `KQPB` kind 20).
+Components are dispatched by their own magic and kind, never by a name or the package's claim,
+and anything else, or anything the purpose does not allow, is refused before any write. It
+decodes, bounds and authenticates only; the wizard, enrollment and the console generator are
+later slices, and the outer signature never replaces a component's own checks. Purpose and
+kind bytes are wire format: append, never renumber. The provider
 `KQPC`/`KQRL`/`KQPL` blobs are signed certificates, not envelopes, and
 keep their own offset-cursor parsers and error variants.
 `src/org_update.rs` adds the two authenticated update
