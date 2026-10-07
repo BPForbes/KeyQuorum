@@ -82,11 +82,30 @@ test("ALLOWED_HOSTS may be a wildcard in [previews.vars] and a hostname or empty
   }
 });
 
+test("ROOT_REDIRECT may be on in a Preview only: the root of a real domain is not the relay's", () => {
+  for (const table of ["vars", "env.staging.vars"]) {
+    for (const value of ['"1"', '"true"', "1", "true"]) {
+      const problems = checkConfig("wrangler.toml", `${CLEAN}\n[${table}]\nROOT_REDIRECT = ${value}\n`);
+      assert.equal(problems.length, 1, `${table} ${value}`);
+      assert.match(problems[0], /ROOT_REDIRECT/);
+      assert.ok(problems[0].includes(`[${table}]`));
+    }
+  }
+  for (const table of ["previews.vars", "env.staging.previews.vars"]) {
+    assert.deepEqual(checkConfig("wrangler.toml", `${CLEAN}\n[${table}]\nROOT_REDIRECT = "1"\n`), [], table);
+  }
+  for (const table of ["vars", "env.staging.vars"]) {
+    assert.deepEqual(checkConfig("wrangler.toml", `${CLEAN}\n[${table}]\nROOT_REDIRECT = "0"\n`), [], table);
+  }
+});
+
 test("the real configuration passes, and its production Worker serves no wildcard", async () => {
   const { readFileSync } = await import("node:fs");
   const text = readFileSync(new URL("../wrangler.toml", import.meta.url), "utf8");
   assert.deepEqual(checkConfig("wrangler.toml", text, { allowPreviewUrls: true }), []);
   assert.match(text, /\[previews\.vars\]\s*\nALLOWED_HOSTS = "\*"/);
+  assert.match(text, /\nROOT_REDIRECT = "1"/);
+  assert.doesNotMatch(text.split("[previews.vars]")[0], /ROOT_REDIRECT\s*=/);
   assert.match(text, /\n\[vars\]\s*\nALLOWED_HOSTS = ""/);
   assert.match(text, /\[env\.staging\.vars\]\s*\nALLOWED_HOSTS = ""/);
 });

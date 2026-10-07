@@ -460,8 +460,9 @@ pub fn renew_licence(
     })
 }
 
-/// Assigns an unassigned key to a licence, atomically with its operation
-/// record. Only a customer scope, and only once: a link is never rewritten.
+/// Assigns an unassigned key to an active licence, atomically with its
+/// operation record. Only a customer scope, and only once: a link is never
+/// rewritten. A voided or ended licence is refused (`LicenceNotActive`).
 pub fn assign_key(
     conn: &dyn Sql,
     key_id: i64,
@@ -474,7 +475,12 @@ pub fn assign_key(
         if !CLIENT_SCOPES.contains(&scope) || licence::link_of_key(conn, key_id)?.is_some() {
             return Err(Error::InvalidApiKeyRequest);
         }
-        licence::get(conn, licence_id)?;
+        // An unassigned key is live. Linking it to a licence that is voided or
+        // past its end would show a working credential under a revoked licence
+        // (the void already ran, so nothing would revoke it): refuse instead.
+        if !licence::get(conn, licence_id)?.active {
+            return Err(Error::LicenceNotActive);
+        }
         licence::link_key(
             conn,
             &KeyLink {

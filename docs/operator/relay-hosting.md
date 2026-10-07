@@ -415,8 +415,11 @@ procedure and the settings, so the connection is made once and the same way.
   setting (the Worker, Settings, Domains & Routes, Preview URLs, Enable
   Cloudflare Access; all Preview URLs share one "Cloudflare Workers Preview
   URLs" policy). A Preview answers `/relay/health`, `/relay/ready`, the status page at
-  `/relay/`, 401 for a customer route under `/relay` and 404 for the rest
-  (including `/`).
+  `/relay/`, 401 for a customer route under `/relay` and 404 for the rest; its
+  root (`/`) is sent on to `/relay/` (the non-secret `ROOT_REDIRECT = "1"` in
+  `[previews.vars]`, which `scripts/guard.mjs` refuses anywhere else, because on
+  a real domain the root belongs to other things and the relay never answers
+  it).
 - "Pages" is not used: static assets on the admin Worker already serve the
   operator page, and a Pages project would be a second product and hostname.
 
@@ -1073,8 +1076,11 @@ The relay has its own front ends and shares nothing with the Lab
   `X-Frame-Options: DENY` and `Cross-Origin-Opener-Policy: same-origin`, so
   neither site can embed or script them. Typing the address, a bookmark, the
   site's own page and a command-line client (which sends none of those headers)
-  are served. A plain link from another site is refused on the public Worker.
-  On the admin Worker alone a top-level link is let through to the token check,
+  are served. Top-level GET/HEAD links and redirect chains from another site may
+  reach the public status page, its mount-to-slash redirect, and the preview-only
+  root redirect. API paths remain refused, even for a top-level navigation;
+  fetches, forms, frames and foreign/null Origin headers remain refused everywhere.
+  On the admin Worker a top-level link is let through to the token check,
   because Cloudflare Access sends the operator back through a redirect that
   starts on Access's own domain and a refusal would lock the operator out; the
   Worker still serves nothing without a valid token.
@@ -1382,23 +1388,33 @@ fingerprints must show `BYPASS`.
 ### Rate limits, layered
 
 Zone rate-limiting rules (`rules.tf`, `relay_rate_limit`: counted per
-client address and Cloudflare data centre on every route under `/relay` except `/relay/health`,
-600 requests per 60 seconds by default, managed in the
-Terraform) absorb floods before the
-Worker runs; the Worker's own rate limit on `CF-Connecting-IP` (a Workers
-rate limiting binding, from memory, verify its accuracy and scope) still
-applies in the Worker; the Durable Object's single writer and its admission
-bound limit the database; the storage alert bounds retention. None replaces
-another.
+client address and Cloudflare data centre on every path under `/relay` except
+one ending in `/health`, 100 requests per 10 seconds by default, then a block
+for 10 seconds, managed in the Terraform) absorb floods before the Worker runs.
+These are the values the Cloudflare **Free** zone plan allows: one rule, a
+10-second counting period and a 10-second block (Cloudflare, rate limiting
+rules, plan availability table, read 2026-10-06 through the documentation
+search). The rule matches on the path only, because a Free-plan expression is
+reported not to allow a Host match (taken from the pull request that made the
+change; not checked against Cloudflare's page here), so it covers `/relay` on
+every hostname of the zone, which is acceptable only while the zone is the
+relay's own. It limits bursts and is not an exact 600-request rolling minute,
+and it has not been measured against live traffic. A longer window or block
+needs a paid zone plan, which is the owner's call, not this repository's. The
+Worker's own rate limit on `CF-Connecting-IP` (a Workers rate limiting binding,
+from memory, verify its accuracy and scope) still applies in the Worker; the
+Durable Object's single writer and its admission bound limit the database; the
+storage alert bounds retention. None replaces another.
 
 ### Private operator access
 
-The admin Worker has **no route that bypasses Access**. Its only hostname
-is a custom domain behind a **Cloudflare Access** self-hosted application
-whose policy requires the operators' identity **and MFA** (`access.tf`: the
-policy lists the operator emails and requires MFA, and is created only once
-`admin_environments` is set), and `workers.dev` and preview URLs are off for
-the admin Worker.
+The admin Worker has **no route that bypasses Access**. Its only path
+(`/relay/admin`, staging `/relay/staging-admin`, decision 1 above) is a Workers
+route behind a **Cloudflare Access** self-hosted application whose policy lists
+the operators' identity (`access.tf`, created only once `admin_environments` is
+set); the second factor is Access's independent MFA with a security key, a
+dashboard setting (see "Operator login and second factor" above); and
+`workers.dev` and preview URLs are off for the admin Worker.
 The Worker also verifies the Access token (`Cf-Access-Jwt-Assertion`)
 itself, as defence in depth, so that a mistake in the Access application
 does not expose it; this is implemented in `workers/admin/src/access.js`
@@ -1406,8 +1422,9 @@ and tested, and a request without a valid token gets no page and no API
 answer (from memory, verify the header and key-set details). The
 service binding from the admin Worker to the Durable Object (`RELAY_ADMIN`) is
 built. Nothing of this has run against a live Access application. The operator
-page is static files served by the admin Worker itself, on that hostname,
-as decided on 2026-10-06; it needs no second origin. The public Worker has
+page is static files served by the admin Worker itself, on its own path, as
+decided on 2026-10-06; it shares the origin of the relay (the accepted cost in
+decision 1). The public Worker has
 no route to any operator path, and no other hostname reaches them. Customer routes (`/inbox`, `/keycheck`,
 `/provider-identity`, `/devices/*`, `/trees/*`) stay outside Access: a
 `keyquorum` client cannot answer an Access login. Record the Access

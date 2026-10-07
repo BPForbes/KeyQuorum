@@ -45,7 +45,7 @@ test("a fetch, frame, script, image or form from another site is refused", () =>
   }
 });
 
-test("a link from another site is refused too unless navigation is allowed (admin only)", () => {
+test("a link from another site is refused too unless the caller allows navigation on that path", () => {
   const link = { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
   assert.ok(crossSiteRefusal(request(link)));
   assert.equal(crossSiteRefusal(request(link), { allowNavigation: true }), null);

@@ -140,9 +140,15 @@ a variable file in this directory, or an agent session.
   rulesets for the `http_ratelimit` and `http_request_cache_settings` phases.
   Applying them replaces any rules already in those phases, so import existing
   ones first (`terraform import`) if the zone has any.
-- The rate-limit counting periods and block timeouts that are allowed depend on
-  the Cloudflare plan; the defaults are meant to suit the lowest plan (from
-  memory, verify). Tune them in `terraform.tfvars`.
+- The edge rate-limit defaults support the Free zone plan: 100 requests per
+  client IP and data center per 10 seconds, then block for 10 seconds. Free
+  rate-limit expressions can match Path but not Host, so this rule covers
+  `/relay` and its descendants on every hostname in this dedicated zone (except
+  paths ending in `/health`). The cache-bypass rule still matches only the
+  configured relay hostnames. Longer counting or blocking windows require a
+  paid zone plan; do not upgrade without the owner's approval. These limits
+  constrain short bursts; they are not an exact 600-request rolling minute.
+  Source: [Cloudflare rate limiting availability](https://developers.cloudflare.com/waf/rate-limiting-rules/#availability), read 2026-10-06.
 - **Operator login and MFA.** Terraform creates the Access application and an
   allow policy for `operator_emails`; it does **not** create or verify the
   second factor. The recommended setup (a decision of the owner, 2026-10-06) is

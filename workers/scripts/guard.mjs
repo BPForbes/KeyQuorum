@@ -75,6 +75,12 @@ function wildcardHost(text) {
   return match !== null && match[1].includes("*");
 }
 
+// A line that turns the root redirect on. A Preview may (its host is its own);
+// on a real domain the root is for other things, so it may not.
+function rootRedirectOn(text) {
+  return /"?ROOT_REDIRECT"?\s*=\s*["']?(1|true)["']?/i.test(text);
+}
+
 function isVarsTable(name) {
   return /^(env\.[^.]+\.)?(previews\.)?vars$/.test(name);
 }
@@ -103,6 +109,12 @@ export function checkConfig(
       const key = /^\s*"?([A-Za-z0-9_.-]+)"?\s*=/.exec(line);
       if (key && SECRET_NAME.test(key[1])) {
         problems.push(`${label}: [vars] name "${key[1]}" looks like a secret; use a Worker secret`);
+      }
+      if (!/(^|\.)previews\.vars$/.test(current) && rootRedirectOn(line)) {
+        problems.push(
+          `${label}: [${current}] turns ROOT_REDIRECT on; only [previews.vars] may, ` +
+            "because the root of a real domain is not the relay's",
+        );
       }
       if (current !== "previews.vars" && wildcardHost(line)) {
         problems.push(

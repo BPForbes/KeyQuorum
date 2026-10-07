@@ -1262,7 +1262,7 @@ fn the_console_views_hold_no_secret_and_name_only_what_the_relay_holds(store: &d
             success: false,
         })
         .expect("event");
-    let auth = store.provider_auth_events(10).expect("auth");
+    let auth = store.provider_auth_events(10, None).expect("auth");
     assert_eq!(
         (auth[0].operation.as_str(), auth[0].success),
         ("console.issue", false)

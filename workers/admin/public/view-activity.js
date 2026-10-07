@@ -55,7 +55,15 @@ export default async function activity(ctx) {
   const people = await get("/api/users", { limit: 100 });
   for (const u of people.users) userSel.append(h("option", { value: String(u.id), text: u.name }));
   const wanted = ctx.params.get("user");
-  if (wanted && people.users.some((u) => String(u.id) === wanted)) userSel.value = wanted;
+  if (wanted && /^\d{1,15}$/.test(wanted)) {
+    // A customer older than the newest page the list shows is fetched by id, so
+    // a link to their activity still opens on them and not on everyone.
+    if (!people.users.some((u) => String(u.id) === wanted)) {
+      const found = await get(`/api/users/${wanted}`).catch(() => null);
+      if (found?.customer) userSel.append(h("option", { value: String(found.customer.id), text: found.customer.name }));
+    }
+    if ([...userSel.options].some((o) => o.value === wanted)) userSel.value = wanted;
+  }
 
   async function draw() {
     const query = {

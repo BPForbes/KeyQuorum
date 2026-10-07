@@ -688,12 +688,19 @@ pub struct ProviderAuthRecord {
     pub entry_hash: String,
 }
 
-/// The newest `limit` (1 to 500) privileged-auth attempts, newest first.
-pub fn provider_auth_events(conn: &dyn Sql, limit: i64) -> Result<Vec<ProviderAuthRecord>> {
+/// The newest `limit` (1 to 500) privileged-auth attempts with an id below
+/// `before` (all of them when `None`), newest first. The cursor is applied in
+/// the query, so a page never skips the rows past the first `limit`.
+pub fn provider_auth_events(
+    conn: &dyn Sql,
+    limit: i64,
+    before: Option<i64>,
+) -> Result<Vec<ProviderAuthRecord>> {
     conn.query_map(
         "SELECT id, operation, success, attempted_at, COALESCE(entry_hash, '')
-         FROM provider_auth_events ORDER BY id DESC LIMIT ?1",
-        params![limit.clamp(1, 500)],
+         FROM provider_auth_events WHERE (?2 IS NULL OR id < ?2)
+         ORDER BY id DESC LIMIT ?1",
+        params![limit.clamp(1, 500), before],
         |row| {
             Ok(ProviderAuthRecord {
                 id: row.get(0)?,

@@ -18,8 +18,8 @@ admin_environments = {}
 operator_emails = []
 
 # Free-plan-safe values; see the variable descriptions.
-rate_limit_requests = 600
-rate_limit_period   = 60
-rate_limit_timeout  = 60
+rate_limit_requests = 100
+rate_limit_period   = 10
+rate_limit_timeout  = 10
 
 archive_bucket_name = ""

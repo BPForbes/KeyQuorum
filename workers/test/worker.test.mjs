@@ -336,7 +336,6 @@ test("another website's browser request is refused with 403 before routing, limi
   const cases = [
     { "sec-fetch-site": "cross-site", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" },
     { "sec-fetch-site": "same-site", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" },
-    { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" },
     { origin: "https://bailey-forbes.com" },
     { origin: "null" },
   ];
@@ -490,4 +489,78 @@ test("a mount that is not valid leaves the relay unconfigured, never wider", asy
     env.MOUNT_PATH = value;
     assert.equal((await callRaw(env, "/relay/health")).status, 200);
   }
+});
+
+// A Worker Preview has a host to itself; there the root may lead to the relay.
+test("with ROOT_REDIRECT set, only a GET or HEAD of the exact root goes to the mount, and nothing else changes", async () => {
+  const { env, forwarded } = fakeEnv();
+  env.ROOT_REDIRECT = "1";
+  const root = await callRaw(env, "/?x=1");
+  assert.equal(root.status, 307);
+  assert.equal(root.headers.get("location"), "/relay/?x=1");
+  assert.equal(root.headers.get("cache-control"), "no-store");
+  assert.equal((await callRaw(env, "/", { method: "HEAD" })).status, 307);
+  assert.equal((await callRaw(env, "/", { method: "POST", body: "{}" })).status, 404);
+  for (const path of ["/health", "/inbox", "/relayx", "/other", "//", "/%2F"]) {
+    assert.equal((await callRaw(env, path)).status, 404, path);
+  }
+  assert.equal((await callRaw(env, "/relay/health")).status, 200);
+  assert.equal(forwarded.length, 0);
+  // A different mount is where it leads.
+  env.MOUNT_PATH = "/relay/staging-user";
+  assert.equal((await callRaw(env, "/")).headers.get("location"), "/relay/staging-user/");
+});
+
+test("without ROOT_REDIRECT, or with any value but 1, the root is a 404 as on a real domain", async () => {
+  for (const value of [undefined, "", "0", "true", "yes", 1]) {
+    const { env } = fakeEnv();
+    env.ROOT_REDIRECT = value;
+    assert.equal((await callRaw(env, "/")).status, 404, String(value));
+  }
+});
+
+test("links and redirect chains reach only the status page, including the preview root", async () => {
+  for (const site of ["cross-site", "same-site"]) {
+    for (const method of ["GET", "HEAD"]) {
+      const headers = { "sec-fetch-site": site, "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
+      for (const mount of ["/relay", "/relay/staging-user"]) {
+        const { env, forwarded } = fakeEnv();
+        env.MOUNT_PATH = mount;
+        env.ROOT_REDIRECT = "1";
+        const root = await callRaw(env, "/?from=github", { method, headers });
+        assert.equal(root.status, 307);
+        assert.equal(root.headers.get("location"), `${mount}/?from=github`);
+        const bare = await callRaw(env, mount, { method, headers });
+        assert.equal(bare.status, 308);
+        assert.equal(bare.headers.get("location"), `${mount}/`);
+        const page = await callRaw(env, `${mount}/`, { method, headers });
+        assert.equal(page.status, 200);
+        assert.equal(page.headers.get("access-control-allow-origin"), null);
+        for (const path of ["/inbox", "/health", "/ready", "/assets/status.js"]) {
+          assert.equal((await callRaw(env, `${mount}${path}`, { method, headers })).status, 403, path);
+        }
+        assert.equal(forwarded.length, 0);
+      }
+    }
+  }
+});
+
+test("status-page navigation does not permit forms, frames, fetches, or foreign Origins", async () => {
+  const { env, forwarded } = fakeEnv();
+  env.ROOT_REDIRECT = "1";
+  const link = { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
+  for (const path of ["/", "/relay", "/relay/"]) {
+    for (const init of [
+      { method: "POST", headers: link, body: "{}" },
+      { headers: { ...link, "sec-fetch-dest": "iframe" } },
+      { headers: { ...link, "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" } },
+      { headers: { ...link, origin: "https://github.com" } },
+      { headers: { ...link, origin: "null" } },
+    ]) {
+      assert.equal((await callRaw(env, path, init)).status, 403, path);
+    }
+  }
+  delete env.ROOT_REDIRECT;
+  assert.equal((await callRaw(env, "/", { headers: link })).status, 403);
+  assert.equal(forwarded.length, 0);
 });

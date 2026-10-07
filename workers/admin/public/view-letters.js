@@ -6,7 +6,16 @@ function letterTable(group) {
   return table(
     [
       { label: "Letter", cell: (l) => `#${l.id}` },
-      { label: "For", cell: (l) => l.customer ?? h("code", { text: shortId(l.recipient_fingerprint) }) },
+      {
+        label: "For",
+        // Named only when one customer holds a key sealed to that recipient; two
+        // do not say whose it is, so none is picked.
+        cell: (l) =>
+          l.customer ??
+          (l.customers?.length > 1
+            ? h("span", { text: `more than one customer: ${l.customers.join(", ")}` })
+            : h("code", { text: shortId(l.recipient_fingerprint) })),
+      },
       { label: "Kind", cell: (l) => l.kind_name },
       { label: "Size", align: "end", cell: (l) => formatBytes(l.size) },
       { label: "Stored", cell: (l) => formatTime(l.stored_at) },
