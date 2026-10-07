@@ -299,7 +299,12 @@ fn a_chunk_from_another_place_or_a_missing_one_is_refused() {
     ));
     // A chunk that is simply not there.
     let mut missing = snapshot_of(&f);
-    missing.objects.remove(2);
+    missing.objects = missing
+        .objects
+        .into_iter()
+        .enumerate()
+        .filter_map(|(at, object)| (at != 2).then_some(object))
+        .collect();
     assert!(restore_into(
         &f,
         &missing,

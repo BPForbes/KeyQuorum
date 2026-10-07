@@ -820,13 +820,13 @@ fn run_backup(command: BackupCommand) -> Result<()> {
                 out.display()
             );
             if restored.held_skipped > 0 {
-                println!(
+                tracing::info!(
                     "{} letters held in object storage were not restored (their objects are not in a backup)",
                     restored.held_skipped
                 );
             }
             if restored.audit_intact {
-                println!("audit chains: intact, every anchor verifies");
+                tracing::info!("audit chains: intact, every anchor verifies");
                 Ok(())
             } else {
                 eprintln!("audit chains: NOT intact; check `host keys events --verify` before trusting this database");

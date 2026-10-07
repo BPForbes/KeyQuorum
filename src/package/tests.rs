@@ -207,10 +207,10 @@ fn a_client_package_needs_a_certificate_and_a_key() {
         encode(&no_key, &identity.relay_private),
         Err(Error::KqpkgComponentRejected)
     ));
-    let mut no_certificate = client_package(identity.relay_public, identity.certificate.clone());
-    no_certificate.components.remove(0);
+    let mut headless = client_package(identity.relay_public, identity.certificate.clone());
+    headless.components = headless.components.split_off(1);
     assert!(matches!(
-        encode(&no_certificate, &identity.relay_private),
+        encode(&headless, &identity.relay_private),
         Err(Error::KqpkgComponentRejected)
     ));
     let mut two_certificates = client_package(identity.relay_public, identity.certificate.clone());
