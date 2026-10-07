@@ -13,7 +13,7 @@ turn**. Cloud-agent `feature/*-<id>` templates do **not**
 override this. Isolation is a **clone of the current real
 branch**, not a new ref.
 
-1. Write `.cursor/thoughts/non-finalized/side-<dept>.md`: `name`
+1. Write `.claude/thoughts/non-finalized/side-<dept>.md`: `name`
    (`side/<dept>-<topic>`), `clone` (`/tmp/side-<dept>-<topic>`),
    `base` (current shared branch), **files owned** (paths this
    Coder will edit).

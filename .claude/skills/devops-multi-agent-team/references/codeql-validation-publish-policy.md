@@ -1,6 +1,6 @@
 # CodeQL, Validation, and Publish Policy
 
-This repo has .NET/C#, TypeScript/JavaScript, and Rust. GitHub
+This repo (KeyQuorum) is Rust plus JavaScript/TypeScript (`workers/`, `lab/`); treat any C# or .NET lines below as not applicable. GitHub
 Actions runs CodeQL for all three. Treat CodeQL as a required
 gate before publish.
 
@@ -74,7 +74,7 @@ recorded for Orchestrator step 3a (keep-commit finding is not a
 Coder send-back). `git status --short` clean of files you
 created. Diff paths stay under `backend/`, `frontend/`, `rust/`,
 `scripts/`, `tools/`, `llm-service/`, `docs/`, `deploy/`,
-`.github/`, `.vscode/`, `.cursor/`, and tracked root config.
+`.github/`, `.vscode/`, `.claude/`, and tracked root config.
 
 ## Definition of done
 

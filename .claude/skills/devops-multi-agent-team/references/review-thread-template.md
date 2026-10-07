@@ -1,6 +1,6 @@
 # Review thread template
 
-Copy to `.cursor/thoughts/non-finalized/review-<topic>.md`.
+Copy to `.claude/thoughts/non-finalized/review-<topic>.md`.
 Local only; do not commit. After QA PASS, move to `finalized/`.
 See [thoughts-layout.md](thoughts-layout.md).
 
@@ -17,7 +17,7 @@ See [thoughts-layout.md](thoughts-layout.md).
 - … · | URL | Takeaway |
 
 ## Push JSON
-- Latest: `.cursor/thoughts/non-finalized/push-<topic>.json`
+- Latest: `.claude/thoughts/non-finalized/push-<topic>.json`
 - Coder writes this **before the first review**. Reviewers compare
   it to the side-branch tree vs `<integration-base>`.
 

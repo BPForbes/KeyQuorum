@@ -109,3 +109,9 @@ scratch/
 /lab/playwright-report/
 /lab/public/project-metadata.json
 /workers/relay-wasm/
+
+# devops skill working notes
+.claude/thoughts/*
+!.claude/thoughts/non-finalized/
+.claude/thoughts/non-finalized/*
+!.claude/thoughts/non-finalized/.gitkeep

@@ -7,11 +7,11 @@ in every earlier commit.
 
 | Path | Git | When |
 |------|-----|------|
-| `.cursor/thoughts/non-finalized/` | **Gitignored** (keepfile only) | Open |
-| `.cursor/thoughts/finalized/` | **Gitignored** | Done (local after QA) |
+| `.claude/thoughts/non-finalized/` | **Gitignored** (keepfile only) | Open |
+| `.claude/thoughts/finalized/` | **Gitignored** | Done (local after QA) |
 
-Keep `.cursor/thoughts/non-finalized/.gitkeep`. Do not `git add`
-any other file under `.cursor/thoughts/`. `.cursor/reviews/` is
+Keep `.claude/thoughts/non-finalized/.gitkeep`. Do not `git add`
+any other file under `.claude/thoughts/`. `.claude/reviews/` is
 obsolete. Push JSON lives in `non-finalized/`
 ([push-json.md](push-json.md)).
 

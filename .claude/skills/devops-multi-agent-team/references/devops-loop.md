@@ -1,7 +1,7 @@
 # DevOps development loop — detailed checklists
 
 Use with the orchestrator loop. Persist `/goal`, review threads, and
-`/repro` notes under `.cursor/thoughts/non-finalized/` (local; do
+`/repro` notes under `.claude/thoughts/non-finalized/` (local; do
 not commit). After QA PASS, move closed thoughts to `finalized/`
 (still local). See [thoughts-layout.md](thoughts-layout.md),
 [role-identity.md](role-identity.md), and

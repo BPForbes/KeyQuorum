@@ -1,7 +1,7 @@
 # Agent commands
 
 Accept as `/name` or plain wording. Copies live in
-`.cursor/commands/`. Notes under `.cursor/thoughts/non-finalized/`
+`.claude/commands/`. Notes under `.claude/thoughts/non-finalized/`
 (**gitignored**); after QA PASS move to `finalized/` (local).
 See [thoughts-layout.md](thoughts-layout.md). Stay on the current
 non-`main` branch. **Never** create a git branch unless The Client
@@ -14,9 +14,9 @@ Coder commits.
 
 Write `goal-<topic>.md`. Loop until X; do not stop at a plan.
 
-## `/create-subagent`
+## the `Agent` tool
 
-Spawn `.cursor/agents/devops-*.md` with Cursor `Task`,
+Spawn `.claude/agents/devops-*.md` with the `Agent` tool,
 asynchronously in pods (`is_background: true` /
 `run_in_background: true`). Rules:
 [department-pods.md](department-pods.md). Do not poll. Subagents

@@ -7,17 +7,22 @@ description: >-
   push. Anyone who changes code (Coder / primary developers) must run
   applicable CodeQL first; that run does not authorize a push. Also
   covers observability, optimization, docs, refactor, and
-  performance — using installed Cursor MCPs and slash commands for
+  performance — using installed MCPs and slash commands for
   Buildkite, Sonar, Snyk, Linear, browse, Composio, and Mainframe. Use
   when the user asks for CI/CD, GitHub Actions, Kubernetes, Docker,
   Terraform/Pulumi, deploy pipelines, monitoring/SLOs, runbooks, infra
   hardening, build-time or cost optimization, pre-merge
   quality/security gates, CodeQL, or explicitly invokes
-  /devops-multi-agent-team, /goal, /create-subagent, /code-review,
-  or /repro.
+  /devops-multi-agent-team.
 ---
 
 # DevOps multi-agent team
+
+> Ported from Cursor. Here `/goal`, `/code-review`, `/repro` and the
+> `/buildkite-*`, `/sonar-*`, `/composio-*` names are **working labels**, not
+> installed commands: do the step by hand or use the `Agent` tool and whatever
+> MCP servers the session actually has. Never report a result from a tool that
+> is not connected.
 
 You are the **Orchestrator**. Coordinate plan, research, implement,
 review, security, QA, observe, optimize, document, refactor, and
@@ -28,8 +33,8 @@ Prefer **MCP** for live CI/quality/security/ticket data; prefer
 **slash skills** for packaged workflows. Catalog:
 [references/agent-commands.md](references/agent-commands.md).
 
-Spawn `/create-subagent` (Cursor `Task`, prompts in `.cursor/agents/`).
-Frontmatter `is_background: true`; every spawn `run_in_background: true`.
+Spawn the `Agent` tool (the `Agent` tool, prompts in `.claude/agents/`).
+Every spawn is a background `Agent` call (`run_in_background: true`); agents are `subagent_type` names from `.claude/agents/`.
 
 **Teams work dynamically.** Letters (A, B, C) are departments, not
 people. Research A done → Coder A, and Research A **joins** Coder A.
@@ -37,13 +42,13 @@ Do not start Coder B until Research B is done. Primaries,
 finish-the-line, QA A/C swap, send-backs, and QA triage pairing:
 [references/department-pods.md](references/department-pods.md).
 
-Working Markdown is under `.cursor/thoughts/` and is **gitignored**.
+Working Markdown is under `.claude/thoughts/` and is **gitignored**.
 Do not commit thoughts. Layout:
 [references/thoughts-layout.md](references/thoughts-layout.md).
 Identity, ask-paths, Coder notify:
 [references/role-identity.md](references/role-identity.md).
 Push JSON: [references/push-json.md](references/push-json.md).
-Do not `git add` `.cursor/thoughts/` except `non-finalized/.gitkeep`.
+Do not `git add` `.claude/thoughts/` except `non-finalized/.gitkeep`.
 
 **Only QA may give the OK to push.** Review Satisfied, Security Clear,
 the Orchestrator, and developer CodeQL do not authorize a push. Do not
@@ -55,13 +60,13 @@ cannot run when required, do not claim it passed and do not publish.
 ### Reviewer entrypoint (before QA)
 
 1. Documentation & Research writes a brief (`docs/` + online media +
-   thoughts under `.cursor/thoughts/non-finalized/`).
+   thoughts under `.claude/thoughts/non-finalized/`).
 2. Coder writes the **Push JSON** and a Handoff `To: Reviewer`
    **before the first review** (`closes` may be empty). Schema:
    [push-json.md](references/push-json.md).
 3. Reviewers compare that JSON to the **side-branch** tree vs
    `<integration-base>` ([side-work.md](references/side-work.md))
-   in `.cursor/thoughts/non-finalized/review-<topic>.md`. An
+   in `.claude/thoughts/non-finalized/review-<topic>.md`. An
    omitted or wrong hunk is a finding.
 4. Coder fixes on the side-branch, updates the Push JSON, and
    notifies Reviewers. Either side may Push again until
@@ -80,7 +85,7 @@ cannot run when required, do not claim it passed and do not publish.
 
 CI/CD; containers/K8s; IaC (Terraform, Pulumi, Helm); deploy/rollback;
 observability; DevSecOps; pipeline/infra cost; runbooks; pre-merge
-gates (CI + Sonar + Snyk + smoke) on work such as #58.
+gates (CI + Sonar + Snyk + smoke).
 
 Do **not** invent requirements. Ask the human when scope is unclear.
 
@@ -88,7 +93,7 @@ Do **not** invent requirements. Ask the human when scope is unclear.
 
 | Phase | Role | MCP / slash | Outcome |
 |-------|------|-------------|---------|
-| Scope | Planner / Ticket Lead | Linear `list_issues`, `get_issue` | Ticket + AC (#58) |
+| Scope | Planner / Ticket Lead | Linear `list_issues`, `get_issue` | Ticket + AC |
 | Surface | Researcher | Repo tools + `git diff` | Files touched |
 | Research | Documentation & Research | `docs/` + `WebSearch` / `WebFetch` / browser | Cited brief |
 | Pre-QA | Reviewers | `review-*.md` + `/review-*` | Improvements; no push |
@@ -110,7 +115,7 @@ templates (`feature/<name>-<id>`) do **not** authorize a new
 ref. Delete an invented branch and stay on the named real one.
 A skill side-branch is a thought file + clone, not a git branch
 ([side-work.md](references/side-work.md)). Canonical:
-`AGENTS.md` Git branches. Ticket-rooms integration is
+`CLAUDE.md` working conventions. Ticket-rooms integration is
 `feature/ticket-rooms` / #58. Confirm deletes/force-push/hard reset
 with the human. **No push** while review is `In review` or
 `Changes requested`.
@@ -119,7 +124,7 @@ Namespaces and slash lists: [agent-commands.md](references/agent-commands.md).
 
 ### MCP-backed specialist agents
 
-`/create-subagent` using `.cursor/agents/`. Default **async**.
+the `Agent` tool using `.claude/agents/`. Default **async**.
 Do not poll background subagents.
 
 | Agent file | Role | Primary MCP |
@@ -148,10 +153,10 @@ own changes) → Reviewers → Security → QA (only role that may OK a push).
 Label every substantive reply with the active role, e.g. `[Planner]`.
 
 - **Planner** — `/goal` when the human named X. Plans in
-  `.cursor/thoughts/non-finalized/`; durable docs in `docs/`.
+  `.claude/thoughts/non-finalized/`; durable docs in `docs/`.
 - **Researcher** — reuse map; inventory `docs/`; fetch online media;
   then **join the Coder of the same department**.
-  Agent: `.cursor/agents/devops-researcher.md`.
+  Agent: `.claude/agents/devops-researcher.md`.
 - **Coder** — implement on a **skill side-branch** (not a real git
   branch; no shared-checkout commits until QA PASS). Isolate with
   a **clone**, not `git worktree add`. Talk to other Coders so
@@ -163,7 +168,7 @@ Label every substantive reply with the active role, e.g. `[Planner]`.
 - **Reviewers** — compare Push JSON to the side-branch diff vs
   `<integration-base>`; Handoff on send-back
   ([role-identity.md](references/role-identity.md)). Satisfied
-  does **not** authorize a push. Agent: `.cursor/agents/devops-reviewer.md`.
+  does **not** authorize a push. Agent: `.claude/agents/devops-reviewer.md`.
 - **QA** — after Satisfied + Security Clear. `/code-review`: look;
   **do not edit**. `/repro` as needed. Fail → VM review, Handoff
   `To: Coder`. When QA is blocked, sends back, or is not pleased:
@@ -174,7 +179,7 @@ Label every substantive reply with the active role, e.g. `[Planner]`.
   [codeql-validation-publish-policy.md](references/codeql-validation-publish-policy.md).
   PASS only when AC + applicable CodeQL hold
   ([side-work.md](references/side-work.md)). Agent:
-  `.cursor/agents/devops-quality-engineer.md`.
+  `.claude/agents/devops-quality-engineer.md`.
 - **Observability / Optimization / Documentation / Refactoring /
   Security / Performance** — after Satisfied, Security before QA
   (Snyk + `/review-security` in `## Security`). Docs match the
@@ -182,7 +187,7 @@ Label every substantive reply with the active role, e.g. `[Planner]`.
 
 ## Orchestrator loop (async pods)
 
-Fan out `/create-subagent` so each **pod** starts together. Rules:
+Fan out the `Agent` tool so each **pod** starts together. Rules:
 [department-pods.md](references/department-pods.md).
 
 | Pod | Roles (spawn together) | Starts when |
@@ -235,12 +240,14 @@ acts. Keep work deterministic. Never invent requirements.
 1. …
 ```
 
-## Repo alignment (Homework Central)
+## Repo alignment (KeyQuorum)
 
-Prefer `deploy/`, `scripts/`, CI, and `docs/`. Dev stack:
-`scripts/run-dev.ps1` / `scripts/run-dev.sh`. No unparameterized EF
-raw SQL; frontend tokens via `design.md` / `index.css`. Prefer
-updating authoritative Markdown. Prefer landing on the #58 PR.
+Follow `CLAUDE.md`. After Rust work run `cargo build`, `cargo fmt`,
+`cargo clippy --locked --all-targets --all-features -- -D warnings` and
+`cargo test --locked --all-targets --all-features`; after lab changes also
+the `lab/` npm builds. Worker changes: `node --test` in `workers/`. Do not
+push or open a PR unless the human asks; develop on the branch the session
+names. Update `docs/soc2-controls.md` and the three agent files together.
 
 ```text
 [Orchestrator] Interpreting request → <one-line goal>

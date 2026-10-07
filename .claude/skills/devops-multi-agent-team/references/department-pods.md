@@ -8,7 +8,7 @@ Read this file. Do not paste it into agent prompts.
 
 | Dept | Owns | Coder seat |
 |------|------|------------|
-| **A** | skill `SKILL.md`, `references/*`, `.cursor/agents/*` | Coder A |
+| **A** | skill `SKILL.md`, `references/*`, `.claude/agents/*` | Coder A |
 | **B** | `AGENTS.md`, `CLAUDE.md`, PR description text | Coder B |
 
 ## Research → Coder
@@ -69,7 +69,7 @@ helping on another item.
 
 ## Orchestrator duties
 
-- Spawn `/create-subagent` (`Task`, `run_in_background: true`) so
+- Spawn the `Agent` tool (`Task`, `run_in_background: true`) so
   pods overlap. Do not poll background subagents.
 - Do not start Coder *N* before Research *N* is done (new work).
 - Record primaries, finish-the-line handoffs, and QA swaps.

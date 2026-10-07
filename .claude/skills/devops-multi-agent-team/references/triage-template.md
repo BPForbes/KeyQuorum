@@ -1,6 +1,6 @@
 # QA triage item
 
-Copy to `.cursor/thoughts/non-finalized/triage-<id>.md`. Same
+Copy to `.claude/thoughts/non-finalized/triage-<id>.md`. Same
 Handoff + **Q&A** as the review thread. Copy ids into Push JSON
 `qa`. `"files"` may be `{}`. Do not `git add`. After QA PASS,
 move to `finalized/`.
@@ -18,7 +18,7 @@ research-then-coder queue.
 **Opened by:** QA
 **Discovered during:** <command, `/repro`, VM, CodeQL, CI>
 **Branch:** <current checkout>
-**Review thread:** `.cursor/thoughts/non-finalized/review-<topic>.md`
+**Review thread:** `.claude/thoughts/non-finalized/review-<topic>.md`
 
 ## What went wrong / Expected / Actual
 - …
