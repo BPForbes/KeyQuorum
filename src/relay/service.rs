@@ -28,6 +28,13 @@ use zeroize::Zeroizing;
 
 pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
 
+/// The largest bridge letter a relay that holds large letters in object storage
+/// accepts (`SqlRelayStore::with_blob_threshold`; `docs/operator/r2-blobs.md`).
+/// It matches the outbox's item cap and the inbox page budget, so one such
+/// letter is always a whole page. Without object storage the cap stays
+/// [`MAX_ENVELOPE_BYTES`]. Device letters never exceed that.
+pub const MAX_LARGE_LETTER_BYTES: usize = 16 * 1024 * 1024;
+
 /// Live provider identity presented on `POST /provider-identity`.
 pub struct ProviderIdentity {
     pub certificate: Vec<u8>,
@@ -229,7 +236,7 @@ pub fn inbox_push(
     token: &str,
     parsed: &ParsedInbox,
 ) -> Result<(InboxAccepted, bool)> {
-    if parsed.envelope.len() > MAX_ENVELOPE_BYTES {
+    if parsed.envelope.len() > store.max_letter_bytes() {
         return Err(Error::BundleFieldTooLarge);
     }
     store.authenticate(token, ApiKeyScope::InboxPush)?;

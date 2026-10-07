@@ -20,7 +20,7 @@
 import { crossSiteRefusal } from "./browser-isolation.js";
 import { relayMount } from "./mount.js";
 import {
-  MAX_REQUEST_BODY,
+  bodyLimit,
   baseHeaders,
   classify,
   hostDecision,
@@ -130,7 +130,8 @@ export async function handle(request, env, log = console) {
   // A relay route. The size is checked before a body is read; the object bounds
   // the stream itself for a request that does not declare one.
   const declared = Number(request.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > MAX_REQUEST_BODY) {
+  const limit = bodyLimit(request.method, route.path, request.headers.get("content-type"));
+  if (Number.isFinite(declared) && declared > limit) {
     return jsonResponse(413, { error: "request too large" });
   }
 

@@ -37,6 +37,13 @@ use zeroize::Zeroizing;
 /// cap before it reads the body; this is the second line.
 pub const MAX_REQUEST_BODY: usize = 2 * 1024 * 1024;
 
+/// The largest body of `POST /inbox` as raw bytes: a letter of up to
+/// [`service::MAX_LARGE_LETTER_BYTES`] plus slack. Only that one route takes a
+/// body this large, and only as raw bytes: a JSON body (trees, expiry) stays at
+/// [`MAX_REQUEST_BODY`], so a big letter cannot ride with a big JSON document
+/// through the core's memory.
+pub const MAX_LARGE_REQUEST_BODY: usize = service::MAX_LARGE_LETTER_BYTES + 64 * 1024;
+
 /// Why a request was turned away before routing, as an HTTP status.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Refused(pub u16);
@@ -59,10 +66,23 @@ pub(crate) fn map_request(
         "DELETE" => "DELETE",
         _ => return Err(Refused(405)),
     };
-    if body.len() > MAX_REQUEST_BODY {
+    let url = Url::parse(url).map_err(|_| Refused(400))?;
+    let raw = !content_type.is_some_and(|value| {
+        value
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .eq_ignore_ascii_case("application/json")
+    });
+    let limit = if method == "POST" && raw && url.path().trim_end_matches('/') == "/inbox" {
+        MAX_LARGE_REQUEST_BODY
+    } else {
+        MAX_REQUEST_BODY
+    };
+    if body.len() > limit {
         return Err(Refused(413));
     }
-    let url = Url::parse(url).map_err(|_| Refused(400))?;
     let content_type = content_type.map(|value| {
         let essence = value.split(';').next().unwrap_or("").trim();
         if essence.eq_ignore_ascii_case("application/json") {

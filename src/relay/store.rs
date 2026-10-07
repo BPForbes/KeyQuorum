@@ -167,6 +167,13 @@ pub trait RelayStore: Send + Sync {
 
     // --- Letters held in object storage (`relay::blob`) --------------------
 
+    /// The largest bridge letter this store accepts: 1 MiB, or
+    /// [`service::MAX_LARGE_LETTER_BYTES`] when letters are held in object
+    /// storage, which is what makes a letter over 1 MiB possible at all.
+    fn max_letter_bytes(&self) -> usize {
+        super::service::MAX_ENVELOPE_BYTES
+    }
+
     /// The bytes of a held letter are stored: make its row ready.
     fn blob_ready(&self, table: MailTable, id: i64) -> Result<bool>;
     /// The bytes could not be stored: drop the not-ready row.
@@ -406,13 +413,16 @@ impl<S: Sql> SqlRelayStore<S> {
     /// R2 bucket). The caller must complete the second step for every letter
     /// that answers with a [`StoredLetter::blob`]; see [`super::blob`].
     pub fn with_blob_threshold(mut self, bytes: usize) -> Self {
-        self.blob_threshold = Some(bytes);
+        self.set_blob_threshold(bytes);
         self
     }
 
     /// [`Self::with_blob_threshold`] on a store already built.
+    ///
+    /// The threshold never exceeds 1 MiB: a letter that large would not fit a
+    /// row, and one over it must always be held.
     pub fn set_blob_threshold(&mut self, bytes: usize) {
-        self.blob_threshold = Some(bytes);
+        self.blob_threshold = Some(bytes.min(super::service::MAX_ENVELOPE_BYTES));
     }
 
     /// The executor, under the store's lock. A poisoned lock is taken over:
@@ -567,6 +577,14 @@ impl<S: Sql + Send> RelayStore for SqlRelayStore<S> {
 
     fn purge_expired_envelopes(&self) -> Result<u64> {
         self.with(|conn| mailbox::purge_expired(conn))
+    }
+
+    fn max_letter_bytes(&self) -> usize {
+        if self.blob_threshold.is_some() {
+            super::service::MAX_LARGE_LETTER_BYTES
+        } else {
+            super::service::MAX_ENVELOPE_BYTES
+        }
     }
 
     fn blob_ready(&self, table: MailTable, id: i64) -> Result<bool> {

@@ -16,12 +16,38 @@ letters, every key, licence, audit row and the public trees stay in the Durable
 Object's SQLite, so everything that must be atomic still is. Without the
 `LETTERS` binding nothing changes: no letter is held out.
 
-Be clear about the gain. A letter is capped at 1 MiB (`MAX_ENVELOPE_BYTES`) and a
-row holds 2 MB, so R2 is not needed to *fit* a letter. What it buys is capacity
-and cost: the Durable Object's 10 GB limit and its storage price, not R2's, bound
-the letters. It also leaves room, later, for sealed deliveries larger than 1 MiB,
-which would need their own decision (client limits, `MAX_RESPONSE_BYTES`, a new
-cap) and is not done here.
+## Letters over 1 MiB
+
+Without R2 a letter is capped at 1 MiB (`MAX_ENVELOPE_BYTES`) and a row holds
+2 MB. **With the bucket bound, a bridge letter may be up to 16 MiB**
+(`MAX_LARGE_LETTER_BYTES`), which is also the outbox's item cap and the inbox
+page budget, so one such letter is always a whole page. Device letters keep 1 MiB.
+No new route and no client change: the client already pushes any size raw
+(`relay::push_inbox`), the outbox already allows 16 MiB, and the relay used to
+answer 413. What changed:
+
+* **Held, always.** The threshold is never above 1 MiB (the core and the Worker
+  both clamp it), so a letter that could not fit a row is always held. The cap
+  itself is a store property (`RelayStore::max_letter_bytes`): 16 MiB when
+  letters are held in object storage, 1 MiB otherwise, so a native host, the lab
+  and a Worker without the binding refuse a larger letter as before.
+* **Raw only.** Only a raw `POST /inbox` may declare a body above 2 MiB
+  (`policy.js` `bodyLimit`, `worker.rs` `map_request`, both checked before a
+  body is read). A JSON push (trees, an expiry) stays at 2 MiB, so a large letter
+  never rides in JSON and is never base64-decoded inside the 128 MB isolate. A
+  large letter therefore carries no trees; the producers that attach trees send
+  small org-update letters.
+* **Memory.** A push holds the body once in the object, once as the core's copy
+  and once as the bytes put in R2 (about 50 MiB at the cap). A pull assembles the
+  answer in pieces (a letter's base64 in 3 MiB steps), never one string of the
+  whole. Workers have 128 MB per isolate, shared with the WebAssembly memory; this
+  has not been measured under load (see "Not done").
+
+## What the bucket buys
+
+Capacity and cost. A letter of up to 1 MiB fits a row, so for those R2 only moves
+the Durable Object's 10 GB limit and storage price onto R2's; for letters over
+1 MiB it is what makes them possible at all.
 
 The relay still never opens a letter. The bucket holds bytes sealed to their
 recipients, and the objects are immutable: the key is `inbox/<sha256>` or
@@ -103,8 +129,12 @@ client sees a reply, and they are hidden from the OpenAPI schema.
 * No measurement of R2 cost, request limits or latency for this workload. The
   per-request cost of a held letter (an R2 put on push, a get per held letter on
   pull) was not estimated and needs the owner's account.
-* No larger-than-1 MiB letters, no backup or export of the bucket, and nothing
-  off Cloudflare (the single-vendor risk in `relay-hosting.md` is unchanged).
+* No measurement of a 16 MiB push or pull against the isolate's memory, or of a
+  Worker's request-body limit on your plan (Cloudflare documents the limit per
+  plan; a plan below 16 MiB would refuse a large letter before the relay sees it).
+* No backup of the letters bucket (the backups in `r2-backups.md` cover the
+  database, not the objects), and nothing off Cloudflare (the single-vendor risk
+  in `relay-hosting.md` is unchanged).
 * Migration: an existing Durable Object database would need the two new columns;
   none exists yet (nothing is deployed), and the native file gets them in
   `relay::migrate`.

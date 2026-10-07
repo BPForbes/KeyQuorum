@@ -253,3 +253,49 @@ test("the threshold and the bucket come from non-secret settings and fall back s
   const usable = bucket();
   assert.equal(bucketOf({ LETTERS: usable }), usable);
 });
+
+test("a large held letter comes back byte for byte, in the right entry, with its neighbours untouched", async () => {
+  const r2 = bucket();
+  const relay = createBlobRelay({ core: core(), bucket: r2, log: quiet });
+  const big = Uint8Array.from({ length: 7 * 1024 * 1024 + 11 }, (_, i) => (i * 31 + 7) % 251);
+  const other = letter(9000);
+  const inline = letter(90);
+  r2.objects.set(`inbox/${sha(big)}`, big);
+  r2.objects.set(`inbox/${sha(other)}`, other);
+  const answer = await relay.around(pull(), () =>
+    json(200, {
+      envelopes: [
+        { id: 1, recipient_fingerprint: "ab", bytes: b64(inline) },
+        { id: 2, recipient_fingerprint: "ab", bytes: b64(big.subarray(0, 42)), blob: held(big) },
+        { id: 3, recipient_fingerprint: "ab", bytes: b64(other.subarray(0, 42)), blob: held(other) },
+      ],
+      trees: [{ label: "A" }],
+      next_after: 3,
+    }),
+  );
+  assert.equal(answer.status, 200);
+  const page = text(answer.body);
+  assert.equal(page.envelopes[0].bytes, b64(inline));
+  assert.equal(page.envelopes[1].bytes, b64(big));
+  assert.equal(page.envelopes[2].bytes, b64(other));
+  assert.ok(page.envelopes.every((entry) => !("blob" in entry)));
+  assert.deepEqual(page.trees, [{ label: "A" }]);
+  assert.equal(page.next_after, 3);
+});
+
+test("a held letter at the 16 MiB cap is stored and read back", async () => {
+  const c = core();
+  const r2 = bucket();
+  const relay = createBlobRelay({ core: c, bucket: r2, log: quiet });
+  const cap = Uint8Array.from({ length: 16 * 1024 * 1024 }, (_, i) => (i * 13) % 253);
+  const stored = await relay.around(push(cap), () => json(201, { id: 7, recipient_fingerprint: "ab", blob: held(cap) }));
+  assert.equal(stored.status, 201);
+  assert.deepEqual(r2.objects.get(`inbox/${sha(cap)}`), cap);
+  const back = await relay.around(pull(), () => json(200, { envelopes: [{ id: 7, recipient_fingerprint: "ab", bytes: b64(cap.subarray(0, 42)), blob: held(cap) }] }));
+  assert.equal(text(back.body).envelopes[0].bytes, b64(cap));
+});
+
+test("the threshold never goes above a mebibyte, so a letter that cannot fit a row is always held", () => {
+  assert.equal(holdFrom({ HOLD_LETTERS_FROM: "4194304" }), 1024 * 1024);
+  assert.equal(holdFrom({ HOLD_LETTERS_FROM: "1048576" }), 1024 * 1024);
+});

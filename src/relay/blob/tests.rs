@@ -18,7 +18,7 @@ fn letter(kind: u8, recipient: &[u8; 32], size: usize) -> Vec<u8> {
         envelope::PACKAGE,
         kind,
         recipient,
-        &vec![0x5a; size.saturating_sub(100)],
+        &vec![0x5a; size.saturating_sub(90)],
     )
     .expect("seal")
 }
@@ -322,4 +322,138 @@ fn a_database_from_before_held_letters_gains_the_columns_and_keeps_its_letters()
         (None, 1),
         "an old letter is an inline, ready one"
     );
+}
+
+mod large {
+    use super::*;
+    use crate::relay::service::{
+        inbox_push, parse_inbox, MAX_ENVELOPE_BYTES, MAX_LARGE_LETTER_BYTES,
+    };
+    use crate::relay::{ApiKeyScope, NewApiKey};
+
+    fn push_key(store: &SqliteRelayStore) -> String {
+        store
+            .mint_key(&NewApiKey {
+                scope: ApiKeyScope::InboxPush,
+                recipient_fingerprint: None,
+                label: None,
+                ttl_seconds: None,
+            })
+            .expect("mint")
+            .token
+            .to_string()
+    }
+
+    fn raw(bytes: &[u8]) -> crate::relay::service::ParsedInbox {
+        parse_inbox(false, bytes).expect("a raw push")
+    }
+
+    #[test]
+    fn a_relay_without_object_storage_keeps_the_one_mebibyte_cap() {
+        let plain = SqliteRelayStore::open_in_memory().expect("schema");
+        assert_eq!(plain.max_letter_bytes(), MAX_ENVELOPE_BYTES);
+        let (public, _) = recipient();
+        let key = push_key(&plain);
+        let over = letter(KIND_INVITE, &public, MAX_ENVELOPE_BYTES + 1000);
+        assert!(inbox_push(&plain, &key, &raw(&over)).is_err());
+    }
+
+    #[test]
+    fn with_object_storage_a_letter_over_a_mebibyte_is_held_and_one_over_the_cap_is_not_taken() {
+        let store = store();
+        assert_eq!(store.max_letter_bytes(), MAX_LARGE_LETTER_BYTES);
+        let (public, fingerprint) = recipient();
+        let key = push_key(&store);
+
+        let big = letter(KIND_INVITE, &public, 3 * 1024 * 1024);
+        let (accepted, duplicate) = inbox_push(&store, &key, &raw(&big)).expect("accepted");
+        assert!(!duplicate);
+        let held = accepted.blob.expect("a large letter is always held");
+        assert_eq!(held.len, big.len());
+        assert!(
+            page(&store, &fingerprint).envelopes.is_empty(),
+            "not ready yet"
+        );
+        store
+            .blob_ready(MailTable::Inbox, accepted.id)
+            .expect("ready");
+        let listed = page(&store, &fingerprint);
+        assert_eq!(
+            listed.envelopes[0].blob.as_ref().map(|b| b.len),
+            Some(big.len())
+        );
+
+        let at_cap = letter(KIND_INVITE, &public, MAX_LARGE_LETTER_BYTES);
+        assert_eq!(at_cap.len(), MAX_LARGE_LETTER_BYTES);
+        assert!(
+            inbox_push(&store, &key, &raw(&at_cap)).is_ok(),
+            "exactly the cap"
+        );
+        let over = letter(KIND_INVITE, &public, MAX_LARGE_LETTER_BYTES + 1);
+        assert!(
+            inbox_push(&store, &key, &raw(&over)).is_err(),
+            "one byte over"
+        );
+    }
+
+    #[test]
+    fn a_threshold_above_a_mebibyte_still_holds_every_letter_that_would_not_fit_a_row() {
+        let store = SqliteRelayStore::open_in_memory()
+            .expect("schema")
+            .with_blob_threshold(64 * 1024 * 1024);
+        let (public, _) = recipient();
+        let big = letter(KIND_INVITE, &public, MAX_ENVELOPE_BYTES + 5000);
+        assert!(store
+            .inbox_push(&[], &big, None)
+            .expect("push")
+            .blob
+            .is_some());
+        let under = letter(KIND_INVITE, &public, MAX_ENVELOPE_BYTES - 5000);
+        assert!(
+            store
+                .inbox_push(&[], &under, None)
+                .expect("push")
+                .blob
+                .is_none(),
+            "the threshold is clamped to a mebibyte, so a letter under it stays in its row"
+        );
+        let small = letter(KIND_INVITE, &public, 2000);
+        assert!(store
+            .inbox_push(&[], &small, None)
+            .expect("push")
+            .blob
+            .is_none());
+    }
+
+    #[test]
+    fn a_device_letter_keeps_its_own_one_mebibyte_cap_even_with_object_storage() {
+        let store = store();
+        let (public, _) = recipient();
+        let over = letter(KIND_DEVICE_TRANSFER, &public, MAX_ENVELOPE_BYTES + 1000);
+        assert!(store.store_device_package(&over).is_err());
+    }
+
+    #[test]
+    fn one_letter_at_the_cap_is_a_whole_page() {
+        let store = store();
+        let (public, fingerprint) = recipient();
+        let at_cap = letter(KIND_INVITE, &public, MAX_LARGE_LETTER_BYTES);
+        let stored = store.inbox_push(&[], &at_cap, None).expect("push");
+        store
+            .blob_ready(MailTable::Inbox, stored.id)
+            .expect("ready");
+        let small = letter(KIND_INVITE, &public, 2000);
+        let second = store.inbox_push(&[], &small, None).expect("push");
+        assert!(second.blob.is_none());
+        let listed = page(&store, &fingerprint);
+        assert_eq!(
+            listed.envelopes.len(),
+            1,
+            "the 16 MiB budget is spent on one letter"
+        );
+        assert!(
+            listed.next_after.is_some(),
+            "the rest is read by the next pull"
+        );
+    }
 }

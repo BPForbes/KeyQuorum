@@ -9,7 +9,7 @@
 // request, bounds it, asks the core, and shapes the answer. A bearer goes to the
 // core and nowhere else: it is not logged, stored or echoed.
 import { createSqlAdapter } from "./sql-adapter.js";
-import { baseHeaders, bearerOf, jsonResponse, readLimited } from "./policy.js";
+import { baseHeaders, bearerOf, bodyLimit, jsonResponse, readLimited } from "./policy.js";
 import { bucketOf, createBlobRelay, holdFrom } from "./blobs.js";
 
 // How many requests the object takes at once. The object is a single writer, so
@@ -120,7 +120,10 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
     const started = clock().getTime();
     let answer = null;
     try {
-      const body = await readLimited(request);
+      const body = await readLimited(
+        request,
+        bodyLimit(request.method, new URL(request.url).pathname, request.headers.get("content-type")),
+      );
       if (body === null) return jsonResponse(413, { error: "request too large" });
       const bearer = bearerOf(request.headers);
       const contentType = request.headers.get("content-type") ?? undefined;

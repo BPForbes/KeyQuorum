@@ -18,10 +18,18 @@
 // their row, atomic with everything else.
 export const DEFAULT_HOLD_FROM = 64 * 1024;
 export const MIN_HOLD_FROM = 4096;
+// Letters under 1 MiB fit a row; one at or over it never does, so the threshold
+// is never above it (the core clamps it the same way).
+export const MAX_HOLD_FROM = 1024 * 1024;
 
 // The routes whose answers carry held letters, and the mailbox each belongs to.
 const PUSH = { "/inbox": "inbox", "/devices/packages": "device" };
 const PULL = { "/inbox": ["inbox", "envelopes"], "/devices/packages": ["device", "packages"] };
+
+// A held letter's place in a page while it is being assembled, and the size of
+// the pieces its base64 is made in (a multiple of 3, so pieces join cleanly).
+const PLACEHOLDER = "__held_letter__";
+const CHUNK = 3 * 1024 * 1024;
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
@@ -29,7 +37,7 @@ const encoder = new TextEncoder();
 export function holdFrom(env) {
   const raw = typeof env.HOLD_LETTERS_FROM === "string" ? env.HOLD_LETTERS_FROM.trim() : "";
   const value = /^\d{1,9}$/.test(raw) ? Number(raw) : DEFAULT_HOLD_FROM;
-  return Math.max(value, MIN_HOLD_FROM);
+  return Math.min(Math.max(value, MIN_HOLD_FROM), MAX_HOLD_FROM);
 }
 
 // A bucket binding is an object with put, get and delete; anything else means
@@ -117,7 +125,10 @@ export function createBlobRelay({ core, bucket, log = console }) {
   }
 
   // A page of letters with the bytes of every held one put back, or a refusal:
-  // never a letter that is only its header.
+  // never a letter that is only its header. A held letter can be 16 MiB, so the
+  // answer is built in pieces (a letter's base64 in 3 MiB steps, never one
+  // string of the whole), because the isolate has 128 MB for the object, the
+  // core's memory and everything in flight.
   async function afterPull(list, answer) {
     if (answer.status !== 200) return answer;
     let page;
@@ -128,6 +139,7 @@ export function createBlobRelay({ core, bucket, log = console }) {
     }
     const entries = Array.isArray(page[list]) ? page[list] : [];
     if (!entries.some((entry) => entry.blob)) return answer;
+    const held = new Map();
     for (const entry of entries) {
       if (!entry.blob) continue;
       const object = await bucket.get(entry.blob.key);
@@ -137,10 +149,35 @@ export function createBlobRelay({ core, bucket, log = console }) {
         log.error("relay: a held letter could not be read back");
         return reply(503, { error: "letter storage unavailable, try again" });
       }
-      entry.bytes = toBase64(bytes);
+      held.set(entry.id, bytes);
+      entry.bytes = PLACEHOLDER;
       delete entry.blob;
     }
-    return { status: answer.status, body: encoder.encode(JSON.stringify(page)) };
+    // Serialise the page with a marker where each held letter goes, then split
+    // on the markers and put the letters between the pieces.
+    const text = JSON.stringify(page);
+    const parts = [];
+    let from = 0;
+    for (const entry of entries) {
+      const bytes = held.get(entry.id);
+      if (!bytes) continue;
+      const marker = `"${PLACEHOLDER}"`;
+      const at = text.indexOf(marker, from);
+      if (at < 0) return reply(503, { error: "letter storage unavailable, try again" });
+      parts.push(encoder.encode(`${text.slice(from, at)}"`));
+      for (let i = 0; i < bytes.length; i += CHUNK) parts.push(encoder.encode(toBase64(bytes.subarray(i, i + CHUNK))));
+      parts.push(encoder.encode('"'));
+      from = at + marker.length;
+    }
+    parts.push(encoder.encode(text.slice(from)));
+    const size = parts.reduce((sum, part) => sum + part.length, 0);
+    const body = new Uint8Array(size);
+    let offset = 0;
+    for (const part of parts) {
+      body.set(part, offset);
+      offset += part.length;
+    }
+    return { status: answer.status, body };
   }
 
   // Runs the core for one request and finishes whatever the answer asks of the
