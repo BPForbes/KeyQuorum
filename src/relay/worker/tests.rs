@@ -10,6 +10,7 @@ fn map(
         None,
         content_type,
         Vec::new(),
+        true,
     )
 }
 
@@ -36,13 +37,21 @@ fn content_types_become_the_routers_literals() {
 fn an_oversized_body_or_a_bad_url_is_refused_before_routing() {
     let big = vec![0u8; MAX_REQUEST_BODY + 1];
     assert_eq!(
-        map_request("POST", "https://relay.test/keycheck", None, None, big).err(),
+        map_request("POST", "https://relay.test/keycheck", None, None, big, true).err(),
         Some(Refused(413))
     );
     let at_cap = vec![0u8; MAX_REQUEST_BODY];
-    assert!(map_request("POST", "https://relay.test/keycheck", None, None, at_cap).is_ok());
+    assert!(map_request(
+        "POST",
+        "https://relay.test/keycheck",
+        None,
+        None,
+        at_cap,
+        true
+    )
+    .is_ok());
     assert_eq!(
-        map_request("GET", "not a url", None, None, Vec::new()).err(),
+        map_request("GET", "not a url", None, None, Vec::new(), true).err(),
         Some(Refused(400))
     );
 }
@@ -57,7 +66,8 @@ fn only_a_raw_inbox_push_may_carry_a_body_as_large_as_a_large_letter() {
                 "https://relay.test/inbox",
                 None,
                 content_type,
-                large()
+                large(),
+                true
             )
             .is_ok(),
             "a raw inbox push takes a large letter"
@@ -67,7 +77,8 @@ fn only_a_raw_inbox_push_may_carry_a_body_as_large_as_a_large_letter() {
             "https://relay.test/inbox/",
             None,
             content_type,
-            vec![0u8; MAX_LARGE_REQUEST_BODY]
+            vec![0u8; MAX_LARGE_REQUEST_BODY],
+            true
         )
         .is_ok());
         assert_eq!(
@@ -76,7 +87,8 @@ fn only_a_raw_inbox_push_may_carry_a_body_as_large_as_a_large_letter() {
                 "https://relay.test/inbox",
                 None,
                 content_type,
-                vec![0u8; MAX_LARGE_REQUEST_BODY + 1]
+                vec![0u8; MAX_LARGE_REQUEST_BODY + 1],
+                true
             )
             .err(),
             Some(Refused(413))
@@ -89,7 +101,8 @@ fn only_a_raw_inbox_push_may_carry_a_body_as_large_as_a_large_letter() {
             "https://relay.test/inbox",
             None,
             Some("application/json"),
-            large()
+            large(),
+            true
         )
         .err(),
         Some(Refused(413))
@@ -103,7 +116,7 @@ fn only_a_raw_inbox_push_may_carry_a_body_as_large_as_a_large_letter() {
         ("POST", "https://relay.test/inbox/other"),
     ] {
         assert_eq!(
-            map_request(method, url, None, None, large()).err(),
+            map_request(method, url, None, None, large(), true).err(),
             Some(Refused(413)),
             "{method} {url}"
         );
@@ -118,8 +131,18 @@ fn an_empty_bearer_is_no_bearer_and_the_query_survives() {
         Some(String::new()),
         None,
         Vec::new(),
+        true,
     )
     .expect("mapped");
     assert!(request.bearer.is_none());
     assert_eq!(request.url.query(), Some("after=3"));
+}
+
+#[test]
+fn without_a_bucket_every_body_keeps_the_small_cap() {
+    let large = vec![0u8; MAX_REQUEST_BODY + 1];
+    assert_eq!(
+        map_request("POST", "https://relay.test/inbox", None, None, large, false).err(),
+        Some(Refused(413))
+    );
 }

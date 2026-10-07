@@ -131,7 +131,7 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
     try {
       const body = await readLimited(
         request,
-        bodyLimit(request.method, new URL(request.url).pathname, request.headers.get("content-type")),
+        bodyLimit(request.method, new URL(request.url).pathname, request.headers.get("content-type"), Boolean(blobs)),
       );
       if (body === null) return jsonResponse(413, { error: "request too large" });
       const bearer = bearerOf(request.headers);

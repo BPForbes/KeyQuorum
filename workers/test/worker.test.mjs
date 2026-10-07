@@ -204,9 +204,10 @@ test("only a raw POST /inbox may declare a body as large as a large letter", asy
 });
 
 test("the body limit is a function of the route and the content type alone", () => {
-  assert.equal(bodyLimit("POST", "/inbox", undefined), MAX_LARGE_LETTER_BODY);
-  assert.equal(bodyLimit("POST", "/inbox/", "application/octet-stream"), MAX_LARGE_LETTER_BODY);
-  assert.equal(bodyLimit("POST", "/inbox", "Application/JSON; charset=utf-8"), MAX_REQUEST_BODY);
+  assert.equal(bodyLimit("POST", "/inbox", undefined), MAX_REQUEST_BODY, "no bucket, no large body");
+  assert.equal(bodyLimit("POST", "/inbox", undefined, true), MAX_LARGE_LETTER_BODY);
+  assert.equal(bodyLimit("POST", "/inbox/", "application/octet-stream", true), MAX_LARGE_LETTER_BODY);
+  assert.equal(bodyLimit("POST", "/inbox", "Application/JSON; charset=utf-8", true), MAX_REQUEST_BODY);
   assert.equal(bodyLimit("GET", "/inbox", undefined), MAX_REQUEST_BODY);
   assert.equal(bodyLimit("POST", "/inbox/x", undefined), MAX_REQUEST_BODY);
   assert.equal(bodyLimit("POST", "/devices/packages", undefined), MAX_REQUEST_BODY);

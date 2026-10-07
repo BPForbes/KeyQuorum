@@ -430,6 +430,11 @@ impl<S: Sql> SqlRelayStore<S> {
         self.with(|conn| super::backup::snapshot(conn, identity, recipient, taken_at, max_bytes))
     }
 
+    /// Whether letters are held out of their rows (a bucket is bound).
+    pub fn holds_letters(&self) -> bool {
+        self.blob_threshold.is_some()
+    }
+
     /// [`Self::with_blob_threshold`] on a store already built.
     ///
     /// The threshold never exceeds 1 MiB: a letter that large would not fit a

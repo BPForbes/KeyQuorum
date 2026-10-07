@@ -58,6 +58,7 @@ pub(crate) fn map_request(
     bearer: Option<String>,
     content_type: Option<&str>,
     body: Vec<u8>,
+    holds_letters: bool,
 ) -> Result<RelayHttpRequest, Refused> {
     let method = match method {
         "GET" => "GET",
@@ -75,11 +76,13 @@ pub(crate) fn map_request(
             .trim()
             .eq_ignore_ascii_case("application/json")
     });
-    let limit = if method == "POST" && raw && url.path().trim_end_matches('/') == "/inbox" {
-        MAX_LARGE_REQUEST_BODY
-    } else {
-        MAX_REQUEST_BODY
-    };
+    let limit =
+        if holds_letters && method == "POST" && raw && url.path().trim_end_matches('/') == "/inbox"
+        {
+            MAX_LARGE_REQUEST_BODY
+        } else {
+            MAX_REQUEST_BODY
+        };
     if body.len() > limit {
         return Err(Refused(413));
     }
@@ -192,7 +195,14 @@ impl RelayCore {
         body: Vec<u8>,
         now: &str,
     ) -> RelayResponse {
-        let request = match map_request(method, url, bearer, content_type.as_deref(), body) {
+        let request = match map_request(
+            method,
+            url,
+            bearer,
+            content_type.as_deref(),
+            body,
+            self.store.holds_letters(),
+        ) {
             Ok(request) => request,
             Err(Refused(status)) => {
                 return RelayResponse {

@@ -130,7 +130,7 @@ export async function handle(request, env, log = console) {
   // A relay route. The size is checked before a body is read; the object bounds
   // the stream itself for a request that does not declare one.
   const declared = Number(request.headers.get("content-length"));
-  const limit = bodyLimit(request.method, route.path, request.headers.get("content-type"));
+  const limit = bodyLimit(request.method, route.path, request.headers.get("content-type"), Boolean(bucketOf(env)));
   if (Number.isFinite(declared) && declared > limit) {
     return jsonResponse(413, { error: "request too large" });
   }
