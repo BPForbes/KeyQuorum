@@ -142,6 +142,13 @@ pub enum Error {
     /// An enrollment request (`.kqreq`) is malformed, altered, or its
     /// signature does not verify.
     InvalidEnrollment,
+    /// A relay database backup (a chunk or its manifest) is malformed, altered,
+    /// not sealed to this key, or its relay signature does not verify.
+    InvalidBackup,
+    /// A relay database is larger than a backup in one pass may hold.
+    BackupTooLarge,
+    /// A backup is restored only into an empty relay database of the same shape.
+    BackupTargetNotEmpty,
     /// The fingerprint a provider typed does not match the enrollment request.
     EnrollmentFingerprintMismatch,
     /// A `.kqpkg` is malformed, oversized, altered, or its signature does
@@ -263,6 +270,15 @@ impl fmt::Display for Error {
                 "API key letter is malformed or its relay signature does not verify"
             ),
             Error::KeyIssueExpired => write!(f, "API key letter has expired"),
+            Error::InvalidBackup => write!(
+                f,
+                "backup is malformed, altered, not for this key, or its signature does not verify"
+            ),
+            Error::BackupTooLarge => write!(f, "the relay database is too large to back up in one pass"),
+            Error::BackupTargetNotEmpty => write!(
+                f,
+                "a backup is restored only into an empty relay database of the same shape"
+            ),
             Error::InvalidEnrollment => write!(
                 f,
                 "enrollment request is malformed or its signature does not verify"

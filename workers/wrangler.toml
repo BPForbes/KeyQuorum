@@ -56,6 +56,16 @@ new_sqlite_classes = ["RelayObject"]
 binding = "LETTERS"
 bucket_name = "keyquorum-letters"
 
+# Sealed backups of the relay's database (docs/operator/r2-backups.md), written
+# by the alarm when BACKUP_RECIPIENT (the operator's backup public key, a deploy
+# variable and never a file: a 64-character key does not belong in this one) is
+# set. Their own bucket, never the letters' one, and sealed to a key only the
+# operator holds, so the bucket reveals nothing even to this Worker. Nothing is
+# backed up while the binding or the key is absent.
+[[r2_buckets]]
+binding = "BACKUPS"
+bucket_name = "keyquorum-backups"
+
 # Per-client limit on customer routes, keyed on CF-Connecting-IP in the Worker,
 # beside the zone's rate-limit rule (deploy/cloudflare/terraform/rules.tf). Not
 # inherited by an environment, so staging repeats it. A namespace_id is an
@@ -108,6 +118,10 @@ new_sqlite_classes = ["RelayObject"]
 [[env.staging.r2_buckets]]
 binding = "LETTERS"
 bucket_name = "keyquorum-letters-staging"
+
+[[env.staging.r2_buckets]]
+binding = "BACKUPS"
+bucket_name = "keyquorum-backups-staging"
 
 [[env.staging.ratelimits]]
 name = "RATE_LIMITER"

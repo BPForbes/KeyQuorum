@@ -11,7 +11,7 @@
 use keyquorum::api_key_delivery::MAX_LICENCE_BYTES;
 use keyquorum::cli;
 use keyquorum::cli::host_args::{
-    HostCommand, IdentityCommand, KeysCommand, PolicyCommand, RootCommand,
+    BackupCommand, HostCommand, IdentityCommand, KeysCommand, PolicyCommand, RootCommand,
 };
 use keyquorum::cli::host_env::{self, ProcessVars};
 use keyquorum::db;
@@ -96,6 +96,7 @@ pub fn run(store_args: &StoreArgs, org_db: &Path, command: HostCommand) -> Resul
                 ))
         }
         HostCommand::Identity { command } => run_identity(command),
+        HostCommand::Backup { command } => run_backup(command),
         HostCommand::Certify {
             root_key,
             relay_public_key,
@@ -744,6 +745,98 @@ fn run_identity(command: IdentityCommand) -> Result<()> {
             private_key_out,
         } => write_keypair("Relay", &public_key_out, &private_key_out),
     }
+}
+
+/// `host backup`: the operator's side of the sealed database backups. None of it
+/// touches a running relay: the keypair is made here, and a backup is read from a
+/// directory the operator downloaded it to.
+fn run_backup(command: BackupCommand) -> Result<()> {
+    match command {
+        BackupCommand::Keygen {
+            public_key_out,
+            private_key_out,
+        } => {
+            if public_key_out.exists() {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!("{} already exists", public_key_out.display()),
+                )));
+            }
+            let (secret, public) = keys::generate_encryption_keypair();
+            cli::write_hex_file(&private_key_out, &secret[..])?;
+            if let Err(err) = cli::write_hex_file(&public_key_out, &public) {
+                let _ = std::fs::remove_file(&private_key_out);
+                return Err(err);
+            }
+            eprintln!(
+                "Backup private key written owner-only to {}; keep it offline. Without it no backup can be read.",
+                private_key_out.display()
+            );
+            println!("BACKUP_RECIPIENT={}", hex::encode(public));
+            Ok(())
+        }
+        BackupCommand::Inspect {
+            dir,
+            backup_key,
+            krl,
+        } => {
+            let secret = host_env::read_key_file(&backup_key)?;
+            let revoked = backup_revocations(krl)?;
+            let seen = relay::backup::inspect_dir(
+                &dir,
+                &secret,
+                &KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY,
+                &revoked,
+            )?;
+            println!("backup {}, taken {}", seen.backup_id, seen.taken_at);
+            for (name, rows) in seen.tables {
+                println!("  {name}: {rows} rows");
+            }
+            Ok(())
+        }
+        BackupCommand::Restore {
+            dir,
+            backup_key,
+            out,
+            krl,
+        } => {
+            let secret = host_env::read_key_file(&backup_key)?;
+            let revoked = backup_revocations(krl)?;
+            let restored = relay::backup::restore_dir(
+                &dir,
+                &out,
+                &secret,
+                &KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY,
+                &revoked,
+            )?;
+            println!(
+                "restored backup {} (taken {}): {} tables, {} rows into {}",
+                restored.backup_id,
+                restored.taken_at,
+                restored.tables,
+                restored.rows,
+                out.display()
+            );
+            if restored.held_skipped > 0 {
+                println!(
+                    "{} letters held in object storage were not restored (their objects are not in a backup)",
+                    restored.held_skipped
+                );
+            }
+            if restored.audit_intact {
+                println!("audit chains: intact, every anchor verifies");
+                Ok(())
+            } else {
+                eprintln!("audit chains: NOT intact; check `host keys events --verify` before trusting this database");
+                Err(Error::IntegrityCheckFailed)
+            }
+        }
+    }
+}
+
+fn backup_revocations(krl: Option<PathBuf>) -> Result<std::collections::HashSet<String>> {
+    let krl = path_or_env(krl, "KEYQUORUM_PROVIDER_KRL");
+    provider::load_revocation_list(&KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY, krl.as_deref())
 }
 
 /// Writes a fresh keypair through the CLI's owner-only hex writer: the

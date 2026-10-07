@@ -159,11 +159,13 @@ export function checkConfig(
     }
   }
 
-  // R2 holds sealed letters for the relay's Durable Object, and only the public
-  // Worker (the file that runs with --allow-r2) may bind it: not the admin
-  // Worker, which never touches a letter. The binding is `LETTERS`. A Worker
-  // Preview gets no bucket at all, so it can never read or delete a real letter,
-  // and staging never shares production's bucket.
+  // R2 holds the relay's sealed letters (LETTERS) and its sealed database
+  // backups (BACKUPS), both written by the public Worker's Durable Object. Only
+  // that Worker (the file that runs with --allow-r2) may bind either: not the
+  // admin Worker, which touches neither. A Worker Preview gets no bucket at all,
+  // so it can never read or delete a real letter or backup. Staging never shares
+  // production's bucket, and the letters and the backups never share one.
+  const BINDINGS = new Set(["LETTERS", "BACKUPS"]);
   const buckets = new Map();
   for (const [name, body] of tables) {
     const match = /^(?:env\.([^.]+)\.)?(previews\.)?r2_buckets$/.exec(name);
@@ -178,18 +180,26 @@ export function checkConfig(
       problems.push(`${label}: [${name}] binds an R2 bucket; only the public Worker's file may (--allow-r2)`);
       continue;
     }
-    for (const binding of joined.matchAll(/^\s*binding\s*=\s*"([^"]*)"/gm)) {
-      if (binding[1] !== "LETTERS") {
-        problems.push(`${label}: [${name}] binds R2 as "${binding[1]}"; the only R2 binding is LETTERS`);
+    // One [[r2_buckets]] entry at a time: a binding and the bucket after it.
+    const entries = joined.split(/^\s*binding\s*=/m).slice(1);
+    for (const entry of entries) {
+      const binding = /^\s*"([^"]*)"/.exec(entry)?.[1] ?? "";
+      if (!BINDINGS.has(binding)) {
+        problems.push(`${label}: [${name}] binds R2 as "${binding}"; the only R2 bindings are LETTERS and BACKUPS`);
+        continue;
       }
+      const bucket = /^\s*bucket_name\s*=\s*"([^"]+)"/m.exec(entry);
+      if (!bucket) problems.push(`${label}: [${name}] binding ${binding} names no bucket_name`);
+      else buckets.set(`${scope}|${binding}`, bucket[1]);
     }
-    const bucket = /^\s*bucket_name\s*=\s*"([^"]+)"/m.exec(joined);
-    if (!bucket) problems.push(`${label}: [${name}] names no bucket_name`);
-    else buckets.set(scope, bucket[1]);
   }
-  for (const [scope, bucket] of buckets) {
-    if (scope !== "" && buckets.get("") === bucket) {
-      problems.push(`${label}: environment ${scope} uses production's R2 bucket "${bucket}"; each has its own`);
+  for (const [at, bucket] of buckets) {
+    const [scope, binding] = at.split("|");
+    if (scope !== "" && buckets.get(`|${binding}`) === bucket) {
+      problems.push(`${label}: environment ${scope} uses production's R2 bucket "${bucket}" for ${binding}; each has its own`);
+    }
+    if (binding === "BACKUPS" && buckets.get(`${scope}|LETTERS`) === bucket) {
+      problems.push(`${label}: ${scope || "production"} keeps its backups in the letters bucket "${bucket}"; they have their own`);
     }
   }
   if (/\bpreviews\s*=\s*\{[^}]*r2_buckets/.test(lines.join("\n"))) {

@@ -89,6 +89,8 @@ export default async function status() {
               row("Housekeeping alarm, next", formatTime(runtime.alarm.next_at)),
               row("Housekeeping alarm, last run", formatTime(runtime.alarm.last_run_at)),
               row("Housekeeping alarm, last failure", runtime.alarm.last_failure ? badge(runtime.alarm.last_failure, "bad") : "none"),
+              row("Large letters in R2", runtime.letters_in_r2 ? badge("on", "good") : badge("off (letters stay in the database, up to 1 MiB)", "warn")),
+              ...backupRows(runtime.backups),
               row(
                 "Version",
                 runtime.deployment
@@ -103,4 +105,16 @@ export default async function status() {
     );
   }
   return h("div", {}, out);
+}
+
+// The backup lines of the status page: off and why, or the last one made and
+// anything that went wrong since. Nothing here is secret: ids and counts only.
+function backupRows(backups) {
+  if (!backups) return [row("Sealed backups", "not reported")];
+  if (!backups.enabled) return [row("Sealed backups", badge(`off: ${backups.reason ?? "not configured"}`, "warn"))];
+  return [
+    row("Sealed backups", badge(`every ${backups.every_hours} h, newest ${backups.keep} kept`, "good")),
+    row("Last backup", backups.last ? `${formatTime(backups.last.at)} · ${backups.last.tables} tables, ${backups.last.rows} rows · ${backups.last.id}` : "none yet"),
+    row("Backup problems", backups.last_failure ? badge(`last attempt failed (${backups.last_failure})`, "bad") : backups.last_skipped ? badge(backups.last_skipped, "warn") : "none"),
+  ];
 }

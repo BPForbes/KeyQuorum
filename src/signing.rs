@@ -24,6 +24,7 @@ const FILE_BRIDGE_APPROVAL_DOMAIN: &[u8] = b"KQ-FILE-BRIDGE-APPROVAL-v1";
 const RELAY_AUDIT_ANCHOR_DOMAIN: &[u8] = b"KQ-RELAY-AUDIT-ANCHOR-v1";
 const RELAY_AUDIT_CHECKPOINT_DOMAIN: &[u8] = b"KQ-RELAY-AUDIT-CHECKPOINT-v1";
 const RELAY_API_KEY_ISSUE_DOMAIN: &[u8] = b"KQ-RELAY-API-KEY-ISSUE-v1";
+const RELAY_BACKUP_DOMAIN: &[u8] = b"KQ-RELAY-BACKUP-v1";
 
 /// Verifies `signature` over `message` under `public_key`. Uses
 /// `verify_strict` rather than `verify` — it rejects the non-canonical
@@ -224,6 +225,16 @@ pub fn relay_audit_anchor_preimage(
     hash_len_prefixed(&mut hasher, signed_at.as_bytes())?;
     hasher.update(Sha256::digest(certificate));
     Ok(hasher.finalize().into())
+}
+
+/// What a relay signs over a database backup's manifest (`relay::backup`): the
+/// manifest body exactly as written, which names every chunk by its SHA-256.
+/// Domain-separated from every other preimage.
+pub fn relay_backup_manifest_preimage(body: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(RELAY_BACKUP_DOMAIN);
+    hasher.update(body);
+    hasher.finalize().into()
 }
 
 /// What a relay signs when it issues a customer API key sealed to that

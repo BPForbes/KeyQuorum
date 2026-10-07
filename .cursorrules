@@ -90,6 +90,13 @@ against the SHA-256 in the key) and marks it ready or aborts it, a pull puts hel
 a trigger tombstones every dropped held row for the sweep. Native hosts, and a Worker without the binding, hold nothing out. Only the
 public Worker may bind R2; the guard refuses it in the admin Worker, in a Preview, under another name, and a staging bucket shared with
 production.
+Sealed backups of the relay's database can be written to a second private R2 bucket (`BACKUPS`, `docs/operator/r2-backups.md`, built,
+not deployed or run end to end): the core (`relay::backup`) dumps every table in one synchronous turn, seals each chunk to an
+operator-held backup public key (`EXPORT_BUNDLE` types 7 and 8) and signs the manifest with the relay key; `workers/src/backups.js`
+uploads the chunks and the manifest last from the alarm, keeping the newest few; `keyquorum host backup keygen|inspect|restore` is the
+operator's offline side (restore checks the signature against the pinned root and every chunk's hash before writing, then re-walks the
+audit chains). The backup public key is the `BACKUP_RECIPIENT` deploy variable (never in `wrangler.toml`, whose guard refuses a 64-hex
+value); the private key never reaches a Worker. Letters held in `LETTERS` are not in a backup.
 
 The mailbox relay (`src/relay/`) stores opaque `.kqpb` envelopes and
 the canonical *public* split-tree as JSON documents (full context). It must never

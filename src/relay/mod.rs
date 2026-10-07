@@ -12,6 +12,7 @@
 pub mod activity;
 mod api_key;
 pub mod audit;
+pub mod backup;
 pub mod blob;
 mod client;
 pub mod customer;

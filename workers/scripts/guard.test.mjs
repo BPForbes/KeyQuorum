@@ -282,10 +282,12 @@ test("R2 is refused in any file that is not the public Worker's", () => {
   assert.equal(checkConfig("admin/wrangler.toml", `${CLEAN}\nr2_buckets = [{ binding = "LETTERS", bucket_name = "x" }]\n`).length, 1);
 });
 
-test("the only R2 binding is LETTERS, and it names a bucket", () => {
+test("the only R2 bindings are LETTERS and BACKUPS, and each names a bucket", () => {
   const renamed = checkConfig("wrangler.toml", R2().replace('"LETTERS"', '"ARCHIVE"'), { allowR2: true });
   assert.equal(renamed.length, 1);
   assert.match(renamed[0], /ARCHIVE/);
+  const both = `${R2()}\n[[r2_buckets]]\nbinding = "BACKUPS"\nbucket_name = "backups"\n`;
+  assert.deepEqual(checkConfig("wrangler.toml", both, { allowR2: true }), []);
   const nameless = checkConfig("wrangler.toml", `${CLEAN}\n[[r2_buckets]]\nbinding = "LETTERS"\n`, { allowR2: true });
   assert.equal(nameless.length, 1);
   assert.match(nameless[0], /bucket_name/);
@@ -306,4 +308,25 @@ test("staging never shares production's bucket", () => {
   const problems = checkConfig("wrangler.toml", text, { allowR2: true });
   assert.equal(problems.length, 1);
   assert.match(problems[0], /own/);
+});
+
+test("the backups never share the letters' bucket, and staging has its own of each", () => {
+  const same = `${R2()}\n[[r2_buckets]]\nbinding = "BACKUPS"\nbucket_name = "letters"\n`;
+  const problems = checkConfig("wrangler.toml", same, { allowR2: true });
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /backups in the letters bucket/);
+  const staging = `${R2()}\n[[r2_buckets]]\nbinding = "BACKUPS"\nbucket_name = "backups"\n` +
+    `[[env.staging.r2_buckets]]\nbinding = "LETTERS"\nbucket_name = "letters-staging"\n` +
+    `[[env.staging.r2_buckets]]\nbinding = "BACKUPS"\nbucket_name = "backups"\n`;
+  const shared = checkConfig("wrangler.toml", staging, { allowR2: true });
+  assert.equal(shared.length, 1);
+  assert.match(shared[0], /BACKUPS/);
+});
+
+test("the real configuration binds both buckets in production and in staging, distinct", async () => {
+  const { readFileSync } = await import("node:fs");
+  const text = readFileSync(new URL("../wrangler.toml", import.meta.url), "utf8");
+  const names = [...text.matchAll(/bucket_name = "([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(names, ["keyquorum-letters", "keyquorum-backups", "keyquorum-letters-staging", "keyquorum-backups-staging"]);
+  assert.doesNotMatch(text, /BACKUP_RECIPIENT\s*=/, "the backup public key is a deploy variable, not in the file");
 });

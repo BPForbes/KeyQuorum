@@ -92,6 +92,52 @@ pub enum HostCommand {
         #[command(subcommand)]
         command: PolicyCommand,
     },
+    /// Sealed backups of the relay's database (docs/operator/r2-backups.md).
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum BackupCommand {
+    /// Generate the backup keypair. The public half is the BACKUP_RECIPIENT
+    /// deploy variable; the private half is the only way to read a backup, so
+    /// it goes only to `--private-key-out` (created owner-only, never
+    /// overwritten, never printed) and belongs offline, not on the relay.
+    Keygen {
+        #[arg(long)]
+        public_key_out: PathBuf,
+        #[arg(long)]
+        private_key_out: PathBuf,
+    },
+    /// Say what a downloaded backup is (its id, when it was taken, its tables)
+    /// after the checks a restore makes, without restoring it.
+    Inspect {
+        /// The directory the backup's objects were downloaded to
+        /// (`manifest.kqbk` and the chunk files)
+        #[arg(long)]
+        dir: PathBuf,
+        /// The backup private key file `backup keygen` wrote
+        #[arg(long)]
+        backup_key: PathBuf,
+        /// Optional signed revocation list (or KEYQUORUM_PROVIDER_KRL)
+        #[arg(long)]
+        krl: Option<PathBuf>,
+    },
+    /// Restore a downloaded backup into a new relay database file, then
+    /// re-walk its audit chains. The file must not exist.
+    Restore {
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        backup_key: PathBuf,
+        /// The new relay database to create (owner-only)
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        krl: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]

@@ -92,3 +92,15 @@ variable "letters_bucket_name_staging" {
   type        = string
   default     = ""
 }
+
+variable "backups_bucket_name" {
+  description = "Name of the production R2 bucket for sealed database backups; the Worker binds it as BACKUPS (workers/wrangler.toml names keyquorum-backups). Never the letters bucket. Leave empty to create none."
+  type        = string
+  default     = ""
+}
+
+variable "backups_bucket_name_staging" {
+  description = "Name of the staging R2 bucket for sealed database backups (workers/wrangler.toml names keyquorum-backups-staging). Leave empty to create none."
+  type        = string
+  default     = ""
+}

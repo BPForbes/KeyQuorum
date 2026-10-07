@@ -1139,3 +1139,69 @@ fn provider_host_keys_create_from_an_enrollment_needs_its_whole_set_and_no_other
     ])
     .is_err());
 }
+
+#[cfg(feature = "provider")]
+#[test]
+fn provider_host_backup_commands_parse_and_need_their_files() {
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "backup",
+        "keygen",
+        "--public-key-out",
+        "b.pub",
+        "--private-key-out",
+        "b.key",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "backup",
+        "keygen",
+        "--public-key-out",
+        "b.pub"
+    ])
+    .is_err());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "backup",
+        "inspect",
+        "--dir",
+        "dl",
+        "--backup-key",
+        "b.key",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "backup",
+        "restore",
+        "--dir",
+        "dl",
+        "--backup-key",
+        "b.key",
+        "--out",
+        "relay.sqlite",
+        "--krl",
+        "provider.kqrl",
+    ])
+    .is_ok());
+    for missing in [["--dir", "dl"], ["--backup-key", "b.key"]] {
+        let mut line = vec![
+            "keyquorum",
+            "host",
+            "backup",
+            "restore",
+            "--out",
+            "relay.sqlite",
+        ];
+        line.extend(missing);
+        assert!(
+            Cli::try_parse_from(line).is_err(),
+            "restore needs both --dir and --backup-key"
+        );
+    }
+}

@@ -10,6 +10,7 @@
 // core and nowhere else: it is not logged, stored or echoed.
 import { createSqlAdapter } from "./sql-adapter.js";
 import { baseHeaders, bearerOf, bodyLimit, jsonResponse, readLimited } from "./policy.js";
+import { backupBucketOf, backupSettings, createBackups } from "./backups.js";
 import { bucketOf, createBlobRelay, holdFrom } from "./blobs.js";
 
 // How many requests the object takes at once. The object is a single writer, so
@@ -71,6 +72,7 @@ function readIdentity(env) {
 export function createRelayService({ storage, env, bindings, clock = () => new Date(), log = console }) {
   let core = null;
   let blobs = null;
+  let backups = null;
   let failure = null;
   let inFlight = 0;
   // What this object has seen since it started, for the operator's status page.
@@ -99,6 +101,13 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
       if (bucket) {
         core.hold_letters_from(holdFrom(env));
         blobs = createBlobRelay({ core, bucket, log });
+      }
+      // With a `BACKUPS` bucket and a backup public key (BACKUP_RECIPIENT), the
+      // alarm writes sealed backups of the database (src/backups.js).
+      const backupBucket = backupBucketOf(env);
+      const settings = backupSettings(env);
+      if (backupBucket && settings.enabled) {
+        backups = createBackups({ core, bucket: backupBucket, storage, settings, relayTime, clock, log });
       }
     } catch (error) {
       failure = "relay unavailable";
@@ -235,6 +244,7 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
         },
         storage_bytes: storageBytes(),
         letters_in_r2: blobs !== null,
+        backups: await backupStatus(),
         deployment: deployment(),
       };
     } catch (error) {
@@ -251,6 +261,17 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
       runtime,
       relay: known,
       note: "Observed by the relay object since it last started. Requests the public Worker refused before the relay (wrong host or route, too large, rate limited) are not counted here.",
+    };
+  }
+
+  // What the operator's status page says of the backups: off and why, or the
+  // last one made and anything that went wrong since.
+  async function backupStatus() {
+    if (backups) return backups.status();
+    const settings = backupSettings(env);
+    return {
+      enabled: false,
+      reason: !backupBucketOf(env) ? "no backup bucket bound (BACKUPS)" : settings.reason,
     };
   }
 
@@ -302,6 +323,15 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
       // The objects of letters that are gone. A bucket that is down leaves them
       // for the next run; the housekeeping and its next alarm go on regardless.
       if (blobs) await blobs.sweep();
+      // A sealed backup when one is due. Its failure is recorded for the status
+      // page and never stops the housekeeping or the next alarm.
+      if (backups) {
+        try {
+          if (await backups.due()) await backups.run();
+        } catch (error) {
+          log.error("relay: the scheduled backup failed", error?.name);
+        }
+      }
       stats.alarmLastRunAt = clock().toISOString();
       stats.alarmLastFailure = null;
     } catch (error) {

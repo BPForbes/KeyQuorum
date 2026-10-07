@@ -130,6 +130,12 @@ pub trait FromValue: Sized {
     fn from_value(value: &Value) -> Option<Self>;
 }
 
+impl FromValue for Value {
+    fn from_value(value: &Value) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
 impl FromValue for i64 {
     fn from_value(value: &Value) -> Option<Self> {
         match value {

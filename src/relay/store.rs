@@ -417,6 +417,19 @@ impl<S: Sql> SqlRelayStore<S> {
         self
     }
 
+    /// A sealed, relay-signed snapshot of the whole database for the operator's
+    /// backup key (`relay::backup`). Built whole and synchronously, so it is
+    /// one consistent point in time.
+    pub fn backup_snapshot(
+        &self,
+        identity: &ProviderIdentity,
+        recipient: &[u8; 32],
+        taken_at: &str,
+        max_bytes: usize,
+    ) -> Result<super::backup::Snapshot> {
+        self.with(|conn| super::backup::snapshot(conn, identity, recipient, taken_at, max_bytes))
+    }
+
     /// [`Self::with_blob_threshold`] on a store already built.
     ///
     /// The threshold never exceeds 1 MiB: a letter that large would not fit a

@@ -125,6 +125,9 @@ impl RelayResponse {
 pub struct RelayCore {
     store: SqlRelayStore<DoSql>,
     identity: Option<ProviderIdentity>,
+    /// A backup being uploaded: built whole by [`RelayCore::backup_begin`], read
+    /// out piece by piece, dropped by [`RelayCore::backup_end`].
+    backup: std::cell::RefCell<Option<crate::relay::backup::Snapshot>>,
 }
 
 fn mail_table(name: &str) -> Result<crate::relay::MailTable, JsError> {
@@ -173,6 +176,7 @@ impl RelayCore {
         Ok(Self {
             store: SqlRelayStore::new(sql, "durable-object"),
             identity,
+            backup: std::cell::RefCell::new(None),
         })
     }
 
@@ -317,6 +321,72 @@ impl RelayCore {
         }
         let done = self.store.blob_tombstones_done(&keys).map_err(js_error)?;
         Ok(u32::try_from(done).unwrap_or(u32::MAX))
+    }
+
+    /// Builds a sealed, relay-signed snapshot of the whole database for the
+    /// operator's backup key (`recipient`, 64 hex characters, an X25519 public
+    /// key), in one synchronous turn so it is consistent, and holds it for the
+    /// caller to read out and upload. Returns its plan as JSON: the backup id and
+    /// the name and size of each chunk and of the manifest. Refuses a database
+    /// whose plaintext would exceed `max_bytes`, and a relay without an identity
+    /// to sign with. Replaces any snapshot not yet ended.
+    pub fn backup_begin(
+        &self,
+        recipient: &str,
+        now: &str,
+        max_bytes: u32,
+    ) -> Result<String, JsError> {
+        let identity = self
+            .identity
+            .as_ref()
+            .ok_or_else(|| JsError::new("the relay has no identity to sign a backup with"))?;
+        let recipient: [u8; 32] = hex::decode(recipient.trim())
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| JsError::new("the backup recipient is not a 32-byte hex key"))?;
+        *self.backup.borrow_mut() = None;
+        let snapshot = self
+            .store
+            .backup_snapshot(identity, &recipient, now, max_bytes as usize)
+            .map_err(js_error)?;
+        let plan = serde_json::json!({
+            "id": snapshot.backup_id,
+            "tables": snapshot.tables,
+            "rows": snapshot.rows,
+            "objects": snapshot.objects.iter()
+                .map(|(name, bytes)| serde_json::json!({ "name": name, "bytes": bytes.len() }))
+                .collect::<Vec<_>>(),
+            "manifest": { "name": snapshot.manifest_name, "bytes": snapshot.manifest.len() },
+        });
+        *self.backup.borrow_mut() = Some(snapshot);
+        serde_json::to_string(&plan).map_err(js_error)
+    }
+
+    /// The sealed bytes of chunk `index` of the snapshot [`Self::backup_begin`] built.
+    pub fn backup_object(&self, index: u32) -> Result<Vec<u8>, JsError> {
+        let held = self.backup.borrow();
+        let snapshot = held
+            .as_ref()
+            .ok_or_else(|| JsError::new("no backup is in progress"))?;
+        snapshot
+            .objects
+            .get(index as usize)
+            .map(|(_, bytes)| bytes.clone())
+            .ok_or_else(|| JsError::new("no such backup chunk"))
+    }
+
+    /// The sealed, signed manifest of the snapshot. Upload it last.
+    pub fn backup_manifest(&self) -> Result<Vec<u8>, JsError> {
+        self.backup
+            .borrow()
+            .as_ref()
+            .map(|snapshot| snapshot.manifest.clone())
+            .ok_or_else(|| JsError::new("no backup is in progress"))
+    }
+
+    /// Drops the snapshot, whatever happened to its upload.
+    pub fn backup_end(&self) {
+        *self.backup.borrow_mut() = None;
     }
 
     /// Whether the store answers (the readiness probe).

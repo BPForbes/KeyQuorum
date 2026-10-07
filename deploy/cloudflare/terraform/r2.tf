@@ -29,3 +29,25 @@ resource "cloudflare_r2_bucket" "letters_staging" {
   account_id = var.account_id
   name       = var.letters_bucket_name_staging
 }
+
+# The relay's sealed database backups (docs/operator/r2-backups.md): their own
+# private bucket per environment, bound to the public Worker as BACKUPS. The
+# objects are sealed to a key only the operator holds, so the bucket is not
+# secret-bearing, but it is still private (no public access, no custom domain),
+# and it is never the letters' bucket. Retention (a lifecycle rule or an object
+# lock) is set in the Cloudflare dashboard or API, not here: the Worker prunes to
+# the newest few, and a lock would be what protects the rest from a compromised
+# Worker.
+resource "cloudflare_r2_bucket" "backups" {
+  count = var.backups_bucket_name == "" ? 0 : 1
+
+  account_id = var.account_id
+  name       = var.backups_bucket_name
+}
+
+resource "cloudflare_r2_bucket" "backups_staging" {
+  count = var.backups_bucket_name_staging == "" ? 0 : 1
+
+  account_id = var.account_id
+  name       = var.backups_bucket_name_staging
+}
