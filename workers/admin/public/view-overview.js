@@ -1,7 +1,9 @@
 import { api, get } from "./api.js";
 import { commit, operation } from "./confirm.js";
 import { plural } from "./format.js";
+import { setupComplete } from "./setup-state.js";
 import { card, clear, h, lockField, notice, section } from "./ui.js";
+import { setupGuide } from "./view-setup.js";
 
 // A new lock, shown once, then confirmed by entering it back. Until then the
 // relay still has the previous lock (or none), so a lost response costs nothing.
@@ -126,10 +128,7 @@ function replaceLockPanel(ctx) {
 export default async function overview(ctx) {
   const o = await get("/api/overview");
   const out = [];
-  if (!o.identity_configured) {
-    out.push(notice("bad", "The relay has no identity (its certificate and key secrets are not set). It cannot issue or seal keys until the operator sets them."));
-  }
-  if (!o.operator_lock) out.push(createLockPanel(ctx, o.operator_lock_pending));
+  if (!setupComplete(o)) out.push(setupGuide(o, createLockPanel(ctx, o.operator_lock_pending)));
 
   out.push(
     section(

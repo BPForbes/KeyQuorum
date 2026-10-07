@@ -1,5 +1,6 @@
 import { get } from "./api.js";
 import { daysUntil, formatBytes, formatTime } from "./format.js";
+import { untrustedReason } from "./setup-state.js";
 import { badge, card, h, notice, section } from "./ui.js";
 
 function row(label, value) {
@@ -18,6 +19,8 @@ export default async function status() {
   const left = expires ? daysUntil(expires) : null;
   if (known && !known.identity.configured) {
     out.push(notice("bad", "The relay has no identity (certificate and key secrets). It cannot issue or seal keys, and official clients will not trust it."));
+  } else if (known?.identity_check?.state === "untrusted") {
+    out.push(notice("bad", `The relay holds an identity that official clients would refuse. ${untrustedReason({ identity_check: known.identity_check })}`));
   } else if (left !== null && left < 0) {
     out.push(notice("bad", "The relay's provider certificate has expired. Official clients will refuse it."));
   } else if (left !== null && left < 30) {
@@ -48,6 +51,8 @@ export default async function status() {
             "tbody",
             {},
             row("Identity", known?.identity?.configured ? badge("configured", "good") : badge("not configured", "bad")),
+            row("Trusted by clients", known?.identity_check?.state === "trusted" ? badge("yes: signed by the pinned root, not expired, key matches", "good") : known?.identity_check?.state === "untrusted" ? badge("no", "bad") : "—"),
+            row("Pinned root", known?.identity_check?.pinned_root ? h("code", { text: known.identity_check.pinned_root }) : "—"),
             row("Provider id", known?.identity?.provider_id ?? "—"),
             row("Certificate serial", known?.identity?.serial ? h("code", { text: known.identity.serial }) : "—"),
             row("Certificate expires", known?.identity?.expires_at ? `${formatTime(known.identity.expires_at)}${left !== null ? ` (${left} days)` : ""}` : "—"),

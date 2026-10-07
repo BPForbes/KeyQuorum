@@ -2,11 +2,18 @@ import { ApiError, api, get } from "./api.js";
 import { bundleList } from "./bundles.js";
 import { commit, operation } from "./confirm.js";
 import { isHex, scopeLabel } from "./format.js";
+import { issuanceBlock } from "./setup-state.js";
 import { clear, field, h, lockField, notice, section } from "./ui.js";
 
 const SCOPES = ["inbox.push", "inbox.pull", "device.push", "device.pull"];
 
 export default async function issue(ctx) {
+  // The relay refuses to seal or issue without an identity and the operator lock;
+  // say which is missing before the operator fills in a form it would refuse.
+  const blocked = issuanceBlock(await get("/api/overview"));
+  if (blocked) {
+    return section("Issue keys", notice("warn", blocked), h("p", {}, h("a", { href: "#overview", text: "Go to the setup steps" }), "."));
+  }
   const wantedUser = Number(ctx.params.get("user"));
   const wantedLicence = Number(ctx.params.get("licence"));
   const known = Number.isInteger(wantedUser) && wantedUser > 0 ? await get(`/api/users/${wantedUser}/licenses`) : null;

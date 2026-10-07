@@ -412,11 +412,72 @@ set, and Access's independent MFA turned on with a security key enrolled (a
 dashboard step: `deploy/cloudflare/terraform/README.md`, "Operator login and
 MFA"), so that the operator can sign in through Access with MFA.
 
+**First-time setup.** On a relay with no identity or no lock the *Overview*
+page opens with a four-step guide (issue #102), each step with its own status
+(`done`, `do this next`, `started, not confirmed`, `waits for an earlier step`,
+or, for step 1, `offline, not visible from here`). The steps are distinct on
+purpose:
+
+1. **The offline provider-root ceremony, and pinning the root**: `host root
+   generate` once, offline (the first time only); `host identity generate` on
+   your own machine ("Host identity"); then `host certify` offline ("Offline
+   provider certificate issuance"). It leaves only its result,
+   `provider.kqcert`. **Pin the root before production:** the relay and every
+   official client trust exactly one root public key, compiled in
+   (`KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`, `src/provider.rs`), and the repository
+   ships a placeholder. Replace it with the public half of your root
+   (`root.pub`) and rebuild the relay (the WebAssembly core) and the clients; a
+   certificate under any other root is refused by every client. The relay checks
+   its identity the way a client does (`provider::self_check`): the certificate
+   is signed by the root the relay pins, has not expired, grants the provider
+   capabilities and names the key the relay holds. The guide marks this step done
+   **only when the certificate part of that check passes** (signed by the pinned
+   root, unexpired, capabilities); holding both Worker secrets is not that. Whether
+   the key matches the certificate is judged at step 2.
+   If the check fails because of the certificate or the pinned root
+   (`certificate_not_signed_by_pinned_root`, `certificate_expired` or
+   `capabilities_missing`) this step reads "needs attention" with the reason. If
+   it fails only because the relay key does not match the certificate
+   (`key_does_not_match_certificate`), the certificate itself verified, so this
+   step stays done and step 2 is the one that reads "needs attention". The
+   console shows the root the relay pins (a public value, 64 hexadecimal
+   characters) so you can compare it with `root.pub`. The Cloudflare relay reads
+   no revocation list, so a revoked certificate is not caught by this check.
+2. **The relay's identity**, a service credential: the Worker secrets
+   `RELAY_PRIVATE_KEY` and `RELAY_CERTIFICATE` ("Secret provisioning"). It is
+   not a personal `.kqkey` (those are sealed to one person and opened with their
+   passphrase; a service signing unattended has neither), and it is never sealed
+   into a bundle ("Why the relay key is not a `.kq*` file" in `relay-secrets.md`).
+   This step is done only when the relay's identity checks out, not merely when
+   it holds both. Until an identity exists it reads "do this next"; it reads
+   "needs attention" if the relay key and the certificate are from different key
+   pairs; and it reads "waits for an earlier step" while step 1 needs attention
+   (for example an expired certificate), because the fault is then in the
+   certificate or the pinned root, not in what was installed.
+3. **The operator lock**, your own authority to change anything (below). The
+   relay refuses to create it without an identity, and the guide waits until
+   that identity checks out (the relay itself requires only that one exists), so
+   it never offers a button that would fail or that seals for an identity clients
+   would refuse.
+4. **Issuing each person's keys.** The first credential is a sealed `.kqkey`
+   for that person's own slot key; later rotations can arrive as a `.kqpb`
+   letter. A bundle is never reused for someone else. The *Issue keys* page shows
+   which step is missing and no form until steps 1 to 3 are done. The relay
+   itself requires an identity and the lock; the added requirement that the
+   identity is trusted is the page's, because a key sealed under an identity
+   clients refuse is useless, not unsafe.
+
+None of the guide's commands holds a value, and it asks for nothing secret. A
+YubiKey option for the lock is evaluated, not built, in
+`yubikey-evaluation.md`; Access's one-time PIN and security-key MFA are
+unchanged.
+
 1. **Check status.** Open the console's *Status* page: ready, the relay's
    identity and certificate (and its expiry), the housekeeping alarm, storage
    and the deployed version. Fix anything it shows as missing before issuing.
 2. **Create the operator lock** (once, on the *Overview* page, which offers it
-   while no lock exists). The console stages a `kql_…` lock and shows it
+   once the relay has a trusted identity and while no lock exists). The console
+   stages a `kql_…` lock and shows it
    **once**: copy it into your password manager or a file only you can read. It
    is not yet the lock. Paste it back and confirm; only then does it take
    effect. If the response was lost, or you did not save the value, repeat the
