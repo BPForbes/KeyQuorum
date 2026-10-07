@@ -28,7 +28,9 @@ export const ISOLATION_HEADERS = {
 // Returns null when the request may be served, or the reason it is refused
 // (for the log; never shown to the caller).
 //
-// `allowNavigation` is for the admin console only. After an operator signs in,
+// `allowNavigation` is for public status-page links and admin sign-in redirects.
+// The public Worker enables it only on its status page and mount/preview-root
+// redirects, never API paths. After an operator signs in,
 // Cloudflare Access sends the browser back through a redirect that began on
 // another site, so the landing request is marked cross-site; refusing it would
 // lock the operator out. A top-level page load (`navigate` to a `document`) is

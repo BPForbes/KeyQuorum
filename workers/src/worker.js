@@ -56,21 +56,24 @@ export async function handle(request, env, log = console) {
     return jsonResponse(404, { error: "not found" });
   }
 
-  // Another website, the Lab and the portfolio included, may not reach this
-  // site from a browser: no fetch, frame, script, image or form from it, and no
-  // link either (the relay has no sign-in redirect that would need one). A
-  // person who types the address, or the site's own page, passes; so does a
-  // command-line client, which sends none of these headers.
-  const refusal = crossSiteRefusal(request);
+  // Parse the mount before deciding whether a cross-site navigation is a
+  // harmless status-page link. Invalid configuration still serves nothing.
+  const mount = relayMount(env.MOUNT_PATH);
+  if (mount === null) return jsonResponse(503, { error: "relay not configured" });
+
+  // Links and redirects may reach only the status page and its redirects.
+  // The browser-isolation helper still refuses fetches, forms and embeds,
+  // foreign/null Origin headers, and non-GET/HEAD navigations. API paths do
+  // not get this exception and can never reach the relay from another site.
+  const statusNavigation =
+    url.pathname === mount ||
+    url.pathname === `${mount}/` ||
+    (env.ROOT_REDIRECT === "1" && url.pathname === "/");
+  const refusal = crossSiteRefusal(request, { allowNavigation: statusNavigation });
   if (refusal) {
     log.warn(`relay: refused ${refusal}`);
     return jsonResponse(403, { error: "cross-site requests are not served" });
   }
-
-  // Where this Worker is mounted (MOUNT_PATH, mount.js): a value that is not a
-  // valid mount leaves it unconfigured, so a typo serves nothing.
-  const mount = relayMount(env.MOUNT_PATH);
-  if (mount === null) return jsonResponse(503, { error: "relay not configured" });
 
   // A Worker Preview has a host to itself, so there its root may lead to the
   // relay's page (`ROOT_REDIRECT`, set only in [previews.vars]; the guard refuses

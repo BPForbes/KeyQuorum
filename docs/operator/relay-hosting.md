@@ -1076,8 +1076,11 @@ The relay has its own front ends and shares nothing with the Lab
   `X-Frame-Options: DENY` and `Cross-Origin-Opener-Policy: same-origin`, so
   neither site can embed or script them. Typing the address, a bookmark, the
   site's own page and a command-line client (which sends none of those headers)
-  are served. A plain link from another site is refused on the public Worker.
-  On the admin Worker alone a top-level link is let through to the token check,
+  are served. Top-level GET/HEAD links and redirect chains from another site may
+  reach the public status page, its mount-to-slash redirect, and the preview-only
+  root redirect. API paths remain refused, even for a top-level navigation;
+  fetches, forms, frames and foreign/null Origin headers remain refused everywhere.
+  On the admin Worker a top-level link is let through to the token check,
   because Cloudflare Access sends the operator back through a redirect that
   starts on Access's own domain and a refusal would lock the operator out; the
   Worker still serves nothing without a valid token.
