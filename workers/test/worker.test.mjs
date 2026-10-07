@@ -182,8 +182,12 @@ test("a declared body over the cap is 413 and never reaches the relay; the cap i
   assert.equal(forwarded.length, 1);
 });
 
-test("only a raw POST /inbox may declare a body as large as a large letter", async () => {
+test("only a raw POST /inbox may declare a body as large as a large letter, and only with a bucket bound", async () => {
   const { env, forwarded } = fakeEnv();
+  const bare = { method: "POST", body: "x", headers: { "content-length": String(MAX_REQUEST_BODY + 1) } };
+  assert.equal((await call(env, "/inbox", bare)).status, 413, "no bucket, no large letter");
+  const noop = async () => null;
+  env.LETTERS = { put: noop, get: noop, delete: noop };
   const declare = (length, extra = {}) => ({ method: "POST", body: "x", headers: { "content-length": String(length), ...extra } });
   // A raw letter up to the large cap is let through to the relay.
   for (const type of [{}, { "content-type": "application/octet-stream" }]) {

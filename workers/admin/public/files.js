@@ -27,6 +27,15 @@ const NOT_HERE = {
 
 const PRIVATE_NAME = /(\.key|\.skey|\.pem|\.secret|\.token|\.p12|\.pfx)$/i;
 
+export const PRIVATE_NAME_NOTE =
+  "This looks like private key material. It is never uploaded to this console: nothing here needs it, and it stays on the machine that holds it. Nothing was read or sent.";
+
+// A file named like a private key is refused from its name alone, before any
+// of its bytes are read.
+export function isPrivateName(name) {
+  return PRIVATE_NAME.test(String(name ?? ""));
+}
+
 export function magicOf(bytes) {
   return bytes.length >= 4 ? String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]) : "";
 }
@@ -53,11 +62,8 @@ export function classify(bytes, name = "") {
   const refuse = (note, label = "Not accepted") => ({ accepted: false, kind: "refused", label, visibility: null, action: null, note });
   if (bytes.length === 0) return refuse("The file is empty.");
   if (bytes.length > MAX_FILE_BYTES) return refuse("The file is too large for this console.");
-  if (PRIVATE_NAME.test(name) || looksLikeRawKey(bytes)) {
-    return refuse(
-      "This looks like private key material. It is never uploaded to this console: nothing here needs it, and it stays on the machine that holds it. Nothing was read or sent.",
-      "Private key material",
-    );
+  if (isPrivateName(name) || looksLikeRawKey(bytes)) {
+    return refuse(PRIVATE_NAME_NOTE, "Private key material");
   }
   const magic = magicOf(bytes);
   if (magic === "KQXB" || magic === "KQPB") {

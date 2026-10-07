@@ -811,7 +811,7 @@ fn run_backup(command: BackupCommand) -> Result<()> {
                 &KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY,
                 &revoked,
             )?;
-            println!(
+            tracing::info!(
                 "restored backup {} (taken {}): {} tables, {} rows into {}",
                 restored.backup_id,
                 restored.taken_at,

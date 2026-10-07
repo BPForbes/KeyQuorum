@@ -363,6 +363,37 @@ pub fn summaries(conn: &dyn Sql, limit: i64) -> Result<(i64, Vec<LetterSummary>)
     summaries_in(conn, MailTable::Inbox, limit)
 }
 
+/// Adds the held-letter columns to a mailbox table that was created before
+/// they existed. `CREATE TABLE IF NOT EXISTS` never adds a column, and a
+/// Durable Object cannot run [`super::migrate`] (it takes a `Connection`), so
+/// the Durable Object core calls this after the schema. A table that does not
+/// exist yet, or already has the columns, is left alone.
+pub fn ensure_blob_columns(conn: &dyn Sql) -> Result<()> {
+    for table in ["mailbox", "device_mailbox"] {
+        let mut names: Vec<String> = Vec::new();
+        conn.query_each(&format!("PRAGMA table_info({table})"), &[], &mut |row| {
+            names.push(row.get::<String>(1)?);
+            Ok(true)
+        })?;
+        if names.is_empty() {
+            continue;
+        }
+        if !names.iter().any(|name| name == "blob_len") {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN blob_len INTEGER"),
+                &[],
+            )?;
+        }
+        if !names.iter().any(|name| name == "blob_ready") {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN blob_ready INTEGER NOT NULL DEFAULT 1"),
+                &[],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[path = "mailbox/tests.rs"]
 mod tests;

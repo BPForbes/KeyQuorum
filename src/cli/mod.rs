@@ -2961,6 +2961,26 @@ pub(crate) fn install_key_component(conn: &Connection, bytes: &[u8], slot: &str)
     Ok(db::relay_credential::normalize_url(&opened.issue.relay_url))
 }
 
+/// The offline checks of [`install_key_component`], with nothing stored and no
+/// relay contacted: the sealed key opens with the slot, verifies against the
+/// root, clock and revocation list, is for this device, and names a usable
+/// relay URL. A package runs this on every key before its first write.
+pub(crate) fn precheck_key_component(bytes: &[u8], slot: &str) -> Result<()> {
+    let secret = encryption_secret_from(None, Some(slot))?;
+    let device_id = device_id_of_slot(slot)?;
+    let opened = open_key_issue(bytes, &secret)?;
+    if opened
+        .issue
+        .device_id
+        .is_some_and(|bound| bound != device_id)
+    {
+        return Err(Error::KeyIssueDeviceMismatch);
+    }
+    relay::validate_relay_url(&db::relay_credential::normalize_url(
+        &opened.issue.relay_url,
+    ))
+}
+
 /// Open and verify a key letter or bundle against this environment's
 /// provider root, clock and revocation list.
 fn open_key_issue(bytes: &[u8], secret: &[u8; 32]) -> Result<crate::api_key_delivery::Opened> {

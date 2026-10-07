@@ -2,7 +2,7 @@
 // material; its zip is a real zip; its fingerprint is the Rust one.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { MAX_FILE_BYTES, classify, fromBase64, looksLikeRawKey, readEnrollment, readPackage, toBase64 } from "../public/files.js";
+import { MAX_FILE_BYTES, classify, fromBase64, isPrivateName, looksLikeRawKey, readEnrollment, readPackage, toBase64 } from "../public/files.js";
 import { crc32, makeZip } from "../public/zip.js";
 
 // Held to the same bytes and fingerprint as src/enrollment/tests.rs.
@@ -157,4 +157,13 @@ test("a zip never takes a name that could leave its folder, or a repeat", () => 
   }
   assert.throws(() => makeZip([{ name: "a", bytes: text("x") }, { name: "a", bytes: text("y") }]));
   assert.throws(() => makeZip([]));
+});
+
+test("a private-looking file name is refused from the name alone", () => {
+  for (const name of ["relay.key", "device.SKEY", "x.pem", "a.p12", "b.pfx", "c.secret", "d.token"]) {
+    assert.equal(isPrivateName(name), true, name);
+  }
+  for (const name of ["provider.kqcert", "enroll.kqreq", "setup.kqpkg", "keyboard.txt"]) {
+    assert.equal(isPrivateName(name), false, name);
+  }
 });

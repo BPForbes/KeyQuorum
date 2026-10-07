@@ -498,3 +498,45 @@ fn two_manifests_or_one_in_an_information_package_are_refused() {
     info.components.push(manifest);
     assert!(package::encode(&info, &relay.identity.relay_private_key).is_err());
 }
+
+#[test]
+fn a_key_bound_to_another_drive_stops_a_manifest_setup_before_any_write() {
+    let mut env = alice();
+    let relay = env.relay.as_ref().expect("a relay");
+    let mut recipient = alice_recipient(&env);
+    let manifest_recipient = recipient.public_key;
+    let manifest_device = recipient.device_id;
+    recipient.device_id = Some([9u8; 16]);
+    let mut key = Vec::new();
+    key_delivery::create_as_bundle(
+        &*relay.store.connection(),
+        &relay.identity,
+        &NewApiKey {
+            scope: ApiKeyScope::InboxPull,
+            recipient_fingerprint: None,
+            label: Some("alice".into()),
+            ttl_seconds: None,
+        },
+        &recipient,
+        |sealed| {
+            key = sealed.to_vec();
+            Ok(())
+        },
+    )
+    .expect("create_as_bundle");
+    let bytes = package::issue_client_package(
+        &relay.identity,
+        &[key.as_slice()],
+        &manifest_recipient,
+        manifest_device,
+        unix("2026-10-01 00:00"),
+        30,
+    )
+    .expect("issue_client_package");
+    put_package(&mut env, &bytes);
+
+    let (result, _) = env.keyquorum(&format!("{SETUP} --yes"));
+    assert!(result.is_err(), "a key for another drive");
+    assert!(!env.fs.exists(Path::new(CERTIFICATE)));
+    assert!(stored_key(&env).is_none());
+}

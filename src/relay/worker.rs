@@ -174,6 +174,7 @@ impl RelayCore {
         };
         let sql = DoSql::new(adapter);
         sql.execute_batch(crate::relay::SCHEMA).map_err(js_error)?;
+        crate::relay::mailbox::ensure_blob_columns(&sql).map_err(js_error)?;
         sql.execute_batch("PRAGMA foreign_keys = ON")
             .map_err(js_error)?;
         Ok(Self {

@@ -95,6 +95,18 @@ fn plan(package_path: &Path, device: &Path, label: &str) -> Result<Plan> {
         )?),
         None => None,
     };
+    if steps.is_some() {
+        // Every sealed key is opened and checked now, before the first write, so
+        // a key that cannot install leaves no identity or certificate behind.
+        let slot = format!("{}={label}", device.display());
+        for component in package
+            .components
+            .iter()
+            .filter(|component| component.kind.carries_key())
+        {
+            super::precheck_key_component(&component.bytes, &slot)?;
+        }
+    }
     let certificate = certificate_of(&package)?.bytes.clone();
     let parsed = provider::parse_certificate(&certificate)?;
     let target = device.join(CERTIFICATE_NAME);

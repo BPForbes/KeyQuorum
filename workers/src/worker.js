@@ -17,6 +17,7 @@
 // served), route an operator path (`/api-keys*`, the full `/audit/*`, anything
 // that mints is not on this Worker), or keep a request waiting behind the
 // object (the object refuses past `MAX_IN_FLIGHT`).
+import { bucketOf } from "./blobs.js";
 import { crossSiteRefusal } from "./browser-isolation.js";
 import { relayMount } from "./mount.js";
 import {

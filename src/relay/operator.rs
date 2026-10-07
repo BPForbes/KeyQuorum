@@ -535,7 +535,10 @@ fn run(
             // Everything the package needs is checked before the keys are
             // minted, so a package cannot fail once they exist.
             let issued_at = crate::provider::unix_from_utc(now).map_err(|e| failure(&e))?;
-            crate::provider::parse_certificate(&identity.certificate).map_err(|e| failure(&e))?;
+            if enrolled {
+                crate::provider::parse_certificate(&identity.certificate)
+                    .map_err(|e| failure(&e))?;
+            }
             let request = build_issuance(
                 customer_id,
                 name,
