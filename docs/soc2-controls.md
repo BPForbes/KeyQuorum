@@ -200,6 +200,15 @@ These are stated so an auditor need not discover them:
 
 ## Audit log
 
+### 2026-10-07 (fourteenth pass): guided first-time setup in the console, and a YubiKey evaluation (#102)
+
+The production console's first screen stopped at "The relay has no identity" and offered to create the operator lock, which the relay refuses until it has one. The Overview now opens, until the relay has an identity and the lock, with a four-step guide, and the Issue keys page stops before its form. A YubiKey option was evaluated and written down, not built.
+
+| Severity | Criterion | Finding | Fix |
+| --- | --- | --- | --- |
+| major | CC8.1, CC6.1 | A first-time operator was shown a warning and a button the relay would refuse, with no account of the offline root ceremony, the relay's service credential or the operator lock as separate things; Issue keys showed a full form that could only fail. | `workers/admin/public/setup-state.js` (DOM-free) decides each step's status from the overview; `view-setup.js` renders the four steps, each with its status; `view-overview.js` shows the guide until `setupComplete`, and `view-issue.js` shows which step is missing instead of the form (`issuanceBlock`). The relay still enforces both rules itself (`need_identity`, the lock check); the page only says so first. The guide's commands name files, never values, and it keeps the relay's identity (Worker secrets) apart from a personal `.kqkey`. Tests: `workers/admin/src/setup.test.mjs`; the page-contract test covers the new files. A headless-browser run of the real Worker and relay core showed both states (outside CI). |
+| minor | CC6.1, CC6.2 | A hardware option for operator authorization could weaken Access MFA, treat key insertion as authentication, or imply a browser key can sign or open KQ formats. | `docs/operator/yubikey-evaluation.md`: what a YubiKey can and cannot do against KQ's Ed25519 and X25519, a threat model, enrolment, confirmation, lost-key and revocation rules, and that the relay's signing key and the offline root stay where they are. Nothing implemented; Access one-time PIN plus security-key MFA unchanged. Its vendor and specification lines come from search summaries, not fetched pages, and say so. |
+
 ### 2026-10-06 (thirteenth pass): a Worker Preview's root leads to the relay page
 
 A Preview URL opened at its root showed `{"error":"not found"}` after the relay moved under `/relay`. `ROOT_REDIRECT = "1"` in `[previews.vars]` now sends a GET or HEAD of the exact root to the mount (`workers/src/worker.js`). Anything else, a POST to the root included, stays a 404. The guard (`workers/scripts/guard.mjs`) fails CI if `ROOT_REDIRECT` is turned on in `[vars]` or an environment's `[vars]`, because on a real domain the root is not the relay's. Tests: `workers/test/worker.test.mjs`, `workers/scripts/guard.test.mjs`; run under local workerd. No SOC 2 weakening: a Preview has its own empty Durable Object and no secrets, and the redirect reveals nothing.

@@ -193,7 +193,7 @@ recovered by replacing the key) and no reply holds a bearer or key hash; the
 operator lock is made in two steps (`bootstrap` or `rotate_lock` stages it in
 `licensee_pending` and shows it once, `confirm_lock` promotes it), and an empty
 store cannot be claimed by an ordinary request; the `admin` scope is not issued
-from the console. There is one operator role (Access decides who is in), and the
+from the console. Until the relay has an identity and the lock, the Overview opens with a four-step first-time setup guide (`workers/admin/public/setup-state.js`, `view-setup.js`: the offline root ceremony, the relay's identity as Worker secrets, the operator lock, then issuing) and Issue keys shows the missing step instead of its form; the relay enforces both rules itself, and a YubiKey option is evaluated, not built (`docs/operator/yubikey-evaluation.md`). There is one operator role (Access decides who is in), and the
 console cannot show letter contents or file histories, which are sealed. What has
 not been done and must not be claimed: a deploy to staging, the restore drill, a
 cost or storage measurement, any enforced licence limit, a second role, and a

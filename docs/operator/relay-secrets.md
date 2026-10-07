@@ -81,3 +81,8 @@ key: an owner-only file (or a service credential file) on the native
 development host, and, in the plan, a Worker secret on Cloudflare. A sealed relay-provisioning
 bundle (a new `KQXB` type sealed to a dedicated host key) is a separate
 design with its own wire format, not part of this deployment path.
+
+A YubiKey cannot hold this key either: the relay signs unattended on every
+request, and a hardware key needs a person's touch. The hardware options that
+are feasible (a second factor on the operator lock, and, with a helper, the
+offline root) are evaluated in `yubikey-evaluation.md`; none is built.

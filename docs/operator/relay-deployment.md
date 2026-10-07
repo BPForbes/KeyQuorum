@@ -412,11 +412,40 @@ set, and Access's independent MFA turned on with a security key enrolled (a
 dashboard step: `deploy/cloudflare/terraform/README.md`, "Operator login and
 MFA"), so that the operator can sign in through Access with MFA.
 
+**First-time setup.** On a relay with no identity or no lock the *Overview*
+page opens with a four-step guide (issue #102), each step with its own status
+(`done`, `do this next`, `started, not confirmed`, `waits for an earlier step`,
+or, for step 1, `offline, not visible from here`). The steps are distinct on
+purpose:
+
+1. **The offline provider-root ceremony** (`host certify`, "Offline provider
+   certificate issuance"). It happens off the page and leaves only its result,
+   `provider.kqcert`. The guide marks it done once the relay holds an identity.
+2. **The relay's identity**, a service credential: the Worker secrets
+   `RELAY_PRIVATE_KEY` and `RELAY_CERTIFICATE` ("Secret provisioning"). It is
+   not a personal `.kqkey` (those are sealed to one person and opened with their
+   passphrase; a service signing unattended has neither), and it is never sealed
+   into a bundle ("Why the relay key is not a `.kq*` file" in `relay-secrets.md`).
+   The warning clears when the relay reports an identity.
+3. **The operator lock**, your own authority to change anything (below). The
+   relay refuses to create it without an identity, and the guide says so instead
+   of offering a button that would fail.
+4. **Issuing each person's keys.** The first credential is a sealed `.kqkey`
+   for that person's own slot key; later rotations can arrive as a `.kqpb`
+   letter. A bundle is never reused for someone else. The *Issue keys* page shows
+   which step is missing and no form until steps 2 and 3 are done; the relay
+   enforces the same rule itself.
+
+None of the guide's commands holds a value, and it asks for nothing secret. A
+YubiKey option for the lock is evaluated, not built, in
+`yubikey-evaluation.md`; Access's one-time PIN and security-key MFA are
+unchanged.
+
 1. **Check status.** Open the console's *Status* page: ready, the relay's
    identity and certificate (and its expiry), the housekeeping alarm, storage
    and the deployed version. Fix anything it shows as missing before issuing.
 2. **Create the operator lock** (once, on the *Overview* page, which offers it
-   while no lock exists). The console stages a `kql_…` lock and shows it
+   once the relay has an identity and while no lock exists). The console stages a `kql_…` lock and shows it
    **once**: copy it into your password manager or a file only you can read. It
    is not yet the lock. Paste it back and confirm; only then does it take
    effect. If the response was lost, or you did not save the value, repeat the
