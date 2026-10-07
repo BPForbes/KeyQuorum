@@ -148,6 +148,19 @@ pub enum ComponentKind {
 }
 
 impl ComponentKind {
+    /// The most bytes one component of this kind may take, signatures and
+    /// sealing included. A package bound by [`MAX_COMPONENT_BYTES`] alone could
+    /// carry an 8 MiB "certificate"; these are the real sizes with room to grow.
+    pub const fn max_bytes(self) -> usize {
+        match self {
+            Self::Certificate => 16 * 1024,
+            Self::RevocationList => 1024 * 1024,
+            Self::Policy => 256 * 1024,
+            Self::ApiKeyBundle | Self::ApiKeyLetter => 128 * 1024,
+            Self::SetupManifest => 256 * 1024,
+        }
+    }
+
     fn tag(self) -> u8 {
         match self {
             Self::Certificate => 1,
@@ -252,7 +265,9 @@ fn check_components(purpose: Purpose, components: &[Component]) -> Result<()> {
     let mut seen = HashSet::new();
     let mut keys = 0usize;
     for component in components {
-        if component.bytes.len() > MAX_COMPONENT_BYTES {
+        if component.bytes.len() > MAX_COMPONENT_BYTES
+            || component.bytes.len() > component.kind.max_bytes()
+        {
             return Err(Error::InvalidKqpkg);
         }
         if classify(&component.bytes)? != component.kind || !component.kind.allowed_in(purpose) {
@@ -351,7 +366,10 @@ pub fn decode(bytes: &[u8]) -> Result<Package> {
         let kind = ComponentKind::from_tag(take_array::<1>(&mut data).map_err(malformed)?[0])?;
         let hash = take_array::<32>(&mut data).map_err(malformed)?;
         let component = take_len_prefixed_u32(&mut data).map_err(malformed)?;
-        if component.len() > MAX_COMPONENT_BYTES || digest(component) != hash {
+        if component.len() > MAX_COMPONENT_BYTES
+            || component.len() > kind.max_bytes()
+            || digest(component) != hash
+        {
             return Err(Error::InvalidKqpkg);
         }
         components.push(Component {

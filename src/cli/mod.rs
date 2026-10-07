@@ -2965,7 +2965,15 @@ pub(crate) fn install_key_component(conn: &Connection, bytes: &[u8], slot: &str)
 /// relay contacted: the sealed key opens with the slot, verifies against the
 /// root, clock and revocation list, is for this device, and names a usable
 /// relay URL. A package runs this on every key before its first write.
-pub(crate) fn precheck_key_component(bytes: &[u8], slot: &str) -> Result<()> {
+///
+/// `issuer` is the relay key that signed the package: the key must have been
+/// issued by that same relay, not merely by another one the root vouches for.
+/// What it returns is secret-free (no bearer), for the preview.
+pub(crate) fn precheck_key_component(
+    bytes: &[u8],
+    slot: &str,
+    issuer: &[u8; 32],
+) -> Result<KeyPreview> {
     let secret = encryption_secret_from(None, Some(slot))?;
     let device_id = device_id_of_slot(slot)?;
     let opened = open_key_issue(bytes, &secret)?;
@@ -2976,9 +2984,28 @@ pub(crate) fn precheck_key_component(bytes: &[u8], slot: &str) -> Result<()> {
     {
         return Err(Error::KeyIssueDeviceMismatch);
     }
-    relay::validate_relay_url(&db::relay_credential::normalize_url(
-        &opened.issue.relay_url,
-    ))
+    if &opened.certificate.relay_public_key != issuer {
+        return Err(Error::KeyIssueRelayMismatch);
+    }
+    let relay_url = db::relay_credential::normalize_url(&opened.issue.relay_url);
+    relay::validate_relay_url(&relay_url)?;
+    Ok(KeyPreview {
+        key_hash: relay::hash_bearer(&opened.issue.token)?,
+        relay_url,
+        scope: opened.issue.scope.clone(),
+        expires_at: opened.issue.expires_at.clone(),
+        licence: opened.issue.licence.clone(),
+    })
+}
+
+/// What a verified sealed key says about itself, without its bearer.
+pub(crate) struct KeyPreview {
+    /// The hash of the bearer, for comparing with a stored key; never printed.
+    pub key_hash: String,
+    pub relay_url: String,
+    pub scope: String,
+    pub expires_at: Option<String>,
+    pub licence: Option<String>,
 }
 
 /// Open and verify a key letter or bundle against this environment's

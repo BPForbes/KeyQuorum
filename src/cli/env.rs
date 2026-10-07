@@ -224,6 +224,11 @@ pub fn read(path: &Path) -> Result<Vec<u8>> {
     fs(|fs| fs.read(path))
 }
 
+/// [`read`] that refuses a file longer than `max` without holding it whole.
+pub fn read_bounded(path: &Path, max: usize) -> Result<Vec<u8>> {
+    fs(|fs| fs.read_bounded(path, max))
+}
+
 pub fn exists(path: &Path) -> bool {
     fs(|fs| fs.exists(path))
 }

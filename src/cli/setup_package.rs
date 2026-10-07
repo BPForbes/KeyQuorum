@@ -21,6 +21,7 @@
 
 use super::env::{self, outln};
 use super::{profile, revocation_list, setup, usage};
+use crate::db;
 use crate::error::Result;
 use crate::package::{self, Component, ComponentKind, Package, Purpose};
 use crate::provider;
@@ -42,6 +43,9 @@ struct Plan {
     /// The steps of the package's own setup manifest, in order, when it carries
     /// one. Without a manifest the plan is the fixed one for its purpose.
     steps: Option<Vec<Operation>>,
+    /// What each sealed key says about itself, checked before any write; empty
+    /// when the slot does not exist yet (the fixed plan creates it).
+    keys: Vec<super::KeyPreview>,
 }
 
 #[inline(never)]
@@ -55,7 +59,7 @@ pub(super) fn run(
     if !env::package_setup() {
         return Err(usage("setup with a package is not available here"));
     }
-    let plan = plan(package_path, device, label)?;
+    let plan = plan(conn, package_path, device, label)?;
     show(&plan, device, label);
     match plan.package.purpose {
         Purpose::ClientSetup | Purpose::ClientUpdate => {}
@@ -63,6 +67,12 @@ pub(super) fn run(
             outln!("This package is information only; nothing to install.");
             return Ok(());
         }
+    }
+    if plan.package.purpose == Purpose::ClientUpdate {
+        // An update replaces credentials, which needs the install ledger that is
+        // not built (a stale package must not be able to put an old key back).
+        outln!("Installing a package update is not supported yet; nothing was changed.");
+        return Ok(());
     }
     if !yes {
         outln!("Nothing was changed. Run again with --yes to apply this plan.");
@@ -72,8 +82,8 @@ pub(super) fn run(
 }
 
 /// Read, verify and plan. Writes nothing.
-fn plan(package_path: &Path, device: &Path, label: &str) -> Result<Plan> {
-    let bytes = env::read(package_path)?;
+fn plan(conn: &Connection, package_path: &Path, device: &Path, label: &str) -> Result<Plan> {
+    let bytes = env::read_bounded(package_path, package::MAX_PACKAGE_BYTES)?;
     let package = package::decode(&bytes)?;
     let now = env::now_utc()?;
     package.check_valid_at(provider::unix_from_utc(&now)?)?;
@@ -95,19 +105,44 @@ fn plan(package_path: &Path, device: &Path, label: &str) -> Result<Plan> {
         )?),
         None => None,
     };
-    if steps.is_some() {
-        // Every sealed key is opened and checked offline now, before the first
-        // write (the relay challenge still runs when it installs), so a key that
-        // cannot open or is for another drive leaves no identity or certificate
-        // behind. A package without a manifest creates the slot while it runs,
-        // so it has none to open yet and keeps the fixed plan.
+    // Every sealed key is opened and checked offline now, before the first
+    // write (the relay challenge still runs when it installs), so a key that
+    // cannot open, is for another drive, was issued by a different relay than
+    // the one that signed this package, or would replace a different stored key
+    // leaves no identity or certificate behind. The slot must already exist: a
+    // key is sealed to an identity the provider has seen (`setup --enroll-out`),
+    // and a new identity made here would not be that one.
+    let mut keys = Vec::new();
+    if matches!(
+        package.purpose,
+        Purpose::ClientSetup | Purpose::ClientUpdate
+    ) {
+        if env::fs(|fs| crate::device::open_in(fs, device)).is_err() {
+            return Err(usage(
+                "this package's keys are sealed to your slot, which must exist first: run \
+                 `keyquorum setup --device DIR --label NAME --enroll-out FILE`, send the file to \
+                 your provider, and open the package they send you",
+            ));
+        }
         let slot = format!("{}={label}", device.display());
         for component in package
             .components
             .iter()
             .filter(|component| component.kind.carries_key())
         {
-            super::precheck_key_component(&component.bytes, &slot)?;
+            let key = super::precheck_key_component(&component.bytes, &slot, &package.issuer)?;
+            // A package never replaces a different key already stored for the
+            // same relay and scope; the same key is simply installed again.
+            if let Some(stored) = db::relay_credential::get(conn, &key.relay_url, &key.scope)? {
+                if stored.key_hash != key.key_hash {
+                    return Err(usage(&format!(
+                        "a different {} key for {} is already stored; setup will not replace it \
+                         (revoke it with your provider first)",
+                        key.scope, key.relay_url
+                    )));
+                }
+            }
+            keys.push(key);
         }
     }
     let certificate = certificate_of(&package)?.bytes.clone();
@@ -132,6 +167,7 @@ fn plan(package_path: &Path, device: &Path, label: &str) -> Result<Plan> {
         certificate,
         certificate_present,
         steps,
+        keys,
     })
 }
 
@@ -220,6 +256,19 @@ fn show(plan: &Plan, device: &Path, label: &str) {
         Purpose::ClientSetup | Purpose::ClientUpdate
     ) {
         return;
+    }
+    for key in &plan.keys {
+        outln!(
+            "  key: {} scope, relay {}, {}{}",
+            key.scope,
+            key.relay_url,
+            key.expires_at
+                .as_deref()
+                .map_or("no expiry".to_string(), |at| format!("expires {at}")),
+            key.licence
+                .as_deref()
+                .map_or(String::new(), |text| format!(", licence: {text}"))
+        );
     }
     if let Some(steps) = &plan.steps {
         outln!(

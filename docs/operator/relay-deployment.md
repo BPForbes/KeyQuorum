@@ -648,8 +648,8 @@ public key only* still gives the original `.kqkey` files.
 files (`provider.kqpkg`, `provider.kqcert`, a README), with `USR_TYPE:
 PROVIDER`. No key is in it and no operator lock is needed. The file tool reads a
 dropped or chosen file's public framing in the page, says what it is and which
-actions apply, and refuses private key material (key files, hex or PEM keys)
-unread. Nothing is uploaded until an action is taken on a file, and storing
+actions apply, and refuses files named like private keys unread and key-looking content (hex
+or PEM keys) once read. Nothing is uploaded until an action is taken on a file, and storing
 public files online for an account is not built. `USR_TYPE` is `CLIENT` or
 `PROVIDER`, derived from the package's signed purpose, never stored apart from
 it. Operator actions by signed letter are a design only

@@ -543,3 +543,139 @@ fn a_key_bound_to_another_drive_stops_a_manifest_setup_before_any_write() {
     assert!(!env.fs.exists(Path::new(CERTIFICATE)));
     assert!(stored_key(&env).is_none());
 }
+
+#[test]
+fn a_key_from_another_relay_than_the_package_signer_is_refused_before_any_write() {
+    let mut env = alice();
+    let relay = env.relay.as_ref().expect("a relay");
+    // A second relay the same root vouches for issues the key; the first relay
+    // signs the package around it.
+    let other = env.other_relay_identity();
+    let recipient = alice_recipient(&env);
+    let mut key = Vec::new();
+    key_delivery::create_as_bundle(
+        &*relay.store.connection(),
+        &other,
+        &NewApiKey {
+            scope: ApiKeyScope::InboxPull,
+            recipient_fingerprint: None,
+            label: Some("alice".into()),
+            ttl_seconds: None,
+        },
+        &recipient,
+        |sealed| {
+            key = sealed.to_vec();
+            Ok(())
+        },
+    )
+    .expect("create_as_bundle");
+    let bytes = package::issue_client_package(
+        &relay.identity,
+        &[key.as_slice()],
+        &recipient.public_key,
+        recipient.device_id,
+        unix("2026-10-01 00:00"),
+        30,
+    )
+    .expect("issue_client_package");
+    put_package(&mut env, &bytes);
+
+    let (result, _) = env.keyquorum(&format!("{SETUP} --yes"));
+    assert!(
+        matches!(result, Err(Error::KeyIssueRelayMismatch)),
+        "a key from a different relay than the signer"
+    );
+    assert!(!env.fs.exists(Path::new(CERTIFICATE)));
+    assert!(stored_key(&env).is_none());
+}
+
+#[test]
+fn the_preview_names_each_keys_scope_relay_and_expiry_and_no_bearer() {
+    let mut env = alice();
+    let bytes = manifest_package(&env);
+    put_package(&mut env, &bytes);
+    let (result, out) = env.keyquorum(SETUP);
+    assert!(result.is_ok(), "setup <package> without --yes");
+    assert!(out.contains("inbox.pull scope"), "{out}");
+    assert!(out.contains(RELAY_URL), "{out}");
+    assert!(out.contains("licence: Licence"), "{out}");
+    assert!(!out.contains("kq_"), "a bearer reached stdout");
+}
+
+#[test]
+fn a_package_file_over_the_cap_is_refused_unread() {
+    let mut env = alice();
+    let big = vec![0u8; package::MAX_PACKAGE_BYTES + 1];
+    put_package(&mut env, &big);
+    let (result, _) = env.keyquorum(&format!("{SETUP} --yes"));
+    assert!(
+        matches!(result, Err(Error::InvalidKqpkg)),
+        "a package over the size cap"
+    );
+    assert!(!env.fs.exists(Path::new(CERTIFICATE)));
+}
+
+#[test]
+fn a_client_update_package_is_shown_but_never_installed() {
+    let mut env = alice();
+    let bytes = package_for(&env, Purpose::ClientUpdate, vec![key_component(&env)]);
+    put_package(&mut env, &bytes);
+
+    let (result, out) = env.keyquorum(&format!("{SETUP} --yes"));
+    assert!(result.is_ok(), "setup <update package> --yes");
+    assert!(out.contains("client update"), "{out}");
+    assert!(out.contains("not supported yet"), "{out}");
+    assert!(!env.fs.exists(Path::new(CERTIFICATE)));
+    assert!(stored_key(&env).is_none());
+}
+
+#[test]
+fn a_package_never_replaces_a_different_stored_key_but_accepts_the_same_one() {
+    let mut env = alice();
+    let first = package_for(&env, Purpose::ClientSetup, vec![key_component(&env)]);
+    put_package(&mut env, &first);
+    let (result, _) = env.keyquorum(&format!("{SETUP} --yes"));
+    assert!(result.is_ok(), "first setup");
+    let before = stored_key(&env).expect("a stored key").key_hash;
+
+    // The same package again is the same key: installed again, nothing changes.
+    let (result, _) = env.keyquorum(&format!("{SETUP} --yes"));
+    assert!(result.is_ok(), "the same package again");
+    assert_eq!(stored_key(&env).expect("still stored").key_hash, before);
+
+    // A newer package carrying a different key for the same relay and scope.
+    let second = package_for(&env, Purpose::ClientSetup, vec![key_component(&env)]);
+    env.fs
+        .write_new(Path::new("/home/alice/second.kqpkg"), &second)
+        .expect("write the second package");
+    let (result, _) = env.keyquorum(&format!(
+        "{ALICE} setup /home/alice/second.kqpkg --device /usb/alice --label alice --yes"
+    ));
+    assert!(
+        result.is_err(),
+        "a different key for the same relay and scope"
+    );
+    assert_eq!(stored_key(&env).expect("kept").key_hash, before);
+}
+
+#[test]
+fn setup_with_a_package_needs_the_slot_to_exist_and_creates_no_identity() {
+    let mut env = MemoryEnv::with_relay();
+    env.now = Some("2026-10-04 12:00".into());
+    // Alice's slot is made on another drive so a key can be sealed to her, and
+    // the drive the package is applied to has no slot at all.
+    let sealed = {
+        let mut other = alice();
+        std::mem::swap(&mut other.relay, &mut env.relay);
+        let key = key_component(&other);
+        std::mem::swap(&mut other.relay, &mut env.relay);
+        key
+    };
+    let bytes = package_for(&env, Purpose::ClientSetup, vec![sealed]);
+    put_package(&mut env, &bytes);
+
+    let (result, _) = env.keyquorum(&format!("{SETUP} --yes"));
+    assert!(result.is_err(), "no slot on this drive");
+    assert!(!env.fs.exists(Path::new(CERTIFICATE)));
+    assert!(!env.fs.exists(Path::new("/usb/alice/device.kq")));
+}

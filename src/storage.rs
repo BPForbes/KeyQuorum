@@ -16,6 +16,16 @@ use std::path::{Path, PathBuf};
 pub trait Storage {
     fn exists(&self, path: &Path) -> bool;
     fn read(&self, path: &Path) -> Result<Vec<u8>>;
+    /// Reads at most `max` bytes and refuses a longer file, so an oversized file
+    /// is never held whole. The default reads first and checks after; a storage
+    /// that can stop early overrides it.
+    fn read_bounded(&self, path: &Path, max: usize) -> Result<Vec<u8>> {
+        let bytes = self.read(path)?;
+        if bytes.len() > max {
+            return Err(Error::InvalidKqpkg);
+        }
+        Ok(bytes)
+    }
     /// Create `path` with `contents`. Refuses to replace an existing file.
     fn write_new(&mut self, path: &Path, contents: &[u8]) -> Result<()>;
     /// Replace `to` with `from`, removing `from`.
@@ -61,6 +71,18 @@ impl Storage for NativeStorage {
 
     fn read(&self, path: &Path) -> Result<Vec<u8>> {
         Ok(fs::read(path)?)
+    }
+
+    fn read_bounded(&self, path: &Path, max: usize) -> Result<Vec<u8>> {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        fs::File::open(path)?
+            .take(max as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > max {
+            return Err(Error::InvalidKqpkg);
+        }
+        Ok(bytes)
     }
 
     fn write_new(&mut self, path: &Path, contents: &[u8]) -> Result<()> {

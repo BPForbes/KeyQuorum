@@ -43,7 +43,7 @@ kind bytes are wire format: append, never renumber.
 `keyquorum setup <file.kqpkg> --device DIR --label NAME` (`src/cli/setup_package.rs`, a native
 everyday command) opens one: it decodes, checks the validity window and that the signer is the
 relay a root-verified, unrevoked certificate names, and that no file it would write conflicts,
-all before any write; without `--yes` it prints the plan and changes nothing; for a manifest package the plan first opens every sealed key with the slot (`precheck_key_component`), so a key that cannot install stops it before anything is written. With `--yes` it
+all before any write; without `--yes` it prints the plan and changes nothing; the package file is read with a size bound (`Env::read_bounded`) and each component has its own cap (`ComponentKind::max_bytes`); the slot must already exist (`setup --enroll-out` first; a package never makes an identity), and the plan first opens every sealed key with it (`precheck_key_component`: it must verify, be for this drive and have been issued by the relay that signed the package), refuses to replace a different key already stored for that relay and scope, prints each key's scope, relay, expiry and licence, and stops before anything is written if one cannot install. A `ClientUpdate` is shown but never installed, and an interrupted setup is a partial installation finished by running it again (no resume ledger, no generation check). With `--yes` it
 runs `setup`'s identity steps, places the certificate as `provider.kqcert` beside the container
 (identical bytes are kept, different bytes refused) and installs each sealed key through
 `install_key_component`, the path `loadkey --bundle` and `inbox open` use. It is refused where
@@ -88,7 +88,7 @@ The operator console (`workers/admin/`) issues the same package: `issue` accepts
 bundle (`relay::operator`, `resolve_recipient`, `package::issue_client_package`); `provider_package` (a POST that takes no lock,
 like `checkpoint`) returns a `ProviderInfo` package and the relay certificate, which the page zips. `package::UserType`
 (`CLIENT` or `PROVIDER`) is derived from `Purpose`, never stored. The page's file tool (`files.js`) only reads public framing
-and refuses private key material, key-looking text and key file names unread; no private file is ever uploaded. Storing public
+and refuses private key file names unread and key-looking content once read; no private file is ever uploaded. Storing public
 files online, and operator actions by signed letter (`docs/operator/admin-letters.md`, a design only), are not built.
 Large sealed letters can be held in a private R2 bucket (`LETTERS`) instead of their row (`docs/operator/r2-blobs.md`, built, not
 deployed or run end to end): the core (`relay::blob`, `SqlRelayStore::with_blob_threshold`) authenticates, validates and inserts the

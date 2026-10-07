@@ -138,7 +138,7 @@ function fileTool(ctx) {
 
   return section(
     "File tool",
-    h("p", { class: "note", text: "Say what a file is, and act on it. Enrollment requests (.kqreq) go to Issue keys; packages, certificates and sealed keys are described. Private keys, secrets and anything this console does not handle are refused unread." }),
+    h("p", { class: "note", text: "Say what a file is, and act on it. Enrollment requests (.kqreq) go to Issue keys; packages, certificates and sealed keys are described. Files named like private keys are refused unread, key-looking content is refused once read, and anything this console does not handle is refused." }),
     zone,
     input,
     h("div", { class: "actions" }, clearButton),

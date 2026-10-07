@@ -479,3 +479,22 @@ fn a_client_package_carries_every_key_it_is_given() {
         Err(Error::InvalidKqpkg)
     ));
 }
+
+#[test]
+fn each_kind_has_its_own_size_cap_and_the_cap_is_enforced_when_encoding() {
+    assert_eq!(ComponentKind::Certificate.max_bytes(), 16 * 1024);
+    assert_eq!(ComponentKind::RevocationList.max_bytes(), 1024 * 1024);
+    assert_eq!(ComponentKind::Policy.max_bytes(), 256 * 1024);
+    assert_eq!(ComponentKind::ApiKeyBundle.max_bytes(), 128 * 1024);
+    assert_eq!(ComponentKind::ApiKeyLetter.max_bytes(), 128 * 1024);
+    assert_eq!(ComponentKind::SetupManifest.max_bytes(), 256 * 1024);
+    assert!(ComponentKind::Certificate.max_bytes() < MAX_COMPONENT_BYTES);
+
+    let identity = issued_identity("2099-01-01 00:00:00");
+    let mut package = client_package(identity.relay_public, identity.certificate.clone());
+    package.components[0].bytes = vec![0u8; ComponentKind::Certificate.max_bytes() + 1];
+    assert!(matches!(
+        encode(&package, &identity.relay_private),
+        Err(Error::InvalidKqpkg)
+    ));
+}
