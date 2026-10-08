@@ -619,8 +619,8 @@ the `.kqpkg` holds the relay's own certificate and that sealed key, signed with
 the relay key, and is written inside the key's transaction, so a failed write
 leaves no key. It is created owner-only and never overwritten. Hand the file to
 the client; they run `keyquorum setup NAME.kqpkg --device DIR --label NAME` to
-see the plan (for a package with a manifest it first opens every sealed key with
-the slot, so a key that cannot install stops it) and add `--yes` to apply it. The fingerprint is the only thing that
+see the plan (it first opens every sealed key with the slot, so a key that
+cannot install stops it) and add `--yes` to apply it. The fingerprint is the only thing that
 ties the request to the person, so never skip the call.
 
 The package also carries a **setup manifest** (`KQXB` type 6, `src/setup_manifest.rs`):
@@ -631,8 +631,8 @@ is sealed to the person, so only that slot can read it; it names every other par
 by SHA-256 and each part must be used by exactly one step. It is bound to the
 package id, purpose, recipient, device and expiry, so a copy for another person,
 drive or package is refused before any write. A package without a manifest still
-installs by the fixed plan. Not built: a console
-button for this, a resume ledger, and a recovery package for a lost relay key.
+installs by the fixed plan. Not built: a resume ledger, installing a
+`ClientUpdate`, and a recovery package for a lost relay key.
 
 ### From the console
 

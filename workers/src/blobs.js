@@ -82,16 +82,22 @@ function letterOf(contentType, body) {
 const reply = (status, object) => ({ status, body: encoder.encode(JSON.stringify(object)) });
 
 export function createBlobRelay({ core, bucket, log = console }) {
-  let tail = Promise.resolve();
   // One at a time, in the order asked. A failure does not break the chain.
-  function serial(task) {
-    const run = tail.then(task, task);
-    tail = run.then(
-      () => {},
-      () => {},
-    );
-    return run;
+  function chain() {
+    let tail = Promise.resolve();
+    return (task) => {
+      const run = tail.then(task, task);
+      tail = run.then(
+        () => {},
+        () => {},
+      );
+      return run;
+    };
   }
+  // Pushes and the sweep share one chain; pulls have their own, so a pull is
+  // not held up behind an upload but two pulls never build a page together.
+  const serial = chain();
+  const serialPulls = chain();
 
   // The core's answer to a push, with the bytes stored first when it asked for
   // them. -> { status, body } (the body a Uint8Array of JSON).
@@ -190,7 +196,10 @@ export function createBlobRelay({ core, bucket, log = console }) {
     }
     if (request.method === "GET" && PULL[path]) {
       const [, list] = PULL[path];
-      return afterPull(list, ask());
+      // A page with held letters can be 16 MiB sealed and several times that
+      // once restored and encoded, in an isolate of 128 MB shared by every
+      // request: one such page at a time.
+      return serialPulls(async () => afterPull(list, ask()));
     }
     return null;
   }

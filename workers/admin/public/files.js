@@ -27,6 +27,9 @@ const NOT_HERE = {
 
 const PRIVATE_NAME = /(\.key|\.skey|\.pem|\.secret|\.token|\.p12|\.pfx)$/i;
 
+// A signed enrollment request is far smaller than this; a bigger file is not one.
+export const MAX_ENROLLMENT_BYTES = 1024;
+
 export const PRIVATE_NAME_NOTE =
   "This looks like private key material. It is never uploaded to this console: nothing here needs it, and it stays on the machine that holds it. Nothing was read or sent.";
 
@@ -147,7 +150,7 @@ export function readPackage(bytes) {
 // client's `setup --enroll-out` prints. The client reads theirs out; the
 // operator compares. The signature is verified by the relay when it is used.
 export async function readEnrollment(bytes) {
-  if (magicOf(bytes) !== "KQRQ" || bytes[4] !== 1 || bytes.length < 4 + 1 + 16 + 8 + 2 + 32 + 32 + 64 || bytes.length > 1024) {
+  if (magicOf(bytes) !== "KQRQ" || bytes[4] !== 1 || bytes.length < 4 + 1 + 16 + 8 + 2 + 32 + 32 + 64 || bytes.length > MAX_ENROLLMENT_BYTES) {
     throw new Error("not a version 1 enrollment request");
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);

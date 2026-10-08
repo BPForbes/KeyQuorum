@@ -97,9 +97,9 @@ keyquorum host backup restore --dir ./dl --backup-key backup.key --out relay.sql
 and refuses an existing file. Before it writes anything it checks that the manifest
 opens with the key, that its signature verifies under the key a certificate signed
 by the **pinned provider root** names (unrevoked, valid when the backup was taken),
-that each chunk is the one the manifest names (SHA-256 and size), and that the
-target has the same tables and columns. It writes in one transaction, so a bad
-chunk leaves nothing, and removes the file if anything fails. Afterwards it
+and that the target has the same tables and columns. It then writes, checking each
+chunk against the manifest (SHA-256 and size) as it is read, all in one
+transaction, so a bad chunk leaves nothing, and removes the file if anything fails. Afterwards it
 re-walks every audit chain and anchor and exits non-zero if one does not hold.
 
 What a restore gives you is a **native relay database** (the reference host's

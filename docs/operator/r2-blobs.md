@@ -40,8 +40,10 @@ answer 413. What changed:
 * **Memory.** A push holds the body once in the object, once as the core's copy
   and once as the bytes put in R2 (about 50 MiB at the cap). A pull assembles the
   answer in pieces (a letter's base64 in 3 MiB steps), never one string of the
-  whole. Workers have 128 MB per isolate, shared with the WebAssembly memory; this
-  has not been measured under load (see "Not done").
+  whole. Workers have 128 MB per isolate, shared with the WebAssembly memory, so
+  the object lets in one large letter body at a time (a second is a 503 with
+  `Retry-After`) and rebuilds one page with held letters at a time; this has not
+  been measured under load (see "Not done").
 
 ## What the bucket buys
 

@@ -426,9 +426,9 @@ pub fn inspect(
 
 /// Restores a backup into `target`, an empty relay database of the same shape
 /// (`relay::open` made it). `read_object` returns the bytes of a chunk by name.
-/// Nothing is written until the manifest, the target and the first chunk's
-/// shape have been checked, and everything is written in one transaction, so a
-/// bad chunk leaves the target empty.
+/// Nothing is written until the manifest and the target have been checked;
+/// each chunk is checked against the manifest as it is read, inside one
+/// transaction, so a bad chunk leaves the target empty.
 pub fn restore(
     target: &dyn Sql,
     manifest: &[u8],

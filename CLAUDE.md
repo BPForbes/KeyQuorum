@@ -43,8 +43,9 @@ is the package issuer and runs the steps in order, all checks before any write. 
 
 Components are dispatched by their own magic and kind, never by a name or the package's claim,
 and anything else, or anything the purpose does not allow, is refused before any write. It
-decodes, bounds and authenticates only; the wizard, enrollment and the console generator are
-later slices, and the outer signature never replaces a component's own checks. Purpose and
+decodes, bounds and authenticates only (enrollment is `src/enrollment.rs`, the generators are
+`package::issue_client_package` and `issue_provider_info_package`; the wizard is not built), and the
+outer signature never replaces a component's own checks. Purpose and
 kind bytes are wire format: append, never renumber.
 `keyquorum setup <file.kqpkg> --device DIR --label NAME` (`src/cli/setup_package.rs`, a native
 everyday command) opens one: it decodes, checks the validity window and that the signer is the

@@ -52,8 +52,8 @@ with what is on the drive. Without \flag{--yes} it only shows the plan and
 changes nothing. With \flag{--yes} it runs the identity steps above, places the
 relay certificate beside the container (never over a different file) and opens
 each sealed key with your slot, installing it only after the relay proves its
-identity. It never prints a key. The package is sealed to your key and
-your drive, so first run \code{keyquorum setup --device ./usb --label alice
+identity. It never prints a key. The package is signed by your provider, and its setup steps and keys are
+sealed to your key and bound to your drive, so first run \code{keyquorum setup --device ./usb --label alice
 --enroll-out alice.kqreq}. It writes a public request (no secret) and prints its
 fingerprint. Send the file to your provider and read them the fingerprint by a
 different channel, such as a call; they will not issue anything until it

@@ -9,7 +9,7 @@
 // request, bounds it, asks the core, and shapes the answer. A bearer goes to the
 // core and nowhere else: it is not logged, stored or echoed.
 import { createSqlAdapter } from "./sql-adapter.js";
-import { baseHeaders, bearerOf, bodyLimit, jsonResponse, readLimited } from "./policy.js";
+import { MAX_REQUEST_BODY, baseHeaders, bearerOf, bodyLimit, jsonResponse, readLimited } from "./policy.js";
 import { backupBucketOf, backupSettings, createBackups } from "./backups.js";
 import { bucketOf, createBlobRelay, holdFrom } from "./blobs.js";
 
@@ -75,6 +75,7 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
   let backups = null;
   let failure = null;
   let inFlight = 0;
+  let largeBodies = 0;
   // What this object has seen since it started, for the operator's status page.
   // In memory only: it is not a record, and a restart begins it again.
   const stats = {
@@ -124,15 +125,21 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
       stats.busyRefusals += 1;
       return jsonResponse(503, { error: "busy" }, { "retry-after": "1" });
     }
+    // A large letter body (up to 16 MiB, buffered whole) is let in one at a time:
+    // the isolate has 128 MB for everything in flight.
+    const limit = bodyLimit(request.method, new URL(request.url).pathname, request.headers.get("content-type"), Boolean(blobs));
+    const large = limit > MAX_REQUEST_BODY;
+    if (large && largeBodies >= 1) {
+      stats.busyRefusals += 1;
+      return jsonResponse(503, { error: "busy" }, { "retry-after": "1" });
+    }
+    if (large) largeBodies += 1;
     inFlight += 1;
     stats.admitted += 1;
     const started = clock().getTime();
     let answer = null;
     try {
-      const body = await readLimited(
-        request,
-        bodyLimit(request.method, new URL(request.url).pathname, request.headers.get("content-type"), Boolean(blobs)),
-      );
+      const body = await readLimited(request, limit);
       if (body === null) return jsonResponse(413, { error: "request too large" });
       const bearer = bearerOf(request.headers);
       const contentType = request.headers.get("content-type") ?? undefined;
@@ -186,6 +193,7 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
     } finally {
       answer?.free?.();
       inFlight -= 1;
+      if (large) largeBodies -= 1;
     }
   }
 

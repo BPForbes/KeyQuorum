@@ -299,3 +299,34 @@ test("the threshold never goes above a mebibyte, so a letter that cannot fit a r
   assert.equal(holdFrom({ HOLD_LETTERS_FROM: "4194304" }), 1024 * 1024);
   assert.equal(holdFrom({ HOLD_LETTERS_FROM: "1048576" }), 1024 * 1024);
 });
+
+test("two pulls with held letters never rebuild their pages at the same time", async () => {
+  const r2 = bucket();
+  let active = 0;
+  let most = 0;
+  const get = r2.get.bind(r2);
+  r2.get = async (key) => {
+    active += 1;
+    most = Math.max(most, active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    try {
+      return await get(key);
+    } finally {
+      active -= 1;
+    }
+  };
+  const relay = createBlobRelay({ core: core(), bucket: r2, log: quiet });
+  const bytes = letter(9000);
+  r2.objects.set(`inbox/${sha(bytes)}`, bytes);
+  const page = () =>
+    relay.around(pull(), () =>
+      json(200, {
+        envelopes: [{ id: 2, recipient_fingerprint: "ab", bytes: b64(bytes.subarray(0, 42)), blob: held(bytes) }],
+        trees: [],
+      }),
+    );
+  const [first, second] = await Promise.all([page(), page()]);
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  assert.equal(most, 1, "one page with held letters at a time");
+});
