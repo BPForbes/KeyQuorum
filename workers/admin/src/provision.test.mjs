@@ -3,7 +3,12 @@
 // all without a DOM.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PRIVATE_FILES, expiryText, filesOf, loadProvisioner, nextSteps, problems, publicZip, utcText } from "../public/provision.js";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { BACKUP_PRIVATE_FILE, PRIVATE_FILES, backupFilesOf, backupNextSteps, expiryText, filesOf, loadProvisioner, nextSteps, problems, publicZip, utcText } from "../public/provision.js";
+
+const PUBLIC = join(fileURLToPath(new URL("..", import.meta.url)), "public");
 
 const TODAY = new Date("2026-10-08T12:00:00Z");
 const good = { providerId: "Acme Security Services", serial: "KQP-000001", expiresAt: "2027-10-08" };
@@ -72,16 +77,39 @@ test("the next steps name the deploy variable, the two secrets and the client pi
   assert.doesNotMatch(steps, /[0-9a-f]{64}/, "the root is shown by the page, not pasted into the steps");
 });
 
-test("the WebAssembly is loaded once, from the console's own files, and initialised before use", async () => {
+test("the WebAssembly is loaded once, from the console's own files, initialised before use, and gives both functions", async () => {
   let loads = 0;
   let inits = 0;
   const importer = async (path) => {
     loads += 1;
     assert.equal(path, "./provision-wasm/keyquorum_console.js");
-    return { default: async () => (inits += 1), provision_identity: () => "{}" };
+    return { default: async () => (inits += 1), provision_identity: () => "{}", backup_keygen: () => "{}" };
   };
   const first = await loadProvisioner(importer);
   const second = await loadProvisioner(importer);
   assert.equal(first, second);
+  assert.deepEqual(Object.keys(first).sort(), ["backup_keygen", "provision_identity"]);
   assert.deepEqual([loads, inits], [1, 1]);
+});
+
+test("the backup keypair becomes backup.key (private) and backup.pub, and its next steps name the variable, never a value", () => {
+  const { backupPub, files } = backupFilesOf(JSON.stringify({ backup_key: hex("0e"), backup_pub: hex("0f") }));
+  assert.equal(backupPub, hex("0f"));
+  assert.deepEqual(files.map((f) => [f.name, f.private]), [[BACKUP_PRIVATE_FILE, true], ["backup.pub", false]]);
+  assert.equal(Buffer.from(files[0].bytes).toString(), `${hex("0e")}\n`);
+  assert.throws(() => backupFilesOf(JSON.stringify({ backup_key: "abc", backup_pub: hex("0f") })), /backup_key/);
+  const steps = backupNextSteps(hex("0f")).join("\n");
+  assert.match(steps, /BACKUP_RECIPIENT/);
+  assert.match(steps, /host backup inspect \| restore/);
+  assert.doesNotMatch(steps, /[0-9a-f]{64}/);
+});
+
+test("the Status page's backup setup makes the keypair in the browser and sends nothing", () => {
+  const status = readFileSync(join(PUBLIC, "view-status.js"), "utf8");
+  assert.match(status, /Make the backup keypair in this browser/);
+  assert.match(status, /BACKUP_RECIPIENT/);
+  assert.match(status, /never upload it anywhere, this console included/);
+  // The one fetch on the page is the status read, through api.js.
+  assert.doesNotMatch(status, /fetch\(/);
+  assert.equal(status.split("await get(").length - 1, 1, "one API read, no upload");
 });

@@ -1,7 +1,9 @@
 import { get } from "./api.js";
 import { daysUntil, formatBytes, formatTime } from "./format.js";
+import { BACKUP_PRIVATE_FILE, backupFilesOf, backupNextSteps, loadProvisioner } from "./provision.js";
 import { untrustedReason } from "./setup-state.js";
-import { badge, card, h, notice, section } from "./ui.js";
+import { badge, busy, card, clear, h, notice, section } from "./ui.js";
+import { downloadBytes } from "./zip.js";
 
 function row(label, value) {
   return h("tr", {}, h("th", { scope: "row", text: label }), h("td", {}, value));
@@ -103,8 +105,56 @@ export default async function status() {
         h("p", { class: "note", text: "These counts are what the relay object observed, not a record: they start again whenever the object restarts, and the signed audit trail is on the Audit page. Requests the public Worker refused before the relay (wrong host or route, too large, rate limited) are in Cloudflare's own analytics." }),
       ),
     );
+    if (!runtime.backups?.enabled) out.push(backupSetup(runtime.backups));
   }
   return h("div", {}, out);
+}
+
+// Sealed backups are off: what is missing, and the backup keypair made here in
+// the browser (provision.js), so the operator can set BACKUP_RECIPIENT without
+// running a command. The private key exists only in `made` until cleared;
+// nothing is sent or stored.
+function backupSetup(backups) {
+  const button = h("button", { type: "button", text: "Make the backup keypair in this browser" });
+  const status = h("div", {});
+  const result = h("div", {});
+  let made = null;
+  const forget = () => {
+    made = null;
+    clear(result);
+  };
+  button.addEventListener("click", async () => {
+    forget();
+    const outcome = await busy(
+      button,
+      status,
+      async () => backupFilesOf((await loadProvisioner()).backup_keygen()),
+      (error) => `Could not make the keypair: ${error.message}.`,
+    );
+    if (!outcome) return;
+    made = outcome;
+    result.append(
+      notice("good", "Made. Download both files now: this page keeps nothing once you leave it."),
+      h("p", {}, "The backup public key (backup.pub, public): ", h("code", { text: made.backupPub })),
+      h(
+        "div",
+        { class: "actions" },
+        made.files.map((file) => h("button", { type: "button", text: `Download ${file.name}`, on: { click: () => downloadBytes(file.name, file.bytes, "text/plain") } })),
+      ),
+      h("p", { class: "note", text: `${BACKUP_PRIVATE_FILE} is private: keep it off shared or synced folders and never upload it anywhere, this console included.` }),
+      h("ol", {}, backupNextSteps(made.backupPub).map((step) => h("li", { text: step }))),
+      h("div", { class: "actions" }, h("button", { type: "button", text: "Clear from this page", on: { click: forget } })),
+    );
+  });
+  return section(
+    "Set up sealed backups",
+    h("p", {
+      text: `Backups are off: ${backups?.reason ?? "not configured"}. They need the BACKUPS bucket bound to the relay Worker (Terraform, backups_bucket_name) and a backup public key in the BACKUP_RECIPIENT deploy variable. Make the keypair here with the relay's own code: the public half goes in the variable, the private half stays with you and is the only thing that can read a backup.`,
+    }),
+    h("div", { class: "actions" }, button),
+    status,
+    result,
+  );
 }
 
 // The backup lines of the status page: off and why, or the last one made and

@@ -108,7 +108,7 @@ Sealed backups of the relay's database can be written to a second private R2 buc
 not deployed or run end to end): the core (`relay::backup`) dumps every table in one synchronous turn, seals each chunk to an
 operator-held backup public key (`EXPORT_BUNDLE` types 7 and 8) and signs the manifest with the relay key; `workers/src/backups.js`
 uploads the chunks and the manifest last from the alarm, keeping the newest few; `keyquorum host backup keygen|inspect|restore` is the
-operator's offline side (restore checks the signature against the pinned root and every chunk's hash before writing, then re-walks the
+operator's offline side (the console's Status page makes the same keypair in the browser, `provision_wasm::backup_keygen`, while backups are off) (restore checks the signature against the pinned root and every chunk's hash before writing, then re-walks the
 audit chains). The backup public key is the `BACKUP_RECIPIENT` deploy variable (never in `wrangler.toml`, whose guard refuses a 64-hex
 value); the private key never reaches a Worker. Letters held in `LETTERS` are not in a backup.
 

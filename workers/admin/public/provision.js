@@ -2,10 +2,11 @@
 // keypair, the certificate the root signs for the relay and the public
 // provider package, by the crate's own `provider::provision` compiled to
 // WebAssembly (provision-wasm/, built by workers/scripts/build-console-wasm.mjs
-// from the `console` feature, nothing else exported). Everything is made in
-// the page and handed to the operator as downloads: nothing here is sent to the
-// admin Worker, the relay or anywhere else, nothing is kept in storage, and the
-// private keys live only in the result object until `forget` drops it.
+// from the `console` feature; its only other export makes the backup keypair
+// the same way). Everything is made in the page and handed to the operator as
+// downloads: nothing here is sent to the admin Worker, the relay or anywhere
+// else, nothing is kept in storage, and the private keys live only in the
+// result object until `forget` drops it.
 //
 // The DOM-free parts (what the form accepts, what the result becomes, what
 // comes next) are here so a test can run them; the panel itself is in
@@ -92,13 +93,41 @@ export function nextSteps(rootPub) {
   ];
 }
 
-// Loads the WebAssembly once, from the console's own files.
+// The backup keypair (`host backup keygen`): the public half is the
+// BACKUP_RECIPIENT deploy variable, the private half the only way to read a
+// backup. The same shape as the identity's files.
+export const BACKUP_PRIVATE_FILE = "backup.key";
+
+export function backupFilesOf(json) {
+  const made = JSON.parse(json);
+  for (const name of ["backup_key", "backup_pub"]) {
+    if (typeof made[name] !== "string" || !HEX_64.test(made[name])) throw new Error(`${name} is not a 64-character hex key`);
+  }
+  const text = (hex) => new TextEncoder().encode(`${hex}\n`);
+  return {
+    backupPub: made.backup_pub,
+    files: [
+      { name: BACKUP_PRIVATE_FILE, bytes: text(made.backup_key), private: true },
+      { name: "backup.pub", bytes: text(made.backup_pub), private: false },
+    ],
+  };
+}
+
+export function backupNextSteps(backupPub) {
+  return [
+    `Set the GitHub environment variable BACKUP_RECIPIENT (cloudflare-staging, then cloudflare-production) to the value shown above (${backupPub.length} hex characters, the contents of backup.pub; it is public), then run the workers deploy. Backups start once the BACKUPS bucket is bound and this variable is set.`,
+    "Keep backup.key offline, with a second copy: it is the only way to read a backup (keyquorum host backup inspect | restore), and a lost one makes every backup unreadable. It never goes on a Worker, in GitHub or in wrangler.toml, and this page sent it nowhere.",
+  ];
+}
+
+// Loads the WebAssembly once, from the console's own files, and gives its
+// two functions: provision_identity and backup_keygen.
 let provisioner = null;
 export async function loadProvisioner(importer = (path) => import(path)) {
   if (!provisioner) {
     const module = await importer("./provision-wasm/keyquorum_console.js");
     await module.default();
-    provisioner = module.provision_identity;
+    provisioner = { provision_identity: module.provision_identity, backup_keygen: module.backup_keygen };
   }
   return provisioner;
 }

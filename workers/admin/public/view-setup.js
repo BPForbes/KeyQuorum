@@ -48,8 +48,8 @@ function generatePanel() {
       button,
       status,
       async () => {
-        const provision = await loadProvisioner();
-        const json = provision(providerId.value.trim(), serial.value.trim(), expiryText(expires.value), utcText(new Date()));
+        const { provision_identity } = await loadProvisioner();
+        const json = provision_identity(providerId.value.trim(), serial.value.trim(), expiryText(expires.value), utcText(new Date()));
         return filesOf(json);
       },
       (error) => `Could not make the identity: ${error.message}.`,

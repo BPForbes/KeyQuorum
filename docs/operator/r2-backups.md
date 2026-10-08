@@ -72,7 +72,10 @@ recovery above still covers.
 
 ## Setting it up
 
-1. Make the keypair on a machine you trust (not the relay):
+1. Make the keypair on a machine you trust (not the relay): on the console's
+   Status page, while backups are off, "Make the backup keypair in this browser"
+   makes it with the relay's own code and downloads `backup.key` and `backup.pub`
+   (the page sends and stores nothing); or
    `keyquorum host backup keygen --public-key-out backup.pub --private-key-out backup.key`.
    The private key is written owner-only, never printed, never overwritten. **Keep
    it offline and keep a second copy**: without it no backup can ever be read.

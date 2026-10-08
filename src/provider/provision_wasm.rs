@@ -1,11 +1,11 @@
-//! The operator console's one export (`console` feature, wasm32 only): make
-//! a provider identity in the browser, with the crate's own code, so the
-//! console's setup guide can offer the files for download without the
-//! operator running a command. The result goes back as JSON holding the
-//! same bytes the files would: the private keys as the hex text `root.key`
-//! and `relay.key` hold, the certificate and the package as base64. The page
-//! downloads them and keeps nothing; nothing here reaches a Worker, the
-//! relay or any network.
+//! The operator console's two exports (`console` feature, wasm32 only): make
+//! a provider identity, and the backup keypair, in the browser with the
+//! crate's own code, so the console can offer the files for download without
+//! the operator running a command. A result goes back as JSON holding the
+//! same bytes the files would: the private keys as the hex text `root.key`,
+//! `relay.key` and `backup.key` hold, the certificate and the package as
+//! base64. The page downloads them and keeps nothing; nothing here reaches
+//! a Worker, the relay or any network.
 
 use super::provision::{provision, Spec};
 use super::CAP_PROVIDER;
@@ -42,4 +42,18 @@ pub fn provision_identity(
         "package_base64": STANDARD.encode(&made.package),
     });
     Ok(json.to_string())
+}
+
+/// The backup keypair `host backup keygen` makes: the public half is the
+/// `BACKUP_RECIPIENT` deploy variable, the private half the only way to read
+/// a backup (`host backup inspect|restore`), kept offline by the operator.
+#[wasm_bindgen]
+pub fn backup_keygen() -> String {
+    let (secret, public) = crate::keys::generate_encryption_keypair();
+    let backup_key = Zeroizing::new(hex::encode(&secret[..]));
+    serde_json::json!({
+        "backup_key": *backup_key,
+        "backup_pub": hex::encode(public),
+    })
+    .to_string()
 }
