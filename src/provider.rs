@@ -33,10 +33,10 @@ pub const CAP_MAILBOX: u32 = 1 << 1;
 pub const CAP_API_ADMIN: u32 = 1 << 2;
 pub const CAP_PROVIDER: u32 = CAP_RELAY | CAP_MAILBOX | CAP_API_ADMIN;
 
-// Offline KeyQuorum provider-root verifying key, pinned from
-// `provider-root.pub` at build time (`build.rs`). The repository ships a
-// placeholder: before production, `host provision` makes the real root and
-// its `root.pub` replaces that file.
+// Offline KeyQuorum provider-root verifying key, compiled in by `build.rs`
+// from `KEYQUORUM_PROVIDER_ROOT` or a git-ignored `provider-root.pub` (the
+// `root.pub` the console or `host provision` generated); never committed. A
+// build given neither carries a placeholder whose private half nobody holds.
 include!(concat!(env!("OUT_DIR"), "/provider_root.rs"));
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -458,6 +458,9 @@ pub(crate) fn civil_from_days(days_since_epoch: i64) -> (i32, u32, u32) {
 pub mod authorize;
 pub mod hardware_auth;
 pub mod policy;
+pub mod provision;
+#[cfg(all(feature = "console", target_arch = "wasm32"))]
+pub mod provision_wasm;
 
 #[cfg(test)]
 #[path = "provider/test_helpers.rs"]

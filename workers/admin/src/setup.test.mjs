@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { identityState, issuanceBlock, setupComplete, setupSteps } from "../public/setup-state.js";
+import { identityState, issuanceBlock, setupComplete, setupSteps, untrustedReason } from "../public/setup-state.js";
 
 const PUBLIC = join(fileURLToPath(new URL("..", import.meta.url)), "public");
 const read = (name) => readFileSync(join(PUBLIC, name), "utf8");
@@ -27,6 +27,14 @@ test("secrets that are present but not trusted never mark the ceremony done", ()
     assert.equal(setupComplete({ ...o, operator_lock: true }), false, reason);
     assert.match(issuanceBlock({ ...o, operator_lock: true }), /not one clients will trust/, reason);
   }
+});
+
+test("a relay that pins no root fails step 1 with the variable to set, and step 2 still says whether the secrets exist", () => {
+  const unpinned = { ...missing, identity_check: { state: "untrusted", reason: "no_pinned_root", pinned_root: null } };
+  assert.deepEqual(statuses(unpinned), { root: "failed", identity: "todo", lock: "waiting", issue: "waiting" });
+  assert.match(untrustedReason(unpinned), /PROVIDER_ROOT/);
+  assert.deepEqual(statuses({ ...unpinned, identity_configured: true }), { root: "failed", identity: "waiting", lock: "waiting", issue: "waiting" });
+  assert.equal(setupComplete({ ...unpinned, identity_configured: true, operator_lock: true }), false);
 });
 
 test("a key that does not match a good certificate fails step 2, not step 1", () => {
@@ -89,12 +97,24 @@ test("the guide keeps the relay's identity apart from a personal .kqkey and puts
   const guide = read("view-setup.js");
   assert.match(guide, /not a personal \.kqkey/);
   assert.match(guide, /Never reuse one person's file for another/);
-  assert.match(guide, /never goes to this relay, this console or any Worker/);
+  assert.match(guide, /never goes to this relay, this console's Worker or any Worker/);
   // Commands name files and variables, never a key, certificate or lock value.
   assert.doesNotMatch(guide, /kq[lq]_[A-Za-z0-9]/);
   assert.doesNotMatch(guide, /--licensee-key\b|KEYQUORUM_LICENSEE_KEY|KEYQUORUM_PROVIDER_ROOT_KEY\b/);
   assert.match(guide, /npx wrangler secret put RELAY_PRIVATE_KEY < relay\.key/);
   assert.match(guide, /base64 < provider\.kqcert \| tr -d '\\\\n' \| npx wrangler secret put RELAY_CERTIFICATE/);
+});
+
+test("the guide makes the identity in the browser with the console's own WebAssembly, sends nothing, and names the private files", () => {
+  const guide = read("view-setup.js");
+  assert.match(guide, /loadProvisioner/);
+  assert.match(guide, /nothing is sent anywhere/);
+  assert.match(guide, /never upload them anywhere, this console included/);
+  assert.doesNotMatch(guide, /\bapi\(|fetch\(/, "the generate panel calls no endpoint");
+  const provision = read("provision.js");
+  assert.match(provision, /import\("\.\/provision-wasm\/keyquorum_console\.js"\)|importer\("\.\/provision-wasm\/keyquorum_console\.js"\)/);
+  assert.doesNotMatch(provision, /localStorage|sessionStorage|indexedDB|fetch\(/, "nothing is stored or sent");
+  assert.match(provision, /PROVIDER_ROOT/);
 });
 
 test("the guide makes the whole identity with one provision run, and certifies under an existing root only after the relay key exists", () => {
@@ -112,8 +132,9 @@ test("the guide makes the whole identity with one provision run, and certifies u
 test("the guide tells the operator to pin the production root, shows the pinned key, and the setup text names no secret", () => {
   const guide = read("view-setup.js");
   assert.match(guide, /KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY/);
-  assert.match(guide, /compiled in from provider-root\.pub/);
-  assert.match(guide, /replace it with the public half of your root/);
+  assert.match(guide, /KEYQUORUM_PROVIDER_ROOT or a git-ignored provider-root\.pub/);
+  assert.match(guide, /build the clients with the public half of your root/);
+  assert.match(guide, /nothing is committed/);
   assert.match(guide, /This relay pins: /);
   assert.match(guide, /\[0-9a-f\]\{64\}/, "only a 64-character hex value is shown as the pinned root");
   assert.match(guide, /done here only when the relay confirms the certificate/);

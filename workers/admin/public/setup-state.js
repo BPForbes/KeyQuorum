@@ -17,6 +17,8 @@ export const STEP_IDS = ["root", "identity", "lock", "issue"];
 
 // Why an identity that is present is not trusted, in words for the operator.
 export const UNTRUSTED_REASONS = {
+  no_pinned_root:
+    "This relay pins no root: its PROVIDER_ROOT deploy variable is not set, so it cannot check that its certificate is one clients will trust. Set the variable to the contents of root.pub (public) and deploy again.",
   certificate_not_signed_by_pinned_root:
     "The certificate is not signed by the root this relay pins, or it is not a certificate. Check the pinned root shown in step 1 against your ceremony's public key, and that the certificate was issued under that root.",
   certificate_expired: "The certificate has expired. Have a new one issued offline and install it.",
@@ -53,7 +55,9 @@ export function setupSteps(overview) {
     // certificate the relay holds, so it reads as done only once that result is
     // trusted, and as failed when the relay says the result is wrong.
     { id: "root", status: trusted || keyFault ? "done" : certificateFault ? "failed" : "offline" },
-    { id: "identity", status: trusted ? "done" : keyFault ? "failed" : identity === "missing" ? "todo" : "waiting" },
+    // Whether the secrets exist is reported apart from the check (a relay that
+    // pins no root cannot check anything, but may still hold them).
+    { id: "identity", status: trusted ? "done" : keyFault ? "failed" : overview.identity_configured !== true ? "todo" : "waiting" },
     { id: "lock", status: lock ? "done" : !trusted ? "waiting" : pending ? "pending" : "todo" },
     { id: "issue", status: trusted && lock ? "todo" : "waiting" },
   ];

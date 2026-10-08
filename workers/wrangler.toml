@@ -66,6 +66,10 @@ bucket_name = "keyquorum-letters"
 binding = "BACKUPS"
 bucket_name = "keyquorum-backups"
 
+# PROVIDER_ROOT, the provider root public key the relay pins for its console's
+# identity check, is a deploy variable too (workers.yml, from the environment's
+# variable of that name), never a [vars] entry here, for the same reason.
+
 # Per-client limit on customer routes, keyed on CF-Connecting-IP in the Worker,
 # beside the zone's rate-limit rule (deploy/cloudflare/terraform/rules.tf). Not
 # inherited by an environment, so staging repeats it. A namespace_id is an

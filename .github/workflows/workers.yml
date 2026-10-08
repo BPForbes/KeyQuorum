@@ -119,6 +119,19 @@ jobs:
         run: npm ci
       - name: Build the relay core (workers feature only) to WebAssembly
         run: npm run build:relay-wasm
+      - name: Build the console's identity maker (console feature only) to WebAssembly
+        run: npm run build:console-wasm
+      - name: Refuse a console build that carries provider, lab or the relay core
+        working-directory: .
+        run: |
+          set -uo pipefail
+          for other in provider lab workers; do
+            if cargo check --keep-going --locked --lib --target wasm32-unknown-unknown --no-default-features --features "console,${other}" > guard.log 2>&1; then
+              echo "::error::a wasm32 build with console and ${other} compiled"
+              exit 1
+            fi
+            grep -q "the console feature stands alone on wasm32" guard.log
+          done
       - name: Guard, smoke-test and relay-core tests
         run: npm test
       - name: Configuration guard (no key material, no secret-like vars, no destructive migration)
@@ -222,6 +235,7 @@ jobs:
           WRANGLER_SEND_METRICS: "false"
           RELAY_URL: ${{ vars.RELAY_URL }}
           BACKUP_RECIPIENT: ${{ vars.BACKUP_RECIPIENT }}
+          PROVIDER_ROOT: ${{ vars.PROVIDER_ROOT }}
         run: |
           # The Worker serves only the host named by ALLOWED_HOSTS and answers 404
           # on any other, a Version URL included (a version shares this Worker's
@@ -243,7 +257,23 @@ jobs:
           if [ -n "${BACKUP_RECIPIENT:-}" ]; then
             args+=(--var "BACKUP_RECIPIENT:${BACKUP_RECIPIENT}")
           fi
+          # The provider root this relay pins (a GitHub environment variable, the
+          # public root.pub the console or `host provision` made, never a secret).
+          # Without it the relay cannot call its identity trusted; a value that is
+          # not a 64-character hex key stops the deploy here.
+          if [ -n "${PROVIDER_ROOT:-}" ]; then
+            if ! printf '%s' "${PROVIDER_ROOT}" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+              echo "::error::PROVIDER_ROOT is not a 64-character hex public key"
+              exit 1
+            fi
+            args+=(--var "PROVIDER_ROOT:${PROVIDER_ROOT}")
+          else
+            echo "::warning::this environment has no PROVIDER_ROOT variable; the relay pins no root and its console cannot call its identity trusted."
+          fi
           npx wrangler deploy --env staging "${args[@]}"
+      - name: Compile the console's identity maker
+        if: steps.credentials.outputs.configured == 'true'
+        run: npm run build:console-wasm
       - name: Deploy the staging admin Worker
         if: steps.credentials.outputs.configured == 'true'
         env:
@@ -355,6 +385,7 @@ jobs:
           WRANGLER_SEND_METRICS: "false"
           RELAY_URL: ${{ vars.RELAY_URL }}
           BACKUP_RECIPIENT: ${{ vars.BACKUP_RECIPIENT }}
+          PROVIDER_ROOT: ${{ vars.PROVIDER_ROOT }}
         run: |
           # As for staging, but production never deploys unconfigured: without a
           # usable RELAY_URL this step fails before anything is uploaded.
@@ -364,7 +395,22 @@ jobs:
           if [ -n "${BACKUP_RECIPIENT:-}" ]; then
             args+=(--var "BACKUP_RECIPIENT:${BACKUP_RECIPIENT}")
           fi
+          # The provider root this relay pins (a GitHub environment variable, the
+          # public root.pub the console or `host provision` made, never a secret).
+          # Without it the relay cannot call its identity trusted; a value that is
+          # not a 64-character hex key stops the deploy here.
+          if [ -n "${PROVIDER_ROOT:-}" ]; then
+            if ! printf '%s' "${PROVIDER_ROOT}" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+              echo "::error::PROVIDER_ROOT is not a 64-character hex public key"
+              exit 1
+            fi
+            args+=(--var "PROVIDER_ROOT:${PROVIDER_ROOT}")
+          else
+            echo "::warning::this environment has no PROVIDER_ROOT variable; the relay pins no root and its console cannot call its identity trusted."
+          fi
           npx wrangler deploy --env="" "${args[@]}"
+      - name: Compile the console's identity maker
+        run: npm run build:console-wasm
       - name: Deploy the production admin Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

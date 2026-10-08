@@ -20,6 +20,7 @@ use keyquorum::keys::{self, KeyType};
 use keyquorum::locked_files;
 use keyquorum::provider::hardware_auth::HardwareAuthority;
 use keyquorum::provider::policy::{self, HardwareAuthorityEntry, NewPolicy};
+use keyquorum::provider::provision;
 use keyquorum::provider::{self, NewCertificate, KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY};
 use keyquorum::relay::key_delivery::{Delivered, Recipient, Via};
 use keyquorum::relay::{
@@ -110,7 +111,7 @@ pub fn run(store_args: &StoreArgs, org_db: &Path, command: HostCommand) -> Resul
                 Some(value) => value,
                 None => provider::system_now_utc()?,
             };
-            let spec = ProvisionSpec {
+            let spec = provision::Spec {
                 provider_id: &provider_id,
                 serial: &serial,
                 issued_at: &issued_at,
@@ -901,17 +902,6 @@ fn write_keypair(what: &str, public_key_out: &Path, private_key_out: &Path) -> R
     Ok(())
 }
 
-/// What `host provision` names in the certificate it signs; the keys it
-/// makes are its own.
-struct ProvisionSpec<'a> {
-    provider_id: &'a str,
-    serial: &'a str,
-    issued_at: &'a str,
-    expires_at: &'a str,
-    capabilities: u32,
-    issuer_id: &'a str,
-}
-
 /// The files `host provision` wrote, by path, and the root it pinned.
 struct Provisioned {
     root_public: [u8; 32],
@@ -923,19 +913,12 @@ struct Provisioned {
     package: PathBuf,
 }
 
-/// A ProviderInfo package made at provisioning is good for this long; the
-/// console issues a fresh one at any time.
-const PROVISION_PACKAGE_VALID_DAYS: u64 = 30;
-
-/// `host provision`: the root ceremony, the relay identity and the
-/// certificate in one run, with the same checks the relay makes on the
-/// result. Everything is built in memory first and verified
-/// (`provider::self_check` under the new root: the certificate is signed by
-/// it, unexpired, grants the capabilities and names the relay key), then
-/// written into `out`, each file created new; a write that fails removes
-/// what this run wrote, so a retry is never refused by a leftover. Neither
-/// private key is printed.
-fn run_provision(out: &Path, spec: &ProvisionSpec<'_>) -> Result<Provisioned> {
+/// `host provision`: `provider::provision` (the root ceremony, the relay
+/// identity and the certificate in one run, checked as the relay checks
+/// them) written into `out`, each file created new; a write that fails
+/// removes what this run wrote, so a retry is never refused by a leftover.
+/// Neither private key is printed.
+fn run_provision(out: &Path, spec: &provision::Spec<'_>) -> Result<Provisioned> {
     let written = Provisioned {
         root_public: [0; 32],
         root_private_key: out.join("root.key"),
@@ -953,49 +936,19 @@ fn run_provision(out: &Path, spec: &ProvisionSpec<'_>) -> Result<Provisioned> {
             )));
         }
     }
-    let (root_private, root_public) = keys::generate_signing_keypair();
-    let (relay_private, relay_public) = provider::generate_relay_identity();
-    let certificate = provider::issue_certificate(
-        &root_private,
-        &NewCertificate {
-            provider_id: spec.provider_id,
-            serial: spec.serial,
-            relay_public_key: &relay_public,
-            issued_at: spec.issued_at,
-            expires_at: spec.expires_at,
-            capabilities: spec.capabilities,
-            issuer_id: spec.issuer_id,
-        },
-    )?;
-    let now = provider::system_now_utc()?;
-    provider::self_check(
-        &root_public,
-        &certificate,
-        &relay_private,
-        &now,
-        &std::collections::HashSet::new(),
-    )?;
-    let identity = ProviderIdentity {
-        certificate: certificate.clone(),
-        relay_private_key: relay_private.clone(),
-    };
-    let package = keyquorum::package::issue_provider_info_package(
-        &identity,
-        provider::unix_from_utc(&now)?,
-        PROVISION_PACKAGE_VALID_DAYS,
-    )?;
+    let made = provision::provision(spec, &provider::system_now_utc()?)?;
     let written = Provisioned {
-        root_public,
+        root_public: made.root_public_key,
         ..written
     };
     create_owner_only_dir(out)?;
     let result = (|| {
-        cli::write_hex_file(&written.root_private_key, &root_private[..])?;
-        cli::write_hex_file(&written.root_public_key, &root_public)?;
-        cli::write_hex_file(&written.relay_private_key, &relay_private[..])?;
-        cli::write_hex_file(&written.relay_public_key, &relay_public)?;
-        locked_files::write_owner_only(&written.identity_file, &certificate)?;
-        locked_files::write_owner_only(&written.package, &package)
+        cli::write_hex_file(&written.root_private_key, &made.root_private_key[..])?;
+        cli::write_hex_file(&written.root_public_key, &made.root_public_key)?;
+        cli::write_hex_file(&written.relay_private_key, &made.relay_private_key[..])?;
+        cli::write_hex_file(&written.relay_public_key, &made.relay_public_key)?;
+        locked_files::write_owner_only(&written.identity_file, &made.certificate)?;
+        locked_files::write_owner_only(&written.package, &made.package)
     })();
     if let Err(err) = result {
         for path in written.paths() {
@@ -1054,7 +1007,7 @@ fn print_provisioned(written: &Provisioned) {
     eprintln!();
     eprintln!("Next:");
     eprintln!(
-        "  1. Pin the root: copy {} to provider-root.pub in the repository, commit, and rebuild the relay and the clients. Its value is {}.",
+        "  1. Pin the root: set the relay's PROVIDER_ROOT deploy variable, and build the clients with KEYQUORUM_PROVIDER_ROOT, to the contents of {} (public, never committed): {}.",
         written.root_public_key.display(),
         hex::encode(written.root_public)
     );

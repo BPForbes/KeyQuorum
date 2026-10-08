@@ -27,8 +27,8 @@ fn an_unknown_commit_keeps_the_bundle_it_wrote() {
     );
 }
 
-fn provision_spec<'a>(expires_at: &'a str) -> ProvisionSpec<'a> {
-    ProvisionSpec {
+fn provision_spec<'a>(expires_at: &'a str) -> provision::Spec<'a> {
+    provision::Spec {
         provider_id: "Acme Security Services",
         serial: "KQP-000001",
         issued_at: "2026-10-08 00:00:00",

@@ -248,7 +248,7 @@ recovered by replacing the key) and no reply holds a bearer or key hash; the
 operator lock is made in two steps (`bootstrap` or `rotate_lock` stages it in
 `licensee_pending` and shows it once, `confirm_lock` promotes it), and an empty
 store cannot be claimed by an ordinary request; the `admin` scope is not issued
-from the console. Until the relay has a trusted identity and the lock, the Overview opens with a four-step first-time setup guide (`workers/admin/public/setup-state.js`, `view-setup.js`: the offline root ceremony with the root pinned, the relay's identity as Worker secrets, the operator lock, then issuing) and Issue keys shows the missing step instead of its form; "trusted" is `operator::identity_check` (`provider::self_check` against the compiled root: signed by it, unexpired, provider capabilities, names the held key), reported as `identity_check` with a reason and the pinned root's public value, and a core that reports no check is unverified; the relay itself requires only an identity and the lock, and a YubiKey option is evaluated, not built (`docs/operator/yubikey-evaluation.md`). There is one operator role (Access decides who is in), and the
+from the console. Until the relay has a trusted identity and the lock, the Overview opens with a four-step first-time setup guide (`workers/admin/public/setup-state.js`, `view-setup.js`: the offline root ceremony with the root pinned, the relay's identity as Worker secrets, the operator lock, then issuing) and Issue keys shows the missing step instead of its form; "trusted" is `operator::identity_check` (`provider::self_check` against the root the Worker's `PROVIDER_ROOT` deploy variable names, `operator::Context::pinned_root`, never a compiled constant: signed by it, unexpired, provider capabilities, names the held key), reported as `identity_check` with a reason (`no_pinned_root` while the variable is unset, `pinned_root` then null) and the pinned root's public value, and a core that reports no check is unverified; the relay itself requires only an identity and the lock, and a YubiKey option is evaluated, not built (`docs/operator/yubikey-evaluation.md`). There is one operator role (Access decides who is in), and the
 console cannot show letter contents or file histories, which are sealed. What has
 not been done and must not be claimed: a deploy to staging, the restore drill, a
 cost or storage measurement, any enforced licence limit, a second role, and a
@@ -298,14 +298,25 @@ and `keys events` before retrying) and removes it only on a failure that is
 certain. `identity
 generate` and `root generate` write the private key only to
 `--private-key-out` (owner-only, never overwritten) and never print it;
-`host provision --out DIR` is the whole ceremony in one run (root keypair, relay
+`provider::provision` is the whole ceremony in one step (root keypair, relay
 keypair, the certificate the root signs, a `ProviderInfo` package), built in
-memory and passed through `provider::self_check` before anything is written,
-every file created new in an owner-only directory, a failed write removing what
-the run wrote. The root every build pins is the 64-hex `provider-root.pub` at
-the repository root (a public value; `build.rs` compiles it into
-`KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`), so pinning a root is committing that
-file; the repository ships a placeholder.
+memory and passed through `provider::self_check` before it is handed back;
+`host provision --out DIR` writes it, every file created new in an owner-only
+directory, a failed write removing what the run wrote, and the console's setup
+guide makes the same files in the browser (`provider::provision_wasm`, the
+`console` feature's one export, built by `workers/scripts/build-console-wasm.mjs`
+into the admin Worker's `public/provision-wasm/`, never committed, loaded under
+`script-src 'self' 'wasm-unsafe-eval'`; `workers/admin/public/provision.js`
+turns the result into downloads and sends, stores and keeps nothing). The relay
+pins the root its `PROVIDER_ROOT` deploy variable names (a GitHub environment
+variable like `BACKUP_RECIPIENT`, public, validated as 64 hex by `workers.yml`,
+never in `wrangler.toml`); a client build compiles its root into
+`KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY` from `KEYQUORUM_PROVIDER_ROOT` (the same
+value), else a git-ignored `provider-root.pub` beside `Cargo.toml` (the
+generated `root.pub` copied there), else a placeholder whose private half nobody
+holds, so a client built with neither trusts no relay; no root is ever
+committed, and the relay never reads any of it. The `console` feature stands alone on
+wasm32 (`build.rs`, `lib.rs` refuse it with `provider`, `lab` or `workers`).
 Prompted passphrases, passwords, PINs and pasted API keys are
 `Zeroizing<String>` (`cli::env::prompt_secret`, `transfer::Passphrases`), and
 so are the vault password and the stored relay bearer (whose `Debug` is

@@ -1,5 +1,7 @@
+import { PRIVATE_FILES, expiryText, filesOf, loadProvisioner, nextSteps, problems, publicZip, utcText } from "./provision.js";
 import { identityState, setupSteps, untrustedReason } from "./setup-state.js";
-import { badge, h, notice, section } from "./ui.js";
+import { badge, busy, clear, field, h, notice, section } from "./ui.js";
+import { downloadBytes } from "./zip.js";
 
 // The first-time setup guide on the Overview page. It explains four distinct
 // steps in order and shows where the relay stands on each. It holds, asks for and
@@ -17,6 +19,74 @@ const LABEL = {
 
 function command(text) {
   return h("pre", {}, h("code", { text }));
+}
+
+// The identity made in this browser (provision.js): a form, then the
+// downloads and what to do with them. The private keys exist only in `made`
+// until the operator clears the panel; nothing is sent or stored.
+function generatePanel() {
+  const providerId = h("input", { type: "text", maxlength: "200", autocomplete: "off", placeholder: "Acme Security Services" });
+  const serial = h("input", { type: "text", class: "mono", maxlength: "64", autocomplete: "off", spellcheck: "false", placeholder: "KQP-000001" });
+  const expires = h("input", { type: "date" });
+  const button = h("button", { type: "button", text: "Make the identity in this browser" });
+  const status = h("div", {});
+  const result = h("div", {});
+  let made = null;
+  const forget = () => {
+    made = null;
+    clear(result);
+  };
+  button.addEventListener("click", async () => {
+    forget();
+    const faults = problems({ providerId: providerId.value, serial: serial.value, expiresAt: expires.value });
+    if (faults.length > 0) {
+      clear(status);
+      status.append(notice("bad", faults.join(" ")));
+      return;
+    }
+    const outcome = await busy(
+      button,
+      status,
+      async () => {
+        const provision = await loadProvisioner();
+        const json = provision(providerId.value.trim(), serial.value.trim(), expiryText(expires.value), utcText(new Date()));
+        return filesOf(json);
+      },
+      (error) => `Could not make the identity: ${error.message}.`,
+    );
+    if (!outcome) return;
+    made = outcome;
+    const downloads = made.files
+      .filter((file) => file.private)
+      .map((file) =>
+        h("button", { type: "button", text: `Download ${file.name}`, on: { click: () => downloadBytes(file.name, file.bytes, "text/plain") } }),
+      );
+    downloads.push(
+      h("button", {
+        type: "button",
+        text: "Download the public files (zip)",
+        on: { click: () => downloadBytes("provider-public.zip", publicZip(made.files), "application/zip") },
+      }),
+    );
+    result.append(
+      notice("good", "Made. Download every file now: this page keeps nothing once you leave it, and a lost private key means making a new identity."),
+      h("p", {}, "The root this identity trusts (root.pub, public): ", h("code", { text: made.rootPub })),
+      h("div", { class: "actions" }, downloads),
+      h("p", { class: "note", text: `${PRIVATE_FILES.join(" and ")} are private: keep them off shared or synced folders and never upload them anywhere, this console included.` }),
+      h("ol", {}, nextSteps(made.rootPub).map((step) => h("li", { text: step }))),
+      h("div", { class: "actions" }, h("button", { type: "button", text: "Clear from this page", on: { click: forget } })),
+    );
+  });
+  return h(
+    "div",
+    {},
+    field("Provider id", providerId, "The name every client sees for this relay."),
+    field("Certificate serial", serial, "Yours to choose; a revocation names it."),
+    field("Certificate expiry", expires, "Have a new certificate issued before this day."),
+    h("div", { class: "actions" }, button),
+    status,
+    result,
+  );
 }
 
 // The root public key this relay pins, a public value, for the operator to
@@ -54,13 +124,15 @@ export function setupGuide(overview, lockPanel) {
         "The offline provider-root ceremony, and pinning the root",
         root.status,
         h("p", {
-          text: "KeyQuorum's provider-root private key stays on an offline machine. It never goes to this relay, this console or any Worker. It signs one certificate (provider.kqcert) naming your relay's public key, a provider id, a serial you can revoke later and an expiry. One command, run once on the offline machine, makes the root, the relay's key pair and that certificate together and checks them the way this relay will; only relay.key and provider.kqcert leave it, for step 2.",
+          text: "KeyQuorum's provider-root private key never goes to this relay, this console's Worker or any Worker. It signs one certificate (provider.kqcert) naming your relay's public key, a provider id, a serial you can revoke later and an expiry. Make the root, the relay's key pair and that certificate together here, in this browser, with the relay's own code: they are checked the way this relay will check them and handed to you as downloads, and nothing is sent anywhere.",
         }),
+        generatePanel(),
+        h("p", { text: "Or make the same files with one command on a machine of your own (the directory must be new; both private keys are written owner-only and never printed):" }),
         command(
-          "# offline, once, the first time only. The directory must be new; both private keys are written owner-only and never printed.\nkeyquorum host provision --out /path/to/provider \\\n  --provider-id \"<your provider id>\" --serial <serial> --expires-at \"<expiry>\"\n# writes root.key, root.pub, relay.key, relay.pub, provider.kqcert and provider-info.kqpkg\n\n# existing root only: certify a new relay key under it (host identity generate, then)\nkeyquorum host certify --root-key /path/to/root.key --relay-public-key relay.pub \\\n  --provider-id \"<your provider id>\" --serial <serial> \\\n  --expires-at \"<expiry>\" --out provider.kqcert",
+          "keyquorum host provision --out /path/to/provider \\\n  --provider-id \"<your provider id>\" --serial <serial> --expires-at \"<expiry>\"\n# writes root.key, root.pub, relay.key, relay.pub, provider.kqcert and provider-info.kqpkg\n\n# existing root only: certify a new relay key under it (host identity generate, then)\nkeyquorum host certify --root-key /path/to/root.key --relay-public-key relay.pub \\\n  --provider-id \"<your provider id>\" --serial <serial> \\\n  --expires-at \"<expiry>\" --out provider.kqcert",
         ),
         h("p", {
-          text: "Pin the root. This relay and every official client trust exactly one root key, compiled in from provider-root.pub at the repository root (KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY in src/provider.rs). The repository ships a placeholder. Before production, replace it with the public half of your root (root.pub, a public value), commit, and rebuild the relay and the clients; a certificate under any other root is refused by every client.",
+          text: "Pin the root. This relay pins the root its PROVIDER_ROOT deploy variable names (a GitHub environment variable, the contents of root.pub, public; set it and run the workers deploy). Every official client trusts exactly one root too, compiled in when it is built (KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY, from KEYQUORUM_PROVIDER_ROOT or a git-ignored provider-root.pub; nothing is committed, and a client built with neither trusts no relay): build the clients with the public half of your root; a certificate under any other root is refused by every client.",
         }),
         pinnedRoot(overview),
         identityState(overview) === "untrusted" && root.status === "failed"

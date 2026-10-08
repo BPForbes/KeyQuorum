@@ -85,10 +85,17 @@ The build downloads the Swagger UI assets for `/swagger-ui` once (the
 `SWAGGER_UI_DOWNLOAD_URL` at a local copy of the archive
 (`file:///path/to/v5.x.y.zip`).
 
-## Provisioning a new provider in one run
+## Provisioning a new provider in one step
 
-A provider that has no root yet makes everything at once, on the offline
-machine:
+A provider that has no root yet makes everything at once: the root keypair,
+the relay keypair, the certificate the root signs for the relay and the
+public `provider-info.kqpkg`. The console's setup guide (step 1 on the
+Overview page) does it in the browser, with the relay's own code compiled to
+WebAssembly (`provider::provision`): fill in the provider id, a serial and
+an expiry, and download `root.key`, `relay.key` (private, one download each)
+and the public files as a zip. The page sends nothing anywhere, keeps nothing
+and shows the root it made. The same files come from one command on a
+machine of your own:
 
 ```sh
 keyquorum host provision --out /media/root/provider \
@@ -110,15 +117,22 @@ relay's two secrets ("Secret provisioning"), and `root.pub` for pinning.
 `root.key` stays, for later certificates (`host certify`) and revocations
 (`host krl`).
 
-**Pin the root.** The relay and every official client trust exactly one root
-public key, compiled in from `provider-root.pub` at the repository root
-(`build.rs` turns its 64 hex characters into
-`KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`). The repository ships a placeholder
-whose private half nobody holds. Copy `root.pub` over it, commit (it is a
-public value), and rebuild the relay (the WebAssembly core, which the
-`workers` workflow does) and the clients; a certificate under any other root
-is refused by every client, and the console's setup guide shows the root the
-running relay pins so you can compare it with `root.pub`.
+**Pin the root, twice.** The relay pins the root its `PROVIDER_ROOT` deploy
+variable names: set the GitHub environment variable (`cloudflare-staging`,
+then `cloudflare-production`) to the contents of `root.pub` (64 hex
+characters, public, never a secret and never a `[vars]` entry) and run the
+`workers` deploy; the workflow refuses a value that is not a 64-character hex
+key, and warns, deploying a relay that pins nothing, when the variable is
+absent. The console's setup guide then shows the root the running relay pins
+so you can compare it with `root.pub`, and reads `no_pinned_root` until it is
+set. Every official client pins a root too, compiled in at build time
+(`build.rs` turns 64 hex characters into `KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`)
+from `KEYQUORUM_PROVIDER_ROOT` in the build's environment, or else from a
+`provider-root.pub` beside `Cargo.toml`, which is git-ignored: copy `root.pub`
+there. Nothing is committed. A client built with neither carries a placeholder
+whose private half nobody holds, so it trusts no relay at all; a certificate
+under any other root is refused by every client. Build the clients you hand
+out with your root, and record which root each build carries.
 
 The two sections below are the same steps one at a time, for a provider that
 already has a root and needs a certificate for a new relay key.
@@ -338,10 +352,11 @@ hosting vendor supplies on its own.
 - **Licence statements are signed text.** `KeyIssue.licence` is carried and
   signed; the relay does not meter seats, suspend by subscription or
   enforce features. Revoking or letting a key expire is the control.
-- **Production trust root.** Confirm that the compiled provider-root public
-  key (`provider-root.pub`, compiled into `KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`)
-  is the `root.pub` your `host provision` run wrote before you issue
-  anything. Clients trust only that root.
+- **Production trust root.** Confirm that the relay's `PROVIDER_ROOT`
+  variable and the root the clients were built with (`KEYQUORUM_PROVIDER_ROOT`
+  or `provider-root.pub` at build time, compiled into
+  `KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`) are both the `root.pub` your
+  provisioning wrote before you issue anything. Clients trust only that root.
 - **Recovery.** Restore a backup into an isolated environment and verify the
   audit chains against the checkpoint for that restore point before you rely
   on it; run a synthetic client that completes the provider challenge, since
@@ -456,17 +471,18 @@ page opens with a four-step guide (issue #102), each step with its own status
 or, for step 1, `offline, not visible from here`). The steps are distinct on
 purpose:
 
-1. **The offline provider-root ceremony, and pinning the root**: `host
-   provision` once, offline ("Provisioning a new provider in one run"), which
-   makes the root, the relay key pair and the certificate together; a provider
-   that already has a root runs `host identity generate` and `host certify`
-   instead. It leaves `provider.kqcert` and `relay.key` for step 2. **Pin the
-   root before production:** the relay and every official client trust exactly
-   one root public key, compiled in from `provider-root.pub`
-   (`KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`), and the repository ships a
-   placeholder. Replace that file with the public half of your root
-   (`root.pub`), commit, and rebuild the relay (the WebAssembly core) and the
-   clients; a certificate under any other root is refused by every client. The relay checks
+1. **The provider-root ceremony, and pinning the root**: the guide makes the
+   root, the relay key pair and the certificate together in the browser, or
+   `host provision` does on a machine of your own ("Provisioning a new
+   provider in one step"); a provider that already has a root runs `host
+   identity generate` and `host certify` instead. It leaves `provider.kqcert`
+   and `relay.key` for step 2. **Pin the root before production:** the relay
+   pins the root its `PROVIDER_ROOT` deploy variable names, and every official
+   client the one it was built with (`KEYQUORUM_PROVIDER_ROOT`, or a
+   git-ignored `provider-root.pub`, into `KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`;
+   nothing is committed). Set the variable and deploy; build the clients with
+   the public half of your root (`root.pub`); a certificate under any other
+   root is refused by every client. The relay checks
    its identity the way a client does (`provider::self_check`): the certificate
    is signed by the root the relay pins, has not expired, grants the provider
    capabilities and names the key the relay holds. The guide marks this step done

@@ -14,6 +14,15 @@ compile_error!(
     "the workers feature excludes provider and lab on wasm32: the public Worker must not carry mailbox-host code or the browser lab"
 );
 
+#[cfg(all(
+    feature = "console",
+    any(feature = "provider", feature = "lab", feature = "workers"),
+    target_arch = "wasm32"
+))]
+compile_error!(
+    "the console feature stands alone on wasm32: the admin console's module carries only provider::provision"
+);
+
 pub mod api_key_delivery;
 pub mod authority;
 pub mod bridge_command;

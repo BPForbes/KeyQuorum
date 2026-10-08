@@ -625,9 +625,11 @@ console and is still true of the front door.
   email and the token's expiry. Without the binding or while the relay's store
   is unavailable a data route answers a sanitized 503.
   Everything else is the static asset, with the content security policy
-  `default-src 'none'; script-src 'self'; style-src 'self'; connect-src
-  'self'; img-src 'self'; base-uri 'none'; form-action 'none';
-  frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`,
+  `default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src
+  'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action
+  'none'; frame-ancestors 'none'` (`'wasm-unsafe-eval'` lets the page compile
+  its own WebAssembly, the identity maker in `public/provision-wasm/`, and
+  allows no JavaScript `eval`), `X-Content-Type-Options: nosniff`,
   `Referrer-Policy: no-referrer`, `Cross-Origin-Opener-Policy: same-origin`
   and `Cache-Control: no-store`. The refusal reason goes to the Worker's
   log and never to the caller.
@@ -1169,10 +1171,13 @@ reference host or in a Worker alike:
 - **The provider-root private key stays offline.** `host certify`, `host
   krl` and `host policy issue` are run on the offline machine
   (`relay-deployment.md`, "Offline provider certificate issuance"); nothing
-  on a Worker holds it. The compiled-in root public key
-  (`src/provider.rs`, `KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`) must be replaced
-  with the key from that ceremony before any production credential is
-  issued, and that replacement recorded.
+  on a Worker holds it. The root the relay pins is its `PROVIDER_ROOT`
+  deploy variable (public, from `root.pub`); a client build compiles its
+  root into `KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY` from `KEYQUORUM_PROVIDER_ROOT`
+  or a git-ignored `provider-root.pub`, and one built with neither carries a
+  placeholder whose private half nobody holds and trusts no relay. No root is
+  committed; the clients handed out must be built with that ceremony's
+  `root.pub`, and that build recorded.
 - **The relay identity key** is the only secret the running relay has. On
   Workers it is a Worker secret set by the operator with `wrangler secret
   put`; it is never in the wrangler configuration, a `[vars]` entry, a

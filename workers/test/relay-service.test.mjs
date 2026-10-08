@@ -460,6 +460,26 @@ test("a lost response is reconciled by the operation id, never done twice, throu
   assert.equal((await ask(service, { op: "keys" })).body.keys.length, 1);
 });
 
+test("the console checks the identity against the root PROVIDER_ROOT pins, and reports none pinned", async () => {
+  const root = randomBytes(32).toString("hex");
+  const pinned = withIdentity({ PROVIDER_ROOT: ` ${root.toUpperCase()}\n` });
+  const check = (await ask(pinned.service, { op: "overview" })).body.identity_check;
+  // A throwaway certificate cannot be signed by that root, but the root itself
+  // is what the page shows, lower-case and trimmed.
+  assert.equal(check.pinned_root, root);
+  assert.equal(check.reason, "certificate_not_signed_by_pinned_root");
+  const unpinned = withIdentity();
+  const none = (await ask(unpinned.service, { op: "overview" })).body.identity_check;
+  assert.deepEqual(none, { state: "untrusted", reason: "no_pinned_root", pinned_root: null });
+  // A root that is set but unreadable is a misconfiguration: the relay serves nothing.
+  const bad = withIdentity({ PROVIDER_ROOT: "not-a-key" });
+  assert.equal(bad.service.operate({ body: JSON.stringify({ op: "overview" }), operator: OPERATOR }).status, 503);
+  assert.equal((await get(bad.service, "/health")).status, 503);
+  const logged = bad.log.lines.map((line) => line.join(" "));
+  assert.ok(logged.some((line) => line.includes("PROVIDER_ROOT")), "the log names the variable, never its value");
+  assert.ok(!logged.some((line) => line.includes("not-a-key")));
+});
+
 test("without an identity the console cannot create the lock or issue, and says so", async () => {
   const { service } = open();
   assert.equal((await ask(service, { op: "overview" })).body.identity_configured, false);

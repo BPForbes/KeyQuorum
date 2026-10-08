@@ -76,7 +76,10 @@ test("a verified request gets the page with strict headers", async () => {
   const csp = response.headers.get("content-security-policy");
   assert.match(csp, /default-src 'none'/);
   assert.match(csp, /frame-ancestors 'none'/);
-  assert.doesNotMatch(csp, /unsafe-inline|unsafe-eval|\*|https?:/);
+  // 'wasm-unsafe-eval' (the page's own WebAssembly) is the one allowance; no
+  // JavaScript eval, no inline code, no other origin.
+  assert.doesNotMatch(csp, /unsafe-inline|(?<!wasm-)unsafe-eval|\*|https?:/);
+  assert.match(csp, /script-src 'self' 'wasm-unsafe-eval';/);
   assert.equal(response.headers.get("x-content-type-options"), "nosniff");
   assert.equal(response.headers.get("cache-control"), "no-store");
   assert.equal(response.headers.get("referrer-policy"), "no-referrer");
@@ -129,8 +132,15 @@ test("the config route names the address clients load keys for, and nothing secr
 // reference to any origin but the page's own, so the CSP above can stay strict.
 const PUBLIC = join(fileURLToPath(new URL("..", import.meta.url)), "public");
 test("the static page keeps to the CSP: no inline code, no outside origin, no innerHTML", () => {
-  for (const name of readdirSync(PUBLIC)) {
-    const text = readFileSync(join(PUBLIC, name), "utf8");
+  // provision-wasm/ (the console's WebAssembly bindings, generated, never
+  // committed) is served beside these files and is checked the same way.
+  const files = readdirSync(PUBLIC, { withFileTypes: true, recursive: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => join(entry.parentPath ?? entry.path, entry.name));
+  for (const path of files) {
+    const name = path.slice(PUBLIC.length + 1);
+    const text = readFileSync(path, "utf8");
+    if (name.endsWith(".wasm")) continue;
     assert.doesNotMatch(text, /https?:\/\//i, `${name} names an origin`);
     assert.doesNotMatch(text, /\son[a-z]+\s*=/i, `${name} has an event-handler attribute`);
     assert.doesNotMatch(text, /\sstyle\s*=/i, `${name} has an inline style`);

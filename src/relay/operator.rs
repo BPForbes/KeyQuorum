@@ -51,7 +51,6 @@ use super::ProviderIdentity;
 use crate::api_key_delivery::DEVICE_ID_LEN;
 use crate::envelope;
 use crate::error::Error;
-use crate::provider::KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use serde::Deserialize;
@@ -71,6 +70,11 @@ pub struct Context<'a> {
     pub operator: &'a str,
     /// The operator lock, if this request presents one.
     pub lock: Option<&'a str>,
+    /// The provider root this relay pins (the `PROVIDER_ROOT` deploy
+    /// variable on the Worker), the one every official client is built
+    /// with. The identity check runs against it; with none pinned the relay
+    /// cannot say its identity is one clients will trust.
+    pub pinned_root: Option<&'a [u8; 32]>,
 }
 
 /// An answer: an HTTP status and a JSON body.
@@ -407,9 +411,10 @@ fn run(
     match request {
         Request::Overview {} => overview(
             store,
-            identity_check(identity, &KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY, now),
+            identity.is_some(),
+            identity_check(identity, ctx.pinned_root, now),
         ),
-        Request::Status {} => status(store, identity, now),
+        Request::Status {} => status(store, identity, ctx.pinned_root, now),
         Request::ProviderPackage {} => provider_package(identity, now),
         Request::Users {
             search,
@@ -1235,7 +1240,7 @@ fn keys_page(
     ok(json!({ "keys": keys, "next_before": next_before }))
 }
 
-fn overview(store: &dyn RelayStore, check: Value) -> Outcome2 {
+fn overview(store: &dyn RelayStore, configured: bool, check: Value) -> Outcome2 {
     let infos = seen(store.list_keys())?;
     let expired = seen(store.expired_key_ids())?;
     let links = seen(store.key_links())?;
@@ -1264,7 +1269,7 @@ fn overview(store: &dyn RelayStore, check: Value) -> Outcome2 {
     ok(json!({
         "operator_lock": seen(store.operator_lock_exists())?,
         "operator_lock_pending": seen(store.operator_lock_pending())?,
-        "identity_configured": check["state"] != "missing",
+        "identity_configured": configured,
         "identity_check": check,
         "customers": seen(store.customer_count())?,
         "keys": { "live": infos.len() - revoked - expired_live, "revoked": revoked,
@@ -1293,7 +1298,14 @@ fn overview(store: &dyn RelayStore, check: Value) -> Outcome2 {
 /// that names the failure and never repeats a secret. `pinned_root` is the
 /// root public key compiled in, a public value the operator compares with the
 /// one their offline ceremony recorded.
-fn identity_check(identity: Option<&ProviderIdentity>, root: &[u8; 32], now: &str) -> Value {
+fn identity_check(
+    identity: Option<&ProviderIdentity>,
+    root: Option<&[u8; 32]>,
+    now: &str,
+) -> Value {
+    let Some(root) = root else {
+        return json!({ "state": "untrusted", "reason": "no_pinned_root", "pinned_root": Value::Null });
+    };
     let pinned_root = hex::encode(root);
     let Some(identity) = identity else {
         return json!({ "state": "missing", "pinned_root": pinned_root });
@@ -1315,8 +1327,13 @@ fn identity_check(identity: Option<&ProviderIdentity>, root: &[u8; 32], now: &st
     json!({ "state": "untrusted", "reason": reason, "pinned_root": pinned_root })
 }
 
-fn status(store: &dyn RelayStore, identity: Option<&ProviderIdentity>, now: &str) -> Outcome2 {
-    let check = identity_check(identity, &KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY, now);
+fn status(
+    store: &dyn RelayStore,
+    identity: Option<&ProviderIdentity>,
+    root: Option<&[u8; 32]>,
+    now: &str,
+) -> Outcome2 {
+    let check = identity_check(identity, root, now);
     let identity_view = match identity {
         None => json!({ "configured": false }),
         Some(identity) => match crate::provider::parse_certificate(&identity.certificate) {

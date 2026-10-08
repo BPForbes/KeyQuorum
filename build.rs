@@ -12,6 +12,10 @@ fn main() {
     let wasm = std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("wasm32");
     let tui = std::env::var_os("CARGO_FEATURE_TUI").is_some();
     let workers = std::env::var_os("CARGO_FEATURE_WORKERS").is_some();
+    let console = std::env::var_os("CARGO_FEATURE_CONSOLE").is_some();
+    if console && wasm && (lab || provider || workers) {
+        panic!("the console feature stands alone on wasm32: the admin console's module carries only provider::provision");
+    }
     if tui && wasm {
         panic!("the tui feature is native-only: the browser lab has no terminal");
     }
@@ -24,18 +28,29 @@ fn main() {
     pin_provider_root();
 }
 
-// The one root public key the relay and every official client trust is the
-// 64 hex characters in `provider-root.pub` at the repository root, a public
-// value (`host provision` writes it as `root.pub`). It is compiled in as
-// `provider::KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`, so pinning a root is
-// committing that file and rebuilding; nothing reads it at run time.
+// The one root public key every official client trusts, compiled in as
+// `provider::KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`, 64 hex characters of a
+// public value the console's setup guide or `host provision` generated as
+// `root.pub`. Nothing is committed: a build reads `KEYQUORUM_PROVIDER_ROOT`
+// (the same value the relay's `PROVIDER_ROOT` deploy variable holds), else
+// `provider-root.pub` beside Cargo.toml (git-ignored; `root.pub` copied
+// there), else a placeholder whose private half nobody holds, so a client
+// built with neither trusts no relay at all. The relay never reads any of it.
+const PLACEHOLDER_ROOT: &str = "f6824aadd7570242115e50d54c1532b8cd9fa12a9a5fc5497b1c838836297c0d";
+
 fn pin_provider_root() {
+    println!("cargo:rerun-if-env-changed=KEYQUORUM_PROVIDER_ROOT");
     println!("cargo:rerun-if-changed=provider-root.pub");
-    let text = std::fs::read_to_string("provider-root.pub")
-        .expect("provider-root.pub (the pinned provider root public key) must exist");
+    let (text, source) = match std::env::var("KEYQUORUM_PROVIDER_ROOT") {
+        Ok(value) if !value.trim().is_empty() => (value, "KEYQUORUM_PROVIDER_ROOT"),
+        _ => match std::fs::read_to_string("provider-root.pub") {
+            Ok(value) => (value, "provider-root.pub"),
+            Err(_) => (PLACEHOLDER_ROOT.to_string(), "the placeholder"),
+        },
+    };
     let hex = text.trim();
     if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        panic!("provider-root.pub must hold exactly 64 hexadecimal characters");
+        panic!("{source} must hold exactly 64 hexadecimal characters (a provider root public key)");
     }
     let bytes: Vec<String> = (0..32)
         .map(|i| format!("0x{}", &hex[2 * i..2 * i + 2]))
@@ -44,7 +59,7 @@ fn pin_provider_root() {
     std::fs::write(
         out.join("provider_root.rs"),
         format!(
-            "/// The provider-root verifying key this build pins (`provider-root.pub`).\n\
+            "/// The provider-root verifying key this build pins (see build.rs).\n\
              /// The matching private key must never appear in git, CI, or this tree.\n\
              pub const KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY: [u8; 32] = [{}];\n",
             bytes.join(", ")

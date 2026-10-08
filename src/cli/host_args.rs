@@ -46,7 +46,8 @@ pub enum HostCommand {
     /// root keypair, the relay keypair, the certificate the root signs for
     /// the relay and the public `ProviderInfo` package. Both private keys are
     /// written owner-only and never printed; `root.pub` is what the build
-    /// pins (`provider-root.pub`) and `relay.key` with `provider.kqcert` are
+    /// pins (the relay's `PROVIDER_ROOT`, a client build's `KEYQUORUM_PROVIDER_ROOT`)
+    /// and `relay.key` with `provider.kqcert` are
     /// the relay's two Worker secrets.
     Provision {
         /// Directory to create; every file it would write must be new
