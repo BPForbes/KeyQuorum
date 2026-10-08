@@ -1,6 +1,7 @@
 import { PRIVATE_FILES, expiryText, filesOf, loadProvisioner, nextSteps, problems, publicZip, utcText, wipe } from "./provision.js";
 import { identityState, setupSteps, untrustedReason } from "./setup-state.js";
 import { badge, busy, clear, field, h, notice, section } from "./ui.js";
+import { onDispose } from "./dispose.js";
 import { downloadBytes } from "./zip.js";
 
 // The first-time setup guide on the Overview page. It explains four distinct
@@ -34,12 +35,18 @@ function generatePanel() {
   let made = null;
   // Revokers for the private downloads this panel started (zip.js).
   const revokes = [];
+  let disposed = false;
   // Wipes the private bytes, releases their pending downloads, then forgets.
   const forget = () => {
     wipe(made, revokes);
     made = null;
     clear(result);
   };
+  // Leaving the view (another page, closing the tab) does the same as Clear.
+  onDispose(() => {
+    disposed = true;
+    forget();
+  });
   button.addEventListener("click", async () => {
     forget();
     const faults = problems({ providerId: providerId.value, serial: serial.value, expiresAt: expires.value });
@@ -59,6 +66,11 @@ function generatePanel() {
       (error) => `Could not make the identity: ${error.message}.`,
     );
     if (!outcome) return;
+    if (disposed) {
+      // Made after the view was left: wiped at once, never shown.
+      wipe(outcome, revokes);
+      return;
+    }
     made = outcome;
     const downloads = made.files
       .filter((file) => file.private)

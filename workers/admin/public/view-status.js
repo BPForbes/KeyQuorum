@@ -3,6 +3,7 @@ import { daysUntil, formatBytes, formatTime } from "./format.js";
 import { BACKUP_PRIVATE_FILE, backupFilesOf, backupNextSteps, loadProvisioner, wipe } from "./provision.js";
 import { untrustedReason } from "./setup-state.js";
 import { badge, busy, card, clear, h, notice, section } from "./ui.js";
+import { onDispose } from "./dispose.js";
 import { downloadBytes } from "./zip.js";
 
 function row(label, value) {
@@ -123,12 +124,18 @@ function backupSetup(backups) {
   let made = null;
   // Revokers for the private downloads this panel started (zip.js).
   const revokes = [];
+  let disposed = false;
   // Wipes the private bytes, releases their pending downloads, then forgets.
   const forget = () => {
     wipe(made, revokes);
     made = null;
     clear(result);
   };
+  // Leaving the view (another page, closing the tab) does the same as Clear.
+  onDispose(() => {
+    disposed = true;
+    forget();
+  });
   button.addEventListener("click", async () => {
     forget();
     const outcome = await busy(
@@ -138,6 +145,11 @@ function backupSetup(backups) {
       (error) => `Could not make the keypair: ${error.message}.`,
     );
     if (!outcome) return;
+    if (disposed) {
+      // Made after the view was left: wiped at once, never shown.
+      wipe(outcome, revokes);
+      return;
+    }
     made = outcome;
     result.append(
       notice("good", "Made. Download both files now: this page keeps nothing once you leave it."),

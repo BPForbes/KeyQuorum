@@ -142,3 +142,52 @@ test("the Status page's backup setup makes the keypair in the browser and sends 
   assert.doesNotMatch(status, /fetch\(/);
   assert.equal(status.split("await get(").length - 1, 1, "one API read, no upload");
 });
+
+test("leaving a view runs each registered cleanup once, and one that throws does not stop the rest", async () => {
+  const { disposeAll, onDispose } = await import("../public/dispose.js");
+  const ran = [];
+  onDispose(() => ran.push("a"));
+  onDispose(() => {
+    throw new Error("boom");
+  });
+  onDispose(() => ran.push("c"));
+  disposeAll();
+  disposeAll();
+  assert.deepEqual(ran, ["a", "c"]);
+});
+
+test("the router disposes the old view before drawing and on pagehide, and both panels wipe on disposal and on a late result", () => {
+  const app = readFileSync(join(PUBLIC, "app.js"), "utf8");
+  assert.ok(app.indexOf("disposeAll();") < app.indexOf("clear(main);"), "dispose before the view is cleared");
+  assert.match(app, /addEventListener\("pagehide", disposeAll\)/);
+  for (const name of ["view-setup.js", "view-status.js"]) {
+    const text = readFileSync(join(PUBLIC, name), "utf8");
+    assert.match(text, /onDispose\(\(\) => \{\n\s+disposed = true;\n\s+forget\(\);/, name);
+    assert.match(text, /if \(disposed\) \{\n[^}]*wipe\(outcome, revokes\);/, name);
+  }
+});
+
+test("a download's revoker releases its Blob URL at once, only once, and the timer then does nothing", async () => {
+  const { downloadBytes } = await import("../public/zip.js");
+  const revoked = [];
+  const timers = [];
+  const saved = { URL: globalThis.URL, document: globalThis.document, setTimeout: globalThis.setTimeout };
+  globalThis.URL = { createObjectURL: () => "blob:fake", revokeObjectURL: (url) => revoked.push(url) };
+  globalThis.document = {
+    createElement: () => ({ click() {}, remove() {} }),
+    body: { append() {} },
+  };
+  globalThis.setTimeout = (fn, ms) => timers.push([fn, ms]);
+  try {
+    const revoke = downloadBytes("relay.key", new Uint8Array([1, 2, 3]), "text/plain");
+    revoke();
+    revoke();
+    assert.deepEqual(revoked, ["blob:fake"]);
+    assert.equal(timers.length, 1);
+    assert.equal(timers[0][1], 10_000);
+    timers[0][0]();
+    assert.deepEqual(revoked, ["blob:fake"], "the fallback timer is a no-op after an explicit revoke");
+  } finally {
+    Object.assign(globalThis, saved);
+  }
+});
