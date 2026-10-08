@@ -36,7 +36,9 @@ fn main() {
 // `provider-root.pub` beside Cargo.toml (git-ignored; `root.pub` copied
 // there), else a placeholder whose private half nobody holds, so a client
 // built with neither trusts no relay at all. The relay never reads any of it.
-const PLACEHOLDER_ROOT: &str = "f6824aadd7570242115e50d54c1532b8cd9fa12a9a5fc5497b1c838836297c0d";
+// Generated once with `host root generate`; its private half was destroyed
+// unrecorded, so nothing can ever be signed under it.
+const PLACEHOLDER_ROOT: &str = "3ad178f9783cf922bd1ad04868a8f2530472f4f1ded4dfbbeb18eb0603fc3f6d";
 
 fn pin_provider_root() {
     println!("cargo:rerun-if-env-changed=KEYQUORUM_PROVIDER_ROOT");
