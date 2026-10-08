@@ -86,12 +86,12 @@ test("the WebAssembly is loaded once, from the console's own files, initialised 
   const importer = async (path) => {
     loads += 1;
     assert.equal(path, "./provision-wasm/keyquorum_console.js");
-    return { default: async () => (inits += 1), provision_identity: () => "{}", backup_keygen: () => "{}" };
+    return { default: async () => (inits += 1), provision_identity: () => "{}", backup_keygen: () => "{}", verify_package: () => "{}" };
   };
   const first = await loadProvisioner(importer);
   const second = await loadProvisioner(importer);
   assert.equal(first, second);
-  assert.deepEqual(Object.keys(first).sort(), ["backup_keygen", "provision_identity"]);
+  assert.deepEqual(Object.keys(first).sort(), ["backup_keygen", "provision_identity", "verify_package"]);
   assert.deepEqual([loads, inits], [1, 1]);
 });
 

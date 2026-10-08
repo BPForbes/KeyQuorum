@@ -45,8 +45,12 @@ const BUNDLE_TYPE_TRACKED_FILE: u8 = 3;
 pub const BUNDLE_TYPE_API_KEY: u8 = 4;
 /// A package's setup manifest (`setup_manifest`): the typed, signed list of
 /// steps `keyquorum setup` runs, sealed to the one recipient and bound to one
-/// `.kqpkg`. Type 5 is reserved for the provider-recovery payload.
+/// `.kqpkg`.
 pub const BUNDLE_TYPE_SETUP_MANIFEST: u8 = 6;
+/// A provider-recovery payload (`provider::recovery`): a relay identity's
+/// private key and its root-signed context, sealed to an enrolled operator key
+/// and carried only in a root-signed `ProviderRecovery` `.kqpkg`.
+pub const BUNDLE_TYPE_PROVIDER_RECOVERY: u8 = 5;
 /// One sealed chunk of a relay database backup (`relay::backup`), sealed to the
 /// operator's backup key and held in R2. Never a `.kqpkg` component.
 pub const BUNDLE_TYPE_BACKUP_CHUNK: u8 = 7;

@@ -164,6 +164,11 @@ pub enum Error {
     KqpkgExpired,
     /// A `.kqpkg`'s signer is not the one its purpose requires.
     KqpkgIssuerUntrusted,
+    /// The install ledger refuses a `.kqpkg` (issue #106): a stale or
+    /// conflicting generation, a changed package under a known id, another
+    /// target, a superseded resume, or another package still pending in the
+    /// same stream. The text says which, never a secret.
+    KqpkgRefused(String),
     /// A relay-issued API key is bound to a device other than the one
     /// opening it.
     KeyIssueDeviceMismatch,
@@ -307,6 +312,7 @@ impl fmt::Display for Error {
                 f,
                 "KeyQuorum package is not signed by the issuer its purpose requires"
             ),
+            Error::KqpkgRefused(reason) => write!(f, "KeyQuorum package refused: {reason}"),
             Error::KeyIssueRelayMismatch => {
                 write!(f, "API key letter names a different relay")
             }

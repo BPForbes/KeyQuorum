@@ -19,25 +19,31 @@ use std::path::PathBuf;
 
 #[derive(Args)]
 pub struct SetupOpts {
-    /// A `.kqpkg` from your provider to install. Without --yes it is only
-    /// inspected and the plan shown; nothing is written.
-    #[arg(value_name = "PACKAGE")]
-    pub package: Option<PathBuf>,
+    /// One or more `.kqpkg` files from your provider to install (a shell
+    /// pattern such as `*.kqpkg` works). Every package is verified and the
+    /// combined plan shown before anything is written; without --yes nothing is.
+    #[arg(value_name = "PACKAGE", num_args = 0..)]
+    pub packages: Vec<PathBuf>,
     /// The device container directory (created if it does not exist)
-    #[arg(long, required_unless_present = "package")]
+    #[arg(long, required_unless_present_any = ["packages", "abandon"])]
     pub device: Option<PathBuf>,
     /// Your label: the slot's name and the label its keys are registered under
-    #[arg(long, required_unless_present = "package")]
+    #[arg(long, required_unless_present_any = ["packages", "abandon"])]
     pub label: Option<String>,
+    /// Give up on a package whose setup did not finish (its id, as setup
+    /// printed it), so another package can be installed for the same slot.
+    /// What it installed stays, and an older package still cannot replace it.
+    #[arg(long, value_name = "PACKAGE_ID", conflicts_with_all = ["packages", "enroll_out", "url"])]
+    pub abandon: Option<String>,
     /// Write your public enrollment request (`.kqreq`) here, for a provider
     /// to seal a package to; share its fingerprint with them out of band
-    #[arg(long, value_name = "FILE", conflicts_with = "package")]
+    #[arg(long, value_name = "FILE", conflicts_with = "packages")]
     pub enroll_out: Option<PathBuf>,
     /// Apply the package's plan after showing it
-    #[arg(long, requires = "package")]
+    #[arg(long, requires = "packages")]
     pub yes: bool,
     /// The relay you use; with it, the relay key is loaded too
-    #[arg(long, conflicts_with = "package")]
+    #[arg(long, conflicts_with = "packages")]
     pub url: Option<String>,
     /// Relay API key (prompted if omitted and --url is given)
     #[arg(long, requires = "url")]
@@ -137,7 +143,8 @@ pub(super) fn ensure_identity(
 
 pub(crate) fn run(conn: &Connection, opts: SetupOpts) -> Result<()> {
     let SetupOpts {
-        package,
+        packages,
+        abandon,
         device: path,
         label,
         url,
@@ -145,13 +152,16 @@ pub(crate) fn run(conn: &Connection, opts: SetupOpts) -> Result<()> {
         yes,
         enroll_out,
     } = opts;
-    if let Some(package) = package {
+    if let Some(id) = abandon {
+        return super::setup_package::abandon(conn, &id);
+    }
+    if !packages.is_empty() {
         let (Some(path), Some(label)) = (path, label) else {
             return Err(usage(
                 "setup with a package needs --device and --label: the drive and slot it is installed for",
             ));
         };
-        return super::setup_package::run(conn, &package, &path, &label, yes);
+        return super::setup_package::run_batch(conn, &packages, &path, &label, yes);
     }
     let (Some(path), Some(label)) = (path, label) else {
         return Err(usage("setup needs --device and --label"));

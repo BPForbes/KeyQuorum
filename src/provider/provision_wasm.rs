@@ -1,7 +1,8 @@
-//! The operator console's two exports (`console` feature, wasm32 only): make
-//! a provider identity, and the backup keypair, in the browser with the
-//! crate's own code, so the console can offer the files for download without
-//! the operator running a command. A result goes back as JSON holding the
+//! The operator console's exports (`console` feature, wasm32 only): make a
+//! provider identity, and the backup keypair, in the browser with the crate's
+//! own code, so the console can offer the files for download without the
+//! operator running a command; and check a package against the pinned root
+//! (`verify_package`) with the same code the native commands use. A result goes back as JSON holding the
 //! same bytes the files would: the private keys as the hex text `root.key`,
 //! `relay.key` and `backup.key` hold, the certificate and the package as
 //! base64. The page downloads them and keeps nothing; nothing here reaches
@@ -59,6 +60,25 @@ pub fn backup_keygen() -> Result<String, JsError> {
         backup_key: &backup_key,
         backup_pub: &backup_pub,
     })
+}
+
+/// Checks a `.kqpkg` against the root this relay pins (`root_hex`, the
+/// `pinned_root` the relay reports) at `now_utc` (`YYYY-MM-DD HH:MM:SS`), with
+/// `package::public::verify`: signature, hashes, purpose, validity window,
+/// signer and certificate, and that every sealed part is sealed to one
+/// recipient. Nothing sealed is opened (the page holds no recipient key) and
+/// no revocation list is applied here; the native command that installs the
+/// package checks both. The result is public JSON.
+#[wasm_bindgen]
+pub fn verify_package(bytes: &[u8], root_hex: &str, now_utc: &str) -> Result<String, JsError> {
+    let root: [u8; 32] = hex::decode(root_hex)
+        .ok()
+        .and_then(|raw| raw.try_into().ok())
+        .ok_or_else(|| JsError::new("the pinned root is not a 64-character hex key"))?;
+    let checked =
+        crate::package::public::verify(bytes, &root, now_utc, &std::collections::HashSet::new())
+            .map_err(|err| JsError::new(&err.to_string()))?;
+    to_json(&checked)
 }
 
 /// The identity as the page receives it. The fields borrow the zeroized hex

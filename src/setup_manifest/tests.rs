@@ -39,9 +39,19 @@ fn key(seed: u8) -> Vec<u8> {
 }
 
 fn package_of(w: &World, keys: &[&[u8]]) -> package::Package {
-    let bytes =
-        package::issue_client_package(&w.identity, keys, &w.public, Some(DEVICE), ISSUED, 30)
-            .expect("issue");
+    let bytes = package::issue_client_package(
+        &w.identity,
+        keys,
+        &w.public,
+        Some(DEVICE),
+        &package::ClientPackage {
+            purpose: package::Purpose::ClientSetup,
+            generation: 1,
+            issued_at: ISSUED,
+            valid_days: 30,
+        },
+    )
+    .expect("issue");
     package::decode(&bytes).expect("decode")
 }
 
@@ -74,6 +84,8 @@ fn standard_body(w: &World) -> Body {
         recipient: hex::encode(w.public),
         device_id: Some(hex::encode(DEVICE)),
         expires_at: NOW_UNIX + 1000,
+        package_generation: 1,
+        certificate_sha256: certificate.clone(),
         operations: standard_operations(&certificate, &[hash_of(&one), hash_of(&two)]),
     }
 }
@@ -419,7 +431,16 @@ fn the_shape_rules_refuse_a_manifest_no_issuer_would_write() {
                 _ => unreachable!(),
             }),
         ),
-        ("another version", Box::new(|b| b.version = 2)),
+        ("another version", Box::new(|b| b.version = 3)),
+        (
+            "version 1, which had no generation",
+            Box::new(|b| b.version = 1),
+        ),
+        ("generation zero", Box::new(|b| b.package_generation = 0)),
+        (
+            "a certificate hash that is not one",
+            Box::new(|b| b.certificate_sha256 = "zz".into()),
+        ),
         (
             "another purpose",
             Box::new(|b| b.purpose = "provider_recovery".into()),
@@ -573,4 +594,46 @@ fn every_part_of_the_package_is_used_by_exactly_one_step() {
             ISSUED + 10
         )
         .is_err());
+}
+
+/// A version 1 manifest, which carried no generation, is refused when read:
+/// its missing field is never taken as zero.
+#[test]
+fn a_manifest_without_a_generation_does_not_parse() {
+    let w = world();
+    let mut value = serde_json::to_value(standard_body(&w)).unwrap();
+    value.as_object_mut().unwrap().remove("package_generation");
+    assert!(serde_json::from_value::<Body>(value).is_err());
+}
+
+/// The manifest names the package's certificate by hash; another certificate
+/// with the same signer would not match.
+#[test]
+fn the_manifest_is_bound_to_the_certificate_it_travels_with() {
+    let w = world();
+    let (one, two) = (key(1), key(2));
+    let package = package_of(&w, &[&one, &two]);
+    let seen = opened(&w, &package);
+    let mut body = seen.body.clone();
+    body.certificate_sha256 = "00".repeat(32);
+    assert!(matches!(
+        body.check_against(
+            &package,
+            manifest_at(&package),
+            &w.public,
+            &DEVICE,
+            NOW_UNIX
+        ),
+        Err(Error::InvalidSetupManifest)
+    ));
+    assert!(seen
+        .body
+        .check_against(
+            &package,
+            manifest_at(&package),
+            &w.public,
+            &DEVICE,
+            NOW_UNIX
+        )
+        .is_ok());
 }

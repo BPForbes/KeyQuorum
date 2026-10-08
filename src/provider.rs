@@ -461,6 +461,7 @@ pub mod policy;
 pub mod provision;
 #[cfg(all(feature = "console", target_arch = "wasm32"))]
 pub mod provision_wasm;
+pub mod recovery;
 
 #[cfg(test)]
 #[path = "provider/test_helpers.rs"]

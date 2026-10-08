@@ -56,6 +56,9 @@ pub struct TestRelay {
     pub fail_uploads: bool,
     /// Let this many uploads through, then fail every later one.
     pub fail_uploads_after: Option<usize>,
+    /// Refuse every request as an unreachable relay would; the root it
+    /// chains to stays pinned.
+    pub unreachable: bool,
 }
 
 pub const RELAY_URL: &str = "https://relay.test";
@@ -92,6 +95,9 @@ impl Env for MemoryEnv {
         let Some(relay) = self.relay.as_mut() else {
             return Err(Error::RelayRequest("no relay in this test".into()));
         };
+        if relay.unreachable {
+            return Err(Error::RelayRequest("the relay is unreachable".into()));
+        }
         if request.url.path() == "/provider-identity" {
             relay.identity_challenges += 1;
         }
@@ -203,6 +209,7 @@ impl MemoryEnv {
             key_checks: 0,
             fail_uploads: false,
             fail_uploads_after: None,
+            unreachable: false,
         });
     }
 

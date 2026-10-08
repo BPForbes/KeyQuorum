@@ -1,6 +1,7 @@
 // What a file is, from its own bytes, before the console does anything with it.
-// Pure: no page, no network. Nothing here verifies a signature; the relay core
-// does that when an action is taken. This only reads the public framing so the
+// Pure: no page, no network. Nothing here verifies a signature; a package is
+// verified by the core's own verifier (package-check.js), and anything else by
+// the relay core when an action is taken. This only reads the public framing so the
 // operator is told what they are holding and which actions apply, and refuses
 // to go on with anything that is, or looks like, private key material.
 
@@ -84,6 +85,9 @@ export function classify(bytes, name = "") {
     if (magic === "KQXB" && kind === 6) {
       return { accepted: true, kind: "setup_manifest", label: "Sealed setup steps (.kqxb, type 6)", visibility: "sealed", action: "inspect", note: "Sealed to its recipient and signed by the relay. It is not stored by the console." };
     }
+    if (magic === "KQXB" && kind === 5) {
+      return refuse("This is a provider recovery payload: the relay key, sealed to an operator. It travels only inside a recovery package and is installed only by `keyquorum host recovery install`, offline. It was not kept or sent.", "Sealed recovery payload, not handled here");
+    }
     if (magic === "KQPB" && kind === 20) {
       return { accepted: true, kind: "sealed_key_letter", label: "Sealed API key letter (.kqpb, kind 20)", visibility: "sealed", action: "inspect", note: "Sealed to its recipient. It is not stored by the console." };
     }
@@ -107,6 +111,7 @@ const COMPONENTS = {
   4: "sealed API key (.kqkey)",
   5: "sealed API key letter",
   6: "setup steps (sealed, signed)",
+  7: "provider recovery payload (sealed to an operator)",
 };
 
 const hex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");

@@ -302,3 +302,15 @@ CREATE TABLE IF NOT EXISTS licensee_pending (
     key_hash    TEXT NOT NULL,
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+
+-- The setup-package generation each recipient's stream has reached
+-- (`relay::package_generation`, issue #106): every client package the relay
+-- signs takes the next one, so the client can refuse an older package. Never
+-- decreases; a package not delivered leaves a harmless gap. Public keys and
+-- device ids only.
+CREATE TABLE IF NOT EXISTS package_generations (
+    recipient   TEXT NOT NULL CHECK (length(recipient) = 64),
+    device_id   TEXT NOT NULL CHECK (device_id = '' OR length(device_id) = 32),
+    generation  INTEGER NOT NULL CHECK (generation >= 1),
+    PRIMARY KEY (recipient, device_id)
+);

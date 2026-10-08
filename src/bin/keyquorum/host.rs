@@ -11,7 +11,8 @@
 use keyquorum::api_key_delivery::MAX_LICENCE_BYTES;
 use keyquorum::cli;
 use keyquorum::cli::host_args::{
-    BackupCommand, HostCommand, IdentityCommand, KeysCommand, PolicyCommand, RootCommand,
+    BackupCommand, HostCommand, IdentityCommand, KeysCommand, PolicyCommand, RecoveryCommand,
+    RootCommand,
 };
 use keyquorum::cli::host_env::{self, ProcessVars};
 use keyquorum::db;
@@ -21,6 +22,7 @@ use keyquorum::locked_files;
 use keyquorum::provider::hardware_auth::HardwareAuthority;
 use keyquorum::provider::policy::{self, HardwareAuthorityEntry, NewPolicy};
 use keyquorum::provider::provision;
+use keyquorum::provider::recovery;
 use keyquorum::provider::{self, NewCertificate, KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY};
 use keyquorum::relay::key_delivery::{Delivered, Recipient, Via};
 use keyquorum::relay::{
@@ -100,6 +102,7 @@ pub fn run(store_args: &StoreArgs, org_db: &Path, command: HostCommand) -> Resul
         }
         HostCommand::Identity { command } => run_identity(command),
         HostCommand::Backup { command } => run_backup(command),
+        HostCommand::Recovery { command } => run_recovery(command),
         HostCommand::Provision {
             out,
             provider_id,
@@ -264,6 +267,7 @@ fn run_keys(store: &dyn RelayStore, command: KeysCommand) -> Result<()> {
             package_relay_url,
             package_licence_file,
             package_valid_days,
+            update,
         } => {
             let identity = authorize_mint(
                 store,
@@ -305,6 +309,22 @@ fn run_keys(store: &dyn RelayStore, command: KeysCommand) -> Result<()> {
                         )?
                     };
                     let issued_at = provider::unix_from_utc(&provider::system_now_utc()?)?;
+                    // The generation is taken first, in its own unit of work: a
+                    // package that is then not written leaves a harmless gap.
+                    let generation = store.next_package_generation(
+                        &request.encryption_public,
+                        Some(&request.device_id),
+                    )?;
+                    let spec = keyquorum::package::ClientPackage {
+                        purpose: if update {
+                            keyquorum::package::Purpose::ClientUpdate
+                        } else {
+                            keyquorum::package::Purpose::ClientSetup
+                        },
+                        generation,
+                        issued_at,
+                        valid_days: package_valid_days,
+                    };
                     // The package is written inside the key's own transaction, so a
                     // package that cannot be built or written leaves no key behind.
                     let delivered = into_file(&package_out, |write| {
@@ -314,8 +334,7 @@ fn run_keys(store: &dyn RelayStore, command: KeysCommand) -> Result<()> {
                                 &[sealed],
                                 &request.encryption_public,
                                 Some(request.device_id),
-                                issued_at,
-                                package_valid_days,
+                                &spec,
                             )?;
                             write(&package)
                         })
@@ -323,7 +342,7 @@ fn run_keys(store: &dyn RelayStore, command: KeysCommand) -> Result<()> {
                     println!("Created API key {}", delivered.info.id);
                     println!("scope: {}", delivered.info.scope);
                     println!("sealed to: {}", delivered.recipient_fingerprint);
-                    println!("wrote {}", package_out.display());
+                    println!("wrote {} (generation {generation})", package_out.display());
                     println!(
                         "hand it to the customer for `keyquorum setup FILE --device DIR --label NAME`; it is never printed"
                     );
@@ -871,6 +890,159 @@ fn run_backup(command: BackupCommand) -> Result<()> {
             }
         }
     }
+}
+
+/// `host recovery`: the provider-recovery package (issue #107), all of it
+/// offline. `keygen` makes the operator's recovery key, `issue` seals a relay
+/// identity to it under the root, and `install` opens one and writes the
+/// identity into a directory the operator names. None of it touches a running
+/// relay, a Worker secret or a deploy variable; deploying a restored identity
+/// is a separate, separately approved step.
+fn run_recovery(command: RecoveryCommand) -> Result<()> {
+    match command {
+        RecoveryCommand::Keygen {
+            public_key_out,
+            private_key_out,
+        } => {
+            if public_key_out.exists() {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!("{} already exists", public_key_out.display()),
+                )));
+            }
+            let (secret, public) = keys::generate_encryption_keypair();
+            cli::write_hex_file(&private_key_out, &secret[..])?;
+            if let Err(err) = cli::write_hex_file(&public_key_out, &public) {
+                let _ = std::fs::remove_file(&private_key_out);
+                return Err(err);
+            }
+            eprintln!(
+                "Recovery private key written owner-only to {}; keep it offline with the operator.",
+                private_key_out.display()
+            );
+            eprintln!(
+                "Public key written to {}; hand it to whoever issues recovery packages.",
+                public_key_out.display()
+            );
+            println!("fingerprint {}", recovery::recipient_fingerprint(&public));
+            Ok(())
+        }
+        RecoveryCommand::Issue {
+            root_key,
+            relay_key,
+            certificate,
+            recipient,
+            confirm_fingerprint,
+            valid_days,
+            out,
+            krl,
+        } => {
+            let recipient = read_key_array_32(&recipient)?;
+            if !recovery::fingerprint_matches(&recipient, &confirm_fingerprint) {
+                return Err(Error::KqpkgRefused(
+                    "the recipient key's fingerprint is not the one confirmed; compare it with the operator again".into(),
+                ));
+            }
+            let root = read_root_key(root_key)?;
+            let root_public = ed25519_dalek::SigningKey::from_bytes(&root)
+                .verifying_key()
+                .to_bytes();
+            if root_public != KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY {
+                return Err(Error::KqpkgRefused(
+                    "this root is not the one this build pins, so the package would not install"
+                        .into(),
+                ));
+            }
+            let relay_private_key = read_key_array_32(&relay_key)?;
+            let certificate = read_bounded(&certificate, 16 * 1024)?;
+            let revoked = backup_revocations(krl)?;
+            let bytes = recovery::issue(&recovery::Issue {
+                root_private_key: &root,
+                relay_private_key: &relay_private_key,
+                certificate: &certificate,
+                recipient: &recipient,
+                now_utc: &provider::system_now_utc()?,
+                valid_days,
+                revoked: &revoked,
+            })?;
+            locked_files::write_owner_only(&out, &bytes)?;
+            eprintln!(
+                "Wrote the recovery package to {} (owner-only, sealed to the confirmed operator key, valid {valid_days} day(s)).",
+                out.display()
+            );
+            Ok(())
+        }
+        RecoveryCommand::Install {
+            package,
+            recipient_key,
+            out,
+            yes,
+            krl,
+        } => {
+            let bytes = read_bounded(&package, keyquorum::package::MAX_PACKAGE_BYTES)?;
+            let secret = host_env::read_key_file(&recipient_key)?;
+            let revoked = backup_revocations(krl)?;
+            let now = provider::system_now_utc()?;
+            let root = KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY;
+            let recovered = recovery::open(&bytes, &secret, &root, &now, &revoked)?;
+            let plan = recovery::plan_install(&out, &recovered)?;
+            let action = |a: recovery::FileAction| match a {
+                recovery::FileAction::Write => "write",
+                recovery::FileAction::Keep => "keep (already identical)",
+            };
+            println!(
+                "Recovery package {} for {} (serial {}, relay key {}, certificate expires {})",
+                recovered.package_id,
+                recovered.provider_id,
+                recovered.serial,
+                hex::encode(recovered.relay_public_key),
+                recovered.certificate_expires_at
+            );
+            println!(
+                "  {}{}",
+                out.display(),
+                if plan.create_dir {
+                    " (create, owner-only)"
+                } else {
+                    ""
+                }
+            );
+            println!("  {}: {}", recovery::RELAY_KEY_FILE, action(plan.relay_key));
+            println!(
+                "  {}: {}",
+                recovery::CERTIFICATE_FILE,
+                action(plan.certificate)
+            );
+            println!("This restores files only: it sets no Worker secret, deploy variable or platform credential.");
+            if !yes {
+                println!("Nothing was written. Run again with --yes to install.");
+                return Ok(());
+            }
+            recovery::install(&plan, &recovered, &root, &now, &revoked)?;
+            println!(
+                "Recovery installed and verified: {} holds the identity the pinned root certifies.",
+                out.display()
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Reads at most `limit` bytes of `path`; a longer file is refused unread
+/// past the bound.
+fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(Error::KqpkgRefused(format!(
+            "{} is larger than {limit} bytes",
+            path.display()
+        )));
+    }
+    Ok(bytes)
 }
 
 fn backup_revocations(krl: Option<PathBuf>) -> Result<std::collections::HashSet<String>> {

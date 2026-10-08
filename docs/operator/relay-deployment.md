@@ -678,6 +678,21 @@ see the plan (it first opens every sealed key with the slot, so a key that
 cannot install stops it) and add `--yes` to apply it. The fingerprint is the only thing that
 ties the request to the person, so never skip the call.
 
+A client can install several packages in one run (`keyquorum setup A.kqpkg
+B.kqpkg --device DIR --label NAME`, or `*.kqpkg`): at most 16 files and 64 MiB
+together. Every file is verified and planned before anything is written, so a
+bad file anywhere stops the whole run with nothing written; the same file twice
+counts once. They are applied in a fixed order (per provider and slot, by
+signed generation, a setup before its updates), and refused up front are two
+files claiming one package id, two packages for one slot at the same
+generation, a setup package after another for its slot, packages that would
+put different certificates on the drive or name different default relays,
+different keys for one relay and scope from two providers, and anything but
+client packages. It is not one transaction: each package goes through the
+ledger on its own, the run reports each one (installed, already installed,
+stopped and pending, not started), and running the same command again skips
+what is installed and resumes the rest.
+
 The package also carries a **setup manifest** (`KQXB` type 6, `src/setup_manifest.rs`):
 the steps `setup` runs, as a closed list of typed operations (`ensure_identity`,
 `install_certificate`, `install_key`, `use_relay`), never shell text. The relay
@@ -686,8 +701,48 @@ is sealed to the person, so only that slot can read it; it names every other par
 by SHA-256 and each part must be used by exactly one step. It is bound to the
 package id, purpose, recipient, device and expiry, so a copy for another person,
 drive or package is refused before any write. A package without a manifest still
-installs by the fixed plan. Not built: a resume ledger, installing a
-`ClientUpdate`, and a recovery package for a lost relay key.
+installs by the fixed plan.
+
+Each client manifest (version 2) signs a package generation, a counter the
+relay keeps per recipient and device, and the SHA-256 of the certificate in
+the package. `host keys create --enrollment ... --update` issues a
+`ClientUpdate` (the console issues `ClientSetup`). The client keeps an install
+ledger in its personal store: a package already installed is a no-op, an
+interrupted one resumes from the first step not verified in place, an older or
+equal generation is refused, and a second package for the same slot waits
+until the pending one finishes or `keyquorum setup --abandon ID` gives it up.
+Only a newer `ClientUpdate` replaces a stored key, and a replaced key is never
+installed again. A client that restores or erases its personal store loses
+that baseline.
+
+### Recovering a relay identity
+
+A relay identity can be restored on a host from a recovery package, made
+offline with the root and sealed to an operator key enrolled for recovery:
+
+1. The operator makes their recovery key and gives the public file to the
+   person holding the root: `keyquorum host recovery keygen --public-key-out
+   recovery.pub --private-key-out recovery.key` (the fingerprint is printed;
+   the private file stays with the operator, offline).
+2. The root holder confirms that fingerprint with the operator by another
+   channel, then issues: `keyquorum host recovery issue --root-key root.key
+   --relay-key relay.key --certificate provider.kqcert --recipient
+   recovery.pub --confirm-fingerprint "..." --valid-days 1 --out
+   recovery.kqpkg`. The root must be the one the build pins, and the identity
+   must pass the relay's own check; the package holds the relay key and
+   certificate only, never the root key, a lock, a token or a client secret.
+3. The operator installs: `keyquorum host recovery install recovery.kqpkg
+   --recipient-key recovery.key --out DIR` shows the plan; add `--yes` to
+   write. `DIR` must be new (its parent existing) or owner-only and not a
+   link; a different file there is refused, never replaced. A run cut short
+   is finished by running it again, and success is reported only after the
+   written files pass the relay's identity check.
+
+A package expires in at most 7 days and with its certificate; a revoked or
+expired certificate, another root or another operator key is refused. To
+replace a lost or expired package, issue a new one. Installing restores files
+only: putting the identity on a Worker (`wrangler secret put`) or a host is a
+separate step with its own approval.
 
 ### From the console
 
@@ -703,7 +758,15 @@ public key only* still gives the original `.kqkey` files.
 files (`provider.kqpkg`, `provider.kqcert`, a README), with `USR_TYPE:
 PROVIDER`. No key is in it and no operator lock is needed. The file tool reads a
 dropped or chosen file's public framing in the page, says what it is and which
-actions apply, and refuses files named like private keys unread and key-looking content (hex
+actions apply, verifies a `.kqpkg` with the crate's own verifier compiled into
+the page (signature, hashes, purpose, validity window, signer and certificate
+against the root this relay pins, and one recipient for every sealed part; it
+says *Unverified* while the relay pins no root or the browser cannot run the
+verifier, and it applies no revocation list and opens nothing sealed), and
+shows the native command that installs it (`keyquorum setup` for a client,
+`keyquorum host recovery install` for recovery); the console itself installs
+nothing, since installing writes to a drive's slot and a personal store or a
+provider host, which no browser runtime here can reach safely, and refuses files named like private keys unread and key-looking content (hex
 or PEM keys) once read. Nothing is uploaded until an action is taken on a file, and storing
 public files online for an account is not built. `USR_TYPE` is `CLIENT` or
 `PROVIDER`, derived from the package's signed purpose, never stored apart from

@@ -166,13 +166,13 @@ let provisioner = null;
 
 /**
  * Loads the WebAssembly once, from the console's own files, and gives its
- * two functions: provision_identity and backup_keygen.
+ * three functions: provision_identity, backup_keygen and verify_package.
  */
 export async function loadProvisioner(importer = (path) => import(path)) {
   if (!provisioner) {
     const module = await importer("./provision-wasm/keyquorum_console.js");
     await module.default();
-    provisioner = { provision_identity: module.provision_identity, backup_keygen: module.backup_keygen };
+    provisioner = { provision_identity: module.provision_identity, backup_keygen: module.backup_keygen, verify_package: module.verify_package };
   }
   return provisioner;
 }

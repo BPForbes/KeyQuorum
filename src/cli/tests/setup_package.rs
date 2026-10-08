@@ -101,6 +101,16 @@ fn package_for(env: &MemoryEnv, purpose: Purpose, components: Vec<Component>) ->
     .expect("encode")
 }
 
+/// The spec of a first-delivery package, generation 1, as the relay issues it.
+fn setup_spec() -> package::ClientPackage {
+    package::ClientPackage {
+        purpose: Purpose::ClientSetup,
+        generation: 1,
+        issued_at: unix("2026-10-01 00:00"),
+        valid_days: 30,
+    }
+}
+
 fn key_component(env: &MemoryEnv) -> Component {
     Component {
         kind: ComponentKind::ApiKeyBundle,
@@ -161,10 +171,16 @@ fn running_it_again_keeps_the_certificate_and_finishes_cleanly() {
     put_package(&mut env, &bytes);
     env.keyquorum(&format!("{SETUP} --yes")).0.expect("first");
 
+    let checks = env.relay.as_ref().expect("a relay").key_checks;
     let (result, out) = env.keyquorum(&format!("{SETUP} --yes"));
     assert!(result.is_ok(), "the second run");
     assert!(!out.contains("Wrote relay certificate"), "{out}");
-    assert!(out.contains("Setup from the package is complete."), "{out}");
+    assert!(out.contains("already installed"), "{out}");
+    assert_eq!(
+        env.relay.as_ref().expect("a relay").key_checks,
+        checks,
+        "a complete package is not run again"
+    );
 }
 
 #[test]
@@ -378,6 +394,26 @@ fn enroll_out_never_overwrites_a_file() {
     );
 }
 
+/// A package with a signed manifest of `purpose` and `generation`, carrying a
+/// fresh key sealed to alice's slot and drive.
+fn manifest_package_with(env: &MemoryEnv, purpose: Purpose, generation: u64) -> Vec<u8> {
+    let relay = env.relay.as_ref().expect("a relay");
+    let recipient = alice_recipient(env);
+    let key = sealed_key(env);
+    package::issue_client_package(
+        &relay.identity,
+        &[key.as_slice()],
+        &recipient.public_key,
+        recipient.device_id,
+        &package::ClientPackage {
+            purpose,
+            generation,
+            ..setup_spec()
+        },
+    )
+    .expect("issue_client_package")
+}
+
 /// A package the way the console issues it: the relay signs the setup manifest
 /// and seals it, with the key, to alice's slot and drive.
 fn manifest_package(env: &MemoryEnv) -> Vec<u8> {
@@ -389,8 +425,7 @@ fn manifest_package(env: &MemoryEnv) -> Vec<u8> {
         &[key.as_slice()],
         &recipient.public_key,
         recipient.device_id,
-        unix("2026-10-01 00:00"),
-        30,
+        &setup_spec(),
     )
     .expect("issue_client_package")
 }
@@ -428,8 +463,7 @@ fn a_manifest_sealed_for_another_drive_writes_nothing() {
         &[key.as_slice()],
         &recipient.public_key,
         Some([9u8; 16]),
-        unix("2026-10-01 00:00"),
-        30,
+        &setup_spec(),
     )
     .expect("issue_client_package");
     put_package(&mut env, &bytes);
@@ -450,8 +484,7 @@ fn a_manifest_for_someone_else_is_refused_before_any_write() {
         &[key.as_slice()],
         &[7u8; 32],
         None,
-        unix("2026-10-01 00:00"),
-        30,
+        &setup_spec(),
     )
     .expect("issue_client_package");
     put_package(&mut env, &bytes);
@@ -529,8 +562,7 @@ fn a_key_bound_to_another_drive_stops_a_manifest_setup_before_any_write() {
         &[key.as_slice()],
         &manifest_recipient,
         manifest_device,
-        unix("2026-10-01 00:00"),
-        30,
+        &setup_spec(),
     )
     .expect("issue_client_package");
     put_package(&mut env, &bytes);
@@ -574,8 +606,7 @@ fn a_key_from_another_relay_than_the_package_signer_is_refused_before_any_write(
         &[key.as_slice()],
         &recipient.public_key,
         recipient.device_id,
-        unix("2026-10-01 00:00"),
-        30,
+        &setup_spec(),
     )
     .expect("issue_client_package");
     put_package(&mut env, &bytes);
@@ -616,15 +647,16 @@ fn a_package_file_over_the_cap_is_refused_unread() {
 }
 
 #[test]
-fn a_client_update_package_is_shown_but_never_installed() {
+fn an_update_package_without_a_signed_generation_is_refused_before_any_write() {
     let mut env = alice();
     let bytes = package_for(&env, Purpose::ClientUpdate, vec![key_component(&env)]);
     put_package(&mut env, &bytes);
 
-    let (result, out) = env.keyquorum(&format!("{SETUP} --yes"));
-    assert!(result.is_ok(), "setup <update package> --yes");
-    assert!(out.contains("client update"), "{out}");
-    assert!(out.contains("not supported yet"), "{out}");
+    let (result, _) = env.keyquorum(&format!("{SETUP} --yes"));
+    assert!(
+        matches!(result, Err(Error::KqpkgRefused(_))),
+        "setup <update package without a manifest> --yes"
+    );
     assert!(!env.fs.exists(Path::new(CERTIFICATE)));
     assert!(stored_key(&env).is_none());
 }
@@ -678,4 +710,423 @@ fn setup_with_a_package_needs_the_slot_to_exist_and_creates_no_identity() {
     assert!(result.is_err(), "no slot on this drive");
     assert!(!env.fs.exists(Path::new(CERTIFICATE)));
     assert!(!env.fs.exists(Path::new("/usb/alice/device.kq")));
+}
+
+/// Writes `bytes` as another package file and runs setup on it.
+fn setup_file(env: &mut MemoryEnv, name: &str, bytes: &[u8], yes: bool) -> Result<String, Error> {
+    let path = format!("/home/alice/{name}.kqpkg");
+    if !env.fs.exists(Path::new(&path)) {
+        env.fs
+            .write_new(Path::new(&path), bytes)
+            .expect("write package");
+    }
+    let (result, out) = env.keyquorum(&format!(
+        "{ALICE} setup {path} --device /usb/alice --label alice{}",
+        if yes { " --yes" } else { "" }
+    ));
+    result.map(|_| out)
+}
+
+fn ledger_state(env: &MemoryEnv, package: &[u8]) -> Option<String> {
+    let id = hex::encode(package::decode(package).expect("decode").id);
+    db::package_ledger::record(env.store(DB), &id)
+        .expect("ledger")
+        .map(|record| record.state)
+}
+
+#[test]
+fn a_newer_update_replaces_the_stored_key_and_an_older_package_never_comes_back() {
+    let mut env = alice();
+    let setup = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    setup_file(&mut env, "setup", &setup, true).expect("first package");
+    let first = stored_key(&env).expect("stored").key_hash;
+    assert_eq!(ledger_state(&env, &setup).as_deref(), Some("complete"));
+
+    let update = manifest_package_with(&env, Purpose::ClientUpdate, 2);
+    let preview = setup_file(&mut env, "update", &update, false).expect("preview");
+    assert!(preview.contains("replaces the key stored now"), "{preview}");
+    assert!(preview.contains("generation: 2"), "{preview}");
+    setup_file(&mut env, "update", &update, true).expect("the update");
+    let second = stored_key(&env).expect("stored").key_hash;
+    assert_ne!(first, second, "the update replaced the key");
+
+    // An older or equal generation is stale, even as an update.
+    let stale = manifest_package_with(&env, Purpose::ClientUpdate, 2);
+    assert!(matches!(
+        setup_file(&mut env, "stale", &stale, true),
+        Err(Error::KqpkgRefused(_))
+    ));
+    assert_eq!(stored_key(&env).expect("kept").key_hash, second);
+    // The first package, run again, is complete and changes nothing.
+    let again = setup_file(&mut env, "setup", &setup, true).expect("rerun");
+    assert!(again.contains("already installed"), "{again}");
+    assert_eq!(stored_key(&env).expect("kept").key_hash, second);
+}
+
+#[test]
+fn a_setup_package_never_replaces_a_key_however_new_its_generation() {
+    let mut env = alice();
+    let first = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    setup_file(&mut env, "first", &first, true).expect("first");
+    let before = stored_key(&env).expect("stored").key_hash;
+    let newer = manifest_package_with(&env, Purpose::ClientSetup, 9);
+    assert!(setup_file(&mut env, "newer", &newer, true).is_err());
+    assert_eq!(stored_key(&env).expect("kept").key_hash, before);
+}
+
+#[test]
+fn an_interrupted_setup_resumes_where_it_stopped_and_redoes_nothing() {
+    let mut env = alice();
+    let bytes = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    // The relay is unreachable: the identity and certificate steps run, the
+    // key step cannot, and the package stays pending.
+    env.relay.as_mut().expect("a relay").unreachable = true;
+    let out = setup_file(&mut env, "interrupted", &bytes, true);
+    assert!(out.is_err(), "the relay is down");
+    assert!(env.fs.exists(Path::new(CERTIFICATE)));
+    assert!(stored_key(&env).is_none());
+    assert_eq!(ledger_state(&env, &bytes).as_deref(), Some("pending"));
+
+    env.relay.as_mut().expect("a relay").unreachable = false;
+    let preview = setup_file(&mut env, "interrupted", &bytes, false).expect("preview");
+    assert!(preview.contains("did not finish"), "{preview}");
+    let out = setup_file(&mut env, "interrupted", &bytes, true).expect("resumed");
+    assert!(
+        !out.contains("Wrote relay certificate"),
+        "the certificate was kept: {out}"
+    );
+    assert!(stored_key(&env).is_some());
+    assert_eq!(ledger_state(&env, &bytes).as_deref(), Some("complete"));
+}
+
+#[test]
+fn a_crash_after_a_step_took_effect_is_finished_without_doing_it_twice() {
+    let mut env = alice();
+    let bytes = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    setup_file(&mut env, "crash", &bytes, true).expect("installed");
+    // As if the process stopped after the key was stored but before its step,
+    // and the rest, were marked: the ledger says pending with one step done.
+    let id = hex::encode(package::decode(&bytes).unwrap().id);
+    env.store(DB)
+        .execute(
+            "UPDATE package_installs SET state = 'pending', steps_done = 'identity'
+             WHERE package_id = ?1",
+            [&id],
+        )
+        .unwrap();
+    let checks = env.relay.as_ref().expect("a relay").key_checks;
+    setup_file(&mut env, "crash", &bytes, true).expect("finished");
+    assert_eq!(
+        env.relay.as_ref().expect("a relay").key_checks,
+        checks,
+        "the stored key was found in place; the relay was not asked again"
+    );
+    assert_eq!(ledger_state(&env, &bytes).as_deref(), Some("complete"));
+}
+
+#[test]
+fn a_pending_package_blocks_another_in_its_stream_until_abandoned() {
+    let mut env = alice();
+    let stuck = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    env.relay.as_mut().expect("a relay").unreachable = true;
+    assert!(setup_file(&mut env, "stuck", &stuck, true).is_err());
+    env.relay.as_mut().expect("a relay").unreachable = false;
+    let next = manifest_package_with(&env, Purpose::ClientSetup, 2);
+    assert!(matches!(
+        setup_file(&mut env, "next", &next, true),
+        Err(Error::KqpkgRefused(_))
+    ));
+    let id = hex::encode(package::decode(&stuck).unwrap().id);
+    let (result, out) = env.keyquorum(&format!("{ALICE} setup --abandon {id}"));
+    assert!(result.is_ok(), "setup --abandon");
+    assert!(out.contains("Abandoned package"), "{out}");
+    assert_eq!(ledger_state(&env, &stuck).as_deref(), Some("failed"));
+    // The abandoned one never resumes; the next one installs.
+    assert!(setup_file(&mut env, "stuck", &stuck, true).is_err());
+    setup_file(&mut env, "next", &next, true).expect("the next package");
+    assert!(stored_key(&env).is_some());
+}
+
+#[test]
+fn a_key_an_update_replaced_is_never_installed_again() {
+    let mut env = alice();
+    let first = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    setup_file(&mut env, "first", &first, true).expect("first");
+    let update = manifest_package_with(&env, Purpose::ClientUpdate, 2);
+    setup_file(&mut env, "update", &update, true).expect("update");
+    // A newer package from the relay that carries the first, replaced key.
+    let relay = env.relay.as_ref().expect("a relay");
+    let old_key = package::decode(&first)
+        .unwrap()
+        .components
+        .into_iter()
+        .find(|c| c.kind == ComponentKind::ApiKeyBundle)
+        .unwrap()
+        .bytes;
+    let recipient = alice_recipient(&env);
+    let replay = package::issue_client_package(
+        &relay.identity,
+        &[old_key.as_slice()],
+        &recipient.public_key,
+        recipient.device_id,
+        &package::ClientPackage {
+            purpose: Purpose::ClientUpdate,
+            generation: 7,
+            ..setup_spec()
+        },
+    )
+    .expect("issue");
+    let before = stored_key(&env).expect("stored").key_hash;
+    assert!(matches!(
+        setup_file(&mut env, "replay", &replay, true),
+        Err(Error::KqpkgRefused(_))
+    ));
+    assert_eq!(stored_key(&env).expect("kept").key_hash, before);
+}
+
+// --- several packages at once (issue #108) -------------------------------
+
+/// Writes each `(name, bytes)` as a package file (once) and runs one setup over
+/// them all, in the order given.
+fn setup_batch(
+    env: &mut MemoryEnv,
+    files: &[(&str, &[u8])],
+    yes: bool,
+) -> (Result<(), Error>, String) {
+    let mut paths = Vec::new();
+    for (name, bytes) in files {
+        let path = format!("/home/alice/{name}.kqpkg");
+        if !env.fs.exists(Path::new(&path)) {
+            env.fs
+                .write_new(Path::new(&path), bytes)
+                .expect("write package");
+        }
+        paths.push(path);
+    }
+    env.keyquorum(&format!(
+        "{ALICE} setup {} --device /usb/alice --label alice{}",
+        paths.join(" "),
+        if yes { " --yes" } else { "" }
+    ))
+}
+
+/// Nothing at all was written: no certificate, no key and no ledger row.
+fn untouched(env: &MemoryEnv, packages: &[&[u8]]) {
+    assert!(!env.fs.exists(Path::new(CERTIFICATE)));
+    assert!(stored_key(env).is_none());
+    for bytes in packages {
+        assert_eq!(ledger_state(env, bytes), None);
+    }
+}
+
+fn key_hash_of(env: &MemoryEnv, package_bytes: &[u8]) -> String {
+    let sealed = package::decode(package_bytes)
+        .expect("decode")
+        .components
+        .into_iter()
+        .find(|c| c.kind == ComponentKind::ApiKeyBundle)
+        .expect("a key")
+        .bytes;
+    let _ = env;
+    crate::setup_manifest::hash_of(&sealed)
+}
+
+#[test]
+fn several_packages_install_in_generation_order_whatever_order_they_are_given() {
+    let mut env = alice();
+    let setup = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    let update = manifest_package_with(&env, Purpose::ClientUpdate, 2);
+    let files: [(&str, &[u8]); 2] = [("b-update", &update), ("a-setup", &setup)];
+
+    let (result, preview) = setup_batch(&mut env, &files, false);
+    assert!(result.is_ok(), "setup b-update.kqpkg a-setup.kqpkg");
+    let first = preview
+        .find("[1/2] /home/alice/a-setup.kqpkg")
+        .expect("setup first");
+    let second = preview
+        .find("[2/2] /home/alice/b-update.kqpkg")
+        .expect("update second");
+    assert!(first < second);
+    untouched(&env, &[&setup, &update]);
+
+    let (result, out) = setup_batch(&mut env, &files, true);
+    assert!(result.is_ok(), "setup b-update.kqpkg a-setup.kqpkg --yes");
+    assert_eq!(ledger_state(&env, &setup).as_deref(), Some("complete"));
+    assert_eq!(ledger_state(&env, &update).as_deref(), Some("complete"));
+    assert!(out.contains("Results:"), "{out}");
+    assert_eq!(out.matches(": installed").count(), 2, "{out}");
+    // The update's key is the one stored; the setup's was retired by it.
+    let stored = stored_key(&env).expect("stored").key_hash;
+    assert_ne!(stored, key_hash_of(&env, &setup));
+
+    let (result, again) = setup_batch(&mut env, &files, true);
+    assert!(result.is_ok(), "setup again");
+    assert_eq!(again.matches(": already installed").count(), 2, "{again}");
+    assert_eq!(stored_key(&env).expect("kept").key_hash, stored);
+}
+
+#[test]
+fn the_same_file_given_twice_counts_once() {
+    let mut env = alice();
+    let setup = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    let files: [(&str, &[u8]); 2] = [("one", &setup), ("copy", &setup)];
+    let (result, out) = setup_batch(&mut env, &files, true);
+    assert!(result.is_ok(), "setup one.kqpkg copy.kqpkg --yes");
+    assert!(out.contains("counts once"), "{out}");
+    assert_eq!(ledger_state(&env, &setup).as_deref(), Some("complete"));
+}
+
+#[test]
+fn a_later_invalid_package_stops_the_batch_before_any_write() {
+    let mut env = alice();
+    let good = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    let mut broken = manifest_package_with(&env, Purpose::ClientUpdate, 2);
+    let middle = broken.len() / 2;
+    broken[middle] ^= 1;
+    let files: [(&str, &[u8]); 2] = [("good", &good), ("broken", &broken)];
+    let (result, _) = setup_batch(&mut env, &files, true);
+    assert!(result.is_err(), "a changed byte in the second package");
+    untouched(&env, &[&good]);
+
+    // A package sealed for someone else's drive stops it the same way.
+    let relay = env.relay.as_ref().expect("a relay");
+    let recipient = alice_recipient(&env);
+    let key = sealed_key(&env);
+    let elsewhere = package::issue_client_package(
+        &relay.identity,
+        &[key.as_slice()],
+        &recipient.public_key,
+        Some([3u8; 16]),
+        &package::ClientPackage {
+            purpose: Purpose::ClientUpdate,
+            generation: 2,
+            ..setup_spec()
+        },
+    )
+    .expect("issue");
+    let files: [(&str, &[u8]); 2] = [("good", &good), ("elsewhere", &elsewhere)];
+    let (result, _) = setup_batch(&mut env, &files, true);
+    assert!(result.is_err(), "a package for another drive");
+    untouched(&env, &[&good]);
+}
+
+#[test]
+fn a_stale_package_in_the_batch_stops_the_newer_one_too() {
+    let mut env = alice();
+    let setup = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    let update = manifest_package_with(&env, Purpose::ClientUpdate, 2);
+    setup_file(&mut env, "setup", &setup, true).expect("setup");
+    setup_file(&mut env, "update", &update, true).expect("update");
+    let stored = stored_key(&env).expect("stored").key_hash;
+    let stale = manifest_package_with(&env, Purpose::ClientUpdate, 2);
+    let newer = manifest_package_with(&env, Purpose::ClientUpdate, 3);
+    let files: [(&str, &[u8]); 2] = [("newer", &newer), ("stale", &stale)];
+    let (result, _) = setup_batch(&mut env, &files, true);
+    assert!(matches!(result, Err(Error::KqpkgRefused(_))));
+    assert_eq!(ledger_state(&env, &newer), None);
+    assert_eq!(stored_key(&env).expect("kept").key_hash, stored);
+}
+
+#[test]
+fn ambiguous_selections_for_one_slot_are_refused_before_any_write() {
+    let mut env = alice();
+    let first = manifest_package_with(&env, Purpose::ClientUpdate, 2);
+    let second = manifest_package_with(&env, Purpose::ClientUpdate, 2);
+    let files: [(&str, &[u8]); 2] = [("first", &first), ("second", &second)];
+    let (result, _) = setup_batch(&mut env, &files, true);
+    assert!(
+        matches!(result, Err(Error::KqpkgRefused(_))),
+        "two at one generation"
+    );
+    untouched(&env, &[&first, &second]);
+
+    let setup = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    let later_setup = manifest_package_with(&env, Purpose::ClientSetup, 2);
+    let files: [(&str, &[u8]); 2] = [("setup", &setup), ("later-setup", &later_setup)];
+    let (result, _) = setup_batch(&mut env, &files, true);
+    assert!(matches!(result, Err(Error::KqpkgRefused(_))), "two setups");
+    untouched(&env, &[&setup, &later_setup]);
+}
+
+#[test]
+fn packages_that_would_place_different_certificates_are_refused() {
+    let mut env = alice();
+    let mine = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    let relay = env.relay.as_ref().expect("a relay");
+    let other = env.other_relay_identity();
+    let recipient = alice_recipient(&env);
+    let mut key = Vec::new();
+    key_delivery::create_as_bundle(
+        &*relay.store.connection(),
+        &other,
+        &NewApiKey {
+            scope: ApiKeyScope::InboxPull,
+            recipient_fingerprint: None,
+            label: Some("alice".into()),
+            ttl_seconds: None,
+        },
+        &recipient,
+        |sealed| {
+            key = sealed.to_vec();
+            Ok(())
+        },
+    )
+    .expect("create_as_bundle");
+    let theirs = package::issue_client_package(
+        &other,
+        &[key.as_slice()],
+        &recipient.public_key,
+        recipient.device_id,
+        &setup_spec(),
+    )
+    .expect("issue");
+    let files: [(&str, &[u8]); 2] = [("mine", &mine), ("theirs", &theirs)];
+    let (result, _) = setup_batch(&mut env, &files, true);
+    assert!(matches!(result, Err(Error::KqpkgRefused(_))));
+    untouched(&env, &[&mine, &theirs]);
+}
+
+#[test]
+fn only_client_packages_install_together() {
+    let mut env = alice();
+    let setup = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    let info = package_for(&env, Purpose::ProviderInfo, vec![]);
+    let files: [(&str, &[u8]); 2] = [("setup", &setup), ("info", &info)];
+    let (result, _) = setup_batch(&mut env, &files, true);
+    assert!(result.is_err(), "provider information in a batch");
+    untouched(&env, &[&setup]);
+}
+
+#[test]
+fn too_many_packages_are_refused_before_reading_them() {
+    let mut env = alice();
+    let paths =
+        vec!["/home/alice/missing.kqpkg"; super::super::setup_package::MAX_BATCH_PACKAGES + 1];
+    let (result, _) = env.keyquorum(&format!(
+        "{ALICE} setup {} --device /usb/alice --label alice --yes",
+        paths.join(" ")
+    ));
+    assert!(matches!(result, Err(Error::Usage(_))), "seventeen packages");
+}
+
+#[test]
+fn a_stopped_batch_reports_each_package_and_running_it_again_finishes() {
+    let mut env = alice();
+    let setup = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    let update = manifest_package_with(&env, Purpose::ClientUpdate, 2);
+    let files: [(&str, &[u8]); 2] = [("setup", &setup), ("update", &update)];
+    env.relay.as_mut().expect("a relay").unreachable = true;
+    let (result, out) = setup_batch(&mut env, &files, true);
+    assert!(result.is_err(), "the relay is down");
+    assert!(out.contains("stopped, pending"), "{out}");
+    assert!(out.contains("not started"), "{out}");
+    assert_eq!(ledger_state(&env, &setup).as_deref(), Some("pending"));
+    assert_eq!(ledger_state(&env, &update), None);
+
+    env.relay.as_mut().expect("a relay").unreachable = false;
+    let (result, out) = setup_batch(&mut env, &files, true);
+    assert!(result.is_ok(), "the same command again");
+    assert_eq!(out.matches(": installed").count(), 2, "{out}");
+    assert_eq!(ledger_state(&env, &setup).as_deref(), Some("complete"));
+    assert_eq!(ledger_state(&env, &update).as_deref(), Some("complete"));
 }

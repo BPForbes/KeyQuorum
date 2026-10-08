@@ -586,13 +586,20 @@ fn run(
                             .ok_or_else(|| failure(&Error::InvalidDevice))?,
                     ),
                 };
+                let generation = store
+                    .next_package_generation(&recipient, device.as_ref())
+                    .map_err(|e| failure(&e))?;
                 let package = crate::package::issue_client_package(
                     identity,
                     &sealed,
                     &recipient,
                     device,
-                    issued_at,
-                    PACKAGE_VALID_DAYS,
+                    &crate::package::ClientPackage {
+                        purpose: crate::package::Purpose::ClientSetup,
+                        generation,
+                        issued_at,
+                        valid_days: PACKAGE_VALID_DAYS,
+                    },
                 )
                 .map_err(|e| failure(&e))?;
                 let keys: Vec<Value> = issued

@@ -122,6 +122,13 @@ pub enum HostCommand {
         #[command(subcommand)]
         command: BackupCommand,
     },
+    /// Provider recovery (offline): restore the relay's identity on a host
+    /// from a root-signed package sealed to an enrolled operator key. It
+    /// configures no Worker, deploy variable or platform credential.
+    Recovery {
+        #[command(subcommand)]
+        command: RecoveryCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -160,6 +167,67 @@ pub enum BackupCommand {
         /// The new relay database to create (owner-only)
         #[arg(long)]
         out: PathBuf,
+        #[arg(long)]
+        krl: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum RecoveryCommand {
+    /// Generate an operator recovery keypair. The public half is enrolled by
+    /// handing it to whoever issues recovery packages, who confirms the
+    /// fingerprint printed here; the private half goes only to
+    /// `--private-key-out` (owner-only, never overwritten, never printed).
+    Keygen {
+        #[arg(long)]
+        public_key_out: PathBuf,
+        #[arg(long)]
+        private_key_out: PathBuf,
+    },
+    /// Issue a `ProviderRecovery` package with the offline root: the relay's
+    /// key and certificate, sealed to the operator key. The identity is
+    /// checked against this build's pinned root before anything is made.
+    Issue {
+        /// Root private key file (or KEYQUORUM_PROVIDER_ROOT_KEY_FILE)
+        #[arg(long)]
+        root_key: Option<PathBuf>,
+        /// The relay private key file to recover
+        #[arg(long)]
+        relay_key: PathBuf,
+        /// Its `provider.kqcert`
+        #[arg(long)]
+        certificate: PathBuf,
+        /// The operator's recovery public key file (`recovery keygen`)
+        #[arg(long)]
+        recipient: PathBuf,
+        /// The recipient key's fingerprint, confirmed with the operator out of band
+        #[arg(long)]
+        confirm_fingerprint: String,
+        /// Days the package stays valid (1 to 7)
+        #[arg(long, default_value_t = 1)]
+        valid_days: u64,
+        /// The package to write (must not exist)
+        #[arg(long)]
+        out: PathBuf,
+        /// Optional signed revocation list (or KEYQUORUM_PROVIDER_KRL)
+        #[arg(long)]
+        krl: Option<PathBuf>,
+    },
+    /// Open a recovery package and install `relay.key` and `provider.kqcert`
+    /// into `--out`. Without `--yes` it shows what it would do and writes
+    /// nothing.
+    Install {
+        /// The `.kqpkg` recovery package
+        package: PathBuf,
+        /// The operator's recovery private key file
+        #[arg(long)]
+        recipient_key: PathBuf,
+        /// The directory to install into: new (its parent must exist) or an
+        /// existing owner-only directory. A different file there is refused.
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        yes: bool,
         #[arg(long)]
         krl: Option<PathBuf>,
     },
@@ -224,6 +292,9 @@ pub enum IdentityCommand {
     },
 }
 
+// `Create` carries every flag of the three ways a key is handed over; the
+// enum is parsed once per command, so its size does not matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub enum KeysCommand {
     Create {
@@ -296,6 +367,11 @@ pub enum KeysCommand {
         /// How many days the package stays valid (1 to 365)
         #[arg(long, requires = "enrollment", default_value_t = 30)]
         package_valid_days: u64,
+        /// Make it a `ClientUpdate` package: setup lets it replace the client's
+        /// stored key for the same relay and scope, only when its generation is
+        /// newer than any package the client has accepted (issue #106)
+        #[arg(long, requires = "enrollment")]
+        update: bool,
     },
     List,
     /// Print the API-key lifecycle audit trail (created, rotated, revoked).

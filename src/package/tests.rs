@@ -118,6 +118,10 @@ fn classify_names_only_what_version_one_handles() {
         classify(&key_letter()).expect("kind"),
         ComponentKind::ApiKeyLetter
     );
+    assert_eq!(
+        classify(&outer(b"KQXB", 1, export::BUNDLE_TYPE_PROVIDER_RECOVERY)).expect("kind"),
+        ComponentKind::RecoveryPayload
+    );
     let refused: Vec<Vec<u8>> = vec![
         b"KQTF....".to_vec(),
         b"KQTX....".to_vec(),
@@ -131,7 +135,8 @@ fn classify_names_only_what_version_one_handles() {
         outer(b"KQXB", 1, 1),
         outer(b"KQXB", 1, 2),
         outer(b"KQXB", 1, 3),
-        outer(b"KQXB", 1, 5),
+        outer(b"KQXB", 1, export::BUNDLE_TYPE_BACKUP_CHUNK),
+        outer(b"KQXB", 1, export::BUNDLE_TYPE_BACKUP_MANIFEST),
         outer(b"KQPB", 2, envelope::KIND_DEVICE_TRANSFER),
         outer(b"KQPB", 2, envelope::KIND_FILE_DELIVERY),
         outer(b"KQPB", 2, envelope::KIND_INVITE),
@@ -321,10 +326,13 @@ fn a_recovery_package_must_be_signed_by_the_root() {
     let recovery = |issuer: [u8; 32]| Package {
         purpose: Purpose::ProviderRecovery,
         issuer,
-        components: vec![component(
-            ComponentKind::Certificate,
-            identity.certificate.clone(),
-        )],
+        components: vec![
+            component(ComponentKind::Certificate, identity.certificate.clone()),
+            component(
+                ComponentKind::RecoveryPayload,
+                outer(b"KQXB", 1, export::BUNDLE_TYPE_PROVIDER_RECOVERY),
+            ),
+        ],
         ..client_package(issuer, identity.certificate.clone())
     };
     let signed_by_root =
@@ -353,8 +361,7 @@ fn issue_client_package_signs_the_relays_certificate_and_sealed_key() {
         &[&key_bundle()],
         &recipient(),
         Some([1u8; 16]),
-        ISSUED,
-        30,
+        &spec(30),
     )
     .expect("issue");
     let package = decode(&bytes).expect("decode");
@@ -374,8 +381,7 @@ fn issue_client_package_signs_the_relays_certificate_and_sealed_key() {
             &[&key_bundle()],
             &recipient(),
             Some([1u8; 16]),
-            ISSUED,
-            30,
+            &spec(30),
         )
         .expect("issue"),
     )
@@ -397,8 +403,7 @@ fn issue_client_package_refuses_a_bad_window_or_an_unsupported_key() {
                 &[&key_bundle()],
                 &recipient(),
                 Some([1u8; 16]),
-                ISSUED,
-                days
+                &spec(days)
             ),
             Err(Error::InvalidKqpkg)
         ));
@@ -409,8 +414,7 @@ fn issue_client_package_refuses_a_bad_window_or_an_unsupported_key() {
             &[b"KQTF...."],
             &recipient(),
             Some([1u8; 16]),
-            ISSUED,
-            30
+            &spec(30),
         ),
         Err(Error::KqpkgComponentRejected)
     ));
@@ -463,8 +467,7 @@ fn a_client_package_carries_every_key_it_is_given() {
             &[&one, &two],
             &recipient(),
             Some([1u8; 16]),
-            ISSUED,
-            30,
+            &spec(30),
         )
         .expect("issue"),
     )
@@ -475,7 +478,7 @@ fn a_client_package_carries_every_key_it_is_given() {
         "certificate, two keys and the manifest"
     );
     assert!(matches!(
-        issue_client_package(&relay, &[], &recipient(), Some([1u8; 16]), ISSUED, 30),
+        issue_client_package(&relay, &[], &recipient(), Some([1u8; 16]), &spec(30)),
         Err(Error::InvalidKqpkg)
     ));
 }
@@ -497,4 +500,80 @@ fn each_kind_has_its_own_size_cap_and_the_cap_is_enforced_when_encoding() {
         encode(&package, &identity.relay_private),
         Err(Error::InvalidKqpkg)
     ));
+}
+
+/// A first-delivery package spec, generation 1, issued at `ISSUED`.
+fn spec(valid_days: u64) -> ClientPackage {
+    ClientPackage {
+        purpose: Purpose::ClientSetup,
+        generation: 1,
+        issued_at: ISSUED,
+        valid_days,
+    }
+}
+
+#[test]
+fn the_public_check_verifies_what_it_can_without_opening_anything() {
+    let identity = issued_identity("2099-01-01 00:00:00");
+    let to = recipient();
+    let sealed = crate::envelope::seal(
+        crate::envelope::EXPORT_BUNDLE,
+        export::BUNDLE_TYPE_API_KEY,
+        &to,
+        b"sealed",
+    )
+    .expect("seal");
+    let mut package = client_package(identity.relay_public, identity.certificate.clone());
+    package.components = vec![
+        component(ComponentKind::Certificate, identity.certificate.clone()),
+        component(ComponentKind::ApiKeyBundle, sealed.clone()),
+    ];
+    package.issued_at = unix_of(NOW) - 60;
+    package.expires_at = unix_of(NOW) + 60;
+    let bytes = encode(&package, &identity.relay_private).expect("encode");
+    let checked = public::verify(&bytes, &identity.root_public, NOW, &empty_revoked())
+        .expect("verify the package publicly");
+    assert_eq!(checked.purpose, "client_setup");
+    assert_eq!(checked.signed_by, "relay");
+    assert_eq!(checked.provider_id, "Acme Security Services");
+    assert_eq!(checked.sealed_to, Some(hex::encode(to)));
+    assert_eq!(checked.components[1].kind, "api_key_bundle");
+
+    // Another root, a revoked certificate, the wrong time or a changed byte fail.
+    let (_, other_root) = generate_signing_keypair();
+    assert!(public::verify(&bytes, &other_root, NOW, &empty_revoked()).is_err());
+    let revoked: HashSet<String> = ["KQP-000184".to_string()].into();
+    assert!(public::verify(&bytes, &identity.root_public, NOW, &revoked).is_err());
+    assert!(public::verify(
+        &bytes,
+        &identity.root_public,
+        "2099-06-01 00:00:00",
+        &empty_revoked()
+    )
+    .is_err());
+    let mut changed = bytes.clone();
+    let last = changed.len() - 1;
+    changed[last] ^= 1;
+    assert!(public::verify(&changed, &identity.root_public, NOW, &empty_revoked()).is_err());
+
+    // Sealed parts addressed to two different recipients are refused.
+    let other = crate::envelope::seal(
+        crate::envelope::EXPORT_BUNDLE,
+        export::BUNDLE_TYPE_API_KEY,
+        &recipient(),
+        b"sealed",
+    )
+    .expect("seal");
+    package
+        .components
+        .push(component(ComponentKind::ApiKeyBundle, other));
+    let mixed = encode(&package, &identity.relay_private).expect("encode");
+    assert!(matches!(
+        public::verify(&mixed, &identity.root_public, NOW, &empty_revoked()),
+        Err(Error::KqpkgRefused(_))
+    ));
+}
+
+fn unix_of(text: &str) -> u64 {
+    crate::provider::unix_from_utc(text).expect("time")
 }
