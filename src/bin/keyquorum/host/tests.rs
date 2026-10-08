@@ -89,8 +89,24 @@ fn provision_makes_an_identity_the_relay_would_trust_under_the_root_it_wrote() {
 }
 
 #[test]
-fn provision_refuses_a_directory_that_already_holds_one_of_its_files_and_writes_nothing() {
+fn provision_refuses_a_directory_that_already_exists_and_writes_nothing() {
     let dir = tempfile::tempdir().expect("dir");
+    // An empty one too: its mode was not this run's to choose.
+    let empty = dir.path().join("empty");
+    std::fs::create_dir(&empty).expect("mkdir");
+    let err = run_provision(&empty, &provision_spec("2099-01-01 00:00:00"))
+        .err()
+        .expect("an existing directory must refuse the run");
+    assert!(matches!(err, Error::Io(ref io) if io.kind() == std::io::ErrorKind::AlreadyExists));
+    assert_eq!(std::fs::read_dir(&empty).expect("read").count(), 0);
+    // A parent that does not exist is not created either.
+    assert!(run_provision(
+        &dir.path().join("no/such/parent"),
+        &provision_spec("2099-01-01 00:00:00")
+    )
+    .is_err());
+    assert!(!dir.path().join("no").exists());
+
     let out = dir.path().join("provider");
     std::fs::create_dir(&out).expect("mkdir");
     std::fs::write(out.join("relay.key"), b"mine").expect("existing");

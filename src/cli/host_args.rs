@@ -50,7 +50,7 @@ pub enum HostCommand {
     /// and `relay.key` with `provider.kqcert` are
     /// the relay's two Worker secrets.
     Provision {
-        /// Directory to create; every file it would write must be new
+        /// Directory to create, owner-only; it must not exist yet
         #[arg(long)]
         out: PathBuf,
         #[arg(long)]

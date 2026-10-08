@@ -915,8 +915,10 @@ struct Provisioned {
 
 /// `host provision`: `provider::provision` (the root ceremony, the relay
 /// identity and the certificate in one run, checked as the relay checks
-/// them) written into `out`, each file created new; a write that fails
-/// removes what this run wrote, so a retry is never refused by a leftover.
+/// them) written into `out`, a directory this run creates owner-only (an
+/// existing one, whatever its mode, is refused before anything is made),
+/// each file created new; a write that fails removes the files this run
+/// created, and only those, so a retry is never refused by a leftover.
 /// Neither private key is printed.
 fn run_provision(out: &Path, spec: &provision::Spec<'_>) -> Result<Provisioned> {
     let written = Provisioned {
@@ -928,13 +930,14 @@ fn run_provision(out: &Path, spec: &provision::Spec<'_>) -> Result<Provisioned> 
         identity_file: out.join("provider.kqcert"),
         package: out.join("provider-info.kqpkg"),
     };
-    for path in written.paths() {
-        if path.exists() {
-            return Err(Error::Io(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                format!("{} already exists", path.display()),
-            )));
-        }
+    if out.exists() {
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!(
+                "{} already exists; provision into a directory that does not exist yet",
+                out.display()
+            ),
+        )));
     }
     let made = provision::provision(spec, &provider::system_now_utc()?)?;
     let written = Provisioned {
@@ -942,41 +945,38 @@ fn run_provision(out: &Path, spec: &provision::Spec<'_>) -> Result<Provisioned> 
         ..written
     };
     create_owner_only_dir(out)?;
-    let result = (|| {
-        cli::write_hex_file(&written.root_private_key, &made.root_private_key[..])?;
-        cli::write_hex_file(&written.root_public_key, &made.root_public_key)?;
-        cli::write_hex_file(&written.relay_private_key, &made.relay_private_key[..])?;
-        cli::write_hex_file(&written.relay_public_key, &made.relay_public_key)?;
-        locked_files::write_owner_only(&written.identity_file, &made.certificate)?;
-        locked_files::write_owner_only(&written.package, &made.package)
-    })();
-    if let Err(err) = result {
-        for path in written.paths() {
-            let _ = std::fs::remove_file(path);
+    // Only a file this run created is removed on failure: one that appeared
+    // in between (its `create_new` write is what fails) is someone else's.
+    let root_key = Zeroizing::new(hex::encode(&made.root_private_key[..]));
+    let relay_key = Zeroizing::new(hex::encode(&made.relay_private_key[..]));
+    let root_pub = hex::encode(made.root_public_key);
+    let relay_pub = hex::encode(made.relay_public_key);
+    let files: [(&Path, &[u8]); 6] = [
+        (&written.root_private_key, root_key.as_bytes()),
+        (&written.root_public_key, root_pub.as_bytes()),
+        (&written.relay_private_key, relay_key.as_bytes()),
+        (&written.relay_public_key, relay_pub.as_bytes()),
+        (&written.identity_file, &made.certificate),
+        (&written.package, &made.package),
+    ];
+    let mut created: Vec<&Path> = Vec::new();
+    for (path, contents) in files {
+        if let Err(err) = locked_files::write_owner_only(path, contents) {
+            for path in created {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(err);
         }
-        return Err(err);
+        created.push(path);
     }
     Ok(written)
 }
 
-impl Provisioned {
-    fn paths(&self) -> [&Path; 6] {
-        [
-            &self.root_private_key,
-            &self.root_public_key,
-            &self.relay_private_key,
-            &self.relay_public_key,
-            &self.identity_file,
-            &self.package,
-        ]
-    }
-}
-
-/// The output directory is made owner-only when this run creates it; one
-/// that already exists keeps its mode.
+/// The output directory, made owner-only by this run and by nothing else:
+/// its parent must exist, and a directory already there (whose mode this
+/// run did not choose) is refused by `create`.
 fn create_owner_only_dir(dir: &Path) -> Result<()> {
     let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;

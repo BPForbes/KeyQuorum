@@ -17,6 +17,9 @@ test("the form needs a provider id, a revocable serial and an expiry after today
   assert.deepEqual(problems(good, TODAY), []);
   assert.match(problems({ ...good, providerId: " " }, TODAY)[0], /provider id is needed/);
   assert.match(problems({ ...good, providerId: "x".repeat(201) }, TODAY)[0], /longer than 200/);
+  assert.match(problems({ ...good, providerId: "Société" }, TODAY)[0], /printable ASCII/);
+  assert.match(problems({ ...good, providerId: "tab\there" }, TODAY)[0], /printable ASCII/);
+  assert.deepEqual(problems({ ...good, providerId: "Acme & Sons, Ltd. (EU)" }, TODAY), []);
   assert.match(problems({ ...good, serial: "no spaces" }, TODAY)[0], /serial is needed/);
   assert.match(problems({ ...good, serial: "-leading" }, TODAY)[0], /serial is needed/);
   assert.match(problems({ ...good, expiresAt: "" }, TODAY)[0], /expiry date is needed/);

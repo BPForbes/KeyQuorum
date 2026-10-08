@@ -16,6 +16,9 @@ import { makeZip } from "./zip.js";
 
 export const SERIAL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 export const MAX_PROVIDER_ID = 200;
+// The certificate codec (`provider::put_str`) writes ASCII only; the form
+// says so before any key is made, rather than failing after.
+export const PROVIDER_ID_PATTERN = /^[\x20-\x7e]+$/;
 
 // The private files, by name, so the page can say which downloads must be
 // kept off any shared folder and never uploaded.
@@ -27,6 +30,7 @@ export function problems({ providerId, serial, expiresAt }, today = new Date()) 
   const id = String(providerId ?? "").trim();
   if (id === "") out.push("A provider id is needed: the name every client will see for this relay.");
   else if (id.length > MAX_PROVIDER_ID) out.push(`The provider id is longer than ${MAX_PROVIDER_ID} characters.`);
+  else if (!PROVIDER_ID_PATTERN.test(id)) out.push("The provider id can hold only printable ASCII characters (letters, digits, spaces and punctuation; no accents).");
   const s = String(serial ?? "").trim();
   if (!SERIAL_PATTERN.test(s)) out.push("A serial is needed: letters, digits, dots, dashes or underscores, up to 64, so the certificate can be revoked by it later.");
   const date = String(expiresAt ?? "").trim();
