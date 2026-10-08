@@ -990,8 +990,17 @@ fn run_recovery(command: RecoveryCommand) -> Result<()> {
                 recovery::FileAction::Write => "write",
                 recovery::FileAction::Keep => "keep (already identical)",
             };
-            println!(
-                "Recovery package {} for {} (serial {}, relay key {}, certificate expires {})",
+            // The checked certificate's public naming fields go through the
+            // host's log like `serve`'s identity line, never a print macro.
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(
+                    EnvFilter::builder()
+                        .with_default_directive(LevelFilter::INFO.into())
+                        .from_env_lossy(),
+                )
+                .try_init();
+            tracing::info!(
+                "recovery package {} for {} serial {} relay key {} certificate expires {}",
                 recovered.package_id,
                 recovered.provider_id,
                 recovered.serial,
