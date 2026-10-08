@@ -130,6 +130,12 @@ and no document, chart or unit in this repository describes one.
 
 ### MongoDB
 
+> **Reopened 2026-10-07 at the owner's request:** MongoDB through the
+> official `mongodb` driver as the production store is proposed in
+> `mongodb-production.md`, with the changes it needs and the questions to
+> answer first. Nothing below has been reversed; this section records why it
+> was removed.
+
 MongoDB was considered for cloud storage and for moving data out, and is
 kept out; the `mongodb` feature, `relay::mongo`, the `--mongodb-*` flags and
 `.github/workflows/mongodb.yml` are removed in the same change as this

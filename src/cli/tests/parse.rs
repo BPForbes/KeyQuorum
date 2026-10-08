@@ -1084,3 +1084,124 @@ fn transfer_commands_parse_without_opening_a_database() {
     ])
     .is_err());
 }
+
+#[cfg(feature = "provider")]
+#[test]
+fn provider_host_keys_create_from_an_enrollment_needs_its_whole_set_and_no_other_recipient() {
+    let base = [
+        "keyquorum",
+        "host",
+        "keys",
+        "create",
+        "--scope",
+        "inbox.pull",
+        "--enrollment",
+        "alice.kqreq",
+    ];
+    let with = |extra: &[&'static str]| {
+        let mut line = base.to_vec();
+        line.extend_from_slice(extra);
+        Cli::try_parse_from(line)
+    };
+    let whole = [
+        "--package-out",
+        "alice.kqpkg",
+        "--confirm-fingerprint",
+        "0123abcd",
+        "--package-relay-url",
+        "https://relay.example.com",
+    ];
+    assert!(with(&whole).is_ok());
+    assert!(with(&[&whole[..], &["--package-valid-days", "7"]].concat()).is_ok());
+    // Each of the three the provider must supply is required.
+    for skip in 0..3 {
+        let partial: Vec<&'static str> = whole
+            .chunks(2)
+            .enumerate()
+            .filter(|(index, _)| *index != skip)
+            .flat_map(|(_, pair)| pair.iter().copied())
+            .collect();
+        assert!(with(&partial).is_err(), "without pair {skip}");
+    }
+    // An enrollment is the recipient: a second one is refused.
+    assert!(with(&[&whole[..], &["--recipient-key", "00"]].concat()).is_err());
+    assert!(with(&[&whole[..], &["--device-id", "00"]].concat()).is_err());
+    // The package flags mean nothing without an enrollment.
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "keys",
+        "create",
+        "--scope",
+        "inbox.pull",
+        "--package-out",
+        "alice.kqpkg",
+    ])
+    .is_err());
+}
+
+#[cfg(feature = "provider")]
+#[test]
+fn provider_host_backup_commands_parse_and_need_their_files() {
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "backup",
+        "keygen",
+        "--public-key-out",
+        "b.pub",
+        "--private-key-out",
+        "b.key",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "backup",
+        "keygen",
+        "--public-key-out",
+        "b.pub"
+    ])
+    .is_err());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "backup",
+        "inspect",
+        "--dir",
+        "dl",
+        "--backup-key",
+        "b.key",
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "backup",
+        "restore",
+        "--dir",
+        "dl",
+        "--backup-key",
+        "b.key",
+        "--out",
+        "relay.sqlite",
+        "--krl",
+        "provider.kqrl",
+    ])
+    .is_ok());
+    for missing in [["--dir", "dl"], ["--backup-key", "b.key"]] {
+        let mut line = vec![
+            "keyquorum",
+            "host",
+            "backup",
+            "restore",
+            "--out",
+            "relay.sqlite",
+        ];
+        line.extend(missing);
+        assert!(
+            Cli::try_parse_from(line).is_err(),
+            "restore needs both --dir and --backup-key"
+        );
+    }
+}

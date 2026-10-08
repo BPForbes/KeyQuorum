@@ -49,6 +49,7 @@ pub mod host_args;
 pub mod host_env;
 mod send;
 mod setup;
+mod setup_package;
 mod transfer_cmd;
 
 /// How long a "one-time" PIN unlock stays valid before the PIN is needed
@@ -2943,6 +2944,68 @@ pub(crate) fn install_key_letter(
         Some(&db::relay_credential::normalize_url(url)),
         Some(device_id),
     )
+}
+
+/// A relay key carried inside a `.kqpkg`: the same open, verify and install
+/// a typed `--bundle` or an inbox letter goes through, from bytes already in
+/// memory, with no bootstrap file left on the drive. The issue's own relay is
+/// the one loaded for; the container named by `slot` (`container=label`)
+/// opens it and is the only device a device-bound issue loads on. Returns the
+/// relay URL the key was stored for.
+#[inline(never)]
+pub(crate) fn install_key_component(conn: &Connection, bytes: &[u8], slot: &str) -> Result<String> {
+    let secret = encryption_secret_from(None, Some(slot))?;
+    let device_id = device_id_of_slot(slot)?;
+    let opened = open_key_issue(bytes, &secret)?;
+    install_key_issue(conn, &opened, None, Some(device_id))?;
+    Ok(db::relay_credential::normalize_url(&opened.issue.relay_url))
+}
+
+/// The offline checks of [`install_key_component`], with nothing stored and no
+/// relay contacted: the sealed key opens with the slot, verifies against the
+/// root, clock and revocation list, is for this device, and names a usable
+/// relay URL. A package runs this on every key before its first write.
+///
+/// `issuer` is the relay key that signed the package: the key must have been
+/// issued by that same relay, not merely by another one the root vouches for.
+/// What it returns is secret-free (no bearer), for the preview.
+pub(crate) fn precheck_key_component(
+    bytes: &[u8],
+    slot: &str,
+    issuer: &[u8; 32],
+) -> Result<KeyPreview> {
+    let secret = encryption_secret_from(None, Some(slot))?;
+    let device_id = device_id_of_slot(slot)?;
+    let opened = open_key_issue(bytes, &secret)?;
+    if opened
+        .issue
+        .device_id
+        .is_some_and(|bound| bound != device_id)
+    {
+        return Err(Error::KeyIssueDeviceMismatch);
+    }
+    if &opened.certificate.relay_public_key != issuer {
+        return Err(Error::KeyIssueRelayMismatch);
+    }
+    let relay_url = db::relay_credential::normalize_url(&opened.issue.relay_url);
+    relay::validate_relay_url(&relay_url)?;
+    Ok(KeyPreview {
+        key_hash: relay::hash_bearer(&opened.issue.token)?,
+        relay_url,
+        scope: opened.issue.scope.clone(),
+        expires_at: opened.issue.expires_at.clone(),
+        licence: opened.issue.licence.clone(),
+    })
+}
+
+/// What a verified sealed key says about itself, without its bearer.
+pub(crate) struct KeyPreview {
+    /// The hash of the bearer, for comparing with a stored key; never printed.
+    pub key_hash: String,
+    pub relay_url: String,
+    pub scope: String,
+    pub expires_at: Option<String>,
+    pub licence: Option<String>,
 }
 
 /// Open and verify a key letter or bundle against this environment's

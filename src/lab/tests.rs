@@ -657,6 +657,21 @@ fn terminal_and_gui_share_one_state() {
 }
 
 #[test]
+fn setup_from_a_package_is_not_offered_in_the_lab() {
+    let mut state = lab();
+    let (outcome, output) = terminal::run(
+        &mut state,
+        "keyquorum setup /home/alice/provider.kqpkg --device /media/alice --label alice --yes",
+    )
+    .unwrap();
+    assert!(!outcome.ok, "the lab refuses a package setup");
+    assert!(
+        output.join("\n").contains("not available here"),
+        "the refusal says why"
+    );
+}
+
+#[test]
 fn a_gui_send_passes_through_both_rings_and_their_timelines_show_it() {
     let mut state = lab();
     let timeline = |state: &mut LabState, line: &str| {

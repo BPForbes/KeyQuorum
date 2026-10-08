@@ -43,6 +43,16 @@ const BUNDLE_TYPE_TRACKED_FILE: u8 = 3;
 /// `envelope::KIND_API_KEY_ISSUE` through the mailbox. Appended after the
 /// tracked-file bundle; the bundle type byte is wire format.
 pub const BUNDLE_TYPE_API_KEY: u8 = 4;
+/// A package's setup manifest (`setup_manifest`): the typed, signed list of
+/// steps `keyquorum setup` runs, sealed to the one recipient and bound to one
+/// `.kqpkg`. Type 5 is reserved for the provider-recovery payload.
+pub const BUNDLE_TYPE_SETUP_MANIFEST: u8 = 6;
+/// One sealed chunk of a relay database backup (`relay::backup`), sealed to the
+/// operator's backup key and held in R2. Never a `.kqpkg` component.
+pub const BUNDLE_TYPE_BACKUP_CHUNK: u8 = 7;
+/// The sealed, relay-signed manifest of a relay database backup, naming every
+/// chunk by its SHA-256. Written last, so a backup without one is incomplete.
+pub const BUNDLE_TYPE_BACKUP_MANIFEST: u8 = 8;
 
 pub fn export_credential(
     conn: &Connection,

@@ -17,8 +17,8 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zeroize::Zeroizing;
 
-const CERT_MAGIC: &[u8; 4] = b"KQPC";
-const KRL_MAGIC: &[u8; 4] = b"KQRL";
+pub(crate) const CERT_MAGIC: &[u8; 4] = b"KQPC";
+pub(crate) const KRL_MAGIC: &[u8; 4] = b"KQRL";
 const FORMAT_VERSION: u8 = 1;
 const CERT_DOMAIN: &[u8] = b"KQPROVIDER-CERT-v1";
 const CHALLENGE_DOMAIN: &[u8] = b"KQPROVIDER-CHALLENGE-v1";
@@ -400,6 +400,46 @@ pub(crate) fn unix_to_utc_minute(secs: u64) -> String {
     let minute = (rem % 3600) / 60;
     let (year, month, day) = civil_from_days(days);
     format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:00")
+}
+
+/// Unix seconds for `YYYY-MM-DD HH:MM[:SS[.fraction]]` UTC, the inverse of
+/// [`unix_to_utc_minute`]; anything else, or a date before 1970, is refused.
+pub fn unix_from_utc(text: &str) -> Result<u64> {
+    let bad = || Error::InvalidProviderCertificate;
+    let (date, time) = text.split_once(' ').ok_or_else(bad)?;
+    let number = |part: &str| part.parse::<u32>().map_err(|_| bad());
+    let mut d = date.split('-');
+    let (year, month, day) = (
+        number(d.next().ok_or_else(bad)?)?,
+        number(d.next().ok_or_else(bad)?)?,
+        number(d.next().ok_or_else(bad)?)?,
+    );
+    let mut t = time.split(':');
+    let hour = number(t.next().ok_or_else(bad)?)?;
+    let minute = number(t.next().ok_or_else(bad)?)?;
+    let second = match t.next() {
+        Some(part) => number(part.split('.').next().ok_or_else(bad)?)?,
+        None => 0,
+    };
+    if d.next().is_some()
+        || t.next().is_some()
+        || !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return Err(bad());
+    }
+    // Howard Hinnant's days-from-civil (UTC, proleptic Gregorian).
+    let y = i64::from(year) - i64::from(month <= 2);
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let mp = (i64::from(month) + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + i64::from(day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days * 86_400 + i64::from(hour * 3600 + minute * 60 + second)).map_err(|_| bad())
 }
 
 /// Howard Hinnant's civil-from-days (UTC, proleptic Gregorian).

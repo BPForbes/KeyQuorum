@@ -596,3 +596,62 @@ checkpoint bounds backdating to the time since it was taken; a leaked relay
 key can sign anchors and mint keys until its serial is revoked; and a
 customer's loaded bearer is in their own store, not on the relay. There is
 no remote kill switch for a running relay other than revoking its serial.
+
+## Issuing a package to a client (`.kqpkg`)
+
+A client who has no key yet enrolls first, so the key can be sealed to them and
+to their drive. They run `keyquorum setup --device DIR --label NAME --enroll-out
+NAME.kqreq`, send you the file (it holds only public keys and the device id) and
+read you its fingerprint over a different channel, such as a call. You then
+issue from the relay host:
+
+```sh
+keyquorum host keys create --scope inbox.pull --enrollment NAME.kqreq \
+  --confirm-fingerprint "<what they read out>" \
+  --package-relay-url https://keyquorum.dev/relay \
+  --package-out NAME.kqpkg [--package-licence-file licence.txt] \
+  [--package-valid-days 30] \
+  --cert provider.kqcert --relay-key relay.key
+```
+
+The key is sealed to the enrollment's encryption key and bound to its device;
+the `.kqpkg` holds the relay's own certificate and that sealed key, signed with
+the relay key, and is written inside the key's transaction, so a failed write
+leaves no key. It is created owner-only and never overwritten. Hand the file to
+the client; they run `keyquorum setup NAME.kqpkg --device DIR --label NAME` to
+see the plan (it first opens every sealed key with the slot, so a key that
+cannot install stops it) and add `--yes` to apply it. The fingerprint is the only thing that
+ties the request to the person, so never skip the call.
+
+The package also carries a **setup manifest** (`KQXB` type 6, `src/setup_manifest.rs`):
+the steps `setup` runs, as a closed list of typed operations (`ensure_identity`,
+`install_certificate`, `install_key`, `use_relay`), never shell text. The relay
+signs it over a domain-separated preimage with its certificate embedded, and it
+is sealed to the person, so only that slot can read it; it names every other part
+by SHA-256 and each part must be used by exactly one step. It is bound to the
+package id, purpose, recipient, device and expiry, so a copy for another person,
+drive or package is refused before any write. A package without a manifest still
+installs by the fixed plan. Not built: a resume ledger, installing a
+`ClientUpdate`, and a recovery package for a lost relay key.
+
+### From the console
+
+`Issue keys` in `/relay/admin` does the same from a browser: choose *Their
+enrollment request*, pick the `.kqreq` (or drop it in **Files** and choose *Use
+to issue keys*), type the fingerprint the client read out, and the console
+returns one `.kqpkg` (the relay's certificate and the sealed keys, bound to
+their drive) in place of loose `.kqkey` files. It is written once and not
+retained: a lost package is replaced by replacing its keys. Choosing *Their
+public key only* still gives the original `.kqkey` files.
+
+**Files** also downloads *the provider package*: a zip of the relay's public
+files (`provider.kqpkg`, `provider.kqcert`, a README), with `USR_TYPE:
+PROVIDER`. No key is in it and no operator lock is needed. The file tool reads a
+dropped or chosen file's public framing in the page, says what it is and which
+actions apply, and refuses files named like private keys unread and key-looking content (hex
+or PEM keys) once read. Nothing is uploaded until an action is taken on a file, and storing
+public files online for an account is not built. `USR_TYPE` is `CLIENT` or
+`PROVIDER`, derived from the package's signed purpose, never stored apart from
+it. Operator actions by signed letter are a design only
+(`admin-letters.md`).
+

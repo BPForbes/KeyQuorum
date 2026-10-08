@@ -221,6 +221,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: "false"
           RELAY_URL: ${{ vars.RELAY_URL }}
+          BACKUP_RECIPIENT: ${{ vars.BACKUP_RECIPIENT }}
         run: |
           # The Worker serves only the host named by ALLOWED_HOSTS and answers 404
           # on any other, a Version URL included (a version shares this Worker's
@@ -235,6 +236,12 @@ jobs:
             args+=(--var "ALLOWED_HOSTS:${host}" --var "MOUNT_PATH:${mount}")
           else
             echo "::warning::cloudflare-staging has no usable RELAY_URL variable (an https URL); the Worker was deployed unconfigured and serves nothing."
+          fi
+          # The operator's backup public key (a GitHub environment variable, not a
+          # secret: only the public half is ever here). Without it the Worker
+          # makes no backups.
+          if [ -n "${BACKUP_RECIPIENT:-}" ]; then
+            args+=(--var "BACKUP_RECIPIENT:${BACKUP_RECIPIENT}")
           fi
           npx wrangler deploy --env staging "${args[@]}"
       - name: Deploy the staging admin Worker
@@ -347,12 +354,17 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: "false"
           RELAY_URL: ${{ vars.RELAY_URL }}
+          BACKUP_RECIPIENT: ${{ vars.BACKUP_RECIPIENT }}
         run: |
           # As for staging, but production never deploys unconfigured: without a
           # usable RELAY_URL this step fails before anything is uploaded.
           host="$(node scripts/relay-host.mjs "${RELAY_URL}")"
           mount="$(node scripts/relay-host.mjs --mount "${RELAY_URL}")"
-          npx wrangler deploy --env="" --var "ALLOWED_HOSTS:${host}" --var "MOUNT_PATH:${mount}"
+          args=(--var "ALLOWED_HOSTS:${host}" --var "MOUNT_PATH:${mount}")
+          if [ -n "${BACKUP_RECIPIENT:-}" ]; then
+            args+=(--var "BACKUP_RECIPIENT:${BACKUP_RECIPIENT}")
+          fi
+          npx wrangler deploy --env="" "${args[@]}"
       - name: Deploy the production admin Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

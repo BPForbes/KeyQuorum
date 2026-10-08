@@ -19,14 +19,25 @@ use std::path::PathBuf;
 
 #[derive(Args)]
 pub struct SetupOpts {
+    /// A `.kqpkg` from your provider to install. Without --yes it is only
+    /// inspected and the plan shown; nothing is written.
+    #[arg(value_name = "PACKAGE")]
+    pub package: Option<PathBuf>,
     /// The device container directory (created if it does not exist)
-    #[arg(long)]
-    pub device: PathBuf,
+    #[arg(long, required_unless_present = "package")]
+    pub device: Option<PathBuf>,
     /// Your label: the slot's name and the label its keys are registered under
-    #[arg(long)]
-    pub label: String,
+    #[arg(long, required_unless_present = "package")]
+    pub label: Option<String>,
+    /// Write your public enrollment request (`.kqreq`) here, for a provider
+    /// to seal a package to; share its fingerprint with them out of band
+    #[arg(long, value_name = "FILE", conflicts_with = "package")]
+    pub enroll_out: Option<PathBuf>,
+    /// Apply the package's plan after showing it
+    #[arg(long, requires = "package")]
+    pub yes: bool,
     /// The relay you use; with it, the relay key is loaded too
-    #[arg(long)]
+    #[arg(long, conflicts_with = "package")]
     pub url: Option<String>,
     /// Relay API key (prompted if omitted and --url is given)
     #[arg(long, requires = "url")]
@@ -69,23 +80,16 @@ pub(super) fn ensure_registered(
     Ok(true)
 }
 
-pub(crate) fn run(conn: &Connection, opts: SetupOpts) -> Result<()> {
-    let SetupOpts {
-        device: path,
-        label,
-        url,
-        api_key,
-    } = opts;
-    let url = url
-        .map(|url| {
-            let url = db::relay_credential::normalize_url(&url);
-            relay::validate_relay_url(&url).map(|_| url)
-        })
-        .transpose()?;
-
-    let mut container = match env::fs(|fs| device::open_in(fs, &path)) {
+/// The drive's container, the slot, its registered keys and its binding:
+/// `device init`, `provision`, `register` and `bind`, each skipped when done.
+pub(super) fn ensure_identity(
+    conn: &Connection,
+    path: &std::path::Path,
+    label: &str,
+) -> Result<()> {
+    let mut container = match env::fs(|fs| device::open_in(fs, path)) {
         Ok(container) => container,
-        Err(open_error) => match env::fs(|fs| device::init_in(fs, &path)) {
+        Err(open_error) => match env::fs(|fs| device::init_in(fs, path)) {
             Ok(container) => {
                 outln!(
                     "Initialized {} device {}",
@@ -98,12 +102,12 @@ pub(crate) fn run(conn: &Connection, opts: SetupOpts) -> Result<()> {
         },
     };
 
-    let passphrase = if container.slot(&label).is_none() {
+    let passphrase = if container.slot(label).is_none() {
         let passphrase = env::confirm_passphrase(
             &format!("Passphrase for {label}: "),
             &format!("Repeat passphrase for {label}: "),
         )?;
-        let slot = env::fs(|fs| device::provision_in(fs, &mut container, &label, &passphrase))?;
+        let slot = env::fs(|fs| device::provision_in(fs, &mut container, label, &passphrase))?;
         outln!("Provisioned slot {}", slot.label);
         passphrase
     } else {
@@ -112,22 +116,59 @@ pub(crate) fn run(conn: &Connection, opts: SetupOpts) -> Result<()> {
     };
 
     let slot = container
-        .slot(&label)
+        .slot(label)
         .ok_or(crate::error::Error::InvalidSlot)?;
     let (encryption, signing) = (slot.encryption_public, slot.signing_public);
     for (kind, public) in [
         (KeyType::Encryption, encryption),
         (KeyType::Signing, signing),
     ] {
-        if ensure_registered(conn, &label, kind, &public)? {
+        if ensure_registered(conn, label, kind, &public)? {
             outln!("Registered {} key for {label}", kind.as_str());
         }
     }
-    env::fs(|fs| device::bind_slot_in(fs, conn, &container, &label, &passphrase))?;
+    env::fs(|fs| device::bind_slot_in(fs, conn, &container, label, &passphrase))?;
     outln!(
         "Bound {label} to device {}",
         hex::encode(container.device_id())
     );
+    Ok(())
+}
+
+pub(crate) fn run(conn: &Connection, opts: SetupOpts) -> Result<()> {
+    let SetupOpts {
+        package,
+        device: path,
+        label,
+        url,
+        api_key,
+        yes,
+        enroll_out,
+    } = opts;
+    if let Some(package) = package {
+        let (Some(path), Some(label)) = (path, label) else {
+            return Err(usage(
+                "setup with a package needs --device and --label: the drive and slot it is installed for",
+            ));
+        };
+        return super::setup_package::run(conn, &package, &path, &label, yes);
+    }
+    let (Some(path), Some(label)) = (path, label) else {
+        return Err(usage("setup needs --device and --label"));
+    };
+    let url = url
+        .map(|url| {
+            let url = db::relay_credential::normalize_url(&url);
+            relay::validate_relay_url(&url).map(|_| url)
+        })
+        .transpose()?;
+    if let Some(out) = &enroll_out {
+        super::setup_package::check_enrollment_target(out)?;
+    }
+    ensure_identity(conn, &path, &label)?;
+    if let Some(out) = &enroll_out {
+        super::setup_package::write_enrollment(&path, &label, out)?;
+    }
 
     super::profile::run_use(
         conn,

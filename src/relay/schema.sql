@@ -43,6 +43,13 @@ CREATE TABLE IF NOT EXISTS mailbox (
     -- UTC cutoff `YYYY-MM-DD HH:MM:00`. NULL means the envelope does not expire.
     -- The host scan (and inbox pull) delete expired rows so they cannot be fetched.
     expires_at              TEXT,
+    -- NULL: the sealed letter is in `envelope`. Otherwise it is held in object
+    -- storage (R2) under `blob_key`, this is its true length, and `envelope`
+    -- holds only its 42-byte outer header (enough to route and to name its
+    -- kind). `blob_ready` is 0 from the moment the row is accepted until the
+    -- object is stored; only ready rows are listed or counted.
+    blob_len                INTEGER,
+    blob_ready              INTEGER NOT NULL DEFAULT 1,
     UNIQUE (recipient_fingerprint, content_hash)
 );
 
@@ -60,11 +67,35 @@ CREATE TABLE IF NOT EXISTS device_mailbox (
     -- UTC `YYYY-MM-DD HH:MM:SS`. Every device letter expires; the host scan
     -- and device pulls delete expired rows so storage stays bounded.
     expires_at              TEXT,
+    -- As in `mailbox`: held in object storage when `blob_len` is set.
+    blob_len                INTEGER,
+    blob_ready              INTEGER NOT NULL DEFAULT 1,
     UNIQUE (recipient_fingerprint, content_hash)
 );
 
 CREATE INDEX IF NOT EXISTS idx_device_mailbox_recipient
     ON device_mailbox (recipient_fingerprint, id);
+
+-- Objects in object storage that no row refers to any more, to be deleted
+-- there. A trigger fills it whenever a row that held its letter out of the
+-- table is deleted, by whatever path (expiry, abort, a purge), so no delete
+-- can forget it. A key still named by a live row is never handed out.
+CREATE TABLE IF NOT EXISTS blob_tombstones (
+    blob_key    TEXT PRIMARY KEY,
+    dropped_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TRIGGER IF NOT EXISTS mailbox_blob_dropped
+AFTER DELETE ON mailbox WHEN old.blob_len IS NOT NULL
+BEGIN
+    INSERT OR REPLACE INTO blob_tombstones (blob_key) VALUES ('inbox/' || old.content_hash);
+END;
+
+CREATE TRIGGER IF NOT EXISTS device_mailbox_blob_dropped
+AFTER DELETE ON device_mailbox WHEN old.blob_len IS NOT NULL
+BEGIN
+    INSERT OR REPLACE INTO blob_tombstones (blob_key) VALUES ('device/' || old.content_hash);
+END;
 
 -- Public device descriptor. The document is signed by the device key.
 -- Slot rows are public keys only.

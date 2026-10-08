@@ -23,7 +23,40 @@ Those bytes are wire format. `.kqbn` eviction notices, the `KQBS` signature arti
 (`KQDV`), slot tokens (`KQST`), and transfer packages (`KQTX`) have their
 own magic and version because they are not sealed envelopes, and
 `key_tree`/`private_bridge` seal raw blobs into database columns with no
-header at all; none of those belong in `envelope.rs`. The provider
+header at all; none of those belong in `envelope.rs`.
+`src/package.rs` is `.kqpkg` (`KQPK` v1, issue #104), a signed setup package, and is not a
+sealed envelope either: an issuer signature over a purpose (`ClientSetup`, `ClientUpdate`,
+`ProviderInfo`, `ProviderRecovery`), a validity window and components that are the unchanged
+bytes of artifacts other modules own (`KQPC`, `KQRL`, `KQPL`, `KQXB` type 4, `KQPB` kind 20, and `KQXB` type 6, the setup manifest).
+A client package carries its **setup manifest** (`src/setup_manifest.rs`, `KQXB` type 6, `package::issue_client_package` builds it):
+the steps `setup` runs, as a closed enum of typed operations (`ensure_identity`, `install_certificate`, `install_key`, `use_relay`;
+`deny_unknown_fields`, never shell text), each part named by SHA-256, listed in dependency order and every non-manifest part used by
+exactly one step. The relay signs it (`signing::relay_setup_manifest_preimage`, certificate embedded) and seals it to the recipient, so
+it is bound to the package id, purpose, recipient, device and expiry; `cli/setup_package.rs` opens it with the slot, checks the signer
+is the package issuer and runs the steps in order, all checks before any write. A package with no manifest keeps the fixed plan.
+
+Components are dispatched by their own magic and kind, never by a name or the package's claim,
+and anything else, or anything the purpose does not allow, is refused before any write. It
+decodes, bounds and authenticates only (enrollment is `src/enrollment.rs`, the generators are
+`package::issue_client_package` and `issue_provider_info_package`; the wizard is not built), and the
+outer signature never replaces a component's own checks. Purpose and
+kind bytes are wire format: append, never renumber.
+`keyquorum setup <file.kqpkg> --device DIR --label NAME` (`src/cli/setup_package.rs`, a native
+everyday command) opens one: it decodes, checks the validity window and that the signer is the
+relay a root-verified, unrevoked certificate names, and that no file it would write conflicts,
+all before any write; without `--yes` it prints the plan and changes nothing; the package file is read with a size bound (`Env::read_bounded`) and each component has its own cap (`ComponentKind::max_bytes`); the slot must already exist (`setup --enroll-out` first; a package never makes an identity), and the plan first opens every sealed key with it (`precheck_key_component`: it must verify, be for this drive and have been issued by the relay that signed the package), refuses to replace a different key already stored for that relay and scope, prints each key's scope, relay, expiry and licence, and stops before anything is written if one cannot install. A `ClientUpdate` is shown but never installed, and an interrupted setup is a partial installation finished by running it again (no resume ledger, no generation check). With `--yes` it
+runs `setup`'s identity steps, places the certificate as `provider.kqcert` beside the container
+(identical bytes are kept, different bytes refused) and installs each sealed key through
+`install_key_component`, the path `loadkey --bundle` and `inbox open` use. It is refused where
+`Env::package_setup` is false: the browser lab says no, and the lab must not offer or document
+it. `ProviderRecovery` packages are not installed by `setup`.
+`keyquorum setup --enroll-out FILE` writes `.kqreq` (`KQRQ` v1, `src/enrollment.rs`), the client's
+public request: device id, label and the slot's public keys, signed by the slot's signing key,
+no secret. The provider verifies it, compares its fingerprint with the client out of band
+(`host keys create --enrollment FILE --confirm-fingerprint ...`, hidden `host`, never in
+customer docs) and the key is minted, sealed to that request and device, and written into a
+`.kqpkg` inside the key's own transaction (`package::issue_client_package`), so a package that
+cannot be written leaves no key. Like package setup it is refused in the lab. The provider
 `KQPC`/`KQRL`/`KQPL` blobs are signed certificates, not envelopes, and
 keep their own offset-cursor parsers and error variants.
 `src/org_update.rs` adds the two authenticated update
@@ -50,6 +83,28 @@ registry (`active_keys_for`, `get_or_register`, `revoke_superseded`,
 `unrevoke_key`). A new authenticated-update primitive belongs in the
 module that owns the table it reads or writes, not in `org_update.rs`,
 even when `org_update.rs` is its only caller today.
+
+The operator console (`workers/admin/`) issues the same package: `issue` accepts an `enrollment` (base64 `.kqreq`) and
+`confirm_fingerprint` in place of a public key and device id, and returns one `ClientSetup` `.kqpkg` and key metadata, no loose
+bundle (`relay::operator`, `resolve_recipient`, `package::issue_client_package`); `provider_package` (a POST that takes no lock,
+like `checkpoint`) returns a `ProviderInfo` package and the relay certificate, which the page zips. `package::UserType`
+(`CLIENT` or `PROVIDER`) is derived from `Purpose`, never stored. The page's file tool (`files.js`) only reads public framing
+and refuses private key file names unread and key-looking content once read; no private file is ever uploaded. Storing public
+files online, and operator actions by signed letter (`docs/operator/admin-letters.md`, a design only), are not built.
+Large sealed letters can be held in a private R2 bucket (`LETTERS`) instead of their row (`docs/operator/r2-blobs.md`, built, not
+deployed or run end to end): the core (`relay::blob`, `SqlRelayStore::with_blob_threshold`) authenticates, validates and inserts the
+row not ready with only the 42-byte header and the true length, the Durable Object's `workers/src/blobs.js` then stores the bytes (checked
+against the SHA-256 in the key) and marks it ready or aborts it, a pull puts held letters back and refuses to return a header-only one, and
+a trigger tombstones every dropped held row for the sweep. Native hosts, and a Worker without the binding, hold nothing out. Only the
+public Worker may bind R2; the guard refuses it in the admin Worker, in a Preview, under another name, and a staging bucket shared with
+production.
+Sealed backups of the relay's database can be written to a second private R2 bucket (`BACKUPS`, `docs/operator/r2-backups.md`, built,
+not deployed or run end to end): the core (`relay::backup`) dumps every table in one synchronous turn, seals each chunk to an
+operator-held backup public key (`EXPORT_BUNDLE` types 7 and 8) and signs the manifest with the relay key; `workers/src/backups.js`
+uploads the chunks and the manifest last from the alarm, keeping the newest few; `keyquorum host backup keygen|inspect|restore` is the
+operator's offline side (restore checks the signature against the pinned root and every chunk's hash before writing, then re-walks the
+audit chains). The backup public key is the `BACKUP_RECIPIENT` deploy variable (never in `wrangler.toml`, whose guard refuses a 64-hex
+value); the private key never reaches a Worker. Letters held in `LETTERS` are not in a backup.
 
 The mailbox relay (`src/relay/`) stores opaque `.kqpb` envelopes and
 the canonical *public* split-tree as JSON documents (full context). It must never

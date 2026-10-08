@@ -179,15 +179,15 @@ test("a change needs an Idempotency-Key, and the lock ceremony and the checkpoin
     assert.equal((await response.json()).code, "operation_id_required");
   }
   assert.equal(calls.length, 0);
-  for (const path of ["/api/operator-lock/bootstrap", "/api/operator-lock/replace", "/api/operator-lock/confirm", "/api/checkpoints"]) {
+  for (const path of ["/api/operator-lock/bootstrap", "/api/operator-lock/replace", "/api/operator-lock/confirm", "/api/checkpoints", "/api/provider-package"]) {
     const response = await ask(req(path, { method: "POST", headers: SAME, body: "{}" }), { binding });
     assert.equal(response.status, 200, path);
   }
-  assert.deepEqual(calls.map((c) => JSON.parse(c.body).op), ["bootstrap", "rotate_lock", "confirm_lock", "checkpoint"]);
+  assert.deepEqual(calls.map((c) => JSON.parse(c.body).op), ["bootstrap", "rotate_lock", "confirm_lock", "checkpoint", "provider_package"]);
   assert.ok(calls.every((c) => !("operation_id" in JSON.parse(c.body))));
 });
 
-test("a lock that is not shaped like one is refused before the relay, and the checkpoint never takes one", async () => {
+test("a lock that is not shaped like one is refused before the relay, and the checkpoint and provider package never take one", async () => {
   const { calls, binding } = relay();
   for (const lock of ["not-a-lock", `kql_${"a".repeat(300)}`, "kq_wrongprefix_aaaaaaaaaaaaaaaaaaaaaaaa", "kql_short"]) {
     const response = await ask(change("/api/users", { name: "x" }, { "x-operator-lock": lock }), { binding });
@@ -196,6 +196,8 @@ test("a lock that is not shaped like one is refused before the relay, and the ch
   assert.equal(calls.length, 0);
   await ask(req("/api/checkpoints", { method: "POST", headers: { ...SAME, "x-operator-lock": newLock() }, body: "{}" }), { binding });
   assert.equal(calls[0].lock, null);
+  await ask(req("/api/provider-package", { method: "POST", headers: { ...SAME, "x-operator-lock": newLock() }, body: "{}" }), { binding });
+  assert.equal(calls[1].lock, null);
 });
 
 test("a body that is not JSON, not an object, too large, or an unknown route or query never reaches the relay", async () => {

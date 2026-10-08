@@ -1,6 +1,7 @@
 //! Opaque envelope store. The only header field used for routing is the
 //! recipient X25519 public key; the sealed payload is stored verbatim.
 
+use super::blob::{self, BlobRef};
 use super::sql::{params, Row, Sql, Value};
 use crate::error::{Error, Result};
 use crate::keys;
@@ -22,7 +23,23 @@ pub const MAX_INBOX_PAGE_BYTES: usize = 16 * 1024 * 1024;
 pub struct StoredEnvelope {
     pub id: i64,
     pub recipient_fingerprint: String,
+    /// The sealed letter, or, for a letter held in object storage, only its
+    /// outer header (see [`super::blob`]).
     pub bytes: Vec<u8>,
+    /// Where the rest is, for a held letter.
+    pub blob: Option<BlobRef>,
+}
+
+/// What [`store_until_held`] did with a letter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stored {
+    pub id: i64,
+    pub recipient_fingerprint: String,
+    /// The letter was already stored and ready.
+    pub duplicate: bool,
+    /// Set when the letter's bytes are still to be stored in object storage
+    /// under this key, after which the row is marked ready.
+    pub blob: Option<BlobRef>,
 }
 
 #[derive(Clone, Debug)]
@@ -42,26 +59,73 @@ pub fn store_until(
     envelope: &[u8],
     expires_at: Option<&str>,
 ) -> Result<(i64, String, bool)> {
-    let (fingerprint, content_hash) = routing_of(envelope)?;
+    let stored = store_until_held(conn, envelope, expires_at, None)?;
+    Ok((stored.id, stored.recipient_fingerprint, stored.duplicate))
+}
 
-    conn.execute(
-        "INSERT OR IGNORE INTO mailbox
-            (recipient_fingerprint, envelope, content_hash, expires_at)
-         VALUES (?1, ?2, ?3, ?4)",
-        params![&fingerprint, envelope, &content_hash, expires_at],
-    )?;
+/// [`store_until`], holding the letter out of its row when it is at least
+/// `hold_from` bytes: the row keeps only the outer header and is not ready
+/// until the caller has stored the bytes ([`Stored::blob`], [`blob`]). A repeat
+/// of a letter whose bytes were never confirmed asks for them again.
+pub fn store_until_held(
+    conn: &dyn Sql,
+    envelope: &[u8],
+    expires_at: Option<&str>,
+    hold_from: Option<usize>,
+) -> Result<Stored> {
+    let (fingerprint, content_hash) = routing_of(envelope)?;
+    let held = hold_from.is_some_and(|threshold| envelope.len() >= threshold);
+
+    if held {
+        conn.execute(
+            "INSERT OR IGNORE INTO mailbox
+                (recipient_fingerprint, envelope, content_hash, expires_at, blob_len, blob_ready)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+            params![
+                &fingerprint,
+                blob::header_of(envelope),
+                &content_hash,
+                expires_at,
+                envelope.len() as i64
+            ],
+        )?;
+    } else {
+        conn.execute(
+            "INSERT OR IGNORE INTO mailbox
+                (recipient_fingerprint, envelope, content_hash, expires_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![&fingerprint, envelope, &content_hash, expires_at],
+        )?;
+    }
 
     if conn.changes()? == 1 {
-        Ok((conn.last_insert_rowid()?, fingerprint, false))
-    } else {
-        let id: i64 = conn.query_row(
-            "SELECT id FROM mailbox
-             WHERE recipient_fingerprint = ?1 AND content_hash = ?2",
-            params![&fingerprint, &content_hash],
-            |row| row.get(0),
-        )?;
-        Ok((id, fingerprint, true))
+        return Ok(Stored {
+            id: conn.last_insert_rowid()?,
+            recipient_fingerprint: fingerprint,
+            duplicate: false,
+            blob: held.then(|| BlobRef {
+                key: blob::key_of(MailTable::Inbox, &content_hash),
+                len: envelope.len(),
+            }),
+        });
     }
+    let (id, blob_len, ready): (i64, Option<i64>, i64) = conn.query_row(
+        "SELECT id, blob_len, blob_ready FROM mailbox
+         WHERE recipient_fingerprint = ?1 AND content_hash = ?2",
+        params![&fingerprint, &content_hash],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let pending = blob_len.is_some() && ready == 0;
+    Ok(Stored {
+        id,
+        recipient_fingerprint: fingerprint,
+        duplicate: !pending,
+        blob: if pending {
+            blob::ref_from(MailTable::Inbox, &content_hash, blob_len)
+        } else {
+            None
+        },
+    })
 }
 
 /// Where a bridge letter is filed (the recipient fingerprint from its outer
@@ -190,23 +254,25 @@ pub fn list_after(
     purge_expired(conn)?;
     let (envelopes, next_after) = read_page(
         conn,
-        "SELECT id, recipient_fingerprint, envelope
+        "SELECT id, recipient_fingerprint, envelope, content_hash, blob_len
          FROM mailbox
-         WHERE recipient_fingerprint = ?1 AND id > ?2
+         WHERE recipient_fingerprint = ?1 AND id > ?2 AND blob_ready = 1
            AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
          ORDER BY id ASC
          LIMIT ?3",
         params![fingerprint, after, fetch],
         page,
         |row| {
+            let content_hash: String = row.get(3)?;
             Ok(StoredEnvelope {
                 id: row.get(0)?,
                 recipient_fingerprint: row.get(1)?,
                 bytes: row.get(2)?,
+                blob: blob::ref_from(MailTable::Inbox, &content_hash, row.get(4)?),
             })
         },
         |item| item.id,
-        |item| item.bytes.len(),
+        |item| item.blob.as_ref().map_or(item.bytes.len(), |held| held.len),
     )?;
     Ok(MailboxPage {
         envelopes,
@@ -253,17 +319,19 @@ pub(crate) fn summaries_in(
     let total: i64 = conn.query_row(
         &format!(
             "SELECT COUNT(*) FROM {name}
-             WHERE expires_at IS NULL OR datetime(expires_at) > datetime('now')"
+             WHERE blob_ready = 1
+               AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))"
         ),
         params![],
         |row| row.get(0),
     )?;
     let letters = conn.query_map(
         &format!(
-            "SELECT id, recipient_fingerprint, substr({column}, 1, 6), length({column}),
-                    created_at, expires_at
+            "SELECT id, recipient_fingerprint, substr({column}, 1, 6),
+                    COALESCE(blob_len, length({column})), created_at, expires_at
              FROM {name}
-             WHERE expires_at IS NULL OR datetime(expires_at) > datetime('now')
+             WHERE blob_ready = 1
+               AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
              ORDER BY id DESC LIMIT ?1"
         ),
         params![limit.clamp(1, 500)],
@@ -282,9 +350,10 @@ pub(crate) fn summaries_in(
     Ok((total, letters))
 }
 
-/// The two mailbox tables [`summaries_in`] can list.
-#[derive(Clone, Copy)]
-pub(crate) enum MailTable {
+/// The two mailbox tables [`summaries_in`] can list, and a held letter's
+/// object key is filed under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MailTable {
     Inbox,
     Devices,
 }
@@ -292,6 +361,43 @@ pub(crate) enum MailTable {
 /// The inbox's letters, summarised. See [`summaries_in`].
 pub fn summaries(conn: &dyn Sql, limit: i64) -> Result<(i64, Vec<LetterSummary>)> {
     summaries_in(conn, MailTable::Inbox, limit)
+}
+
+/// Adds the columns a mailbox table created before them lacks (`expires_at`,
+/// `blob_len`, `blob_ready`). `CREATE TABLE IF NOT EXISTS` never adds a column, and a
+/// Durable Object cannot run [`super::migrate`] (it takes a `Connection`), so
+/// the Durable Object core calls this after the schema. A table that does not
+/// exist yet, or already has the columns, is left alone.
+pub fn ensure_blob_columns(conn: &dyn Sql) -> Result<()> {
+    for table in ["mailbox", "device_mailbox"] {
+        let mut names: Vec<String> = Vec::new();
+        conn.query_each(&format!("PRAGMA table_info({table})"), &[], &mut |row| {
+            names.push(row.get::<String>(1)?);
+            Ok(true)
+        })?;
+        if names.is_empty() {
+            continue;
+        }
+        if !names.iter().any(|name| name == "expires_at") {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN expires_at TEXT"),
+                &[],
+            )?;
+        }
+        if !names.iter().any(|name| name == "blob_len") {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN blob_len INTEGER"),
+                &[],
+            )?;
+        }
+        if !names.iter().any(|name| name == "blob_ready") {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN blob_ready INTEGER NOT NULL DEFAULT 1"),
+                &[],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

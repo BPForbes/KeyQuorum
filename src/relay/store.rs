@@ -28,13 +28,14 @@ use super::api_key::{
     KeyCheck, NewApiKey, OldKey, ProviderAuthRecord,
 };
 use super::audit::{self, Checkpoint, TableReport};
+use super::blob::{self, BlobRef};
 use super::customer::{self, Customer, LicenceFilter, NewCustomer, Page, UserRow};
 use super::device_directory::{self, DeviceDescriptor};
 use super::device_mail::{self, DeviceMailPage};
 use super::issuance::{self, Issuance, Issued, RotateVia, Rotated, Voided};
 use super::key_delivery::{self, Delivered, DeliveryRecord, Recipient};
 use super::licence::{self, KeyLink, Licence, Version};
-use super::mailbox::{self, LetterSummary, MailboxPage};
+use super::mailbox::{self, LetterSummary, MailTable, MailboxPage, Stored};
 use super::operator_log::{self, Note, OperatorAction};
 use super::org_tree::{self, TreeSummary};
 use super::service::ProviderIdentity;
@@ -53,6 +54,9 @@ pub struct StoredLetter {
     pub id: i64,
     pub recipient_fingerprint: String,
     pub duplicate: bool,
+    /// Set when the letter's bytes are still to be stored in object storage
+    /// under this key before the row is ready ([`super::blob`]).
+    pub blob: Option<BlobRef>,
 }
 
 impl From<(i64, String, bool)> for StoredLetter {
@@ -61,6 +65,18 @@ impl From<(i64, String, bool)> for StoredLetter {
             id,
             recipient_fingerprint,
             duplicate,
+            blob: None,
+        }
+    }
+}
+
+impl From<Stored> for StoredLetter {
+    fn from(stored: Stored) -> Self {
+        Self {
+            id: stored.id,
+            recipient_fingerprint: stored.recipient_fingerprint,
+            duplicate: stored.duplicate,
+            blob: stored.blob,
         }
     }
 }
@@ -148,6 +164,26 @@ pub trait RelayStore: Send + Sync {
     ) -> Result<MailboxPage>;
     /// Delete expired letters; returns how many.
     fn purge_expired_envelopes(&self) -> Result<u64>;
+
+    // --- Letters held in object storage (`relay::blob`) --------------------
+
+    /// The largest bridge letter this store accepts: 1 MiB, or
+    /// [`service::MAX_LARGE_LETTER_BYTES`] when letters are held in object
+    /// storage, which is what makes a letter over 1 MiB possible at all.
+    fn max_letter_bytes(&self) -> usize {
+        super::service::MAX_ENVELOPE_BYTES
+    }
+
+    /// The bytes of a held letter are stored: make its row ready.
+    fn blob_ready(&self, table: MailTable, id: i64) -> Result<bool>;
+    /// The bytes could not be stored: drop the not-ready row.
+    fn blob_abort(&self, table: MailTable, id: i64) -> Result<bool>;
+    /// Drop held rows not ready after `minutes` (a crash between the steps).
+    fn blob_drop_stale(&self, minutes: i64) -> Result<u64>;
+    /// Keys of objects to delete: dropped, and named by no live row.
+    fn blob_tombstones(&self, limit: i64) -> Result<Vec<String>>;
+    /// These objects are deleted: forget their tombstones.
+    fn blob_tombstones_done(&self, keys: &[String]) -> Result<u64>;
 
     // --- Public trees ----------------------------------------------------
 
@@ -353,6 +389,9 @@ pub trait RelayStore: Send + Sync {
 pub struct SqlRelayStore<S> {
     sql: Mutex<S>,
     backend: &'static str,
+    /// Letters at least this long are held in object storage, not the row.
+    /// `None` (the native hosts) holds none out.
+    blob_threshold: Option<usize>,
 }
 
 /// The relay's original backend: [`SqlRelayStore`] over a SQLite file or an
@@ -365,7 +404,43 @@ impl<S: Sql> SqlRelayStore<S> {
         Self {
             sql: Mutex::new(sql),
             backend,
+            blob_threshold: None,
         }
+    }
+
+    /// Hold letters of at least `bytes` out of their rows, for a deployment
+    /// whose caller stores them in object storage (the Durable Object with an
+    /// R2 bucket). The caller must complete the second step for every letter
+    /// that answers with a [`StoredLetter::blob`]; see [`super::blob`].
+    pub fn with_blob_threshold(mut self, bytes: usize) -> Self {
+        self.set_blob_threshold(bytes);
+        self
+    }
+
+    /// A sealed, relay-signed snapshot of the whole database for the operator's
+    /// backup key (`relay::backup`). Built whole and synchronously, so it is
+    /// one consistent point in time.
+    pub fn backup_snapshot(
+        &self,
+        identity: &ProviderIdentity,
+        recipient: &[u8; 32],
+        taken_at: &str,
+        max_bytes: usize,
+    ) -> Result<super::backup::Snapshot> {
+        self.with(|conn| super::backup::snapshot(conn, identity, recipient, taken_at, max_bytes))
+    }
+
+    /// Whether letters are held out of their rows (a bucket is bound).
+    pub fn holds_letters(&self) -> bool {
+        self.blob_threshold.is_some()
+    }
+
+    /// [`Self::with_blob_threshold`] on a store already built.
+    ///
+    /// The threshold never exceeds 1 MiB: a letter that large would not fit a
+    /// row, and one over it must always be held.
+    pub fn set_blob_threshold(&mut self, bytes: usize) {
+        self.blob_threshold = Some(bytes.min(super::service::MAX_ENVELOPE_BYTES));
     }
 
     /// The executor, under the store's lock. A poisoned lock is taken over:
@@ -503,7 +578,8 @@ impl<S: Sql + Send> RelayStore for SqlRelayStore<S> {
                 for tree in trees {
                     org_tree::merge_public_tree(conn, tree)?;
                 }
-                mailbox::store_until(conn, envelope, expires_at).map(StoredLetter::from)
+                mailbox::store_until_held(conn, envelope, expires_at, self.blob_threshold)
+                    .map(StoredLetter::from)
             })
         })
     }
@@ -519,6 +595,34 @@ impl<S: Sql + Send> RelayStore for SqlRelayStore<S> {
 
     fn purge_expired_envelopes(&self) -> Result<u64> {
         self.with(|conn| mailbox::purge_expired(conn))
+    }
+
+    fn max_letter_bytes(&self) -> usize {
+        if self.blob_threshold.is_some() {
+            super::service::MAX_LARGE_LETTER_BYTES
+        } else {
+            super::service::MAX_ENVELOPE_BYTES
+        }
+    }
+
+    fn blob_ready(&self, table: MailTable, id: i64) -> Result<bool> {
+        self.with(|conn| blob::mark_ready(conn, table, id))
+    }
+
+    fn blob_abort(&self, table: MailTable, id: i64) -> Result<bool> {
+        self.with(|conn| blob::abort(conn, table, id))
+    }
+
+    fn blob_drop_stale(&self, minutes: i64) -> Result<u64> {
+        self.with(|conn| blob::drop_stale_pending(conn, minutes))
+    }
+
+    fn blob_tombstones(&self, limit: i64) -> Result<Vec<String>> {
+        self.with(|conn| blob::tombstones(conn, limit))
+    }
+
+    fn blob_tombstones_done(&self, keys: &[String]) -> Result<u64> {
+        self.with(|conn| blob::tombstones_done(conn, keys))
     }
 
     fn put_public_tree(&self, tree: &PublicTree) -> Result<PublicTree> {
@@ -538,7 +642,9 @@ impl<S: Sql + Send> RelayStore for SqlRelayStore<S> {
     }
 
     fn store_device_package(&self, package: &[u8]) -> Result<StoredLetter> {
-        self.with(|conn| device_mail::store(conn, package).map(StoredLetter::from))
+        self.with(|conn| {
+            device_mail::store_held(conn, package, self.blob_threshold).map(StoredLetter::from)
+        })
     }
 
     fn list_device_packages_after(

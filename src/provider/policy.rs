@@ -11,7 +11,7 @@ use crate::provider::hardware_auth::HardwareAuthority;
 use crate::signing;
 use sha2::{Digest, Sha256};
 
-const POLICY_MAGIC: &[u8; 4] = b"KQPL";
+pub(crate) const POLICY_MAGIC: &[u8; 4] = b"KQPL";
 const FORMAT_VERSION: u8 = 1;
 const POLICY_DOMAIN: &[u8] = b"KQPROVIDER-POLICY-v1";
 const SIG_LEN: usize = 64;

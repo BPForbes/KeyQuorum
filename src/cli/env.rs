@@ -58,6 +58,12 @@ pub trait Env: Any {
     fn interactive(&self) -> bool {
         false
     }
+    /// Whether `keyquorum setup <package>` may run here. It installs a
+    /// provider's package onto a real drive and store, which the browser lab
+    /// has no honest equivalent of, so the lab says no.
+    fn package_setup(&self) -> bool {
+        true
+    }
 }
 
 /// The real process: terminal, `std::fs`, and SQLite files on disk.
@@ -216,6 +222,11 @@ pub fn fs<R>(f: impl FnOnce(&mut dyn Storage) -> R) -> R {
 
 pub fn read(path: &Path) -> Result<Vec<u8>> {
     fs(|fs| fs.read(path))
+}
+
+/// [`read`] that refuses a file longer than `max` without holding it whole.
+pub fn read_bounded(path: &Path, max: usize) -> Result<Vec<u8>> {
+    fs(|fs| fs.read_bounded(path, max))
 }
 
 pub fn exists(path: &Path) -> bool {
@@ -411,6 +422,10 @@ impl RelayTransport for EnvRelay {
     fn send(&self, request: RelayHttpRequest) -> Result<RelayHttpResponse> {
         with(|env| env.relay_send(request))
     }
+}
+
+pub fn package_setup() -> bool {
+    with(|env| env.package_setup())
 }
 
 pub fn provider_root() -> [u8; 32] {

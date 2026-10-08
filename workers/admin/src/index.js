@@ -25,6 +25,9 @@ import { matchRoute } from "./routes.js";
 const LOCK_PATTERN = /^kql_[A-Za-z0-9_-]{20,200}$/;
 const OPERATION_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
 const OBJECT_NAME = "relay";
+// POSTs that change nothing in the relay and take no operator lock, but must
+// still come from this console (same origin).
+const SIGNING_POSTS = new Set(["checkpoint", "provider_package"]);
 
 const SECURITY_HEADERS = {
   "content-security-policy":
@@ -87,7 +90,7 @@ async function api(request, env, claims, url) {
   }
   const { spec, fields } = route;
   const change = spec.change === true;
-  const writes = change || spec.lock === true || spec.op === "checkpoint";
+  const writes = change || spec.lock === true || SIGNING_POSTS.has(spec.op);
 
   // The console is for a person: a service token carries no email, and the
   // relay records who acted.
@@ -120,7 +123,7 @@ async function api(request, env, claims, url) {
   let operationId = null;
   let body = {};
   if (writes) {
-    if (spec.op !== "checkpoint" && request.method === "POST") {
+    if (!SIGNING_POSTS.has(spec.op) && request.method === "POST") {
       const raw = request.headers.get("x-operator-lock");
       if (raw !== null) {
         if (!LOCK_PATTERN.test(raw)) return json(400, { error: "the operator lock is malformed" });

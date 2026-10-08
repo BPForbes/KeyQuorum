@@ -11,7 +11,7 @@
 use keyquorum::api_key_delivery::MAX_LICENCE_BYTES;
 use keyquorum::cli;
 use keyquorum::cli::host_args::{
-    HostCommand, IdentityCommand, KeysCommand, PolicyCommand, RootCommand,
+    BackupCommand, HostCommand, IdentityCommand, KeysCommand, PolicyCommand, RootCommand,
 };
 use keyquorum::cli::host_env::{self, ProcessVars};
 use keyquorum::db;
@@ -96,6 +96,7 @@ pub fn run(store_args: &StoreArgs, org_db: &Path, command: HostCommand) -> Resul
                 ))
         }
         HostCommand::Identity { command } => run_identity(command),
+        HostCommand::Backup { command } => run_backup(command),
         HostCommand::Certify {
             root_key,
             relay_public_key,
@@ -229,6 +230,12 @@ fn run_keys(store: &dyn RelayStore, command: KeysCommand) -> Result<()> {
             relay_url,
             device_id,
             licence_file,
+            enrollment,
+            package_out,
+            confirm_fingerprint,
+            package_relay_url,
+            package_licence_file,
+            package_valid_days,
         } => {
             let identity = authorize_mint(
                 store,
@@ -247,8 +254,53 @@ fn run_keys(store: &dyn RelayStore, command: KeysCommand) -> Result<()> {
                 label,
                 ttl_seconds,
             };
-            match (recipient_key, out) {
-                (Some(recipient_key), Some(out)) => {
+            match (enrollment, recipient_key, out) {
+                (Some(enrollment), _, _) => {
+                    let package_out = package_out.ok_or_else(|| {
+                        Error::Usage("--package-out is required with --enrollment".into())
+                    })?;
+                    let typed = confirm_fingerprint.ok_or_else(|| {
+                        Error::Usage(
+                            "--confirm-fingerprint is required with --enrollment: read it from the client, not from the file".into(),
+                        )
+                    })?;
+                    let request = keyquorum::enrollment::decode_file(&enrollment)?;
+                    request.confirm_fingerprint(&typed)?;
+                    let recipient = Recipient {
+                        public_key: request.encryption_public,
+                        device_id: Some(request.device_id),
+                        ..recipient_from(
+                            &hex::encode(request.encryption_public),
+                            package_relay_url,
+                            None,
+                            package_licence_file,
+                        )?
+                    };
+                    let issued_at = provider::unix_from_utc(&provider::system_now_utc()?)?;
+                    // The package is written inside the key's own transaction, so a
+                    // package that cannot be built or written leaves no key behind.
+                    let delivered = into_file(&package_out, |write| {
+                        store.mint_key_as_bundle(&identity, &new, &recipient, &mut |sealed| {
+                            let package = keyquorum::package::issue_client_package(
+                                &identity,
+                                &[sealed],
+                                &request.encryption_public,
+                                Some(request.device_id),
+                                issued_at,
+                                package_valid_days,
+                            )?;
+                            write(&package)
+                        })
+                    })?;
+                    println!("Created API key {}", delivered.info.id);
+                    println!("scope: {}", delivered.info.scope);
+                    println!("sealed to: {}", delivered.recipient_fingerprint);
+                    println!("wrote {}", package_out.display());
+                    println!(
+                        "hand it to the customer for `keyquorum setup FILE --device DIR --label NAME`; it is never printed"
+                    );
+                }
+                (None, Some(recipient_key), Some(out)) => {
                     let recipient =
                         recipient_from(&recipient_key, relay_url, device_id, licence_file)?;
                     let delivered = into_file(&out, |write| {
@@ -695,6 +747,107 @@ fn run_identity(command: IdentityCommand) -> Result<()> {
             private_key_out,
         } => write_keypair("Relay", &public_key_out, &private_key_out),
     }
+}
+
+/// `host backup`: the operator's side of the sealed database backups. None of it
+/// touches a running relay: the keypair is made here, and a backup is read from a
+/// directory the operator downloaded it to.
+fn run_backup(command: BackupCommand) -> Result<()> {
+    // The restore reports through tracing like the rest of the host, so it
+    // needs a subscriber of its own (INFO unless RUST_LOG says otherwise).
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
+        .try_init();
+    match command {
+        BackupCommand::Keygen {
+            public_key_out,
+            private_key_out,
+        } => {
+            if public_key_out.exists() {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!("{} already exists", public_key_out.display()),
+                )));
+            }
+            let (secret, public) = keys::generate_encryption_keypair();
+            cli::write_hex_file(&private_key_out, &secret[..])?;
+            if let Err(err) = cli::write_hex_file(&public_key_out, &public) {
+                let _ = std::fs::remove_file(&private_key_out);
+                return Err(err);
+            }
+            eprintln!(
+                "Backup private key written owner-only to {}; keep it offline. Without it no backup can be read.",
+                private_key_out.display()
+            );
+            println!("BACKUP_RECIPIENT={}", hex::encode(public));
+            Ok(())
+        }
+        BackupCommand::Inspect {
+            dir,
+            backup_key,
+            krl,
+        } => {
+            let secret = host_env::read_key_file(&backup_key)?;
+            let revoked = backup_revocations(krl)?;
+            let seen = relay::backup::inspect_dir(
+                &dir,
+                &secret,
+                &KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY,
+                &revoked,
+            )?;
+            println!("backup {}, taken {}", seen.backup_id, seen.taken_at);
+            for (name, rows) in seen.tables {
+                println!("  {name}: {rows} rows");
+            }
+            Ok(())
+        }
+        BackupCommand::Restore {
+            dir,
+            backup_key,
+            out,
+            krl,
+        } => {
+            let secret = host_env::read_key_file(&backup_key)?;
+            let revoked = backup_revocations(krl)?;
+            let restored = relay::backup::restore_dir(
+                &dir,
+                &out,
+                &secret,
+                &KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY,
+                &revoked,
+            )?;
+            tracing::info!(
+                "restored backup {} (taken {}): {} tables, {} rows into {}",
+                restored.backup_id,
+                restored.taken_at,
+                restored.tables,
+                restored.rows,
+                out.display()
+            );
+            if restored.held_skipped > 0 {
+                tracing::info!(
+                    "{} letters held in object storage were not restored (their objects are not in a backup)",
+                    restored.held_skipped
+                );
+            }
+            if restored.audit_intact {
+                tracing::info!("audit chains: intact, every anchor verifies");
+                Ok(())
+            } else {
+                eprintln!("audit chains: NOT intact; check `host keys events --verify` before trusting this database");
+                Err(Error::IntegrityCheckFailed)
+            }
+        }
+    }
+}
+
+fn backup_revocations(krl: Option<PathBuf>) -> Result<std::collections::HashSet<String>> {
+    let krl = path_or_env(krl, "KEYQUORUM_PROVIDER_KRL");
+    provider::load_revocation_list(&KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY, krl.as_deref())
 }
 
 /// Writes a fresh keypair through the CLI's owner-only hex writer: the

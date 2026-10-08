@@ -88,7 +88,7 @@ function isVarsTable(name) {
 export function checkConfig(
   label,
   text,
-  { allowDestructive = false, allowPreviewUrls = false } = {},
+  { allowDestructive = false, allowPreviewUrls = false, allowR2 = false } = {},
 ) {
   const problems = scanForKeyMaterial(label, text);
   const lines = text.split(/\r?\n/).map(stripComment);
@@ -157,6 +157,56 @@ export function checkConfig(
         `${label}: [${name}] binds another Worker's Durable Object, so this file must carry no migration`,
       );
     }
+  }
+
+  // R2 holds the relay's sealed letters (LETTERS) and its sealed database
+  // backups (BACKUPS), both written by the public Worker's Durable Object. Only
+  // that Worker (the file that runs with --allow-r2) may bind either: not the
+  // admin Worker, which touches neither. A Worker Preview gets no bucket at all,
+  // so it can never read or delete a real letter or backup. Staging never shares
+  // production's bucket, and the letters and the backups never share one.
+  const BINDINGS = new Set(["LETTERS", "BACKUPS"]);
+  const buckets = new Map();
+  for (const [name, body] of tables) {
+    const match = /^(?:env\.([^.]+)\.)?(previews\.)?r2_buckets$/.exec(name);
+    if (!match) continue;
+    const scope = match[1] ?? "";
+    const joined = body.join("\n");
+    if (match[2]) {
+      problems.push(`${label}: [${name}] binds an R2 bucket for a Worker Preview; a Preview gets none`);
+      continue;
+    }
+    if (!allowR2) {
+      problems.push(`${label}: [${name}] binds an R2 bucket; only the public Worker's file may (--allow-r2)`);
+      continue;
+    }
+    // One [[r2_buckets]] entry at a time: a binding and the bucket after it.
+    const entries = joined.split(/^\s*binding\s*=/m).slice(1);
+    for (const entry of entries) {
+      const binding = /^\s*"([^"]*)"/.exec(entry)?.[1] ?? "";
+      if (!BINDINGS.has(binding)) {
+        problems.push(`${label}: [${name}] binds R2 as "${binding}"; the only R2 bindings are LETTERS and BACKUPS`);
+        continue;
+      }
+      const bucket = /^\s*bucket_name\s*=\s*"([^"]+)"/m.exec(entry);
+      if (!bucket) problems.push(`${label}: [${name}] binding ${binding} names no bucket_name`);
+      else buckets.set(`${scope}|${binding}`, bucket[1]);
+    }
+  }
+  for (const [at, bucket] of buckets) {
+    const [scope, binding] = at.split("|");
+    if (scope !== "" && buckets.get(`|${binding}`) === bucket) {
+      problems.push(`${label}: environment ${scope} uses production's R2 bucket "${bucket}" for ${binding}; each has its own`);
+    }
+    if (binding === "BACKUPS" && buckets.get(`${scope}|LETTERS`) === bucket) {
+      problems.push(`${label}: ${scope || "production"} keeps its backups in the letters bucket "${bucket}"; they have their own`);
+    }
+  }
+  if (/\bpreviews\s*=\s*\{[^}]*r2_buckets/.test(lines.join("\n"))) {
+    problems.push(`${label}: an inline previews table binds an R2 bucket; a Preview gets none`);
+  }
+  if (!allowR2 && /\br2_buckets\s*=/.test(lines.join("\n"))) {
+    problems.push(`${label}: an inline r2_buckets binds R2; only the public Worker's file may (--allow-r2)`);
   }
 
   if (!allowDestructive && /\b(deleted_classes|renamed_classes)\b/.test(lines.join("\n"))) {
@@ -229,9 +279,10 @@ function main(argv) {
     problems = checkConfig(file, readFileSync(file, "utf8"), {
       allowDestructive: process.env.ALLOW_DESTRUCTIVE_MIGRATION === "1",
       allowPreviewUrls: args.includes("--allow-preview-urls"),
+      allowR2: args.includes("--allow-r2"),
     });
   } else {
-    console.error("usage: guard.mjs FILE [--allow-preview-urls] | --bundle DIR [--max-gzip-bytes N]");
+    console.error("usage: guard.mjs FILE [--allow-preview-urls] [--allow-r2] | --bundle DIR [--max-gzip-bytes N]");
     return 2;
   }
   for (const problem of problems) console.error(`error: ${problem}`);

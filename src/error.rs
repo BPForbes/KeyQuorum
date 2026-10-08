@@ -139,6 +139,31 @@ pub enum Error {
     /// A relay-issued API key names a relay other than the one it was
     /// loaded for.
     KeyIssueRelayMismatch,
+    /// An enrollment request (`.kqreq`) is malformed, altered, or its
+    /// signature does not verify.
+    InvalidEnrollment,
+    /// A relay database backup (a chunk or its manifest) is malformed, altered,
+    /// not sealed to this key, or its relay signature does not verify.
+    InvalidBackup,
+    /// A package's setup manifest is malformed, altered, not for this key,
+    /// names a step this version does not know, or does not match its package.
+    InvalidSetupManifest,
+    /// A relay database is larger than a backup in one pass may hold.
+    BackupTooLarge,
+    /// A backup is restored only into an empty relay database of the same shape.
+    BackupTargetNotEmpty,
+    /// The fingerprint a provider typed does not match the enrollment request.
+    EnrollmentFingerprintMismatch,
+    /// A `.kqpkg` is malformed, oversized, altered, or its signature does
+    /// not verify.
+    InvalidKqpkg,
+    /// A `.kqpkg` holds a component its purpose does not allow, or one
+    /// this version has no handler for.
+    KqpkgComponentRejected,
+    /// A `.kqpkg` is past its expiry or not yet valid.
+    KqpkgExpired,
+    /// A `.kqpkg`'s signer is not the one its purpose requires.
+    KqpkgIssuerUntrusted,
     /// A relay-issued API key is bound to a device other than the one
     /// opening it.
     KeyIssueDeviceMismatch,
@@ -248,6 +273,40 @@ impl fmt::Display for Error {
                 "API key letter is malformed or its relay signature does not verify"
             ),
             Error::KeyIssueExpired => write!(f, "API key letter has expired"),
+            Error::InvalidSetupManifest => write!(
+                f,
+                "setup manifest is malformed, not for this key, or does not match its package"
+            ),
+            Error::InvalidBackup => write!(
+                f,
+                "backup is malformed, altered, not for this key, or its signature does not verify"
+            ),
+            Error::BackupTooLarge => write!(f, "the relay database is too large to back up in one pass"),
+            Error::BackupTargetNotEmpty => write!(
+                f,
+                "a backup is restored only into an empty relay database of the same shape"
+            ),
+            Error::InvalidEnrollment => write!(
+                f,
+                "enrollment request is malformed or its signature does not verify"
+            ),
+            Error::EnrollmentFingerprintMismatch => write!(
+                f,
+                "the fingerprint does not match this enrollment request"
+            ),
+            Error::InvalidKqpkg => write!(
+                f,
+                "KeyQuorum package is malformed or its signature does not verify"
+            ),
+            Error::KqpkgComponentRejected => write!(
+                f,
+                "KeyQuorum package holds a component its purpose does not allow"
+            ),
+            Error::KqpkgExpired => write!(f, "KeyQuorum package is expired or not yet valid"),
+            Error::KqpkgIssuerUntrusted => write!(
+                f,
+                "KeyQuorum package is not signed by the issuer its purpose requires"
+            ),
             Error::KeyIssueRelayMismatch => {
                 write!(f, "API key letter names a different relay")
             }

@@ -17,10 +17,11 @@
 // served), route an operator path (`/api-keys*`, the full `/audit/*`, anything
 // that mints is not on this Worker), or keep a request waiting behind the
 // object (the object refuses past `MAX_IN_FLIGHT`).
+import { bucketOf } from "./blobs.js";
 import { crossSiteRefusal } from "./browser-isolation.js";
 import { relayMount } from "./mount.js";
 import {
-  MAX_REQUEST_BODY,
+  bodyLimit,
   baseHeaders,
   classify,
   hostDecision,
@@ -130,7 +131,8 @@ export async function handle(request, env, log = console) {
   // A relay route. The size is checked before a body is read; the object bounds
   // the stream itself for a request that does not declare one.
   const declared = Number(request.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > MAX_REQUEST_BODY) {
+  const limit = bodyLimit(request.method, route.path, request.headers.get("content-type"), Boolean(bucketOf(env)));
+  if (Number.isFinite(declared) && declared > limit) {
     return jsonResponse(413, { error: "request too large" });
   }
 

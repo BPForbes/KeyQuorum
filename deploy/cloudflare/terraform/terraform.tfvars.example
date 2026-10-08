@@ -23,3 +23,13 @@ rate_limit_period   = 10
 rate_limit_timeout  = 10
 
 archive_bucket_name = ""
+
+# Private R2 buckets for the relay's large sealed letters. The names are the ones
+# workers/wrangler.toml binds; create both before the first deploy.
+letters_bucket_name         = "keyquorum-letters"
+letters_bucket_name_staging = "keyquorum-letters-staging"
+
+# Private R2 buckets for the relay's sealed database backups (never the letters'
+# buckets). The names are the ones workers/wrangler.toml binds as BACKUPS.
+backups_bucket_name         = "keyquorum-backups"
+backups_bucket_name_staging = "keyquorum-backups-staging"

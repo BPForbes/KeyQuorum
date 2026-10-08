@@ -17,4 +17,5 @@ mod profile;
 mod request;
 mod send;
 mod setup;
+mod setup_package;
 mod split;

@@ -5,7 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import worker, { handle } from "../src/worker.js";
-import { MAX_REQUEST_BODY } from "../src/policy.js";
+import { MAX_LARGE_LETTER_BODY, MAX_REQUEST_BODY, bodyLimit } from "../src/policy.js";
 import { STATUS_CSP, STATUS_CSS, STATUS_HTML, STATUS_JS } from "../src/status-page.js";
 
 const HOST = "relay.test";
@@ -166,20 +166,55 @@ test("a route with the wrong method is 405 with the methods it takes, anything u
 
 test("a declared body over the cap is 413 and never reaches the relay; the cap itself is allowed", async () => {
   const { env, forwarded } = fakeEnv();
-  const over = await call(env, "/inbox", {
+  const over = await call(env, "/keycheck", {
     method: "POST",
     body: "x",
     headers: { "content-length": String(MAX_REQUEST_BODY + 1) },
   });
   assert.equal(over.status, 413);
   assert.equal(forwarded.length, 0);
-  const at = await call(env, "/inbox", {
+  const at = await call(env, "/keycheck", {
     method: "POST",
     body: "x",
     headers: { "content-length": String(MAX_REQUEST_BODY) },
   });
   assert.equal(at.status, 200);
   assert.equal(forwarded.length, 1);
+});
+
+test("only a raw POST /inbox may declare a body as large as a large letter, and only with a bucket bound", async () => {
+  const { env, forwarded } = fakeEnv();
+  const bare = { method: "POST", body: "x", headers: { "content-length": String(MAX_REQUEST_BODY + 1) } };
+  assert.equal((await call(env, "/inbox", bare)).status, 413, "no bucket, no large letter");
+  const noop = async () => null;
+  env.LETTERS = { put: noop, get: noop, delete: noop };
+  const declare = (length, extra = {}) => ({ method: "POST", body: "x", headers: { "content-length": String(length), ...extra } });
+  // A raw letter up to the large cap is let through to the relay.
+  for (const type of [{}, { "content-type": "application/octet-stream" }]) {
+    assert.equal((await call(env, "/inbox", declare(MAX_REQUEST_BODY + 1, type))).status, 200);
+    assert.equal((await call(env, "/inbox", declare(MAX_LARGE_LETTER_BODY, type))).status, 200);
+    assert.equal((await call(env, "/inbox", declare(MAX_LARGE_LETTER_BODY + 1, type))).status, 413);
+  }
+  const reached = forwarded.length;
+  // JSON, another route and another method keep the small cap.
+  for (const [path, init] of [
+    ["/inbox", declare(MAX_REQUEST_BODY + 1, { "content-type": "application/json" })],
+    ["/devices/packages", declare(MAX_REQUEST_BODY + 1)],
+    ["/trees", { ...declare(MAX_REQUEST_BODY + 1), method: "PUT" }],
+  ]) {
+    assert.equal((await call(env, path, init)).status, 413, path);
+  }
+  assert.equal(forwarded.length, reached, "none of those reached the relay");
+});
+
+test("the body limit is a function of the route and the content type alone", () => {
+  assert.equal(bodyLimit("POST", "/inbox", undefined), MAX_REQUEST_BODY, "no bucket, no large body");
+  assert.equal(bodyLimit("POST", "/inbox", undefined, true), MAX_LARGE_LETTER_BODY);
+  assert.equal(bodyLimit("POST", "/inbox/", "application/octet-stream", true), MAX_LARGE_LETTER_BODY);
+  assert.equal(bodyLimit("POST", "/inbox", "Application/JSON; charset=utf-8", true), MAX_REQUEST_BODY);
+  assert.equal(bodyLimit("GET", "/inbox", undefined), MAX_REQUEST_BODY);
+  assert.equal(bodyLimit("POST", "/inbox/x", undefined), MAX_REQUEST_BODY);
+  assert.equal(bodyLimit("POST", "/devices/packages", undefined), MAX_REQUEST_BODY);
 });
 
 test("every answer is never cached and never sniffed, whatever the relay said", async () => {

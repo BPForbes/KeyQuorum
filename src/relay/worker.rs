@@ -37,6 +37,13 @@ use zeroize::Zeroizing;
 /// cap before it reads the body; this is the second line.
 pub const MAX_REQUEST_BODY: usize = 2 * 1024 * 1024;
 
+/// The largest body of `POST /inbox` as raw bytes: a letter of up to
+/// [`service::MAX_LARGE_LETTER_BYTES`] plus slack. Only that one route takes a
+/// body this large, and only as raw bytes: a JSON body (trees, expiry) stays at
+/// [`MAX_REQUEST_BODY`], so a big letter cannot ride with a big JSON document
+/// through the core's memory.
+pub const MAX_LARGE_REQUEST_BODY: usize = service::MAX_LARGE_LETTER_BYTES + 64 * 1024;
+
 /// Why a request was turned away before routing, as an HTTP status.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Refused(pub u16);
@@ -51,6 +58,7 @@ pub(crate) fn map_request(
     bearer: Option<String>,
     content_type: Option<&str>,
     body: Vec<u8>,
+    holds_letters: bool,
 ) -> Result<RelayHttpRequest, Refused> {
     let method = match method {
         "GET" => "GET",
@@ -59,10 +67,25 @@ pub(crate) fn map_request(
         "DELETE" => "DELETE",
         _ => return Err(Refused(405)),
     };
-    if body.len() > MAX_REQUEST_BODY {
+    let url = Url::parse(url).map_err(|_| Refused(400))?;
+    let raw = !content_type.is_some_and(|value| {
+        value
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .eq_ignore_ascii_case("application/json")
+    });
+    let limit =
+        if holds_letters && method == "POST" && raw && url.path().trim_end_matches('/') == "/inbox"
+        {
+            MAX_LARGE_REQUEST_BODY
+        } else {
+            MAX_REQUEST_BODY
+        };
+    if body.len() > limit {
         return Err(Refused(413));
     }
-    let url = Url::parse(url).map_err(|_| Refused(400))?;
     let content_type = content_type.map(|value| {
         let essence = value.split(';').next().unwrap_or("").trim();
         if essence.eq_ignore_ascii_case("application/json") {
@@ -105,6 +128,17 @@ impl RelayResponse {
 pub struct RelayCore {
     store: SqlRelayStore<DoSql>,
     identity: Option<ProviderIdentity>,
+    /// A backup being uploaded: built whole by [`RelayCore::backup_begin`], read
+    /// out piece by piece, dropped by [`RelayCore::backup_end`].
+    backup: std::cell::RefCell<Option<crate::relay::backup::Snapshot>>,
+}
+
+fn mail_table(name: &str) -> Result<crate::relay::MailTable, JsError> {
+    match name {
+        "inbox" => Ok(crate::relay::MailTable::Inbox),
+        "device" => Ok(crate::relay::MailTable::Devices),
+        _ => Err(JsError::new("unknown mailbox")),
+    }
 }
 
 fn js_error(error: impl std::fmt::Display) -> JsError {
@@ -140,11 +174,13 @@ impl RelayCore {
         };
         let sql = DoSql::new(adapter);
         sql.execute_batch(crate::relay::SCHEMA).map_err(js_error)?;
+        crate::relay::mailbox::ensure_blob_columns(&sql).map_err(js_error)?;
         sql.execute_batch("PRAGMA foreign_keys = ON")
             .map_err(js_error)?;
         Ok(Self {
             store: SqlRelayStore::new(sql, "durable-object"),
             identity,
+            backup: std::cell::RefCell::new(None),
         })
     }
 
@@ -160,7 +196,14 @@ impl RelayCore {
         body: Vec<u8>,
         now: &str,
     ) -> RelayResponse {
-        let request = match map_request(method, url, bearer, content_type.as_deref(), body) {
+        let request = match map_request(
+            method,
+            url,
+            bearer,
+            content_type.as_deref(),
+            body,
+            self.store.holds_letters(),
+        ) {
             Ok(request) => request,
             Err(Refused(status)) => {
                 return RelayResponse {
@@ -245,6 +288,118 @@ impl RelayCore {
             .map_err(js_error)
     }
 
+    /// From now on, hold letters of at least `bytes` out of their rows: the
+    /// caller (the Durable Object, with an R2 bucket bound) stores each one's
+    /// bytes in the bucket and then calls [`Self::blob_ready`], or
+    /// [`Self::blob_abort`] if it cannot. Never called when no bucket is bound,
+    /// so without one nothing is held out. `bytes` is at least 4096.
+    pub fn hold_letters_from(&mut self, bytes: u32) {
+        self.store.set_blob_threshold(bytes.max(4096) as usize);
+    }
+
+    /// The bytes of held letter `id` of `table` (`"inbox"` or `"device"`) are
+    /// stored: make it ready. False when there was nothing to make ready.
+    pub fn blob_ready(&self, table: &str, id: f64) -> Result<bool, JsError> {
+        self.store
+            .blob_ready(mail_table(table)?, id as i64)
+            .map_err(js_error)
+    }
+
+    /// The bytes could not be stored: drop the not-ready row, so the sender's
+    /// retry starts clean. A ready row is never dropped.
+    pub fn blob_abort(&self, table: &str, id: f64) -> Result<bool, JsError> {
+        self.store
+            .blob_abort(mail_table(table)?, id as i64)
+            .map_err(js_error)
+    }
+
+    /// Keys of objects to delete from the bucket, as a JSON array of strings:
+    /// dropped, and named by no live row. At most `limit`.
+    pub fn blob_tombstones(&self, limit: u32) -> Result<String, JsError> {
+        let keys = self
+            .store
+            .blob_tombstones(i64::from(limit))
+            .map_err(js_error)?;
+        serde_json::to_string(&keys).map_err(js_error)
+    }
+
+    /// The objects named by `keys` (a JSON array of strings) are deleted:
+    /// forget their tombstones. Returns how many were forgotten.
+    pub fn blob_tombstones_done(&self, keys: &str) -> Result<u32, JsError> {
+        let keys: Vec<String> = serde_json::from_str(keys).map_err(js_error)?;
+        if keys.len() > 1000 {
+            return Err(JsError::new("too many keys"));
+        }
+        let done = self.store.blob_tombstones_done(&keys).map_err(js_error)?;
+        Ok(u32::try_from(done).unwrap_or(u32::MAX))
+    }
+
+    /// Builds a sealed, relay-signed snapshot of the whole database for the
+    /// operator's backup key (`recipient`, 64 hex characters, an X25519 public
+    /// key), in one synchronous turn so it is consistent, and holds it for the
+    /// caller to read out and upload. Returns its plan as JSON: the backup id and
+    /// the name and size of each chunk and of the manifest. Refuses a database
+    /// whose plaintext would exceed `max_bytes`, and a relay without an identity
+    /// to sign with. Replaces any snapshot not yet ended.
+    pub fn backup_begin(
+        &self,
+        recipient: &str,
+        now: &str,
+        max_bytes: u32,
+    ) -> Result<String, JsError> {
+        let identity = self
+            .identity
+            .as_ref()
+            .ok_or_else(|| JsError::new("the relay has no identity to sign a backup with"))?;
+        let recipient: [u8; 32] = hex::decode(recipient.trim())
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| JsError::new("the backup recipient is not a 32-byte hex key"))?;
+        *self.backup.borrow_mut() = None;
+        let snapshot = self
+            .store
+            .backup_snapshot(identity, &recipient, now, max_bytes as usize)
+            .map_err(js_error)?;
+        let plan = serde_json::json!({
+            "id": snapshot.backup_id,
+            "tables": snapshot.tables,
+            "rows": snapshot.rows,
+            "objects": snapshot.objects.iter()
+                .map(|(name, bytes)| serde_json::json!({ "name": name, "bytes": bytes.len() }))
+                .collect::<Vec<_>>(),
+            "manifest": { "name": snapshot.manifest_name, "bytes": snapshot.manifest.len() },
+        });
+        *self.backup.borrow_mut() = Some(snapshot);
+        serde_json::to_string(&plan).map_err(js_error)
+    }
+
+    /// The sealed bytes of chunk `index` of the snapshot [`Self::backup_begin`] built.
+    pub fn backup_object(&self, index: u32) -> Result<Vec<u8>, JsError> {
+        let held = self.backup.borrow();
+        let snapshot = held
+            .as_ref()
+            .ok_or_else(|| JsError::new("no backup is in progress"))?;
+        snapshot
+            .objects
+            .get(index as usize)
+            .map(|(_, bytes)| bytes.clone())
+            .ok_or_else(|| JsError::new("no such backup chunk"))
+    }
+
+    /// The sealed, signed manifest of the snapshot. Upload it last.
+    pub fn backup_manifest(&self) -> Result<Vec<u8>, JsError> {
+        self.backup
+            .borrow()
+            .as_ref()
+            .map(|snapshot| snapshot.manifest.clone())
+            .ok_or_else(|| JsError::new("no backup is in progress"))
+    }
+
+    /// Drops the snapshot, whatever happened to its upload.
+    pub fn backup_end(&self) {
+        *self.backup.borrow_mut() = None;
+    }
+
     /// Whether the store answers (the readiness probe).
     pub fn ready(&self) -> bool {
         self.store.ping().is_ok()
@@ -259,6 +414,9 @@ impl RelayCore {
                 .purge_expired_device_packages()
                 .map_err(js_error)?;
         let purged = purged + self.store.purge_old_activity().map_err(js_error)?;
+        // A held letter whose bytes were never confirmed (a crash between the
+        // two steps) is dropped after an hour and its key tombstoned.
+        let purged = purged + self.store.blob_drop_stale(60).map_err(js_error)?;
         if let Some(identity) = &self.identity {
             self.store.anchor_audit(identity, now).map_err(js_error)?;
         }

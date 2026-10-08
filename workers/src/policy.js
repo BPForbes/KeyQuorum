@@ -10,6 +10,20 @@ import { stripMount } from "./mount.js";
 // src/relay/worker.rs); this is the first line, taken before a body is read.
 export const MAX_REQUEST_BODY = 2 * 1024 * 1024;
 
+// The one body that may be larger: a raw `POST /inbox` carrying a large letter
+// (up to 16 MiB, `MAX_LARGE_LETTER_BYTES` in src/relay/service.rs, plus slack),
+// which the relay holds in R2. Only with a bucket bound (`held`); without one
+// every body keeps the small cap. A
+// JSON body (trees, an expiry) and every other route keep the small cap, so a
+// large letter never rides in JSON through the isolate's 128 MB.
+export const MAX_LARGE_LETTER_BODY = 16 * 1024 * 1024 + 64 * 1024;
+
+export function bodyLimit(method, path, contentType, held = false) {
+  const json = String(contentType ?? "").split(";")[0].trim().toLowerCase() === "application/json";
+  const inbox = String(path ?? "").replace(/\/+$/, "") === "/inbox";
+  return held && method === "POST" && !json && inbox ? MAX_LARGE_LETTER_BODY : MAX_REQUEST_BODY;
+}
+
 // ALLOWED_HOSTS is a non-secret variable the deploy job fills with the
 // relay's custom domain. Empty or missing means the Worker is unconfigured and
 // serves nothing. "*" means any host and is only ever set in the `previews`

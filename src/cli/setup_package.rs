@@ -1,0 +1,423 @@
+//! `keyquorum setup <package.kqpkg>`: open a provider's package, show what it
+//! would do, and with `--yes` do it (issue #104).
+//!
+//! The package is read with bounded parsing and everything is checked before
+//! a single write: its signature and component hashes ([`package::decode`]),
+//! its validity window, that its signer is the relay a root-verified, unrevoked
+//! certificate names ([`Package::verify_issuer`], against this environment's
+//! pinned root), and that nothing it would write conflicts with what is on the
+//! drive. Without `--yes` the plan is printed and nothing is changed.
+//!
+//! Applying runs the same steps a person would: the identity steps of plain
+//! `setup`, the relay certificate placed beside the container (never over a
+//! different file), and each sealed key opened with the slot and installed
+//! through the one path `loadkey --bundle` and `inbox open` use
+//! (`install_key_component`: the relay challenge runs before any bearer is
+//! sent). It decides no trust of its own, never prints a bearer, and
+//! leaves no bootstrap file behind. Running it again finishes what stopped.
+//!
+//! It is a real-drive command: an environment that cannot honestly offer it,
+//! the browser lab, refuses it ([`env::package_setup`]).
+
+use super::env::{self, outln};
+use super::{profile, revocation_list, setup, usage};
+use crate::db;
+use crate::error::Result;
+use crate::package::{self, Component, ComponentKind, Package, Purpose};
+use crate::provider;
+use crate::setup_manifest::{self, Operation};
+use rusqlite::Connection;
+use std::path::Path;
+
+const CERTIFICATE_NAME: &str = "provider.kqcert";
+
+/// A package that passed every check, and what applying it would do.
+struct Plan {
+    package: Package,
+    provider_id: String,
+    serial: String,
+    certificate_expires: String,
+    certificate: Vec<u8>,
+    /// The certificate is already on the drive, byte for byte.
+    certificate_present: bool,
+    /// The steps of the package's own setup manifest, in order, when it carries
+    /// one. Without a manifest the plan is the fixed one for its purpose.
+    steps: Option<Vec<Operation>>,
+    /// What each sealed key says about itself, checked before any write; empty
+    /// when the slot does not exist yet (the fixed plan creates it).
+    keys: Vec<super::KeyPreview>,
+}
+
+#[inline(never)]
+pub(super) fn run(
+    conn: &Connection,
+    package_path: &Path,
+    device: &Path,
+    label: &str,
+    yes: bool,
+) -> Result<()> {
+    if !env::package_setup() {
+        return Err(usage("setup with a package is not available here"));
+    }
+    let plan = plan(conn, package_path, device, label)?;
+    show(&plan, device, label);
+    match plan.package.purpose {
+        Purpose::ClientSetup | Purpose::ClientUpdate => {}
+        _ => {
+            outln!("This package is information only; nothing to install.");
+            return Ok(());
+        }
+    }
+    if plan.package.purpose == Purpose::ClientUpdate {
+        // An update replaces credentials, which needs the install ledger that is
+        // not built (a stale package must not be able to put an old key back).
+        outln!("Installing a package update is not supported yet; nothing was changed.");
+        return Ok(());
+    }
+    if !yes {
+        outln!("Nothing was changed. Run again with --yes to apply this plan.");
+        return Ok(());
+    }
+    apply(conn, &plan, device, label)
+}
+
+/// Read, verify and plan. Writes nothing.
+fn plan(conn: &Connection, package_path: &Path, device: &Path, label: &str) -> Result<Plan> {
+    let bytes = env::read_bounded(package_path, package::MAX_PACKAGE_BYTES)?;
+    let package = package::decode(&bytes)?;
+    let now = env::now_utc()?;
+    package.check_valid_at(provider::unix_from_utc(&now)?)?;
+    let root = env::provider_root();
+    let (revoked, _) = revocation_list(&root)?;
+    package.verify_issuer(&root, &now, &revoked)?;
+    if package.purpose == Purpose::ProviderRecovery {
+        return Err(usage(
+            "a provider recovery package is installed on the provider host, not by setup",
+        ));
+    }
+    let steps = match package
+        .components
+        .iter()
+        .position(|component| component.kind == ComponentKind::SetupManifest)
+    {
+        Some(at) => Some(read_manifest(
+            &package, at, device, label, &now, &root, &revoked,
+        )?),
+        None => None,
+    };
+    // Every sealed key is opened and checked offline now, before the first
+    // write (the relay challenge still runs when it installs), so a key that
+    // cannot open, is for another drive, was issued by a different relay than
+    // the one that signed this package, or would replace a different stored key
+    // leaves no identity or certificate behind. The slot must already exist: a
+    // key is sealed to an identity the provider has seen (`setup --enroll-out`),
+    // and a new identity made here would not be that one.
+    let mut keys = Vec::new();
+    if matches!(
+        package.purpose,
+        Purpose::ClientSetup | Purpose::ClientUpdate
+    ) {
+        if env::fs(|fs| crate::device::open_in(fs, device)).is_err() {
+            return Err(usage(
+                "this package's keys are sealed to your slot, which must exist first: run \
+                 `keyquorum setup --device DIR --label NAME --enroll-out FILE`, send the file to \
+                 your provider, and open the package they send you",
+            ));
+        }
+        let slot = format!("{}={label}", device.display());
+        for component in package
+            .components
+            .iter()
+            .filter(|component| component.kind.carries_key())
+        {
+            let key = super::precheck_key_component(&component.bytes, &slot, &package.issuer)?;
+            // A package never replaces a different key already stored for the
+            // same relay and scope; the same key is simply installed again.
+            if let Some(stored) = db::relay_credential::get(conn, &key.relay_url, &key.scope)? {
+                if stored.key_hash != key.key_hash {
+                    return Err(usage(&format!(
+                        "a different {} key for {} is already stored; setup will not replace it \
+                         (revoke it with your provider first)",
+                        key.scope, key.relay_url
+                    )));
+                }
+            }
+            keys.push(key);
+        }
+    }
+    let certificate = certificate_of(&package)?.bytes.clone();
+    let parsed = provider::parse_certificate(&certificate)?;
+    let target = device.join(CERTIFICATE_NAME);
+    let certificate_present = if env::exists(&target) {
+        if env::read(&target)? != certificate {
+            return Err(usage(&format!(
+                "{} already holds a different certificate; setup will not replace it",
+                target.display()
+            )));
+        }
+        true
+    } else {
+        false
+    };
+    Ok(Plan {
+        package,
+        provider_id: parsed.provider_id,
+        serial: parsed.serial,
+        certificate_expires: parsed.expires_at,
+        certificate,
+        certificate_present,
+        steps,
+        keys,
+    })
+}
+
+/// The package's setup manifest, opened with this slot and held against the
+/// package, the person and the drive. The manifest is sealed to the recipient, so
+/// reading it takes the slot's passphrase; the slot must therefore exist
+/// already (the provider sealed to it). A manifest that is not for this slot,
+/// this drive or this package, that names a step this version does not know, or
+/// that leaves a part of the package unused, is refused before anything is
+/// written.
+fn read_manifest(
+    package: &Package,
+    at: usize,
+    device: &Path,
+    label: &str,
+    now: &str,
+    root: &[u8; 32],
+    revoked: &std::collections::HashSet<String>,
+) -> Result<Vec<Operation>> {
+    let container = env::fs(|fs| crate::device::open_in(fs, device)).map_err(|_| {
+        usage(
+            "this package's setup steps are sealed to your slot, which must exist first: run \
+             `keyquorum setup --device DIR --label NAME --enroll-out FILE`, send the file to your \
+             provider, and open the package they send you",
+        )
+    })?;
+    let secrets = super::open_slot_secrets(&format!("{}={label}", device.display()))?;
+    let opened = setup_manifest::open(
+        &package.components[at].bytes,
+        &secrets.encryption_secret,
+        root,
+        now,
+        revoked,
+    )?;
+    if opened.relay_public_key != package.issuer {
+        return Err(crate::error::Error::KqpkgIssuerUntrusted);
+    }
+    opened.body.check_against(
+        package,
+        at,
+        &secrets.encryption_public,
+        container.device_id(),
+        provider::unix_from_utc(now)?,
+    )?;
+    Ok(opened.body.operations)
+}
+
+fn certificate_of(package: &Package) -> Result<&Component> {
+    package
+        .components
+        .iter()
+        .find(|component| component.kind == ComponentKind::Certificate)
+        .ok_or(crate::error::Error::KqpkgComponentRejected)
+}
+
+fn kind_name(kind: ComponentKind) -> &'static str {
+    match kind {
+        ComponentKind::Certificate => "relay certificate",
+        ComponentKind::RevocationList => "revocation list",
+        ComponentKind::Policy => "hardware-authority policy",
+        ComponentKind::ApiKeyBundle => "sealed API key (.kqkey)",
+        ComponentKind::ApiKeyLetter => "sealed API key letter",
+        ComponentKind::SetupManifest => "setup steps (sealed to you, signed by the relay)",
+    }
+}
+
+fn show(plan: &Plan, device: &Path, label: &str) {
+    let purpose = match plan.package.purpose {
+        Purpose::ClientSetup => "client setup",
+        Purpose::ClientUpdate => "client update",
+        Purpose::ProviderInfo => "provider information",
+        Purpose::ProviderRecovery => "provider recovery",
+    };
+    outln!(
+        "Package {} ({purpose}), verified: signed by the relay {} ({}), certificate valid until {}",
+        hex::encode(plan.package.id),
+        plan.provider_id,
+        plan.serial,
+        plan.certificate_expires
+    );
+    for component in &plan.package.components {
+        outln!("  contains: {}", kind_name(component.kind));
+    }
+    if !matches!(
+        plan.package.purpose,
+        Purpose::ClientSetup | Purpose::ClientUpdate
+    ) {
+        return;
+    }
+    for key in &plan.keys {
+        outln!(
+            "  key: {} scope, relay {}, {}{}",
+            key.scope,
+            key.relay_url,
+            key.expires_at
+                .as_deref()
+                .map_or("no expiry".to_string(), |at| format!("expires {at}")),
+            key.licence
+                .as_deref()
+                .map_or(String::new(), |text| format!(", licence: {text}"))
+        );
+    }
+    if let Some(steps) = &plan.steps {
+        outln!(
+            "Steps for slot {label} on {}, in this order:",
+            device.display()
+        );
+        for (number, step) in steps.iter().enumerate() {
+            outln!("  {}. {}", number + 1, step.describe());
+        }
+        return;
+    }
+    outln!(
+        "Plan for slot {label} on {}: set up the drive identity if missing, {} the relay \
+         certificate, install each sealed key after the relay proves itself.",
+        device.display(),
+        if plan.certificate_present {
+            "keep"
+        } else {
+            "write"
+        }
+    );
+}
+
+/// Runs the manifest's steps in the order it lists them (which validation
+/// made the dependency order). Each step is one fixed handler; none is text.
+fn apply_steps(
+    conn: &Connection,
+    plan: &Plan,
+    steps: &[Operation],
+    device: &Path,
+    label: &str,
+) -> Result<()> {
+    let slot = format!("{}={label}", device.display());
+    let mut relays: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+    let part = |hash: &str| {
+        plan.package
+            .components
+            .iter()
+            .find(|component| setup_manifest::hash_of(&component.bytes) == hash)
+            .ok_or(crate::error::Error::KqpkgComponentRejected)
+    };
+    for (number, step) in steps.iter().enumerate() {
+        outln!("Step {}/{}: {}", number + 1, steps.len(), step.describe());
+        match step {
+            Operation::EnsureIdentity { .. } => setup::ensure_identity(conn, device, label)?,
+            Operation::InstallCertificate { .. } => {
+                if !plan.certificate_present {
+                    let target = device.join(CERTIFICATE_NAME);
+                    env::write_new(&target, &plan.certificate)?;
+                    outln!("Wrote relay certificate {}", target.display());
+                }
+            }
+            Operation::InstallKey { component, .. } => {
+                let url = super::install_key_component(conn, &part(component)?.bytes, &slot)?;
+                relays.insert(component, url);
+            }
+            Operation::UseRelay { key, .. } => {
+                profile::run_use(
+                    conn,
+                    profile::UseOpts {
+                        label: Some(label.to_string()),
+                        slot: Some(label.to_string()),
+                        device: Some(device.to_path_buf()),
+                        url: relays.get(key.as_str()).cloned(),
+                        cache: None,
+                        show: false,
+                        clear: false,
+                    },
+                )?;
+            }
+        }
+    }
+    outln!("Setup from the package is complete.");
+    Ok(())
+}
+
+fn apply(conn: &Connection, plan: &Plan, device: &Path, label: &str) -> Result<()> {
+    if let Some(steps) = &plan.steps {
+        return apply_steps(conn, plan, steps, device, label);
+    }
+    setup::ensure_identity(conn, device, label)?;
+    if !plan.certificate_present {
+        let target = device.join(CERTIFICATE_NAME);
+        env::write_new(&target, &plan.certificate)?;
+        outln!("Wrote relay certificate {}", target.display());
+    }
+    let slot = format!("{}={label}", device.display());
+    let mut relay_url = None;
+    let mut installed = 0usize;
+    for component in plan
+        .package
+        .components
+        .iter()
+        .filter(|component| component.kind.carries_key())
+    {
+        relay_url = Some(super::install_key_component(conn, &component.bytes, &slot)?);
+        installed += 1;
+    }
+    profile::run_use(
+        conn,
+        profile::UseOpts {
+            label: Some(label.to_string()),
+            slot: Some(label.to_string()),
+            device: Some(device.to_path_buf()),
+            url: relay_url,
+            cache: None,
+            show: false,
+            clear: false,
+        },
+    )?;
+    outln!("Installed {installed} sealed key(s). Setup from the package is complete.");
+    Ok(())
+}
+
+/// Refuses, before any change, an enrollment file that cannot be written: the
+/// request is never written over another file, and the lab has no honest
+/// equivalent.
+pub(super) fn check_enrollment_target(out: &Path) -> Result<()> {
+    if !env::package_setup() {
+        return Err(usage("setup --enroll-out is not available here"));
+    }
+    if env::exists(out) {
+        return Err(usage(&format!(
+            "{} already exists; setup will not overwrite it",
+            out.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Writes the signed public enrollment request for the slot and prints the
+/// fingerprint to compare with the provider. The slot's passphrase is asked
+/// for once, to sign; nothing secret is written.
+pub(super) fn write_enrollment(device: &Path, label: &str, out: &Path) -> Result<()> {
+    let container = env::fs(|fs| crate::device::open_in(fs, device))?;
+    let secrets = super::open_slot_secrets(&format!("{}={label}", device.display()))?;
+    let request = crate::enrollment::Request {
+        device_id: *container.device_id(),
+        created_at: provider::unix_from_utc(&env::now_utc()?)?,
+        label: label.to_string(),
+        encryption_public: secrets.encryption_public,
+        signing_public: secrets.signing_public,
+    };
+    let bytes = crate::enrollment::encode(&request, &secrets.signing_secret)?;
+    env::write_new(out, &bytes)?;
+    outln!("Wrote enrollment request {}", out.display());
+    outln!(
+        "Fingerprint (tell your provider, out of band): {}",
+        request.fingerprint()?
+    );
+    Ok(())
+}

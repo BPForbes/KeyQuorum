@@ -608,3 +608,31 @@ test("the schema keeps a delivered licence statement immutable in the real objec
   assert.throws(() => storage.db.exec("UPDATE licence_versions SET terms = 'rewritten'"), /immutable/);
   assert.throws(() => storage.db.exec("DELETE FROM licence_versions"), /immutable/);
 });
+
+test("a second large letter body is refused while one is still being read, and the slot is freed after", async () => {
+  const noop = async () => null;
+  const { service } = open({ env: { LETTERS: { put: noop, get: noop, delete: noop } } });
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const slow = new ReadableStream({
+    async pull(controller) {
+      await gate;
+      controller.close();
+    },
+  });
+  const first = service.fetch(new Request(`${BASE}/inbox`, { method: "POST", body: slow, duplex: "half" }));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const big = { "content-length": String(MAX_REQUEST_BODY + 1) };
+  const refused = await post(service, "/inbox", "x", big);
+  assert.equal(refused.status, 503);
+  assert.equal(refused.headers.get("retry-after"), "1");
+  // A small request is not held up by it.
+  assert.notEqual((await get(service, "/health")).status, 503);
+  release();
+  await first;
+  // The slot is free again: the same large declaration now gets past admission.
+  const again = await post(service, "/inbox", "x", big);
+  assert.notEqual(again.status, 503);
+});

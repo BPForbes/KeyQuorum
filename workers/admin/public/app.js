@@ -10,6 +10,7 @@ const ROUTES = [
   ["users", "Users", () => import("./view-users.js"), true],
   ["user", "User", () => import("./view-user.js"), false],
   ["issue", "Issue keys", () => import("./view-issue.js"), true],
+  ["files", "Files", () => import("./view-files.js"), true],
   ["keys", "Keys", () => import("./view-keys.js"), true],
   ["activity", "Activity", () => import("./view-activity.js"), true],
   ["letters", "Letters and trees", () => import("./view-letters.js"), true],

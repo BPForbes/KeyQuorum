@@ -9,7 +9,9 @@
 // request, bounds it, asks the core, and shapes the answer. A bearer goes to the
 // core and nowhere else: it is not logged, stored or echoed.
 import { createSqlAdapter } from "./sql-adapter.js";
-import { baseHeaders, bearerOf, jsonResponse, readLimited } from "./policy.js";
+import { MAX_REQUEST_BODY, baseHeaders, bearerOf, bodyLimit, jsonResponse, readLimited } from "./policy.js";
+import { backupBucketOf, backupSettings, createBackups } from "./backups.js";
+import { bucketOf, createBlobRelay, holdFrom } from "./blobs.js";
 
 // How many requests the object takes at once. The object is a single writer, so
 // what queues behind it is bounded here: past this, a request is refused at
@@ -69,8 +71,11 @@ function readIdentity(env) {
 
 export function createRelayService({ storage, env, bindings, clock = () => new Date(), log = console }) {
   let core = null;
+  let blobs = null;
+  let backups = null;
   let failure = null;
   let inFlight = 0;
+  let largeBodies = 0;
   // What this object has seen since it started, for the operator's status page.
   // In memory only: it is not a record, and a restart begins it again.
   const stats = {
@@ -91,6 +96,20 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
   } else {
     try {
       core = new bindings.RelayCore(createSqlAdapter(storage), identity.certificate, identity.key);
+      // With an R2 bucket bound (`LETTERS`), large sealed letters are held there
+      // and not in the row; without one nothing is, and nothing below changes.
+      const bucket = bucketOf(env);
+      if (bucket) {
+        core.hold_letters_from(holdFrom(env));
+        blobs = createBlobRelay({ core, bucket, log });
+      }
+      // With a `BACKUPS` bucket and a backup public key (BACKUP_RECIPIENT), the
+      // alarm writes sealed backups of the database (src/backups.js).
+      const backupBucket = backupBucketOf(env);
+      const settings = backupSettings(env);
+      if (backupBucket && settings.enabled) {
+        backups = createBackups({ core, bucket: backupBucket, storage, settings, relayTime, clock, log });
+      }
     } catch (error) {
       failure = "relay unavailable";
       log.error("relay: the core did not start", error?.name);
@@ -106,24 +125,40 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
       stats.busyRefusals += 1;
       return jsonResponse(503, { error: "busy" }, { "retry-after": "1" });
     }
+    // A large letter body (up to 16 MiB, buffered whole) is let in one at a time:
+    // the isolate has 128 MB for everything in flight.
+    const limit = bodyLimit(request.method, new URL(request.url).pathname, request.headers.get("content-type"), Boolean(blobs));
+    const large = limit > MAX_REQUEST_BODY;
+    if (large && largeBodies >= 1) {
+      stats.busyRefusals += 1;
+      return jsonResponse(503, { error: "busy" }, { "retry-after": "1" });
+    }
+    if (large) largeBodies += 1;
     inFlight += 1;
     stats.admitted += 1;
     const started = clock().getTime();
     let answer = null;
     try {
-      const body = await readLimited(request);
+      const body = await readLimited(request, limit);
       if (body === null) return jsonResponse(413, { error: "request too large" });
       const bearer = bearerOf(request.headers);
-      answer = core.handle(
-        request.method,
-        request.url,
-        bearer,
-        request.headers.get("content-type") ?? undefined,
-        body,
-        relayTime(clock()),
-      );
-      const status = answer.status;
-      const bytes = answer.body;
+      const contentType = request.headers.get("content-type") ?? undefined;
+      const ask = () => core.handle(request.method, request.url, bearer, contentType, body, relayTime(clock()));
+      // A route that carries held letters finishes its business with the bucket
+      // first (src/blobs.js); every other request goes straight to the core.
+      const held = blobs
+        ? await blobs.around({ method: request.method, url: request.url, contentType, body }, () => {
+            const reply = ask();
+            try {
+              return { status: reply.status, body: reply.body };
+            } finally {
+              reply.free?.();
+            }
+          })
+        : null;
+      if (!held) answer = ask();
+      const status = held ? held.status : answer.status;
+      const bytes = held ? held.body : answer.body;
       // What a known key did, for the provider's console: the key, the coarse
       // part of the API, the answer, how long it took (this clock moves only
       // when the object waits, so it is coarse) and the bytes each way. Never
@@ -158,6 +193,7 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
     } finally {
       answer?.free?.();
       inFlight -= 1;
+      if (large) largeBodies -= 1;
     }
   }
 
@@ -215,6 +251,8 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
           interval_ms: SCAN_INTERVAL_MS,
         },
         storage_bytes: storageBytes(),
+        letters_in_r2: blobs !== null,
+        backups: await backupStatus(),
         deployment: deployment(),
       };
     } catch (error) {
@@ -231,6 +269,17 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
       runtime,
       relay: known,
       note: "Observed by the relay object since it last started. Requests the public Worker refused before the relay (wrong host or route, too large, rate limited) are not counted here.",
+    };
+  }
+
+  // What the operator's status page says of the backups: off and why, or the
+  // last one made and anything that went wrong since.
+  async function backupStatus() {
+    if (backups) return backups.status();
+    const settings = backupSettings(env);
+    return {
+      enabled: false,
+      reason: !backupBucketOf(env) ? "no backup bucket bound (BACKUPS)" : settings.reason,
     };
   }
 
@@ -279,6 +328,18 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
   async function alarm() {
     try {
       if (core) core.scan(relayTime(clock()));
+      // The objects of letters that are gone. A bucket that is down leaves them
+      // for the next run; the housekeeping and its next alarm go on regardless.
+      if (blobs) await blobs.sweep();
+      // A sealed backup when one is due. Its failure is recorded for the status
+      // page and never stops the housekeeping or the next alarm.
+      if (backups) {
+        try {
+          if (await backups.due()) await backups.run();
+        } catch (error) {
+          log.error("relay: the scheduled backup failed", error?.name);
+        }
+      }
       stats.alarmLastRunAt = clock().toISOString();
       stats.alarmLastFailure = null;
     } catch (error) {

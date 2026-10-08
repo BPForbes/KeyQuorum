@@ -20,6 +20,12 @@ use utoipa::ToSchema;
 pub struct InboxAccepted {
     pub id: i64,
     pub recipient_fingerprint: String,
+    /// Set only between the relay core and the Durable Object that stores a
+    /// large letter in object storage; the Worker removes it before any client
+    /// sees a reply. Absent everywhere else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(ignore)]
+    pub blob: Option<super::blob::BlobRef>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -28,6 +34,12 @@ pub struct InboxEnvelope {
     pub recipient_fingerprint: String,
     /// Standard base64 of the exact `.kqpb` bytes.
     pub bytes: String,
+    /// Set only between the relay core and the Durable Object, for a letter
+    /// held in object storage (`bytes` is then only its header); the Worker
+    /// fills `bytes` in and removes this before any client sees a reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(ignore)]
+    pub blob: Option<super::blob::BlobRef>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]

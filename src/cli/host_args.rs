@@ -92,6 +92,52 @@ pub enum HostCommand {
         #[command(subcommand)]
         command: PolicyCommand,
     },
+    /// Sealed backups of the relay's database (docs/operator/r2-backups.md).
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum BackupCommand {
+    /// Generate the backup keypair. The public half is the BACKUP_RECIPIENT
+    /// deploy variable; the private half is the only way to read a backup, so
+    /// it goes only to `--private-key-out` (created owner-only, never
+    /// overwritten, never printed) and belongs offline, not on the relay.
+    Keygen {
+        #[arg(long)]
+        public_key_out: PathBuf,
+        #[arg(long)]
+        private_key_out: PathBuf,
+    },
+    /// Say what a downloaded backup is (its id, when it was taken, its tables)
+    /// after the checks a restore makes, without restoring it.
+    Inspect {
+        /// The directory the backup's objects were downloaded to
+        /// (`manifest.kqbk` and the chunk files)
+        #[arg(long)]
+        dir: PathBuf,
+        /// The backup private key file `backup keygen` wrote
+        #[arg(long)]
+        backup_key: PathBuf,
+        /// Optional signed revocation list (or KEYQUORUM_PROVIDER_KRL)
+        #[arg(long)]
+        krl: Option<PathBuf>,
+    },
+    /// Restore a downloaded backup into a new relay database file, then
+    /// re-walk its audit chains. The file must not exist.
+    Restore {
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        backup_key: PathBuf,
+        /// The new relay database to create (owner-only)
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        krl: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -201,6 +247,30 @@ pub enum KeysCommand {
         /// A UTF-8 licence statement to carry inside the sealed bundle
         #[arg(long, requires = "recipient_key")]
         licence_file: Option<PathBuf>,
+        /// The customer's enrollment request (`.kqreq`, from `keyquorum setup
+        /// --enroll-out`): seal the key to it, bound to its device, and write a
+        /// `.kqpkg` at --package-out instead of a bare bundle
+        #[arg(
+            long,
+            requires_all = ["package_out", "confirm_fingerprint", "package_relay_url"],
+            conflicts_with_all = ["recipient_key", "out", "relay_url", "device_id", "licence_file"]
+        )]
+        enrollment: Option<PathBuf>,
+        /// Where to write the package (created owner-only, never overwritten)
+        #[arg(long, requires = "enrollment")]
+        package_out: Option<PathBuf>,
+        /// The fingerprint the customer read out from their own `setup --enroll-out`
+        #[arg(long, requires = "enrollment")]
+        confirm_fingerprint: Option<String>,
+        /// The relay URL the customer loads the key for, carried inside the key
+        #[arg(long, requires = "enrollment")]
+        package_relay_url: Option<String>,
+        /// A UTF-8 licence statement to carry inside the sealed key
+        #[arg(long, requires = "enrollment")]
+        package_licence_file: Option<PathBuf>,
+        /// How many days the package stays valid (1 to 365)
+        #[arg(long, requires = "enrollment", default_value_t = 30)]
+        package_valid_days: u64,
     },
     List,
     /// Print the API-key lifecycle audit trail (created, rotated, revoked).
