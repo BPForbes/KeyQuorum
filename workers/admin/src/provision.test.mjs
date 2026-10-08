@@ -159,7 +159,7 @@ test("leaving a view runs each registered cleanup once, and one that throws does
 test("the router disposes the old view before drawing and on pagehide, and both panels wipe on disposal and on a late result", () => {
   const app = readFileSync(join(PUBLIC, "app.js"), "utf8");
   assert.ok(app.indexOf("disposeAll();") < app.indexOf("clear(main);"), "dispose before the view is cleared");
-  assert.match(app, /addEventListener\("pagehide", disposeAll\)/);
+  assert.match(app, /watchPageLifecycle\(window, render\)/);
   for (const name of ["view-setup.js", "view-status.js"]) {
     const text = readFileSync(join(PUBLIC, name), "utf8");
     assert.match(text, /onDispose\(\(\) => \{\n\s+disposed = true;\n\s+forget\(\);/, name);
@@ -190,4 +190,36 @@ test("a download's revoker releases its Blob URL at once, only once, and the tim
   } finally {
     Object.assign(globalThis, saved);
   }
+});
+
+test("leaving the page wipes the panel, and a back/forward-cache restore draws the view again so new results show", async () => {
+  const { onDispose, watchPageLifecycle } = await import("../public/dispose.js");
+  const listeners = {};
+  const win = { addEventListener: (name, fn) => ((listeners[name] ??= []).push(fn)) };
+  // A panel as both provisioning panels build it: a result held until disposed.
+  let disposed = false;
+  let shown = null;
+  const { files } = filesOf(result);
+  shown = { files };
+  onDispose(() => {
+    disposed = true;
+    wipe(shown, []);
+    shown = null;
+  });
+  let rendered = 0;
+  watchPageLifecycle(win, async () => {
+    rendered += 1;
+    // The router builds a fresh panel: a new, undisposed one.
+    disposed = false;
+  });
+  for (const fn of listeners.pagehide) fn({ persisted: true });
+  assert.equal(shown, null);
+  assert.ok(files.filter((f) => f.private).every((f) => f.bytes.every((b) => b === 0)), "the old result is wiped");
+  assert.equal(disposed, true);
+  for (const fn of listeners.pageshow) fn({ persisted: false });
+  assert.equal(rendered, 0, "an ordinary load does not draw twice");
+  for (const fn of listeners.pageshow) fn({ persisted: true });
+  await Promise.resolve();
+  assert.equal(rendered, 1);
+  assert.equal(disposed, false, "the restored view's panel can show a new result");
 });

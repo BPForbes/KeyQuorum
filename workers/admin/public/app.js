@@ -2,7 +2,7 @@
 // textContent. The operator lock is typed into a field for one action and is
 // never kept: not in a variable, in storage or in the address.
 import { errorText, get } from "./api.js";
-import { disposeAll } from "./dispose.js";
+import { disposeAll, watchPageLifecycle } from "./dispose.js";
 import { clear, h, notice } from "./ui.js";
 
 // [route, title, loader, in the menu]
@@ -93,7 +93,7 @@ async function start() {
   } catch {
     // the form is simply not pre-filled
   }
-  window.addEventListener("pagehide", disposeAll);
+  watchPageLifecycle(window, render);
   window.addEventListener("hashchange", () => {
     render().then(() => document.getElementById("page-title")?.focus());
   });
