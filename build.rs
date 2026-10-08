@@ -21,4 +21,34 @@ fn main() {
     if lab && provider && wasm {
         panic!("provider and lab builds are mutually exclusive: the lab WASM must not carry mailbox-host code");
     }
+    pin_provider_root();
+}
+
+// The one root public key the relay and every official client trust is the
+// 64 hex characters in `provider-root.pub` at the repository root, a public
+// value (`host provision` writes it as `root.pub`). It is compiled in as
+// `provider::KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`, so pinning a root is
+// committing that file and rebuilding; nothing reads it at run time.
+fn pin_provider_root() {
+    println!("cargo:rerun-if-changed=provider-root.pub");
+    let text = std::fs::read_to_string("provider-root.pub")
+        .expect("provider-root.pub (the pinned provider root public key) must exist");
+    let hex = text.trim();
+    if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        panic!("provider-root.pub must hold exactly 64 hexadecimal characters");
+    }
+    let bytes: Vec<String> = (0..32)
+        .map(|i| format!("0x{}", &hex[2 * i..2 * i + 2]))
+        .collect();
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
+    std::fs::write(
+        out.join("provider_root.rs"),
+        format!(
+            "/// The provider-root verifying key this build pins (`provider-root.pub`).\n\
+             /// The matching private key must never appear in git, CI, or this tree.\n\
+             pub const KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY: [u8; 32] = [{}];\n",
+            bytes.join(", ")
+        ),
+    )
+    .expect("write provider_root.rs");
 }

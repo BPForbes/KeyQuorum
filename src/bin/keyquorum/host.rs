@@ -97,6 +97,31 @@ pub fn run(store_args: &StoreArgs, org_db: &Path, command: HostCommand) -> Resul
         }
         HostCommand::Identity { command } => run_identity(command),
         HostCommand::Backup { command } => run_backup(command),
+        HostCommand::Provision {
+            out,
+            provider_id,
+            serial,
+            issued_at,
+            expires_at,
+            capabilities,
+            issuer_id,
+        } => {
+            let issued_at = match issued_at.filter(|s| !s.is_empty()) {
+                Some(value) => value,
+                None => provider::system_now_utc()?,
+            };
+            let spec = ProvisionSpec {
+                provider_id: &provider_id,
+                serial: &serial,
+                issued_at: &issued_at,
+                expires_at: &expires_at,
+                capabilities: provider::parse_capabilities(&capabilities)?,
+                issuer_id: &issuer_id,
+            };
+            let written = run_provision(&out, &spec)?;
+            print_provisioned(&written);
+            Ok(())
+        }
         HostCommand::Certify {
             root_key,
             relay_public_key,
@@ -874,6 +899,171 @@ fn write_keypair(what: &str, public_key_out: &Path, private_key_out: &Path) -> R
     );
     eprintln!("Public key written to {}", public_key_out.display());
     Ok(())
+}
+
+/// What `host provision` names in the certificate it signs; the keys it
+/// makes are its own.
+struct ProvisionSpec<'a> {
+    provider_id: &'a str,
+    serial: &'a str,
+    issued_at: &'a str,
+    expires_at: &'a str,
+    capabilities: u32,
+    issuer_id: &'a str,
+}
+
+/// The files `host provision` wrote, by path, and the root it pinned.
+struct Provisioned {
+    root_public: [u8; 32],
+    root_private_key: PathBuf,
+    root_public_key: PathBuf,
+    relay_private_key: PathBuf,
+    relay_public_key: PathBuf,
+    identity_file: PathBuf,
+    package: PathBuf,
+}
+
+/// A ProviderInfo package made at provisioning is good for this long; the
+/// console issues a fresh one at any time.
+const PROVISION_PACKAGE_VALID_DAYS: u64 = 30;
+
+/// `host provision`: the root ceremony, the relay identity and the
+/// certificate in one run, with the same checks the relay makes on the
+/// result. Everything is built in memory first and verified
+/// (`provider::self_check` under the new root: the certificate is signed by
+/// it, unexpired, grants the capabilities and names the relay key), then
+/// written into `out`, each file created new; a write that fails removes
+/// what this run wrote, so a retry is never refused by a leftover. Neither
+/// private key is printed.
+fn run_provision(out: &Path, spec: &ProvisionSpec<'_>) -> Result<Provisioned> {
+    let written = Provisioned {
+        root_public: [0; 32],
+        root_private_key: out.join("root.key"),
+        root_public_key: out.join("root.pub"),
+        relay_private_key: out.join("relay.key"),
+        relay_public_key: out.join("relay.pub"),
+        identity_file: out.join("provider.kqcert"),
+        package: out.join("provider-info.kqpkg"),
+    };
+    for path in written.paths() {
+        if path.exists() {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("{} already exists", path.display()),
+            )));
+        }
+    }
+    let (root_private, root_public) = keys::generate_signing_keypair();
+    let (relay_private, relay_public) = provider::generate_relay_identity();
+    let certificate = provider::issue_certificate(
+        &root_private,
+        &NewCertificate {
+            provider_id: spec.provider_id,
+            serial: spec.serial,
+            relay_public_key: &relay_public,
+            issued_at: spec.issued_at,
+            expires_at: spec.expires_at,
+            capabilities: spec.capabilities,
+            issuer_id: spec.issuer_id,
+        },
+    )?;
+    let now = provider::system_now_utc()?;
+    provider::self_check(
+        &root_public,
+        &certificate,
+        &relay_private,
+        &now,
+        &std::collections::HashSet::new(),
+    )?;
+    let identity = ProviderIdentity {
+        certificate: certificate.clone(),
+        relay_private_key: relay_private.clone(),
+    };
+    let package = keyquorum::package::issue_provider_info_package(
+        &identity,
+        provider::unix_from_utc(&now)?,
+        PROVISION_PACKAGE_VALID_DAYS,
+    )?;
+    let written = Provisioned {
+        root_public,
+        ..written
+    };
+    create_owner_only_dir(out)?;
+    let result = (|| {
+        cli::write_hex_file(&written.root_private_key, &root_private[..])?;
+        cli::write_hex_file(&written.root_public_key, &root_public)?;
+        cli::write_hex_file(&written.relay_private_key, &relay_private[..])?;
+        cli::write_hex_file(&written.relay_public_key, &relay_public)?;
+        locked_files::write_owner_only(&written.identity_file, &certificate)?;
+        locked_files::write_owner_only(&written.package, &package)
+    })();
+    if let Err(err) = result {
+        for path in written.paths() {
+            let _ = std::fs::remove_file(path);
+        }
+        return Err(err);
+    }
+    Ok(written)
+}
+
+impl Provisioned {
+    fn paths(&self) -> [&Path; 6] {
+        [
+            &self.root_private_key,
+            &self.root_public_key,
+            &self.relay_private_key,
+            &self.relay_public_key,
+            &self.identity_file,
+            &self.package,
+        ]
+    }
+}
+
+/// The output directory is made owner-only when this run creates it; one
+/// that already exists keeps its mode.
+fn create_owner_only_dir(dir: &Path) -> Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    Ok(builder.create(dir)?)
+}
+
+fn print_provisioned(written: &Provisioned) {
+    eprintln!(
+        "Root private key written owner-only to {} (keep it offline; it signs certificates and revocations, nothing else)",
+        written.root_private_key.display()
+    );
+    eprintln!(
+        "Relay private key written owner-only to {} (the relay's RELAY_PRIVATE_KEY secret)",
+        written.relay_private_key.display()
+    );
+    eprintln!(
+        "Provider certificate written to {} (the relay's RELAY_CERTIFICATE secret, base64)",
+        written.identity_file.display()
+    );
+    eprintln!(
+        "Public keys written to {} and {}; provider package to {}",
+        written.root_public_key.display(),
+        written.relay_public_key.display(),
+        written.package.display()
+    );
+    eprintln!();
+    eprintln!("Next:");
+    eprintln!(
+        "  1. Pin the root: copy {} to provider-root.pub in the repository, commit, and rebuild the relay and the clients. Its value is {}.",
+        written.root_public_key.display(),
+        hex::encode(written.root_public)
+    );
+    eprintln!(
+        "  2. Set the relay's secrets (in workers/, add --env staging for the staging relay):\n       npx wrangler secret put RELAY_PRIVATE_KEY < {}\n       base64 < {} | tr -d '\\n' | npx wrangler secret put RELAY_CERTIFICATE",
+        written.relay_private_key.display(),
+        written.identity_file.display()
+    );
+    eprintln!("  3. Reload the console; the setup guide clears steps 1 and 2 once the relay's identity checks out.");
 }
 
 #[allow(clippy::too_many_arguments)]

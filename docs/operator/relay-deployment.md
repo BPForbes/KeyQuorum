@@ -85,6 +85,44 @@ The build downloads the Swagger UI assets for `/swagger-ui` once (the
 `SWAGGER_UI_DOWNLOAD_URL` at a local copy of the archive
 (`file:///path/to/v5.x.y.zip`).
 
+## Provisioning a new provider in one run
+
+A provider that has no root yet makes everything at once, on the offline
+machine:
+
+```sh
+keyquorum host provision --out /media/root/provider \
+  --provider-id "Acme Security Services" \
+  --serial KQP-000184 \
+  --expires-at "2027-10-01 00:00:00"
+```
+
+It builds the root keypair, the relay keypair and the certificate the root
+signs for the relay in memory, checks them exactly as the relay will
+(`provider::self_check`: signed by that root, unexpired, provider
+capabilities, naming that relay key), and only then writes, into a new
+owner-only directory, `root.key`, `root.pub`, `relay.key`, `relay.pub`,
+`provider.kqcert` and a public `provider-info.kqpkg`. Every file is created
+new (an existing one refuses the run before anything is written), a write
+that fails removes what the run wrote, and neither private key is printed.
+What leaves the offline machine: `relay.key` and `provider.kqcert` for the
+relay's two secrets ("Secret provisioning"), and `root.pub` for pinning.
+`root.key` stays, for later certificates (`host certify`) and revocations
+(`host krl`).
+
+**Pin the root.** The relay and every official client trust exactly one root
+public key, compiled in from `provider-root.pub` at the repository root
+(`build.rs` turns its 64 hex characters into
+`KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`). The repository ships a placeholder
+whose private half nobody holds. Copy `root.pub` over it, commit (it is a
+public value), and rebuild the relay (the WebAssembly core, which the
+`workers` workflow does) and the clients; a certificate under any other root
+is refused by every client, and the console's setup guide shows the root the
+running relay pins so you can compare it with `root.pub`.
+
+The two sections below are the same steps one at a time, for a provider that
+already has a root and needs a certificate for a new relay key.
+
 ## Host identity
 
 On the relay host (or the operator's workstation):
@@ -301,9 +339,9 @@ hosting vendor supplies on its own.
   signed; the relay does not meter seats, suspend by subscription or
   enforce features. Revoking or letting a key expire is the control.
 - **Production trust root.** Confirm that the compiled provider-root public
-  key (`KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`, `src/provider.rs`) is the key
-  from your offline ceremony before you issue anything. Clients trust only
-  that root.
+  key (`provider-root.pub`, compiled into `KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`)
+  is the `root.pub` your `host provision` run wrote before you issue
+  anything. Clients trust only that root.
 - **Recovery.** Restore a backup into an isolated environment and verify the
   audit chains against the checkpoint for that restore point before you rely
   on it; run a synthetic client that completes the provider challenge, since
@@ -418,16 +456,17 @@ page opens with a four-step guide (issue #102), each step with its own status
 or, for step 1, `offline, not visible from here`). The steps are distinct on
 purpose:
 
-1. **The offline provider-root ceremony, and pinning the root**: `host root
-   generate` once, offline (the first time only); `host identity generate` on
-   your own machine ("Host identity"); then `host certify` offline ("Offline
-   provider certificate issuance"). It leaves only its result,
-   `provider.kqcert`. **Pin the root before production:** the relay and every
-   official client trust exactly one root public key, compiled in
-   (`KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`, `src/provider.rs`), and the repository
-   ships a placeholder. Replace it with the public half of your root
-   (`root.pub`) and rebuild the relay (the WebAssembly core) and the clients; a
-   certificate under any other root is refused by every client. The relay checks
+1. **The offline provider-root ceremony, and pinning the root**: `host
+   provision` once, offline ("Provisioning a new provider in one run"), which
+   makes the root, the relay key pair and the certificate together; a provider
+   that already has a root runs `host identity generate` and `host certify`
+   instead. It leaves `provider.kqcert` and `relay.key` for step 2. **Pin the
+   root before production:** the relay and every official client trust exactly
+   one root public key, compiled in from `provider-root.pub`
+   (`KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`), and the repository ships a
+   placeholder. Replace that file with the public half of your root
+   (`root.pub`), commit, and rebuild the relay (the WebAssembly core) and the
+   clients; a certificate under any other root is refused by every client. The relay checks
    its identity the way a client does (`provider::self_check`): the certificate
    is signed by the root the relay pins, has not expired, grants the provider
    capabilities and names the key the relay holds. The guide marks this step done

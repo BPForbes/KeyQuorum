@@ -97,20 +97,23 @@ test("the guide keeps the relay's identity apart from a personal .kqkey and puts
   assert.match(guide, /base64 < provider\.kqcert \| tr -d '\\\\n' \| npx wrangler secret put RELAY_CERTIFICATE/);
 });
 
-test("the guide generates the relay's key pair before the certificate that names its public key", () => {
+test("the guide makes the whole identity with one provision run, and certifies under an existing root only after the relay key exists", () => {
   const guide = read("view-setup.js");
+  const provision = guide.indexOf("host provision --out");
   const generate = guide.indexOf("host identity generate");
   const certify = guide.indexOf("host certify");
-  assert.ok(generate !== -1 && certify !== -1);
+  assert.ok(provision !== -1 && generate !== -1 && certify !== -1);
+  assert.ok(provision < certify, "the one-command path comes first");
   assert.ok(generate < certify, "relay.pub must exist before host certify reads it");
-  assert.equal(guide.split("host identity generate").length - 1, 1, "the key pair is made once");
+  assert.equal(guide.split("host provision").length - 1, 1, "the identity is made once");
+  assert.match(guide, /both private keys are written owner-only and never printed/);
 });
 
 test("the guide tells the operator to pin the production root, shows the pinned key, and the setup text names no secret", () => {
   const guide = read("view-setup.js");
   assert.match(guide, /KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY/);
+  assert.match(guide, /compiled in from provider-root\.pub/);
   assert.match(guide, /replace it with the public half of your root/);
-  assert.match(guide, /host root generate --public-key-out root\.pub --private-key-out root\.key/);
   assert.match(guide, /This relay pins: /);
   assert.match(guide, /\[0-9a-f\]\{64\}/, "only a 64-character hex value is shown as the pinned root");
   assert.match(guide, /done here only when the relay confirms the certificate/);

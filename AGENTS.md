@@ -297,7 +297,15 @@ store reached over a network is `Error::StoreCommitUnknown`, not a failure:
 and `keys events` before retrying) and removes it only on a failure that is
 certain. `identity
 generate` and `root generate` write the private key only to
-`--private-key-out` (owner-only, never overwritten) and never print it.
+`--private-key-out` (owner-only, never overwritten) and never print it;
+`host provision --out DIR` is the whole ceremony in one run (root keypair, relay
+keypair, the certificate the root signs, a `ProviderInfo` package), built in
+memory and passed through `provider::self_check` before anything is written,
+every file created new in an owner-only directory, a failed write removing what
+the run wrote. The root every build pins is the 64-hex `provider-root.pub` at
+the repository root (a public value; `build.rs` compiles it into
+`KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`), so pinning a root is committing that
+file; the repository ships a placeholder.
 Prompted passphrases, passwords, PINs and pasted API keys are
 `Zeroizing<String>` (`cli::env::prompt_secret`, `transfer::Passphrases`), and
 so are the vault password and the stored relay bearer (whose `Debug` is

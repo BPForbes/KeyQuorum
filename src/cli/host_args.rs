@@ -42,6 +42,30 @@ pub enum HostCommand {
         #[command(subcommand)]
         command: IdentityCommand,
     },
+    /// Make a provider's whole identity in one run, into a new directory: the
+    /// root keypair, the relay keypair, the certificate the root signs for
+    /// the relay and the public `ProviderInfo` package. Both private keys are
+    /// written owner-only and never printed; `root.pub` is what the build
+    /// pins (`provider-root.pub`) and `relay.key` with `provider.kqcert` are
+    /// the relay's two Worker secrets.
+    Provision {
+        /// Directory to create; every file it would write must be new
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        provider_id: String,
+        /// A serial you can revoke later (`host krl --serial`)
+        #[arg(long)]
+        serial: String,
+        #[arg(long)]
+        issued_at: Option<String>,
+        #[arg(long)]
+        expires_at: String,
+        #[arg(long, default_value = "provider")]
+        capabilities: String,
+        #[arg(long, default_value = "KeyQuorumRoot")]
+        issuer_id: String,
+    },
     /// Issue a `provider.kqcert` with the offline provider-root private key.
     Certify {
         /// Root private key file (or KEYQUORUM_PROVIDER_ROOT_KEY_FILE; the raw

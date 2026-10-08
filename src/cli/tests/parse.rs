@@ -506,6 +506,42 @@ fn provider_host_store_and_credential_file_flags_parse() {
 
 #[cfg(feature = "provider")]
 #[test]
+fn provider_host_provision_parses_with_a_directory_and_the_certificate_naming_fields() {
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "provision",
+        "--out",
+        "provider",
+        "--provider-id",
+        "Acme",
+        "--serial",
+        "KQP-1",
+        "--expires-at",
+        "2027-01-01 00:00:00",
+    ])
+    .is_ok());
+    // No key is ever taken as a flag value.
+    assert!(Cli::try_parse_from([
+        "keyquorum",
+        "host",
+        "provision",
+        "--out",
+        "provider",
+        "--provider-id",
+        "Acme",
+        "--serial",
+        "KQP-1",
+        "--expires-at",
+        "2027-01-01 00:00:00",
+        "--root-key",
+        "x",
+    ])
+    .is_err());
+}
+
+#[cfg(feature = "provider")]
+#[test]
 fn provider_host_keys_list_parses() {
     assert!(Cli::try_parse_from(["keyquorum", "host", "keys", "list"]).is_ok());
     assert!(Cli::try_parse_from([
