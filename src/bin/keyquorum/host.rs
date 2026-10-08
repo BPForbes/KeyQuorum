@@ -1038,8 +1038,10 @@ fn run_recovery(command: RecoveryCommand) -> Result<()> {
                     "The recovery package {} was overwritten and removed; it carried the relay key.",
                     package.display()
                 ),
-                recovery::Disposal::Kept(err) => eprintln!(
-                    "warning: the recovery package {} could not be removed ({err}); delete it now, it carries the relay key",
+                // Through the host's log like the identity line above: the
+                // error came out of the same flow as the verified certificate.
+                recovery::Disposal::Kept(err) => tracing::warn!(
+                    "the recovery package {} could not be removed ({err}); delete it now, it carries the relay key",
                     package.display()
                 ),
             }
