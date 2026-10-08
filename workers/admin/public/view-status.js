@@ -9,6 +9,8 @@ function row(label, value) {
   return h("tr", {}, h("th", { scope: "row", text: label }), h("td", {}, value));
 }
 
+// The Status page: the relay's identity, lock and counts, the object's runtime
+// figures, and the backup setup while backups are off.
 export default async function status() {
   const s = await get("/api/status");
   const known = s.relay;

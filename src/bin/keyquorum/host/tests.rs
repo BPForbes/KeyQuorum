@@ -27,6 +27,7 @@ fn an_unknown_commit_keeps_the_bundle_it_wrote() {
     );
 }
 
+/// A certificate spec for the provisioning tests, expiring at `expires_at`.
 fn provision_spec<'a>(expires_at: &'a str) -> provision::Spec<'a> {
     provision::Spec {
         provider_id: "Acme Security Services",
@@ -38,6 +39,7 @@ fn provision_spec<'a>(expires_at: &'a str) -> provision::Spec<'a> {
     }
 }
 
+/// The written files self-check under the written root and under no other.
 #[test]
 fn provision_makes_an_identity_the_relay_would_trust_under_the_root_it_wrote() {
     let dir = tempfile::tempdir().expect("dir");
@@ -88,6 +90,7 @@ fn provision_makes_an_identity_the_relay_would_trust_under_the_root_it_wrote() {
     }
 }
 
+/// An existing directory, empty or not, and a missing parent are refused.
 #[test]
 fn provision_refuses_a_directory_that_already_exists_and_writes_nothing() {
     let dir = tempfile::tempdir().expect("dir");
@@ -123,6 +126,7 @@ fn provision_refuses_a_directory_that_already_exists_and_writes_nothing() {
     assert_eq!(std::fs::read(out.join("relay.key")).expect("kept"), b"mine");
 }
 
+/// The self-check runs before any write, so nothing is left behind.
 #[test]
 fn provision_refuses_a_certificate_that_would_already_be_expired() {
     let dir = tempfile::tempdir().expect("dir");

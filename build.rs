@@ -1,10 +1,10 @@
-// Refuse a wasm32 build that enables both `lab` and `provider`.
-//
-// The browser lab is public, inspectable WASM and must never carry
-// mailbox-host code. `lib.rs` has the same guard as a `compile_error!`,
-// but provider's dependencies (tokio/mio) fail on wasm32 before the crate
-// itself is compiled, so this build script is what reliably names the
-// reason. Native builds may combine the two (`--all-features` test runs).
+/// Refuse a wasm32 build that enables both `lab` and `provider`.
+///
+/// The browser lab is public, inspectable WASM and must never carry
+/// mailbox-host code. `lib.rs` has the same guard as a `compile_error!`,
+/// but provider's dependencies (tokio/mio) fail on wasm32 before the crate
+/// itself is compiled, so this build script is what reliably names the
+/// reason. Native builds may combine the two (`--all-features` test runs).
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let lab = std::env::var_os("CARGO_FEATURE_LAB").is_some();
@@ -36,10 +36,12 @@ fn main() {
 // `provider-root.pub` beside Cargo.toml (git-ignored; `root.pub` copied
 // there), else a placeholder whose private half nobody holds, so a client
 // built with neither trusts no relay at all. The relay never reads any of it.
-// Generated once with `host root generate`; its private half was destroyed
-// unrecorded, so nothing can ever be signed under it.
+/// Generated once with `host root generate`; its private half was destroyed
+/// unrecorded, so nothing can ever be signed under it.
 const PLACEHOLDER_ROOT: &str = "3ad178f9783cf922bd1ad04868a8f2530472f4f1ded4dfbbeb18eb0603fc3f6d";
 
+/// Writes `provider_root.rs` into `OUT_DIR` with the root this build pins
+/// (see the comment above), refusing anything but 64 hex characters.
 fn pin_provider_root() {
     println!("cargo:rerun-if-env-changed=KEYQUORUM_PROVIDER_ROOT");
     println!("cargo:rerun-if-changed=provider-root.pub");

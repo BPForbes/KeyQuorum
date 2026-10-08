@@ -505,6 +505,7 @@ fn provider_host_store_and_credential_file_flags_parse() {
 }
 
 #[cfg(feature = "provider")]
+/// `host provision` takes a directory and the certificate's naming fields, never a key.
 #[test]
 fn provider_host_provision_parses_with_a_directory_and_the_certificate_naming_fields() {
     assert!(Cli::try_parse_from([

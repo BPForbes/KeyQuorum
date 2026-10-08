@@ -401,6 +401,7 @@ fn already_done(done: &OperatorAction) -> Reply {
     )
 }
 
+/// Dispatches one parsed request to its handler.
 fn run(
     store: &dyn RelayStore,
     identity: Option<&ProviderIdentity>,
@@ -1240,6 +1241,9 @@ fn keys_page(
     ok(json!({ "keys": keys, "next_before": next_before }))
 }
 
+/// The Overview page's numbers: the lock's state, whether the identity
+/// secrets exist (`configured`) and the identity check, customers, keys,
+/// licences and the last day's activity. Nothing in it is a secret.
 fn overview(store: &dyn RelayStore, configured: bool, check: Value) -> Outcome2 {
     let infos = seen(store.list_keys())?;
     let expired = seen(store.expired_key_ids())?;
@@ -1327,6 +1331,9 @@ fn identity_check(
     json!({ "state": "untrusted", "reason": reason, "pinned_root": pinned_root })
 }
 
+/// The Status page's view of the relay: the identity check against the
+/// pinned `root`, the certificate's public naming fields, the lock's state
+/// and the store's counts. No key, bearer or lock value is in it.
 fn status(
     store: &dyn RelayStore,
     identity: Option<&ProviderIdentity>,

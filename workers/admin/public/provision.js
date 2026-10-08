@@ -24,7 +24,9 @@ export const PROVIDER_ID_PATTERN = /^[\x20-\x7e]+$/;
 // kept off any shared folder and never uploaded.
 export const PRIVATE_FILES = ["root.key", "relay.key"];
 
-// What the form must say for the certificate; -> [] when it is good.
+/**
+ * What the form must say for the certificate; -> [] when it is good.
+ */
 export function problems({ providerId, serial, expiresAt }, today = new Date()) {
   const out = [];
   const id = String(providerId ?? "").trim();
@@ -39,25 +41,34 @@ export function problems({ providerId, serial, expiresAt }, today = new Date()) 
   return out;
 }
 
-// A time as the relay's certificates write it (`YYYY-MM-DD HH:MM:SS`, UTC).
+/**
+ * A time as the relay's certificates write it (`YYYY-MM-DD HH:MM:SS`, UTC).
+ */
 export function utcText(date) {
   return date.toISOString().slice(0, 19).replace("T", " ");
 }
 
-// A `<input type="date">` value as a certificate expiry, at the end of that day.
+/**
+ * A `<input type="date">` value as a certificate expiry, at the end of that day.
+ */
 export function expiryText(dateValue) {
   return `${dateValue} 23:59:59`;
 }
 
 const HEX_64 = /^[0-9a-f]{64}$/;
 
+/**
+ * Standard base64 text as bytes (the certificate and the package arrive so).
+ */
 function fromBase64(text) {
   return Uint8Array.from(atob(text), (character) => character.charCodeAt(0));
 }
 
-// The result the WebAssembly returns (a JSON string), as the files
-// `keyquorum host provision` would have written: the same names, the same
-// bytes. Refused unless every part has the shape it must.
+/**
+ * The result the WebAssembly returns (a JSON string), as the files
+ * `keyquorum host provision` would have written: the same names, the same
+ * bytes. Refused unless every part has the shape it must.
+ */
 export function filesOf(json) {
   const made = JSON.parse(json);
   for (const name of ["root_key", "root_pub", "relay_key", "relay_pub"]) {
@@ -77,7 +88,9 @@ export function filesOf(json) {
   };
 }
 
-// The public files as one zip, for a single download.
+/**
+ * The public files as one zip, for a single download.
+ */
 export function publicZip(files, date = new Date()) {
   return makeZip(
     files.filter((file) => !file.private).map((file) => ({ name: file.name, bytes: file.bytes })),
@@ -85,9 +98,11 @@ export function publicZip(files, date = new Date()) {
   );
 }
 
-// What to do with the downloads, in order, naming files and variables and
-// never a value: the root for the deploy variable, the two secrets, the rebuild
-// the clients need.
+/**
+ * What to do with the downloads, in order, naming files and variables and
+ * never a value: the root for the deploy variable, the two secrets, the rebuild
+ * the clients need.
+ */
 export function nextSteps(rootPub) {
   return [
     `Pin the root on the relay: set the GitHub environment variable PROVIDER_ROOT (cloudflare-staging, then cloudflare-production) to the value shown above (${rootPub.length} hex characters, the contents of root.pub; it is public), then run the workers deploy. The relay reads it as a deploy variable, never from a file in the repository.`,
@@ -99,9 +114,14 @@ export function nextSteps(rootPub) {
 
 // The backup keypair (`host backup keygen`): the public half is the
 // BACKUP_RECIPIENT deploy variable, the private half the only way to read a
-// backup. The same shape as the identity's files.
+// backup.
 export const BACKUP_PRIVATE_FILE = "backup.key";
 
+/**
+ * The backup keypair the WebAssembly returns (a JSON string), as the files
+ * `host backup keygen` would have written; refused unless both halves are
+ * 64-character hex keys.
+ */
 export function backupFilesOf(json) {
   const made = JSON.parse(json);
   for (const name of ["backup_key", "backup_pub"]) {
@@ -117,6 +137,10 @@ export function backupFilesOf(json) {
   };
 }
 
+/**
+ * What to do with the backup keypair, in order, naming the variable and the
+ * file and never a value.
+ */
 export function backupNextSteps(backupPub) {
   return [
     `Set the GitHub environment variable BACKUP_RECIPIENT (cloudflare-staging, then cloudflare-production) to the value shown above (${backupPub.length} hex characters, the contents of backup.pub; it is public), then run the workers deploy. Backups start once the BACKUPS bucket is bound and this variable is set.`,
@@ -124,9 +148,12 @@ export function backupNextSteps(backupPub) {
   ];
 }
 
-// Loads the WebAssembly once, from the console's own files, and gives its
-// two functions: provision_identity and backup_keygen.
 let provisioner = null;
+
+/**
+ * Loads the WebAssembly once, from the console's own files, and gives its
+ * two functions: provision_identity and backup_keygen.
+ */
 export async function loadProvisioner(importer = (path) => import(path)) {
   if (!provisioner) {
     const module = await importer("./provision-wasm/keyquorum_console.js");

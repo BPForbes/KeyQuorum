@@ -29,6 +29,7 @@ if (!cli.endsWith(` ${locked}`)) {
   throw new Error(`wasm-bindgen CLI is "${cli}" but Cargo.lock pins ${locked}; the two must match.`);
 }
 
+// Runs one build tool from the repository root, its output shown.
 const run = (cmd, args) => execFileSync(cmd, args, { cwd: repoRoot, stdio: "inherit" });
 
 // Its own target directory, so it never shares a build with the relay core.

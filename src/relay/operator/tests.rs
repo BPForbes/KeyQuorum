@@ -35,6 +35,8 @@ impl Console {
         self.ask_as(OPERATOR, request, lock, true)
     }
 
+    /// One request as `operator`, with or without the identity, against this
+    /// console's pinned root.
     fn ask_as(
         &self,
         operator: &str,
@@ -105,6 +107,7 @@ fn client() -> (zeroize::Zeroizing<[u8; 32]>, [u8; 32]) {
     keys::generate_encryption_keypair()
 }
 
+/// No operator, an unknown op, a bare request and an oversized body are refused before the store.
 #[test]
 fn nothing_is_answered_without_a_verified_operator_or_for_a_malformed_request() {
     let c = console();
@@ -1305,6 +1308,7 @@ mod identity_trust {
         )
     }
 
+    /// The happy path: signed by the pinned root, unexpired, naming the held key.
     #[test]
     fn a_certificate_from_the_pinned_root_for_the_held_key_is_trusted() {
         let (identity, root) = identity_of(issued_identity_with_caps(
@@ -1317,6 +1321,7 @@ mod identity_trust {
         assert!(check.get("reason").is_none());
     }
 
+    /// Without secrets the state is `missing`, and the pinned root is still shown.
     #[test]
     fn no_identity_is_missing_and_still_names_the_pinned_root() {
         let check = identity_check(None, Some(&[7u8; 32]), BEFORE_EXPIRY);
@@ -1326,6 +1331,7 @@ mod identity_trust {
         );
     }
 
+    /// Wrong root, expired, swapped key and missing capabilities each have their reason.
     #[test]
     fn each_way_an_identity_is_configured_but_untrusted_names_its_own_reason() {
         let (identity, root) = identity_of(issued_identity_with_caps(
@@ -1375,6 +1381,7 @@ mod identity_trust {
         );
     }
 
+    /// Overview and status agree on the check, and the relay key never appears.
     #[test]
     fn the_overview_and_status_report_the_check_and_leak_no_secret() {
         // The console pins the root its identity was issued under, so the
@@ -1414,6 +1421,7 @@ mod identity_trust {
         );
     }
 
+    /// No `PROVIDER_ROOT`: `no_pinned_root` with a null `pinned_root`, over the console too.
     #[test]
     fn a_relay_that_pins_no_root_cannot_call_its_identity_trusted() {
         let (identity, _) = identity_of(issued_identity_with_caps(

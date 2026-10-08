@@ -39,6 +39,7 @@ export function untrustedReason(overview) {
   return UNTRUSTED_REASONS[reason] ?? "The relay could not confirm its identity is one clients will trust.";
 }
 
+// Each step's status, in order, from the overview alone.
 export function setupSteps(overview) {
   const identity = identityState(overview);
   const trusted = identity === "trusted";

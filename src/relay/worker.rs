@@ -112,6 +112,7 @@ pub struct RelayResponse {
 
 #[wasm_bindgen]
 impl RelayResponse {
+    /// The HTTP status of the answer.
     #[wasm_bindgen(getter)]
     pub fn status(&self) -> u16 {
         self.status

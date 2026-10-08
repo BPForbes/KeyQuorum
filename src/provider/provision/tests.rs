@@ -1,6 +1,7 @@
 use super::*;
 use crate::provider::{self, CAP_PROVIDER, KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY};
 
+/// A spec expiring at `expires_at`, for these tests.
 fn spec<'a>(expires_at: &'a str) -> Spec<'a> {
     Spec {
         provider_id: "Acme Security Services",
@@ -12,6 +13,7 @@ fn spec<'a>(expires_at: &'a str) -> Spec<'a> {
     }
 }
 
+/// The certificate verifies under the root made with it, not the placeholder; two runs differ.
 #[test]
 fn the_identity_self_checks_under_its_own_root_and_under_no_other() {
     let made = provision(&spec("2099-01-01 00:00:00"), "2026-10-09 00:00:00").expect("provision");
@@ -40,6 +42,7 @@ fn the_identity_self_checks_under_its_own_root_and_under_no_other() {
     assert_ne!(again.relay_public_key, made.relay_public_key);
 }
 
+/// The package decodes as `ProviderInfo`, issued by the relay key, valid `PACKAGE_VALID_DAYS`.
 #[test]
 fn the_package_is_the_public_provider_info_one_signed_by_the_relay() {
     let made = provision(&spec("2099-01-01 00:00:00"), "2026-10-09 00:00:00").expect("provision");
@@ -52,6 +55,7 @@ fn the_package_is_the_public_provider_info_one_signed_by_the_relay() {
     );
 }
 
+/// A spec expired at `now_utc` is refused by the self-check.
 #[test]
 fn a_certificate_that_would_already_be_expired_is_refused() {
     assert!(matches!(

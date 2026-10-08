@@ -80,6 +80,9 @@ function readPinnedRoot(env) {
   return { root: Uint8Array.from(text.match(/../g), (pair) => parseInt(pair, 16)) };
 }
 
+// The relay inside one Durable Object: the core over its storage, the R2
+// helpers when their buckets are bound, request admission, and the console's
+// `operate` and `status`. Fails closed on an unusable identity or root.
 export function createRelayService({ storage, env, bindings, clock = () => new Date(), log = console }) {
   let core = null;
   let blobs = null;

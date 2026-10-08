@@ -42,6 +42,8 @@ pub struct StoreArgs {
     pub mailbox_db: PathBuf,
 }
 
+/// Runs one `keyquorum host` subcommand. The store is opened only by the
+/// commands that need it.
 pub fn run(store_args: &StoreArgs, org_db: &Path, command: HostCommand) -> Result<()> {
     match command {
         HostCommand::Serve {
@@ -985,6 +987,8 @@ fn create_owner_only_dir(dir: &Path) -> Result<()> {
     Ok(builder.create(dir)?)
 }
 
+/// What `host provision` prints: every file by path, the public root, and
+/// the three steps that follow. No private key is ever among them.
 fn print_provisioned(written: &Provisioned) {
     eprintln!(
         "Root private key written owner-only to {} (keep it offline; it signs certificates and revocations, nothing else)",
