@@ -82,10 +82,12 @@ pub struct Record {
     pub state: String,
 }
 
+/// A ledger refusal, reported as a refused package.
 fn refused(reason: impl Into<String>) -> Error {
     Error::KqpkgRefused(reason.into())
 }
 
+/// One `package_installs` row as a [`Record`].
 fn record_of(row: &rusqlite::Row) -> rusqlite::Result<Record> {
     let steps: String = row.get(10)?;
     Ok(Record {

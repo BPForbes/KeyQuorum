@@ -1027,11 +1027,22 @@ fn run_recovery(command: RecoveryCommand) -> Result<()> {
                 println!("Nothing was written. Run again with --yes to install.");
                 return Ok(());
             }
-            recovery::install(&plan, &recovered, &root, &now, &revoked)?;
+            let disposal =
+                recovery::install_and_dispose(&package, &plan, &recovered, &root, &now, &revoked)?;
             println!(
                 "Recovery installed and verified: {} holds the identity the pinned root certifies.",
                 out.display()
             );
+            match disposal {
+                recovery::Disposal::Removed => println!(
+                    "The recovery package {} was overwritten and removed; it carried the relay key.",
+                    package.display()
+                ),
+                recovery::Disposal::Kept(err) => eprintln!(
+                    "warning: the recovery package {} could not be removed ({err}); delete it now, it carries the relay key",
+                    package.display()
+                ),
+            }
             Ok(())
         }
     }

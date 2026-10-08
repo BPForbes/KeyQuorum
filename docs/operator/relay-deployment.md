@@ -687,8 +687,8 @@ signed generation, a setup before its updates), and refused up front are two
 files claiming one package id, two packages for one slot at the same
 generation, a setup package after another for its slot, packages that would
 put different certificates on the drive or name different default relays,
-different keys for one relay and scope from two providers, and anything but
-client packages. It is not one transaction: each package goes through the
+and anything but client packages (so a batch is always one provider and one
+slot). It is not one transaction: each package goes through the
 ledger on its own, the run reports each one (installed, already installed,
 stopped and pending, not started), and running the same command again skips
 what is installed and resumes the rest.
@@ -736,7 +736,10 @@ offline with the root and sealed to an operator key enrolled for recovery:
    write. `DIR` must be new (its parent existing) or owner-only and not a
    link; a different file there is refused, never replaced. A run cut short
    is finished by running it again, and success is reported only after the
-   written files pass the relay's identity check.
+   written files pass the relay's identity check. The package, which carries
+   the relay key, is then overwritten and removed; a shown plan or a failed
+   install leaves it for the retry, and a warning names it if it could not be
+   removed.
 
 A package expires in at most 7 days and with its certificate; a revoked or
 expired certificate, another root or another operator key is refused. To

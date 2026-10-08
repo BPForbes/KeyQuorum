@@ -660,3 +660,58 @@ fn verification_refuses_an_identity_that_does_not_check_out() {
     let (_, other_root) = generate_signing_keypair();
     assert!(verify_installed(&dir, &recovered, &other_root, NOW, &none()).is_err());
 }
+
+#[cfg(unix)]
+#[test]
+fn a_successful_install_removes_the_package_and_a_failed_one_keeps_it() {
+    let f = fixture();
+    let recovered = open_fixture(&f).expect("open");
+    let parent = tempfile::tempdir().expect("tmp");
+    let package = parent.path().join("recovery.kqpkg");
+    crate::locked_files::write_owner_only(&package, &f.package).expect("package");
+
+    // Only shown: planning never touches the package.
+    let dir = parent.path().join("relay-identity");
+    let plan = plan_install(&dir, &recovered).expect("plan");
+    assert!(package.exists(), "a plan keeps the package");
+
+    // A failed install (the target appeared after the plan) keeps it too.
+    owner_only_dir(&dir);
+    assert!(install_and_dispose(
+        &package,
+        &plan,
+        &recovered,
+        &f.made.root_public_key,
+        NOW,
+        &none()
+    )
+    .is_err());
+    assert!(
+        package.exists(),
+        "a failed install keeps the package for the retry"
+    );
+
+    // A successful install removes it.
+    let plan = plan_install(&dir, &recovered).expect("plan again");
+    let disposal = install_and_dispose(
+        &package,
+        &plan,
+        &recovered,
+        &f.made.root_public_key,
+        NOW,
+        &none(),
+    )
+    .expect("install and dispose");
+    assert!(matches!(disposal, Disposal::Removed));
+    assert!(!package.exists(), "the package is gone once installed");
+    verify_installed(&dir, &recovered, &f.made.root_public_key, NOW, &none())
+        .expect("verified recovery");
+
+    // A link is never followed or removed.
+    let target = parent.path().join("target");
+    std::fs::write(&target, b"x").expect("target");
+    let link = parent.path().join("link.kqpkg");
+    std::os::unix::fs::symlink(&target, &link).expect("symlink");
+    assert!(dispose_package(&link).is_err());
+    assert!(target.exists() && link.exists());
+}

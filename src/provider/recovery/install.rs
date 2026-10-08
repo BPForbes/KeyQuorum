@@ -73,6 +73,7 @@ impl InstallPlan {
     }
 }
 
+/// An install refusal, naming the path and never a key.
 fn refused(reason: String) -> Error {
     Error::KqpkgRefused(format!("provider recovery: {reason}"))
 }
@@ -142,6 +143,8 @@ fn existing(path: &Path, matches: impl Fn(&[u8]) -> bool) -> Result<FileAction> 
     }
 }
 
+/// Whether a file's text is the recovered relay key, in any form `host serve`
+/// would read it (hex, with or without a trailing line ending).
 fn key_matches(recovered: &Recovered) -> impl Fn(&[u8]) -> bool + '_ {
     move |contents| {
         std::str::from_utf8(contents)
@@ -327,5 +330,56 @@ pub fn verify_installed(
             dir.display()
         )));
     }
+    Ok(())
+}
+
+/// What became of the recovery package after a successful install.
+#[derive(Debug)]
+pub enum Disposal {
+    /// Overwritten and removed.
+    Removed,
+    /// The install succeeded but the package could not be removed; the error
+    /// says why, and the operator deletes it.
+    Kept(Error),
+}
+
+/// [`install`], and once the identity is installed and verified, the recovery
+/// package itself disposed of ([`dispose_package`]): it carries the relay key,
+/// so it does not outlive the install. A failed install is an error and
+/// leaves the package where it is, for the retry; a plan that is only shown
+/// never calls this.
+pub fn install_and_dispose(
+    package_path: &Path,
+    plan: &InstallPlan,
+    recovered: &Recovered,
+    root: &[u8; 32],
+    now_utc: &str,
+    revoked: &HashSet<String>,
+) -> Result<Disposal> {
+    install(plan, recovered, root, now_utc, revoked)?;
+    Ok(match dispose_package(package_path) {
+        Ok(()) => Disposal::Removed,
+        Err(err) => Disposal::Kept(err),
+    })
+}
+
+/// Overwrites a recovery package with zeros, flushes it, and removes it. A
+/// link or anything but a regular file is refused and left alone. On a
+/// copy-on-write or journalled filesystem the old blocks may survive the
+/// overwrite; the removal is what this guarantees.
+pub fn dispose_package(path: &Path) -> Result<()> {
+    use std::io::Write;
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.is_file() {
+        return Err(refused(format!(
+            "{} is not a regular file; it was not removed",
+            path.display()
+        )));
+    }
+    let mut file = fs::OpenOptions::new().write(true).open(path)?;
+    file.write_all(&vec![0u8; meta.len() as usize])?;
+    file.sync_all()?;
+    drop(file);
+    fs::remove_file(path)?;
     Ok(())
 }

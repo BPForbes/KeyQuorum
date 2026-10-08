@@ -55,6 +55,11 @@ fn alice_recipient(env: &MemoryEnv) -> Recipient {
 
 /// The relay mints a pull key sealed to alice, as the console would.
 fn sealed_key(env: &MemoryEnv) -> Vec<u8> {
+    sealed_key_for(env, alice_recipient(env))
+}
+
+/// [`sealed_key`] for a recipient whose relay URL a test chose.
+fn sealed_key_for(env: &MemoryEnv, recipient: Recipient) -> Vec<u8> {
     let relay = env.relay.as_ref().expect("a relay");
     let mut bytes = Vec::new();
     key_delivery::create_as_bundle(
@@ -66,7 +71,7 @@ fn sealed_key(env: &MemoryEnv) -> Vec<u8> {
             label: Some("alice".into()),
             ttl_seconds: None,
         },
-        &alice_recipient(env),
+        &recipient,
         |sealed| {
             bytes = sealed.to_vec();
             Ok(())
@@ -136,9 +141,12 @@ fn without_yes_the_package_is_shown_and_nothing_changes() {
 
     let (result, out) = env.keyquorum(SETUP);
     assert!(result.is_ok(), "setup <package> without --yes");
-    assert!(out.contains("client setup"), "{out}");
-    assert!(out.contains("sealed API key (.kqkey)"), "{out}");
-    assert!(out.contains("Nothing was changed"), "{out}");
+    assert!(out.contains("client setup"), "setup provider.kqpkg");
+    assert!(
+        out.contains("sealed API key (.kqkey)"),
+        "setup provider.kqpkg"
+    );
+    assert!(out.contains("Nothing was changed"), "setup provider.kqpkg");
     assert!(!env.fs.exists(Path::new(CERTIFICATE)));
     assert!(stored_key(&env).is_none());
     assert_eq!(env.relay.as_ref().expect("a relay").key_checks, 0);
@@ -152,12 +160,18 @@ fn yes_installs_the_certificate_and_the_key_and_prints_no_bearer() {
 
     let (result, out) = env.keyquorum(&format!("{SETUP} --yes"));
     assert!(result.is_ok(), "setup <package> --yes");
-    assert!(out.contains("Wrote relay certificate"), "{out}");
+    assert!(
+        out.contains("Wrote relay certificate"),
+        "setup provider.kqpkg --yes"
+    );
     assert!(
         out.contains("from a sealed bundle"),
-        "the key goes through the verified install path: {out}"
+        "setup provider.kqpkg --yes: the key goes through the verified install path"
     );
-    assert!(out.contains("Setup from the package is complete."), "{out}");
+    assert!(
+        out.contains("Setup from the package is complete."),
+        "setup provider.kqpkg --yes"
+    );
     assert!(!out.contains("kq_"), "a bearer reached stdout");
     assert!(env.fs.exists(Path::new(CERTIFICATE)));
     assert!(stored_key(&env).is_some());
@@ -174,8 +188,14 @@ fn running_it_again_keeps_the_certificate_and_finishes_cleanly() {
     let checks = env.relay.as_ref().expect("a relay").key_checks;
     let (result, out) = env.keyquorum(&format!("{SETUP} --yes"));
     assert!(result.is_ok(), "the second run");
-    assert!(!out.contains("Wrote relay certificate"), "{out}");
-    assert!(out.contains("already installed"), "{out}");
+    assert!(
+        !out.contains("Wrote relay certificate"),
+        "setup provider.kqpkg --yes, run again"
+    );
+    assert!(
+        out.contains("already installed"),
+        "setup provider.kqpkg --yes, run again"
+    );
     assert_eq!(
         env.relay.as_ref().expect("a relay").key_checks,
         checks,
@@ -305,7 +325,10 @@ fn an_information_package_installs_nothing_even_with_yes() {
 
     let (result, out) = env.keyquorum(&format!("{SETUP} --yes"));
     assert!(result.is_ok(), "an information package opens");
-    assert!(out.contains("information only"), "{out}");
+    assert!(
+        out.contains("information only"),
+        "setup provider.kqpkg --yes (provider information)"
+    );
     assert!(!env.fs.exists(Path::new(CERTIFICATE)));
 }
 
@@ -318,7 +341,10 @@ fn enroll_out_writes_a_signed_public_request_and_the_provider_can_read_it() {
     );
     let (result, out) = env.keyquorum(&line);
     assert!(result.is_ok(), "setup --enroll-out");
-    assert!(out.contains("Fingerprint (tell your provider"), "{out}");
+    assert!(
+        out.contains("Fingerprint (tell your provider"),
+        "setup --enroll-out"
+    );
     let bytes = env
         .fs
         .read(Path::new("/home/alice/alice.kqreq"))
@@ -438,15 +464,18 @@ fn a_package_with_a_manifest_runs_its_steps_in_order() {
 
     let (result, preview) = env.keyquorum(SETUP);
     assert!(result.is_ok(), "setup <package> without --yes");
-    assert!(preview.contains("in this order"), "{preview}");
+    assert!(preview.contains("in this order"), "setup provider.kqpkg");
     assert!(!env.fs.exists(Path::new(CERTIFICATE)));
 
     let (result, out) = env.keyquorum(&format!("{SETUP} --yes"));
     assert!(result.is_ok(), "setup <package> --yes");
     let first = out.find("Step 1/").expect("step 1");
     let second = out.find("Step 2/").expect("step 2");
-    assert!(first < second, "{out}");
-    assert!(out.contains("Setup from the package is complete."), "{out}");
+    assert!(first < second, "setup provider.kqpkg --yes");
+    assert!(
+        out.contains("Setup from the package is complete."),
+        "setup provider.kqpkg --yes"
+    );
     assert!(!out.contains("kq_"), "a bearer reached stdout");
     assert!(env.fs.exists(Path::new(CERTIFICATE)));
     assert!(stored_key(&env).is_some());
@@ -627,9 +656,9 @@ fn the_preview_names_each_keys_scope_relay_and_expiry_and_no_bearer() {
     put_package(&mut env, &bytes);
     let (result, out) = env.keyquorum(SETUP);
     assert!(result.is_ok(), "setup <package> without --yes");
-    assert!(out.contains("inbox.pull scope"), "{out}");
-    assert!(out.contains(RELAY_URL), "{out}");
-    assert!(out.contains("licence: Licence"), "{out}");
+    assert!(out.contains("inbox.pull scope"), "setup provider.kqpkg");
+    assert!(out.contains(RELAY_URL), "setup provider.kqpkg");
+    assert!(out.contains("licence: Licence"), "setup provider.kqpkg");
     assert!(!out.contains("kq_"), "a bearer reached stdout");
 }
 
@@ -744,8 +773,11 @@ fn a_newer_update_replaces_the_stored_key_and_an_older_package_never_comes_back(
 
     let update = manifest_package_with(&env, Purpose::ClientUpdate, 2);
     let preview = setup_file(&mut env, "update", &update, false).expect("preview");
-    assert!(preview.contains("replaces the key stored now"), "{preview}");
-    assert!(preview.contains("generation: 2"), "{preview}");
+    assert!(
+        preview.contains("replaces the key stored now"),
+        "setup update.kqpkg"
+    );
+    assert!(preview.contains("generation: 2"), "setup update.kqpkg");
     setup_file(&mut env, "update", &update, true).expect("the update");
     let second = stored_key(&env).expect("stored").key_hash;
     assert_ne!(first, second, "the update replaced the key");
@@ -759,7 +791,10 @@ fn a_newer_update_replaces_the_stored_key_and_an_older_package_never_comes_back(
     assert_eq!(stored_key(&env).expect("kept").key_hash, second);
     // The first package, run again, is complete and changes nothing.
     let again = setup_file(&mut env, "setup", &setup, true).expect("rerun");
-    assert!(again.contains("already installed"), "{again}");
+    assert!(
+        again.contains("already installed"),
+        "setup setup.kqpkg --yes, run again"
+    );
     assert_eq!(stored_key(&env).expect("kept").key_hash, second);
 }
 
@@ -789,11 +824,14 @@ fn an_interrupted_setup_resumes_where_it_stopped_and_redoes_nothing() {
 
     env.relay.as_mut().expect("a relay").unreachable = false;
     let preview = setup_file(&mut env, "interrupted", &bytes, false).expect("preview");
-    assert!(preview.contains("did not finish"), "{preview}");
+    assert!(
+        preview.contains("did not finish"),
+        "setup interrupted.kqpkg"
+    );
     let out = setup_file(&mut env, "interrupted", &bytes, true).expect("resumed");
     assert!(
         !out.contains("Wrote relay certificate"),
-        "the certificate was kept: {out}"
+        "setup interrupted.kqpkg --yes keeps the certificate"
     );
     assert!(stored_key(&env).is_some());
     assert_eq!(ledger_state(&env, &bytes).as_deref(), Some("complete"));
@@ -839,7 +877,7 @@ fn a_pending_package_blocks_another_in_its_stream_until_abandoned() {
     let id = hex::encode(package::decode(&stuck).unwrap().id);
     let (result, out) = env.keyquorum(&format!("{ALICE} setup --abandon {id}"));
     assert!(result.is_ok(), "setup --abandon");
-    assert!(out.contains("Abandoned package"), "{out}");
+    assert!(out.contains("Abandoned package"), "setup --abandon ID");
     assert_eq!(ledger_state(&env, &stuck).as_deref(), Some("failed"));
     // The abandoned one never resumes; the next one installs.
     assert!(setup_file(&mut env, "stuck", &stuck, true).is_err());
@@ -953,15 +991,26 @@ fn several_packages_install_in_generation_order_whatever_order_they_are_given() 
     assert!(result.is_ok(), "setup b-update.kqpkg a-setup.kqpkg --yes");
     assert_eq!(ledger_state(&env, &setup).as_deref(), Some("complete"));
     assert_eq!(ledger_state(&env, &update).as_deref(), Some("complete"));
-    assert!(out.contains("Results:"), "{out}");
-    assert_eq!(out.matches(": installed").count(), 2, "{out}");
+    assert!(
+        out.contains("Results:"),
+        "setup b-update.kqpkg a-setup.kqpkg --yes"
+    );
+    assert_eq!(
+        out.matches(": installed").count(),
+        2,
+        "setup b-update.kqpkg a-setup.kqpkg --yes"
+    );
     // The update's key is the one stored; the setup's was retired by it.
     let stored = stored_key(&env).expect("stored").key_hash;
     assert_ne!(stored, key_hash_of(&env, &setup));
 
     let (result, again) = setup_batch(&mut env, &files, true);
     assert!(result.is_ok(), "setup again");
-    assert_eq!(again.matches(": already installed").count(), 2, "{again}");
+    assert_eq!(
+        again.matches(": already installed").count(),
+        2,
+        "setup b-update.kqpkg a-setup.kqpkg --yes, again"
+    );
     assert_eq!(stored_key(&env).expect("kept").key_hash, stored);
 }
 
@@ -972,7 +1021,10 @@ fn the_same_file_given_twice_counts_once() {
     let files: [(&str, &[u8]); 2] = [("one", &setup), ("copy", &setup)];
     let (result, out) = setup_batch(&mut env, &files, true);
     assert!(result.is_ok(), "setup one.kqpkg copy.kqpkg --yes");
-    assert!(out.contains("counts once"), "{out}");
+    assert!(
+        out.contains("counts once"),
+        "setup one.kqpkg copy.kqpkg --yes"
+    );
     assert_eq!(ledger_state(&env, &setup).as_deref(), Some("complete"));
 }
 
@@ -1118,15 +1170,82 @@ fn a_stopped_batch_reports_each_package_and_running_it_again_finishes() {
     env.relay.as_mut().expect("a relay").unreachable = true;
     let (result, out) = setup_batch(&mut env, &files, true);
     assert!(result.is_err(), "the relay is down");
-    assert!(out.contains("stopped, pending"), "{out}");
-    assert!(out.contains("not started"), "{out}");
+    assert!(
+        out.contains("stopped, pending"),
+        "setup setup.kqpkg update.kqpkg --yes, relay down"
+    );
+    assert!(
+        out.contains("not started"),
+        "setup setup.kqpkg update.kqpkg --yes, relay down"
+    );
     assert_eq!(ledger_state(&env, &setup).as_deref(), Some("pending"));
     assert_eq!(ledger_state(&env, &update), None);
 
     env.relay.as_mut().expect("a relay").unreachable = false;
     let (result, out) = setup_batch(&mut env, &files, true);
     assert!(result.is_ok(), "the same command again");
-    assert_eq!(out.matches(": installed").count(), 2, "{out}");
+    assert_eq!(
+        out.matches(": installed").count(),
+        2,
+        "setup setup.kqpkg update.kqpkg --yes, again"
+    );
     assert_eq!(ledger_state(&env, &setup).as_deref(), Some("complete"));
     assert_eq!(ledger_state(&env, &update).as_deref(), Some("complete"));
+}
+
+#[test]
+fn packages_naming_different_default_relays_are_refused_before_any_write() {
+    let mut env = alice();
+    let setup = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    let relay = env.relay.as_ref().expect("a relay");
+    let recipient = Recipient {
+        relay_url: "https://other-relay.example.test/".into(),
+        ..alice_recipient(&env)
+    };
+    let key = sealed_key_for(&env, recipient.clone());
+    let elsewhere = package::issue_client_package(
+        &relay.identity,
+        &[key.as_slice()],
+        &recipient.public_key,
+        recipient.device_id,
+        &package::ClientPackage {
+            purpose: Purpose::ClientUpdate,
+            generation: 2,
+            ..setup_spec()
+        },
+    )
+    .expect("issue");
+    let files: [(&str, &[u8]); 2] = [("setup", &setup), ("elsewhere", &elsewhere)];
+    let (result, _) = setup_batch(&mut env, &files, true);
+    assert!(
+        matches!(&result, Err(Error::KqpkgRefused(reason)) if reason.contains("default relays")),
+        "setup setup.kqpkg elsewhere.kqpkg --yes"
+    );
+    untouched(&env, &[&setup, &elsewhere]);
+}
+
+#[test]
+fn the_relay_step_runs_again_when_the_profile_names_another_slot() {
+    let mut env = alice();
+    let bytes = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    setup_file(&mut env, "profile", &bytes, true).expect("setup profile.kqpkg --yes");
+    // The profile is moved to another slot on the same relay, and the package
+    // is left pending as if the run stopped before its last step was marked.
+    db::profile::set(env.store(DB), db::profile::DEFAULT_SLOT_LABEL, "bob").expect("set");
+    let id = hex::encode(package::decode(&bytes).unwrap().id);
+    env.store(DB)
+        .execute(
+            "UPDATE package_installs SET state = 'pending', steps_done = '' WHERE package_id = ?1",
+            [&id],
+        )
+        .unwrap();
+    setup_file(&mut env, "profile", &bytes, true).expect("setup profile.kqpkg --yes, again");
+    assert_eq!(
+        db::profile::get(env.store(DB), db::profile::DEFAULT_SLOT_LABEL)
+            .expect("profile")
+            .as_deref(),
+        Some("alice"),
+        "setup profile.kqpkg --yes restores the approved slot"
+    );
+    assert_eq!(ledger_state(&env, &bytes).as_deref(), Some("complete"));
 }

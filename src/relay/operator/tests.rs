@@ -1625,3 +1625,45 @@ fn the_provider_package_is_public_provider_only_and_needs_no_lock() {
     let (status, _) = c.ask(json!({ "op": "provider_package", "extra": 1 }), None);
     assert_eq!(status, 400, "no fields beyond the op");
 }
+
+/// The generation a package signs, read from its sealed manifest.
+fn manifest_generation(c: &Console, secret: &[u8; 32], body: &Value) -> u64 {
+    let bytes = STANDARD
+        .decode(body["package"]["package_base64"].as_str().expect("b64"))
+        .expect("base64");
+    let package = crate::package::decode(&bytes).expect("a valid package");
+    let manifest = package
+        .components
+        .iter()
+        .find(|component| component.kind == crate::package::ComponentKind::SetupManifest)
+        .expect("the setup manifest");
+    crate::setup_manifest::open(
+        &manifest.bytes,
+        secret,
+        &c.root,
+        "2026-10-06 12:00:00",
+        &empty_revoked(),
+    )
+    .expect("open the manifest")
+    .body
+    .package_generation
+}
+
+#[test]
+fn successive_packages_for_one_enrollment_sign_rising_generations() {
+    let c = console();
+    let lock = c.lock();
+    let (secret, encoded, fingerprint) = enrollment();
+    let (status, first) = issue_from_enrollment(&c, &lock, &encoded, &fingerprint);
+    assert_eq!(status, 200, "first issue from an enrollment");
+    let (status, second) = issue_from_enrollment(&c, &lock, &encoded, &fingerprint);
+    assert_eq!(status, 200, "second issue from the same enrollment");
+    let (one, two) = (
+        manifest_generation(&c, &secret, &first),
+        manifest_generation(&c, &secret, &second),
+    );
+    assert!(
+        one >= 1 && two > one,
+        "generations rise per recipient and drive"
+    );
+}

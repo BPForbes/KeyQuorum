@@ -105,6 +105,7 @@ struct Batched {
 }
 
 impl Batched {
+    /// The package id, as the ledger and the results name it.
     fn id(&self) -> String {
         hex::encode(self.plan.package.id)
     }
@@ -139,8 +140,8 @@ impl Batched {
 /// two files with one package id, two packages of one stream at the same
 /// generation, a setup package after another package of its stream, two
 /// packages that would place different certificates on the drive or name
-/// different default relays, two streams installing different keys for one
-/// relay and scope, and anything but client packages. The combined plan is
+/// different default relays, and anything but client packages. One
+/// certificate and one slot make every package of a batch one stream. The combined plan is
 /// shown, and `--yes` applies the packages one at a time through the same
 /// ledger and executor as one package, re-checking each against the state the
 /// ones before it left. It is not one transaction: a package that stops leaves
@@ -273,7 +274,6 @@ fn check_batch(batch: &[Batched], device: &Path) -> Result<()> {
     let refuse = |reason: String| Err(Error::KqpkgRefused(reason));
     let mut ids = HashSet::new();
     let mut relays = HashSet::new();
-    let mut keys: HashMap<(String, String), (String, String)> = HashMap::new();
     for (index, item) in batch.iter().enumerate() {
         let id = item.id();
         if !ids.insert(id.clone()) {
@@ -318,25 +318,6 @@ fn check_batch(batch: &[Batched], device: &Path) -> Result<()> {
                          never replaces keys, so select it alone or with its updates",
                         item.path.display()
                     ));
-                }
-            }
-        }
-        for key in item.plan.keys.values() {
-            let slot = (key.preview.relay_url.clone(), key.preview.scope.clone());
-            match keys.get(&slot) {
-                Some((other_stream, hash))
-                    if *hash != key.preview.key_hash
-                        && (*other_stream != stream
-                            || item.plan.package.purpose != Purpose::ClientUpdate) =>
-                {
-                    return refuse(format!(
-                        "two packages install different {} keys for {}; only a later update of \
-                         the same slot may replace one",
-                        key.preview.scope, key.preview.relay_url
-                    ));
-                }
-                _ => {
-                    keys.insert(slot, (stream.clone(), key.preview.key_hash.clone()));
                 }
             }
         }
@@ -574,6 +555,8 @@ fn kind_name(kind: ComponentKind) -> &'static str {
     }
 }
 
+/// Prints a verified plan: what signed the package, what it holds, its
+/// generation, each key it installs and the steps in order. Never a bearer.
 pub(super) fn show(plan: &Plan, device: &Path, label: &str) {
     let purpose = match plan.package.purpose {
         Purpose::ClientSetup => "client setup",
@@ -674,10 +657,19 @@ fn step_in_place(
             }
             None => false,
         },
+        // Every field `run_step`'s `use` writes must already match: the relay,
+        // the drive, the slot and the label, so another slot's profile on the
+        // same relay does not count as this step done.
         Operation::UseRelay { key, .. } => match plan.keys.get(key) {
             Some(KeyPlan { preview, .. }) => {
-                db::profile::get(conn, db::profile::DEFAULT_RELAY_URL)?.as_deref()
-                    == Some(preview.relay_url.as_str())
+                let device_text = device.display().to_string();
+                let is = |name: &str, want: &str| -> Result<bool> {
+                    Ok(db::profile::get(conn, name)?.as_deref() == Some(want))
+                };
+                is(db::profile::DEFAULT_RELAY_URL, &preview.relay_url)?
+                    && is(db::profile::DEFAULT_CONTAINER, &device_text)?
+                    && is(db::profile::DEFAULT_SLOT_LABEL, label)?
+                    && is(db::profile::DEFAULT_LABEL, label)?
             }
             None => false,
         },

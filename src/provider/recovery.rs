@@ -110,6 +110,7 @@ pub struct Recovered {
 }
 
 impl std::fmt::Debug for Recovered {
+    /// The public fields only; the relay private key prints as `[redacted]`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Recovered")
             .field("package_id", &self.package_id)
@@ -143,10 +144,12 @@ pub fn fingerprint_matches(public_key: &[u8; 32], given: &str) -> bool {
     normalize(given) == normalize(&recipient_fingerprint(public_key))
 }
 
+/// A recovery refusal, naming what was wrong and never a key.
 fn refused(reason: &str) -> Error {
     Error::KqpkgRefused(format!("provider recovery: {reason}"))
 }
 
+/// The SHA-256 of `bytes`, lowercase hex.
 fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
@@ -339,8 +342,8 @@ pub fn open(
 mod install;
 #[cfg(not(target_arch = "wasm32"))]
 pub use install::{
-    install, plan_install, verify_installed, FileAction, InstallPlan, CERTIFICATE_FILE,
-    RELAY_KEY_FILE,
+    dispose_package, install, install_and_dispose, plan_install, verify_installed, Disposal,
+    FileAction, InstallPlan, CERTIFICATE_FILE, RELAY_KEY_FILE,
 };
 
 #[cfg(test)]

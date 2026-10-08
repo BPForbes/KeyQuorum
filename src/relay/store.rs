@@ -732,6 +732,7 @@ impl<S: Sql + Send> RelayStore for SqlRelayStore<S> {
         })
     }
 
+    /// One increment of `package_generations`, in its own unit of work.
     fn next_package_generation(
         &self,
         recipient: &[u8; 32],

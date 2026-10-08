@@ -542,9 +542,31 @@ fn run(
             // package cannot fail once they exist. Without an enrollment there
             // is no package, and the certificate is only embedded in each bundle.
             let issued_at = crate::provider::unix_from_utc(now).map_err(|e| failure(&e))?;
+            // For a package: the recipient, the drive and the generation, all
+            // taken before the keys are minted (like `host keys create`), so
+            // nothing can fail between minting and the package. A generation a
+            // refused or repeated request took is a harmless gap.
+            let mut package_target: Option<([u8; 32], Option<[u8; 16]>, u64)> = None;
             if enrolled {
                 crate::provider::parse_certificate(&identity.certificate)
                     .map_err(|e| failure(&e))?;
+                let recipient: [u8; 32] = hex::decode(&recipient_public_key)
+                    .ok()
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .ok_or_else(|| failure(&Error::InvalidPublicKey))?;
+                let device: Option<[u8; 16]> = match device_id.as_deref() {
+                    None => None,
+                    Some(text) => Some(
+                        hex::decode(text)
+                            .ok()
+                            .and_then(|bytes| bytes.try_into().ok())
+                            .ok_or_else(|| failure(&Error::InvalidDevice))?,
+                    ),
+                };
+                let generation = store
+                    .next_package_generation(&recipient, device.as_ref())
+                    .map_err(|e| failure(&e))?;
+                package_target = Some((recipient, device, generation));
             }
             let request = build_issuance(
                 customer_id,
@@ -568,27 +590,11 @@ fn run(
                 operation_id.as_deref(),
                 |note| store.issue_licensed_bundles(identity, &request, Some(note)),
             )?;
-            if enrolled {
+            if let Some((recipient, device, generation)) = package_target {
                 // The sealed keys travel only inside the package; the reply
                 // names them and carries no second copy.
                 let sealed: Vec<&[u8]> =
                     issued.bundles.iter().map(|b| b.bundle.as_slice()).collect();
-                let recipient: [u8; 32] = hex::decode(&recipient_public_key)
-                    .ok()
-                    .and_then(|bytes| bytes.try_into().ok())
-                    .ok_or_else(|| failure(&Error::InvalidPublicKey))?;
-                let device: Option<[u8; 16]> = match device_id.as_deref() {
-                    None => None,
-                    Some(text) => Some(
-                        hex::decode(text)
-                            .ok()
-                            .and_then(|bytes| bytes.try_into().ok())
-                            .ok_or_else(|| failure(&Error::InvalidDevice))?,
-                    ),
-                };
-                let generation = store
-                    .next_package_generation(&recipient, device.as_ref())
-                    .map_err(|e| failure(&e))?;
                 let package = crate::package::issue_client_package(
                     identity,
                     &sealed,

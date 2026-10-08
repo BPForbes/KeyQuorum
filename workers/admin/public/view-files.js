@@ -44,11 +44,16 @@ function providerPackage() {
 }
 
 // The relay's pinned root (`identity_check.pinned_root`), asked once per page.
+// Only an answer is kept: a failed request is forgotten and thrown, so the next
+// file asks again and a failure is never reported as "no root pinned".
 let pinned = null;
 function pinnedRoot() {
   pinned ??= api("GET", "/api/overview").then(
     (overview) => overview?.identity_check?.pinned_root ?? null,
-    () => null,
+    (error) => {
+      pinned = null;
+      throw error;
+    },
   );
   return pinned;
 }
@@ -59,9 +64,20 @@ const STATES = {
   refused: ["Refused", "bad"],
 };
 
+// A dropped package: its public framing, then the core's verdict against the
+// relay's pinned root, then the native command that installs it.
 async function packageBody(bytes, name) {
   const read = readPackage(bytes);
-  const result = await checkPackage({ bytes, name, pinnedRoot: await pinnedRoot(), load: () => loadProvisioner() });
+  let root;
+  try {
+    root = await pinnedRoot();
+  } catch {
+    return [
+      h("p", {}, badge("Unverified", "plain"), " ", badge(`USR_TYPE: ${read.userType}`, "plain"), " ", h("code", { text: read.purpose })),
+      notice("warn", "Could not read the root this relay pins, so the package was not verified. Try the file again."),
+    ];
+  }
+  const result = await checkPackage({ bytes, name, pinnedRoot: root, load: () => loadProvisioner() });
   const [label, tone] = STATES[result.state];
   const body = [
     h("p", {}, badge(label, tone), " ", badge(`USR_TYPE: ${read.userType}`, "plain"), " ", h("code", { text: read.purpose })),
