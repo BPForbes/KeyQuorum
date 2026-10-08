@@ -979,75 +979,96 @@ fn run_recovery(command: RecoveryCommand) -> Result<()> {
             yes,
             krl,
         } => {
-            let bytes = read_bounded(&package, keyquorum::package::MAX_PACKAGE_BYTES)?;
-            let secret = host_env::read_key_file(&recipient_key)?;
             let revoked = backup_revocations(krl)?;
             let now = provider::system_now_utc()?;
-            let root = KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY;
-            let recovered = recovery::open(&bytes, &secret, &root, &now, &revoked)?;
-            let plan = recovery::plan_install(&out, &recovered)?;
-            let action = |a: recovery::FileAction| match a {
-                recovery::FileAction::Write => "write",
-                recovery::FileAction::Keep => "keep (already identical)",
-            };
-            // The checked certificate's public naming fields go through the
-            // host's log like `serve`'s identity line, never a print macro.
-            let _ = tracing_subscriber::fmt()
-                .with_env_filter(
-                    EnvFilter::builder()
-                        .with_default_directive(LevelFilter::INFO.into())
-                        .from_env_lossy(),
-                )
-                .try_init();
-            tracing::info!(
-                "recovery package {} for {} serial {} relay key {} certificate expires {}",
-                recovered.package_id,
-                recovered.provider_id,
-                recovered.serial,
-                hex::encode(recovered.relay_public_key),
-                recovered.certificate_expires_at
-            );
-            println!(
-                "  {}{}",
-                out.display(),
-                if plan.create_dir {
-                    " (create, owner-only)"
-                } else {
-                    ""
-                }
-            );
-            println!("  {}: {}", recovery::RELAY_KEY_FILE, action(plan.relay_key));
-            println!(
-                "  {}: {}",
-                recovery::CERTIFICATE_FILE,
-                action(plan.certificate)
-            );
-            println!("This restores files only: it sets no Worker secret, deploy variable or platform credential.");
-            if !yes {
-                println!("Nothing was written. Run again with --yes to install.");
-                return Ok(());
-            }
-            let disposal =
-                recovery::install_and_dispose(&package, &plan, &recovered, &root, &now, &revoked)?;
-            println!(
-                "Recovery installed and verified: {} holds the identity the pinned root certifies.",
-                out.display()
-            );
-            match disposal {
-                recovery::Disposal::Removed => println!(
-                    "The recovery package {} was overwritten and removed; it carried the relay key.",
-                    package.display()
-                ),
-                // Through the host's log like the identity line above: the
-                // error came out of the same flow as the verified certificate.
-                recovery::Disposal::Kept(err) => tracing::warn!(
-                    "the recovery package {} could not be removed ({err}); delete it now, it carries the relay key",
-                    package.display()
-                ),
-            }
-            Ok(())
+            recovery_install(
+                &package,
+                &recipient_key,
+                &out,
+                yes,
+                &KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY,
+                &now,
+                &revoked,
+            )
         }
     }
+}
+
+/// `host recovery install`, with the pinned root, the clock and the revocation
+/// list passed in: the command supplies the build's own, and a test supplies a
+/// root it holds, since nobody holds the private half of the placeholder root.
+fn recovery_install(
+    package: &Path,
+    recipient_key: &Path,
+    out: &Path,
+    yes: bool,
+    root: &[u8; 32],
+    now: &str,
+    revoked: &std::collections::HashSet<String>,
+) -> Result<()> {
+    let bytes = read_bounded(package, keyquorum::package::MAX_PACKAGE_BYTES)?;
+    let secret = host_env::read_key_file(recipient_key)?;
+    let recovered = recovery::open(&bytes, &secret, root, now, revoked)?;
+    let plan = recovery::plan_install(out, &recovered)?;
+    let action = |a: recovery::FileAction| match a {
+        recovery::FileAction::Write => "write",
+        recovery::FileAction::Keep => "keep (already identical)",
+    };
+    // The checked certificate's public naming fields go through the
+    // host's log like `serve`'s identity line, never a print macro.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
+        .try_init();
+    tracing::info!(
+        "recovery package {} for {} serial {} relay key {} certificate expires {}",
+        recovered.package_id,
+        recovered.provider_id,
+        recovered.serial,
+        hex::encode(recovered.relay_public_key),
+        recovered.certificate_expires_at
+    );
+    println!(
+        "  {}{}",
+        out.display(),
+        if plan.create_dir {
+            " (create, owner-only)"
+        } else {
+            ""
+        }
+    );
+    println!("  {}: {}", recovery::RELAY_KEY_FILE, action(plan.relay_key));
+    println!(
+        "  {}: {}",
+        recovery::CERTIFICATE_FILE,
+        action(plan.certificate)
+    );
+    println!("This restores files only: it sets no Worker secret, deploy variable or platform credential.");
+    if !yes {
+        println!("Nothing was written. Run again with --yes to install.");
+        return Ok(());
+    }
+    let disposal = recovery::install_and_dispose(package, &plan, &recovered, root, now, revoked)?;
+    println!(
+        "Recovery installed and verified: {} holds the identity the pinned root certifies.",
+        out.display()
+    );
+    match disposal {
+        recovery::Disposal::Removed => println!(
+            "The recovery package {} was overwritten and removed; it carried the relay key.",
+            package.display()
+        ),
+        // Through the host's log like the identity line above: the
+        // error came out of the same flow as the verified certificate.
+        recovery::Disposal::Kept(err) => tracing::warn!(
+            "the recovery package {} could not be removed ({err}); delete it now, it carries the relay key",
+            package.display()
+        ),
+    }
+    Ok(())
 }
 
 /// Reads at most `limit` bytes of `path`; a longer file is refused unread

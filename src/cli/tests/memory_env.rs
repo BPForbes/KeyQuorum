@@ -244,6 +244,28 @@ impl MemoryEnv {
         }
     }
 
+    /// Renew the relay's certificate: same provider, same relay key, a new
+    /// serial, signed by the same root, as a provider does when the old one
+    /// nears its end. The relay answers with the renewed one from now on.
+    pub fn renew_certificate(&mut self, serial: &str) {
+        let relay = self.relay.as_mut().expect("a relay");
+        let current = provider::parse_certificate(&relay.identity.certificate)
+            .expect("the current certificate");
+        relay.identity.certificate = provider::issue_certificate(
+            &relay.root_private,
+            &provider::NewCertificate {
+                provider_id: &current.provider_id,
+                serial,
+                relay_public_key: &current.relay_public_key,
+                issued_at: "2026-01-01 00:00:00",
+                expires_at: "2999-12-31 23:59:00",
+                capabilities: provider::CAP_PROVIDER,
+                issuer_id: "TestRoot",
+            },
+        )
+        .expect("renewed certificate");
+    }
+
     /// Mint a relay key of `scope` (inbox push needs no recipient).
     pub fn relay_key(&self, scope: relay::ApiKeyScope, fingerprint: Option<String>) -> String {
         let relay = self.relay.as_ref().expect("a relay");

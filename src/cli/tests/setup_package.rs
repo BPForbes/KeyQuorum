@@ -1143,6 +1143,142 @@ fn a_later_invalid_package_stops_the_batch_before_any_write() {
 }
 
 #[test]
+fn a_later_package_sealed_to_another_recipient_stops_the_batch_before_any_write() {
+    let mut env = alice();
+    let good = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    // An otherwise valid generation-2 update whose key and manifest are sealed
+    // to some other recipient's public key, not alice's slot.
+    let mut stranger = alice_recipient(&env);
+    stranger.public_key = crate::keys::generate_encryption_keypair().1;
+    let key = sealed_key_for(&env, stranger.clone());
+    let relay = env.relay.as_ref().expect("a relay");
+    let foreign = package::issue_client_package(
+        &relay.identity,
+        &[key.as_slice()],
+        &stranger.public_key,
+        stranger.device_id,
+        &package::ClientPackage {
+            purpose: Purpose::ClientUpdate,
+            generation: 2,
+            ..setup_spec()
+        },
+    )
+    .expect("issue_client_package");
+    let files: [(&str, &[u8]); 2] = [("good", &good), ("foreign", &foreign)];
+    let (result, _) = setup_batch(&mut env, &files, true);
+    assert!(
+        result.is_err(),
+        "setup good.kqpkg foreign.kqpkg --yes with the second sealed to another recipient"
+    );
+    untouched(&env, &[&good, &foreign]);
+}
+
+#[test]
+fn packages_over_the_aggregate_limit_are_refused_before_any_write() {
+    let mut env = alice();
+    let each = package::MAX_PACKAGE_BYTES;
+    let count = super::super::setup_package::MAX_BATCH_BYTES / each + 1;
+    // Each file is within the per-file cap; together they pass the batch cap.
+    let blobs: Vec<(String, Vec<u8>)> = (0..count)
+        .map(|i| (format!("big{i}"), vec![0u8; each]))
+        .collect();
+    let files: Vec<(&str, &[u8])> = blobs
+        .iter()
+        .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+        .collect();
+    let (result, _) = setup_batch(&mut env, &files, true);
+    assert!(
+        matches!(result, Err(Error::Usage(_))),
+        "setup of files totalling more than the batch cap"
+    );
+    assert!(!env.fs.exists(Path::new(CERTIFICATE)));
+    assert!(stored_key(&env).is_none());
+}
+
+/// A package refused by the ledger because its generation is not past the
+/// baseline (and not for some other reason).
+fn is_stale(result: &Result<String, Error>) -> bool {
+    matches!(result, Err(Error::KqpkgRefused(why)) if why.contains("not newer than"))
+}
+
+#[test]
+fn a_renewed_certificate_keeps_the_baseline_through_package_setup() {
+    let mut env = alice();
+    let first = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    setup_file(&mut env, "before-renewal", &first, true).expect("setup before-renewal.kqpkg --yes");
+    assert_eq!(ledger_state(&env, &first).as_deref(), Some("complete"));
+
+    // The provider renews its certificate and the operator clears the old
+    // file from the drive. The stream is the same provider, slot and drive, so
+    // the generation already reached still binds.
+    env.renew_certificate("TEST-RENEWED");
+    env.fs
+        .delete(Path::new(CERTIFICATE))
+        .expect("remove the old certificate");
+    let equal = manifest_package_with(&env, Purpose::ClientUpdate, 1);
+    assert!(
+        is_stale(&setup_file(&mut env, "renewed-equal", &equal, true)),
+        "setup renewed-equal.kqpkg --yes at the generation already reached"
+    );
+    assert_eq!(ledger_state(&env, &equal), None);
+    assert!(!env.fs.exists(Path::new(CERTIFICATE)));
+
+    let newer = manifest_package_with(&env, Purpose::ClientUpdate, 2);
+    setup_file(&mut env, "renewed-newer", &newer, true).expect("setup renewed-newer.kqpkg --yes");
+    assert_eq!(ledger_state(&env, &newer).as_deref(), Some("complete"));
+    assert!(env.fs.exists(Path::new(CERTIFICATE)));
+
+    // Going back to the first generation under the renewed certificate is
+    // refused too.
+    let older = manifest_package_with(&env, Purpose::ClientUpdate, 1);
+    assert!(
+        is_stale(&setup_file(&mut env, "renewed-older", &older, true)),
+        "setup renewed-older.kqpkg --yes below the baseline"
+    );
+}
+
+#[test]
+fn a_moved_relay_url_keeps_the_baseline_through_package_planning() {
+    let mut env = alice();
+    let first = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    setup_file(&mut env, "before-move", &first, true).expect("setup before-move.kqpkg --yes");
+
+    // The relay now answers at another address; its packages name it.
+    let moved = |env: &MemoryEnv, generation: u64| {
+        let relay = env.relay.as_ref().expect("a relay");
+        let mut recipient = alice_recipient(env);
+        recipient.relay_url = "https://moved.test/".into();
+        let key = sealed_key_for(env, recipient.clone());
+        package::issue_client_package(
+            &relay.identity,
+            &[key.as_slice()],
+            &recipient.public_key,
+            recipient.device_id,
+            &package::ClientPackage {
+                purpose: Purpose::ClientUpdate,
+                generation,
+                ..setup_spec()
+            },
+        )
+        .expect("issue_client_package")
+    };
+    let equal = moved(&env, 1);
+    assert!(
+        is_stale(&setup_file(&mut env, "moved-equal", &equal, true)),
+        "setup moved-equal.kqpkg --yes at the generation already reached"
+    );
+    assert_eq!(ledger_state(&env, &equal), None);
+
+    // A newer generation for the moved address passes the ledger and is
+    // previewed; the preview writes nothing.
+    let newer = moved(&env, 2);
+    let preview =
+        setup_file(&mut env, "moved-newer", &newer, false).expect("setup moved-newer.kqpkg");
+    assert!(preview.contains("moved.test"), "setup moved-newer.kqpkg");
+    assert_eq!(ledger_state(&env, &newer), None);
+}
+
+#[test]
 fn a_stale_package_in_the_batch_stops_the_newer_one_too() {
     let mut env = alice();
     let setup = manifest_package_with(&env, Purpose::ClientSetup, 1);
@@ -1407,5 +1543,96 @@ fn a_use_step_whose_completion_mark_fails_leaves_no_profile_change() {
         .execute_batch("DROP TRIGGER fail_relay_mark;")
         .expect("drop trigger");
     setup_file(&mut env, "mark-fails", &bytes, true).expect("setup mark-fails.kqpkg --yes, again");
+    assert_eq!(ledger_state(&env, &bytes).as_deref(), Some("complete"));
+}
+
+/// Makes recording `step` fail, as a crash between its verified effect and
+/// its completion mark would leave things.
+fn fail_marking(env: &MemoryEnv, step: &str) {
+    env.store(DB)
+        .execute_batch(&format!(
+            "CREATE TRIGGER fail_mark BEFORE UPDATE ON package_installs
+               WHEN NEW.steps_done LIKE '%{step}%' AND OLD.steps_done NOT LIKE '%{step}%'
+             BEGIN SELECT RAISE(ABORT, 'injected'); END;"
+        ))
+        .expect("trigger");
+}
+
+fn steps_done(env: &MemoryEnv, package: &[u8]) -> Vec<String> {
+    let id = hex::encode(package::decode(package).expect("decode").id);
+    db::package_ledger::record(env.store(DB), &id)
+        .expect("ledger")
+        .expect("a ledger row")
+        .steps_done
+}
+
+#[test]
+fn a_crash_between_the_certificate_file_and_its_mark_is_finished_without_a_second_write() {
+    let mut env = alice();
+    let bytes = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    fail_marking(&env, "certificate");
+    assert!(
+        setup_file(&mut env, "cert-crash", &bytes, true).is_err(),
+        "setup cert-crash.kqpkg --yes, recording the certificate step fails"
+    );
+    // The file is on the drive but the ledger does not say so.
+    let written = env
+        .fs
+        .read(Path::new(CERTIFICATE))
+        .expect("the certificate");
+    assert_eq!(ledger_state(&env, &bytes).as_deref(), Some("pending"));
+    assert!(!steps_done(&env, &bytes).iter().any(|s| s == "certificate"));
+    assert!(stored_key(&env).is_none());
+
+    env.store(DB)
+        .execute_batch("DROP TRIGGER fail_mark;")
+        .expect("drop trigger");
+    let out = setup_file(&mut env, "cert-crash", &bytes, true)
+        .expect("setup cert-crash.kqpkg --yes again");
+    assert!(
+        !out.contains("Wrote relay certificate"),
+        "setup cert-crash.kqpkg --yes writes the certificate once"
+    );
+    assert_eq!(
+        env.fs.read(Path::new(CERTIFICATE)).expect("certificate"),
+        written
+    );
+    assert!(steps_done(&env, &bytes).iter().any(|s| s == "certificate"));
+    assert!(stored_key(&env).is_some());
+    assert_eq!(ledger_state(&env, &bytes).as_deref(), Some("complete"));
+}
+
+#[test]
+fn a_crash_between_the_stored_key_and_its_mark_is_finished_without_a_second_key_check() {
+    let mut env = alice();
+    let bytes = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    fail_marking(&env, "key-1");
+    assert!(
+        setup_file(&mut env, "key-crash", &bytes, true).is_err(),
+        "setup key-crash.kqpkg --yes, recording the key step fails"
+    );
+    // The relay checked the key and it is stored, but the ledger does not say so.
+    assert!(stored_key(&env).is_some());
+    assert_eq!(ledger_state(&env, &bytes).as_deref(), Some("pending"));
+    assert!(!steps_done(&env, &bytes).iter().any(|s| s == "key-1"));
+    let checks = env.relay.as_ref().expect("a relay").key_checks;
+
+    env.store(DB)
+        .execute_batch("DROP TRIGGER fail_mark;")
+        .expect("drop trigger");
+    setup_file(&mut env, "key-crash", &bytes, true).expect("setup key-crash.kqpkg --yes again");
+    assert_eq!(
+        env.relay.as_ref().expect("a relay").key_checks,
+        checks,
+        "the stored key is recognised, not sent to the relay again"
+    );
+    let count: i64 = env
+        .store(DB)
+        .query_row("SELECT COUNT(*) FROM relay_credentials", [], |row| {
+            row.get(0)
+        })
+        .expect("count");
+    assert_eq!(count, 1, "one relay credential");
+    assert!(steps_done(&env, &bytes).iter().any(|s| s == "key-1"));
     assert_eq!(ledger_state(&env, &bytes).as_deref(), Some("complete"));
 }

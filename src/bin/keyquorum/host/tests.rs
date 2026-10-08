@@ -166,3 +166,185 @@ fn provision_refuses_a_certificate_that_would_already_be_expired() {
         "nothing is written when the check fails"
     );
 }
+
+/// `host recovery install --yes` on an otherwise valid recovery package: the
+/// placeholder root's private half is held by nobody, so each case pins a root
+/// the test holds and changes exactly one input.
+mod recovery_install {
+    use super::*;
+    use keyquorum::package::{Component, ComponentKind, Package, Purpose};
+    use std::collections::HashSet;
+
+    const NOW: &str = "2026-10-08 12:00:00";
+
+    struct Fixture {
+        dir: tempfile::TempDir,
+        made: provision::Identity,
+        operator_secret: Zeroizing<[u8; 32]>,
+        operator_public: [u8; 32],
+        package: PathBuf,
+        key_file: PathBuf,
+        out: PathBuf,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().expect("dir");
+            let made = provision::provision(&provision_spec("2099-01-01 00:00:00"), NOW)
+                .expect("provision");
+            let (operator_secret, operator_public) = keys::generate_encryption_keypair();
+            let bytes = recovery::issue(&recovery::Issue {
+                root_private_key: &made.root_private_key,
+                relay_private_key: &made.relay_private_key,
+                certificate: &made.certificate,
+                recipient: &operator_public,
+                now_utc: NOW,
+                valid_days: 1,
+                revoked: &HashSet::new(),
+            })
+            .expect("issue");
+            let package = dir.path().join("recovery.kqpkg");
+            std::fs::write(&package, bytes).expect("package");
+            let key_file = dir.path().join("operator.key");
+            cli::write_hex_file(&key_file, &operator_secret[..]).expect("operator key");
+            let out = dir.path().join("restored");
+            Fixture {
+                dir,
+                made,
+                operator_secret: Zeroizing::new(*operator_secret),
+                operator_public,
+                package,
+                key_file,
+                out,
+            }
+        }
+
+        fn install(&self, key_file: &Path, root: &[u8; 32]) -> Result<()> {
+            recovery_install(
+                &self.package,
+                key_file,
+                &self.out,
+                true,
+                root,
+                NOW,
+                &HashSet::new(),
+            )
+        }
+
+        /// Failed, wrote nothing and kept the package.
+        fn assert_refused_with_nothing_written(&self, result: Result<()>, case: &str) {
+            assert!(result.is_err(), "host recovery install --yes, {case}");
+            assert!(!self.out.exists(), "{case}: the destination stays absent");
+            assert!(self.package.exists(), "{case}: the package is kept");
+        }
+    }
+
+    #[test]
+    fn the_unchanged_fixture_installs_and_removes_the_package() {
+        let f = Fixture::new();
+        f.install(&f.key_file, &f.made.root_public_key)
+            .expect("host recovery install --yes on the valid fixture");
+        assert!(f.out.join(recovery::RELAY_KEY_FILE).exists());
+        assert!(f.out.join(recovery::CERTIFICATE_FILE).exists());
+        assert!(
+            !f.package.exists(),
+            "a verified install removes the package"
+        );
+    }
+
+    #[test]
+    fn a_wrong_root_installs_nothing() {
+        let f = Fixture::new();
+        let (_, other_root) = keys::generate_signing_keypair();
+        let result = f.install(&f.key_file, &other_root);
+        f.assert_refused_with_nothing_written(result, "a root the package was not signed by");
+    }
+
+    #[test]
+    fn a_wrong_recipient_installs_nothing() {
+        let f = Fixture::new();
+        let (other_secret, _) = keys::generate_encryption_keypair();
+        let other_key = f.dir.path().join("other-operator.key");
+        cli::write_hex_file(&other_key, &other_secret[..]).expect("other operator key");
+        let result = f.install(&other_key, &f.made.root_public_key);
+        f.assert_refused_with_nothing_written(
+            result,
+            "an operator key the package is not sealed to",
+        );
+    }
+
+    #[test]
+    fn a_relay_key_that_is_not_the_certificates_installs_nothing() {
+        let f = Fixture::new();
+        // The root signs a context for the real certificate, but the sealed
+        // relay key belongs to another relay.
+        let (other_relay_private, _) = provider::generate_relay_identity();
+        let issued_at = provider::unix_from_utc(NOW).expect("time");
+        let context = recovery::Context {
+            version: recovery::VERSION,
+            purpose: "provider_recovery".to_string(),
+            package_id: hex::encode([7u8; 16]),
+            recipient: hex::encode(f.operator_public),
+            provider_id: "Acme Security Services".to_string(),
+            serial: "KQP-000001".to_string(),
+            relay_public_key: hex::encode(f.made.relay_public_key),
+            certificate_sha256: {
+                use sha2::{Digest, Sha256};
+                hex::encode(Sha256::digest(&f.made.certificate))
+            },
+            issued_at,
+            expires_at: issued_at + 86_400,
+            operations: recovery::OPERATIONS.to_vec(),
+        };
+        let json = serde_json::to_vec(&context).expect("context");
+        let signature = keyquorum::signing::sign(
+            &f.made.root_private_key,
+            &keyquorum::signing::provider_recovery_preimage(&json),
+        );
+        let mut payload = Vec::new();
+        keyquorum::envelope::push_len_prefixed_u32(&mut payload, &json).expect("length");
+        payload.extend_from_slice(&other_relay_private[..]);
+        payload.extend_from_slice(&signature);
+        let sealed = keyquorum::envelope::seal(
+            keyquorum::envelope::EXPORT_BUNDLE,
+            keyquorum::export::BUNDLE_TYPE_PROVIDER_RECOVERY,
+            &f.operator_public,
+            &payload,
+        )
+        .expect("seal");
+        let bytes = keyquorum::package::encode(
+            &Package {
+                purpose: Purpose::ProviderRecovery,
+                id: [7u8; 16],
+                issued_at,
+                expires_at: issued_at + 86_400,
+                issuer: f.made.root_public_key,
+                components: vec![
+                    Component {
+                        kind: ComponentKind::Certificate,
+                        bytes: f.made.certificate.clone(),
+                    },
+                    Component {
+                        kind: ComponentKind::RecoveryPayload,
+                        bytes: sealed,
+                    },
+                ],
+            },
+            &f.made.root_private_key,
+        )
+        .expect("encode");
+        std::fs::write(&f.package, bytes).expect("replace the package");
+        // The operator's own key opens it; only the relay key is wrong.
+        assert_eq!(
+            *f.operator_secret,
+            *host_env::read_key_file(&f.key_file).expect("key")
+        );
+        let result = f.install(&f.key_file, &f.made.root_public_key);
+        assert!(
+            matches!(result, Err(Error::RelayIdentityMismatch)),
+            "host recovery install --yes, a relay key the certificate does not name"
+        );
+        assert!(!f.out.exists(), "the destination stays absent");
+        assert!(f.package.exists(), "the package is kept");
+    }
+}

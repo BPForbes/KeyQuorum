@@ -776,3 +776,21 @@ public files online for an account is not built. `USR_TYPE` is `CLIENT` or
 it. Operator actions by signed letter are a design only
 (`admin-letters.md`).
 
+**Support matrix for packages.** The console is a verifier with a native-install
+handoff. It does not decrypt sealed contents and installs nothing, so a
+browser installation permission, a destination swap or an interrupted browser
+install does not arise. What each runtime can do:
+
+| Runtime | Verifying a `.kqpkg` | Installing it |
+| --- | --- | --- |
+| Console in a browser that runs WebAssembly (the page allows `wasm-unsafe-eval` for its own scripts) and the relay pins a root (`PROVIDER_ROOT`) | Verified or refused: signature, hashes, purpose, validity window, signer and certificate against the pinned root, one recipient for every sealed part. No revocation list, nothing sealed opened. | Not here. The page shows the native command: `keyquorum setup` for a client package, `keyquorum host recovery install` for recovery. |
+| Console in a browser that cannot run WebAssembly, or whose verifier failed to load | *Unverified*, with text that says to install and check natively. No purpose-specific command is shown. | Native only. |
+| Console while the relay pins no root | *Unverified*. | Native only. |
+| `keyquorum setup` on a native machine | All of the above, plus the sealed parts: the slot opens them, each key's relay challenge and `/keycheck` run, the ledger decides resume, stale and conflict cases before any write. | Yes. This is the only client install route. |
+| `keyquorum host recovery install` on a native machine | Opens the recovery payload with the operator key under the pinned root and runs `provider::self_check`. | Yes, native only. Its permission and inode checks are Unix-specific. |
+| Lab | Not offered. | `setup` with a package is refused (`Env::package_setup` is false). |
+
+A *Verified* result in the page therefore says the public framing is
+authentic. The checks on the decrypted contents, the generation baseline, the
+resume record and the destination checks happen only in the native command.
+
