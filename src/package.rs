@@ -11,12 +11,12 @@
 //!
 //! Dispatch is by the component's own magic, version and kind byte, never by
 //! a file name or by the kind the package claims for it ([`classify`]); a
-//! claim that disagrees with the bytes is refused. Version 1 knows six
+//! claim that disagrees with the bytes is refused. Version 1 knows seven
 //! components. Everything else (`.kqenc`, `.kqtf`, `.kqhs`, `.kqbs`,
 //! `.kqbn`, raw `KQTX`, generic `KQXB` types, other `KQPB` kinds) fails
 //! before anything is accepted, as does a component the purpose does not
-//! allow. The recipient-sealed provider recovery payload and protected
-//! manifest the issue proposes are later slices and have no kind yet.
+//! allow. The seventh is the provider recovery payload (`KQXB` type 5,
+//! `provider::recovery`), allowed only in a root-signed `ProviderRecovery`.
 //!
 //! This module only frames, bounds and authenticates. The wizard, drive
 //! enrollment and the console generator call it and are not here.
@@ -84,7 +84,8 @@ impl Purpose {
         })
     }
 
-    fn is_client(self) -> bool {
+    /// A client purpose (`ClientSetup` or `ClientUpdate`).
+    pub fn is_client(self) -> bool {
         matches!(self, Self::ClientSetup | Self::ClientUpdate)
     }
 
@@ -145,6 +146,9 @@ pub enum ComponentKind {
     /// The package's typed setup steps (`KQXB` type 6, `setup_manifest`): sealed
     /// to the recipient, signed by the relay, bound to this package.
     SetupManifest,
+    /// A relay identity sealed to an enrolled operator key, its context signed
+    /// by the offline root (`KQXB` type 5, `provider::recovery`).
+    RecoveryPayload,
 }
 
 impl ComponentKind {
@@ -158,6 +162,7 @@ impl ComponentKind {
             Self::Policy => 256 * 1024,
             Self::ApiKeyBundle | Self::ApiKeyLetter => 128 * 1024,
             Self::SetupManifest => 256 * 1024,
+            Self::RecoveryPayload => 64 * 1024,
         }
     }
 
@@ -169,6 +174,7 @@ impl ComponentKind {
             Self::ApiKeyBundle => 4,
             Self::ApiKeyLetter => 5,
             Self::SetupManifest => 6,
+            Self::RecoveryPayload => 7,
         }
     }
 
@@ -180,8 +186,22 @@ impl ComponentKind {
             4 => Self::ApiKeyBundle,
             5 => Self::ApiKeyLetter,
             6 => Self::SetupManifest,
+            7 => Self::RecoveryPayload,
             _ => return Err(Error::KqpkgComponentRejected),
         })
+    }
+
+    /// The kind as reports and the console spell it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Certificate => "certificate",
+            Self::RevocationList => "revocation_list",
+            Self::Policy => "policy",
+            Self::ApiKeyBundle => "api_key_bundle",
+            Self::ApiKeyLetter => "api_key_letter",
+            Self::SetupManifest => "setup_manifest",
+            Self::RecoveryPayload => "recovery_payload",
+        }
     }
 
     /// A sealed customer API key, installed through the verified key path.
@@ -190,12 +210,15 @@ impl ComponentKind {
     }
 
     /// Whether `purpose` may carry this kind. Customer keys travel only in
-    /// client purposes; revocation lists and policies only in provider ones.
+    /// client purposes; revocation lists and policies only in provider
+    /// information; a recovery payload only in a recovery package, which
+    /// carries nothing else but its certificate.
     fn allowed_in(self, purpose: Purpose) -> bool {
         match self {
             Self::Certificate => true,
-            Self::RevocationList | Self::Policy => !purpose.is_client(),
+            Self::RevocationList | Self::Policy => purpose == Purpose::ProviderInfo,
             Self::ApiKeyBundle | Self::ApiKeyLetter | Self::SetupManifest => purpose.is_client(),
+            Self::RecoveryPayload => purpose == Purpose::ProviderRecovery,
         }
     }
 }
@@ -248,6 +271,7 @@ pub fn classify(bytes: &[u8]) -> Result<ComponentKind> {
             {
                 (export::BUNDLE_TYPE_API_KEY, _, _) => Ok(ComponentKind::ApiKeyBundle),
                 (export::BUNDLE_TYPE_SETUP_MANIFEST, _, _) => Ok(ComponentKind::SetupManifest),
+                (export::BUNDLE_TYPE_PROVIDER_RECOVERY, _, _) => Ok(ComponentKind::RecoveryPayload),
                 _ => Err(Error::KqpkgComponentRejected),
             }
         }
@@ -284,6 +308,9 @@ fn check_components(purpose: Purpose, components: &[Component]) -> Result<()> {
         return Err(Error::KqpkgComponentRejected);
     }
     if purpose.is_client() && keys == 0 {
+        return Err(Error::KqpkgComponentRejected);
+    }
+    if purpose == Purpose::ProviderRecovery && !seen.contains(&ComponentKind::RecoveryPayload) {
         return Err(Error::KqpkgComponentRejected);
     }
     Ok(())
@@ -397,23 +424,43 @@ pub fn decode(bytes: &[u8]) -> Result<Package> {
     })
 }
 
-/// A `ClientSetup` package for `.kqkey` bundles the relay just sealed: the
-/// relay's own certificate, the sealed keys (at least one, at most fourteen) and
-/// the setup manifest that says what `keyquorum setup` does with them
-/// ([`setup_manifest`]), signed with the relay key, valid for `valid_days` (1 to
-/// 365) from `issued_at`, under a fresh random id. The manifest is sealed to
-/// `recipient` and bound to this package's id, to that recipient and to
-/// `device_id`. The sealed keys are not opened or altered, and the package holds
-/// no bearer in the clear.
+/// What a client package is and when: its purpose (`ClientSetup` for a first
+/// delivery, `ClientUpdate` for replacement keys), the relay's generation for
+/// the recipient's stream (`RelayStore::next_package_generation`, issue #106),
+/// and its validity window.
+pub struct ClientPackage {
+    pub purpose: Purpose,
+    pub generation: u64,
+    pub issued_at: u64,
+    pub valid_days: u64,
+}
+
+/// A client package for `.kqkey` bundles the relay just sealed: the relay's own
+/// certificate, the sealed keys (at least one, at most fourteen) and the setup
+/// manifest that says what `keyquorum setup` does with them ([`setup_manifest`]),
+/// signed with the relay key, valid for `valid_days` (1 to 365) from
+/// `issued_at`, under a fresh random id. The manifest is sealed to `recipient`
+/// and bound to this package's id, purpose, generation and certificate, to that
+/// recipient and to `device_id`. The sealed keys are not opened or altered, and
+/// the package holds no bearer in the clear.
 pub fn issue_client_package(
     identity: &crate::relay::ProviderIdentity,
     sealed_keys: &[&[u8]],
     recipient: &[u8; 32],
     device_id: Option<[u8; 16]>,
-    issued_at: u64,
-    valid_days: u64,
+    spec: &ClientPackage,
 ) -> Result<Vec<u8>> {
-    if !(1..=365).contains(&valid_days) || sealed_keys.is_empty() {
+    let ClientPackage {
+        purpose,
+        generation,
+        issued_at,
+        valid_days,
+    } = *spec;
+    if !(1..=365).contains(&valid_days)
+        || sealed_keys.is_empty()
+        || !purpose.is_client()
+        || generation == 0
+    {
         return Err(Error::InvalidKqpkg);
     }
     let mut id = [0u8; 16];
@@ -431,10 +478,12 @@ pub fn issue_client_package(
         &setup_manifest::Body {
             version: setup_manifest::VERSION,
             package_id: hex::encode(id),
-            purpose: Purpose::ClientSetup.name().to_string(),
+            purpose: purpose.name().to_string(),
             recipient: hex::encode(recipient),
             device_id: device_id.map(hex::encode),
             expires_at,
+            package_generation: generation,
+            certificate_sha256: certificate_hash.clone(),
             operations: setup_manifest::standard_operations(&certificate_hash, &key_hashes),
         },
     )?;
@@ -447,14 +496,7 @@ pub fn issue_client_package(
         kind: ComponentKind::SetupManifest,
         bytes: manifest,
     });
-    issue_with_id(
-        identity,
-        Purpose::ClientSetup,
-        id,
-        components,
-        issued_at,
-        valid_days,
-    )
+    issue_with_id(identity, purpose, id, components, issued_at, valid_days)
 }
 
 /// A `ProviderInfo` package: the relay's own certificate and nothing else
@@ -559,6 +601,9 @@ impl Package {
         Ok(())
     }
 }
+
+#[path = "package/public.rs"]
+pub mod public;
 
 #[cfg(test)]
 #[path = "package/tests.rs"]

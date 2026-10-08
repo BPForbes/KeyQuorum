@@ -11,7 +11,8 @@
 use keyquorum::api_key_delivery::MAX_LICENCE_BYTES;
 use keyquorum::cli;
 use keyquorum::cli::host_args::{
-    BackupCommand, HostCommand, IdentityCommand, KeysCommand, PolicyCommand, RootCommand,
+    BackupCommand, HostCommand, IdentityCommand, KeysCommand, PolicyCommand, RecoveryCommand,
+    RootCommand,
 };
 use keyquorum::cli::host_env::{self, ProcessVars};
 use keyquorum::db;
@@ -20,6 +21,8 @@ use keyquorum::keys::{self, KeyType};
 use keyquorum::locked_files;
 use keyquorum::provider::hardware_auth::HardwareAuthority;
 use keyquorum::provider::policy::{self, HardwareAuthorityEntry, NewPolicy};
+use keyquorum::provider::provision;
+use keyquorum::provider::recovery;
 use keyquorum::provider::{self, NewCertificate, KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY};
 use keyquorum::relay::key_delivery::{Delivered, Recipient, Via};
 use keyquorum::relay::{
@@ -41,6 +44,8 @@ pub struct StoreArgs {
     pub mailbox_db: PathBuf,
 }
 
+/// Runs one `keyquorum host` subcommand. The store is opened only by the
+/// commands that need it.
 pub fn run(store_args: &StoreArgs, org_db: &Path, command: HostCommand) -> Result<()> {
     match command {
         HostCommand::Serve {
@@ -97,6 +102,32 @@ pub fn run(store_args: &StoreArgs, org_db: &Path, command: HostCommand) -> Resul
         }
         HostCommand::Identity { command } => run_identity(command),
         HostCommand::Backup { command } => run_backup(command),
+        HostCommand::Recovery { command } => run_recovery(command),
+        HostCommand::Provision {
+            out,
+            provider_id,
+            serial,
+            issued_at,
+            expires_at,
+            capabilities,
+            issuer_id,
+        } => {
+            let issued_at = match issued_at.filter(|s| !s.is_empty()) {
+                Some(value) => value,
+                None => provider::system_now_utc()?,
+            };
+            let spec = provision::Spec {
+                provider_id: &provider_id,
+                serial: &serial,
+                issued_at: &issued_at,
+                expires_at: &expires_at,
+                capabilities: provider::parse_capabilities(&capabilities)?,
+                issuer_id: &issuer_id,
+            };
+            let written = run_provision(&out, &spec)?;
+            print_provisioned(&written);
+            Ok(())
+        }
         HostCommand::Certify {
             root_key,
             relay_public_key,
@@ -236,6 +267,7 @@ fn run_keys(store: &dyn RelayStore, command: KeysCommand) -> Result<()> {
             package_relay_url,
             package_licence_file,
             package_valid_days,
+            update,
         } => {
             let identity = authorize_mint(
                 store,
@@ -277,6 +309,22 @@ fn run_keys(store: &dyn RelayStore, command: KeysCommand) -> Result<()> {
                         )?
                     };
                     let issued_at = provider::unix_from_utc(&provider::system_now_utc()?)?;
+                    // The generation is taken first, in its own unit of work: a
+                    // package that is then not written leaves a harmless gap.
+                    let generation = store.next_package_generation(
+                        &request.encryption_public,
+                        Some(&request.device_id),
+                    )?;
+                    let spec = keyquorum::package::ClientPackage {
+                        purpose: if update {
+                            keyquorum::package::Purpose::ClientUpdate
+                        } else {
+                            keyquorum::package::Purpose::ClientSetup
+                        },
+                        generation,
+                        issued_at,
+                        valid_days: package_valid_days,
+                    };
                     // The package is written inside the key's own transaction, so a
                     // package that cannot be built or written leaves no key behind.
                     let delivered = into_file(&package_out, |write| {
@@ -286,8 +334,7 @@ fn run_keys(store: &dyn RelayStore, command: KeysCommand) -> Result<()> {
                                 &[sealed],
                                 &request.encryption_public,
                                 Some(request.device_id),
-                                issued_at,
-                                package_valid_days,
+                                &spec,
                             )?;
                             write(&package)
                         })
@@ -295,7 +342,7 @@ fn run_keys(store: &dyn RelayStore, command: KeysCommand) -> Result<()> {
                     println!("Created API key {}", delivered.info.id);
                     println!("scope: {}", delivered.info.scope);
                     println!("sealed to: {}", delivered.recipient_fingerprint);
-                    println!("wrote {}", package_out.display());
+                    println!("wrote {} (generation {generation})", package_out.display());
                     println!(
                         "hand it to the customer for `keyquorum setup FILE --device DIR --label NAME`; it is never printed"
                     );
@@ -845,6 +892,202 @@ fn run_backup(command: BackupCommand) -> Result<()> {
     }
 }
 
+/// `host recovery`: the provider-recovery package (issue #107), all of it
+/// offline. `keygen` makes the operator's recovery key, `issue` seals a relay
+/// identity to it under the root, and `install` opens one and writes the
+/// identity into a directory the operator names. None of it touches a running
+/// relay, a Worker secret or a deploy variable; deploying a restored identity
+/// is a separate, separately approved step.
+fn run_recovery(command: RecoveryCommand) -> Result<()> {
+    match command {
+        RecoveryCommand::Keygen {
+            public_key_out,
+            private_key_out,
+        } => {
+            if public_key_out.exists() {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!("{} already exists", public_key_out.display()),
+                )));
+            }
+            let (secret, public) = keys::generate_encryption_keypair();
+            cli::write_hex_file(&private_key_out, &secret[..])?;
+            if let Err(err) = cli::write_hex_file(&public_key_out, &public) {
+                let _ = std::fs::remove_file(&private_key_out);
+                return Err(err);
+            }
+            eprintln!(
+                "Recovery private key written owner-only to {}; keep it offline with the operator.",
+                private_key_out.display()
+            );
+            eprintln!(
+                "Public key written to {}; hand it to whoever issues recovery packages.",
+                public_key_out.display()
+            );
+            println!("fingerprint {}", recovery::recipient_fingerprint(&public));
+            Ok(())
+        }
+        RecoveryCommand::Issue {
+            root_key,
+            relay_key,
+            certificate,
+            recipient,
+            confirm_fingerprint,
+            valid_days,
+            out,
+            krl,
+        } => {
+            let recipient = read_key_array_32(&recipient)?;
+            if !recovery::fingerprint_matches(&recipient, &confirm_fingerprint) {
+                return Err(Error::KqpkgRefused(
+                    "the recipient key's fingerprint is not the one confirmed; compare it with the operator again".into(),
+                ));
+            }
+            let root = read_root_key(root_key)?;
+            let root_public = ed25519_dalek::SigningKey::from_bytes(&root)
+                .verifying_key()
+                .to_bytes();
+            if root_public != KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY {
+                return Err(Error::KqpkgRefused(
+                    "this root is not the one this build pins, so the package would not install"
+                        .into(),
+                ));
+            }
+            let relay_private_key = read_key_array_32(&relay_key)?;
+            let certificate = read_bounded(&certificate, 16 * 1024)?;
+            let revoked = backup_revocations(krl)?;
+            let bytes = recovery::issue(&recovery::Issue {
+                root_private_key: &root,
+                relay_private_key: &relay_private_key,
+                certificate: &certificate,
+                recipient: &recipient,
+                now_utc: &provider::system_now_utc()?,
+                valid_days,
+                revoked: &revoked,
+            })?;
+            locked_files::write_owner_only(&out, &bytes)?;
+            eprintln!(
+                "Wrote the recovery package to {} (owner-only, sealed to the confirmed operator key, valid {valid_days} day(s)).",
+                out.display()
+            );
+            Ok(())
+        }
+        RecoveryCommand::Install {
+            package,
+            recipient_key,
+            out,
+            yes,
+            krl,
+        } => {
+            let revoked = backup_revocations(krl)?;
+            let now = provider::system_now_utc()?;
+            recovery_install(
+                &package,
+                &recipient_key,
+                &out,
+                yes,
+                &KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY,
+                &now,
+                &revoked,
+            )
+        }
+    }
+}
+
+/// `host recovery install`, with the pinned root, the clock and the revocation
+/// list passed in: the command supplies the build's own, and a test supplies a
+/// root it holds, since nobody holds the private half of the placeholder root.
+fn recovery_install(
+    package: &Path,
+    recipient_key: &Path,
+    out: &Path,
+    yes: bool,
+    root: &[u8; 32],
+    now: &str,
+    revoked: &std::collections::HashSet<String>,
+) -> Result<()> {
+    let bytes = read_bounded(package, keyquorum::package::MAX_PACKAGE_BYTES)?;
+    let secret = host_env::read_key_file(recipient_key)?;
+    let recovered = recovery::open(&bytes, &secret, root, now, revoked)?;
+    let plan = recovery::plan_install(out, &recovered)?;
+    let action = |a: recovery::FileAction| match a {
+        recovery::FileAction::Write => "write",
+        recovery::FileAction::Keep => "keep (already identical)",
+    };
+    // The checked certificate's public naming fields go through the
+    // host's log like `serve`'s identity line, never a print macro.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
+        .try_init();
+    tracing::info!(
+        "recovery package {} for {} serial {} relay key {} certificate expires {}",
+        recovered.package_id,
+        recovered.provider_id,
+        recovered.serial,
+        hex::encode(recovered.relay_public_key),
+        recovered.certificate_expires_at
+    );
+    println!(
+        "  {}{}",
+        out.display(),
+        if plan.create_dir {
+            " (create, owner-only)"
+        } else {
+            ""
+        }
+    );
+    println!("  {}: {}", recovery::RELAY_KEY_FILE, action(plan.relay_key));
+    println!(
+        "  {}: {}",
+        recovery::CERTIFICATE_FILE,
+        action(plan.certificate)
+    );
+    println!("This restores files only: it sets no Worker secret, deploy variable or platform credential.");
+    if !yes {
+        println!("Nothing was written. Run again with --yes to install.");
+        return Ok(());
+    }
+    let disposal = recovery::install_and_dispose(package, &plan, &recovered, root, now, revoked)?;
+    println!(
+        "Recovery installed and verified: {} holds the identity the pinned root certifies.",
+        out.display()
+    );
+    match disposal {
+        recovery::Disposal::Removed => println!(
+            "The recovery package {} was overwritten and removed; it carried the relay key.",
+            package.display()
+        ),
+        // Through the host's log like the identity line above: the
+        // error came out of the same flow as the verified certificate.
+        recovery::Disposal::Kept(err) => tracing::warn!(
+            "the recovery package {} could not be removed ({err}); delete it now, it carries the relay key",
+            package.display()
+        ),
+    }
+    Ok(())
+}
+
+/// Reads at most `limit` bytes of `path`; a longer file is refused unread
+/// past the bound.
+fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(Error::KqpkgRefused(format!(
+            "{} is larger than {limit} bytes",
+            path.display()
+        )));
+    }
+    Ok(bytes)
+}
+
 fn backup_revocations(krl: Option<PathBuf>) -> Result<std::collections::HashSet<String>> {
     let krl = path_or_env(krl, "KEYQUORUM_PROVIDER_KRL");
     provider::load_revocation_list(&KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY, krl.as_deref())
@@ -874,6 +1117,136 @@ fn write_keypair(what: &str, public_key_out: &Path, private_key_out: &Path) -> R
     );
     eprintln!("Public key written to {}", public_key_out.display());
     Ok(())
+}
+
+/// The files `host provision` wrote, by path, and the root it pinned.
+struct Provisioned {
+    root_public: [u8; 32],
+    root_private_key: PathBuf,
+    root_public_key: PathBuf,
+    relay_private_key: PathBuf,
+    relay_public_key: PathBuf,
+    identity_file: PathBuf,
+    package: PathBuf,
+}
+
+/// `host provision`: `provider::provision` (the root ceremony, the relay
+/// identity and the certificate in one run, checked as the relay checks
+/// them) written into `out`, a directory this run creates owner-only (an
+/// existing one, whatever its mode, is refused before anything is made),
+/// each file created new. On a write failure the cleanup removes only the
+/// files this run created and tries to remove the then-empty directory; a
+/// cleanup that itself fails can leave output to inspect before a retry.
+/// Neither private key is printed.
+fn run_provision(out: &Path, spec: &provision::Spec<'_>) -> Result<Provisioned> {
+    let written = Provisioned {
+        root_public: [0; 32],
+        root_private_key: out.join("root.key"),
+        root_public_key: out.join("root.pub"),
+        relay_private_key: out.join("relay.key"),
+        relay_public_key: out.join("relay.pub"),
+        identity_file: out.join("provider.kqcert"),
+        package: out.join("provider-info.kqpkg"),
+    };
+    if out.exists() {
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!(
+                "{} already exists; provision into a directory that does not exist yet",
+                out.display()
+            ),
+        )));
+    }
+    let made = provision::provision(spec, &provider::system_now_utc()?)?;
+    let written = Provisioned {
+        root_public: made.root_public_key,
+        ..written
+    };
+    create_owner_only_dir(out)?;
+    let root_key = Zeroizing::new(hex::encode(&made.root_private_key[..]));
+    let relay_key = Zeroizing::new(hex::encode(&made.relay_private_key[..]));
+    let root_pub = hex::encode(made.root_public_key);
+    let relay_pub = hex::encode(made.relay_public_key);
+    write_all_new(
+        out,
+        &[
+            (&written.root_private_key, root_key.as_bytes()),
+            (&written.root_public_key, root_pub.as_bytes()),
+            (&written.relay_private_key, relay_key.as_bytes()),
+            (&written.relay_public_key, relay_pub.as_bytes()),
+            (&written.identity_file, &made.certificate),
+            (&written.package, &made.package),
+        ],
+    )?;
+    Ok(written)
+}
+
+/// Writes each file new and owner-only, in order, into `dir` (which this run
+/// created). On a failure it removes only the files it created, never one
+/// that appeared in between, then tries to remove `dir` itself, which
+/// succeeds only when nothing else is left in it.
+fn write_all_new(dir: &Path, files: &[(&Path, &[u8])]) -> Result<()> {
+    let mut created: Vec<&Path> = Vec::new();
+    for (path, contents) in files {
+        if let Err(err) = locked_files::write_owner_only(path, contents) {
+            for path in created {
+                let _ = std::fs::remove_file(path);
+            }
+            let _ = std::fs::remove_dir(dir);
+            return Err(err);
+        }
+        created.push(path);
+    }
+    Ok(())
+}
+
+/// The output directory, made owner-only by this run and by nothing else:
+/// its parent must exist, and a directory already there (whose mode this
+/// run did not choose) is refused by `create`.
+fn create_owner_only_dir(dir: &Path) -> Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    Ok(builder.create(dir)?)
+}
+
+/// What `host provision` prints: every file by path, the public root, and
+/// the three steps that follow. No private key is ever among them.
+fn print_provisioned(written: &Provisioned) {
+    eprintln!(
+        "Root private key written owner-only to {} (keep it offline; it signs certificates and revocations, nothing else)",
+        written.root_private_key.display()
+    );
+    eprintln!(
+        "Relay private key written owner-only to {} (the relay's RELAY_PRIVATE_KEY secret)",
+        written.relay_private_key.display()
+    );
+    eprintln!(
+        "Provider certificate written to {} (the relay's RELAY_CERTIFICATE secret, base64)",
+        written.identity_file.display()
+    );
+    eprintln!(
+        "Public keys written to {} and {}; provider package to {}",
+        written.root_public_key.display(),
+        written.relay_public_key.display(),
+        written.package.display()
+    );
+    eprintln!();
+    eprintln!("Next:");
+    eprintln!(
+        "  1. Pin the root: set the relay's PROVIDER_ROOT deploy variable, and build the clients with KEYQUORUM_PROVIDER_ROOT, to the contents of {} (public, never committed): {}.",
+        written.root_public_key.display(),
+        hex::encode(written.root_public)
+    );
+    eprintln!(
+        "  2. Set the relay's secrets (in workers/, add --env staging for the staging relay):\n       npx wrangler secret put RELAY_PRIVATE_KEY < {}\n       base64 < {} | tr -d '\\n' | npx wrangler secret put RELAY_CERTIFICATE",
+        written.relay_private_key.display(),
+        written.identity_file.display()
+    );
+    eprintln!("  3. Reload the console; the setup guide clears steps 1 and 2 once the relay's identity checks out.");
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -69,6 +69,20 @@ function readIdentity(env) {
   return { certificate, key };
 }
 
+// The provider root this relay pins (`PROVIDER_ROOT`, a deploy variable
+// holding the 64-hex public key `host provision` or the console wrote as
+// root.pub; never a secret). -> { root } as bytes, undefined when unset, or
+// { error } when set but not a 64-character hex key (the value is never named).
+function readPinnedRoot(env) {
+  const text = typeof env.PROVIDER_ROOT === "string" ? env.PROVIDER_ROOT.trim() : "";
+  if (text === "") return { root: undefined };
+  if (!/^[0-9a-fA-F]{64}$/.test(text)) return { error: "pinned root misconfigured" };
+  return { root: Uint8Array.from(text.match(/../g), (pair) => parseInt(pair, 16)) };
+}
+
+// The relay inside one Durable Object: the core over its storage, the R2
+// helpers when their buckets are bound, request admission, and the console's
+// `operate` and `status`. Fails closed on an unusable identity or root.
 export function createRelayService({ storage, env, bindings, clock = () => new Date(), log = console }) {
   let core = null;
   let blobs = null;
@@ -88,14 +102,16 @@ export function createRelayService({ storage, env, bindings, clock = () => new D
   };
 
   const identity = readIdentity(env);
-  if (identity.error) {
+  const pinned = readPinnedRoot(env);
+  if (identity.error || pinned.error) {
     // Fail closed: serve nothing rather than a relay that cannot prove who it
-    // is. The reason names no value.
-    failure = identity.error;
-    log.error("relay: the identity secrets are set but unusable");
+    // is, or that would check its identity against a root it cannot read.
+    // The reason names no value.
+    failure = identity.error ?? pinned.error;
+    log.error(identity.error ? "relay: the identity secrets are set but unusable" : "relay: PROVIDER_ROOT is set but is not a 64-character hex key");
   } else {
     try {
-      core = new bindings.RelayCore(createSqlAdapter(storage), identity.certificate, identity.key);
+      core = new bindings.RelayCore(createSqlAdapter(storage), identity.certificate, identity.key, pinned.root);
       // With an R2 bucket bound (`LETTERS`), large sealed letters are held there
       // and not in the row; without one nothing is, and nothing below changes.
       const bucket = bucketOf(env);

@@ -40,6 +40,11 @@ test("sealed keys are accepted as sealed and every other sealed file is not hand
   assert.equal(classify(frame("KQXB", 1, 4)).kind, "sealed_key");
   assert.equal(classify(frame("KQPB", 2, 20)).kind, "sealed_key_letter");
   assert.equal(classify(frame("KQXB", 1, 4)).visibility, "sealed");
+  // A loose recovery payload (the relay key, sealed to an operator) is never
+  // taken here; it is installed only natively, from its package.
+  const recovery = classify(frame("KQXB", 1, 5));
+  assert.equal(recovery.accepted, false);
+  assert.match(recovery.note, /host recovery install/);
   for (const [magic, version, kind] of [["KQXB", 1, 1], ["KQXB", 1, 3], ["KQPB", 2, 9], ["KQPB", 2, 13]]) {
     assert.equal(classify(frame(magic, version, kind)).accepted, false, `${magic} ${kind}`);
   }

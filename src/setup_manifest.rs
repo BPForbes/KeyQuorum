@@ -31,8 +31,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 
-/// The manifest format. A reader refuses any other.
-pub const VERSION: u32 = 1;
+/// The manifest format. A reader refuses any other: version 1, which carried
+/// no generation, is refused rather than read as generation zero (issue #106).
+pub const VERSION: u32 = 2;
 /// The most steps one manifest holds.
 pub const MAX_OPERATIONS: usize = 32;
 /// A sealed manifest is never larger than this.
@@ -140,6 +141,14 @@ pub struct Body {
     pub device_id: Option<String>,
     /// Unix seconds, never later than the package's own end.
     pub expires_at: u64,
+    /// The relay's generation for this recipient and device (issue #106):
+    /// required, at least 1, and compared by the client with the highest it
+    /// has accepted for the same stream, so an older package cannot replace
+    /// newer credentials. There is no default: a manifest without it fails.
+    pub package_generation: u64,
+    /// SHA-256 (hex) of the package's relay certificate, so the manifest is
+    /// bound to the certificate it travels with as well as to its signer.
+    pub certificate_sha256: String,
     pub operations: Vec<Operation>,
 }
 
@@ -219,6 +228,8 @@ impl Body {
             || !is_hex(&self.recipient, 64)
             || !matches!(self.purpose.as_str(), "client_setup" | "client_update")
             || self.device_id.as_deref().is_some_and(|d| !is_hex(d, 32))
+            || self.package_generation == 0
+            || !is_hex(&self.certificate_sha256, 64)
             || self.operations.is_empty()
             || self.operations.len() > MAX_OPERATIONS
         {
@@ -312,6 +323,9 @@ impl Body {
                 .is_some_and(|d| d != hex::encode(device_id))
             || now_unix >= self.expires_at
             || self.expires_at > package.expires_at
+            || !package.components.iter().any(|c| {
+                c.kind == ComponentKind::Certificate && hash_of(&c.bytes) == self.certificate_sha256
+            })
         {
             return Err(Error::InvalidSetupManifest);
         }

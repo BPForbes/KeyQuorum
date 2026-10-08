@@ -52,6 +52,7 @@ cases![
     known_keys_activity_is_counted_in_place_and_unknown_bearers_are_not,
     the_operator_lock_is_staged_then_confirmed_and_the_old_one_stands_until_then,
     the_console_views_hold_no_secret_and_name_only_what_the_relay_holds,
+    package_generations_rise_per_recipient_and_device,
 ];
 
 fn new_key(scope: ApiKeyScope, fingerprint: Option<&str>) -> NewApiKey {
@@ -1430,4 +1431,28 @@ pub(crate) fn concurrent_writers_keep_every_invariant(store: &(impl RelayStore +
         .find(|r| r.table == AuditTable::ProviderAuthEvents.name())
         .expect("auth report");
     assert_eq!(auth.rows, (WRITERS * ROUNDS) as u64);
+}
+
+/// Each recipient and device has its own stream; a generation is never reused.
+fn package_generations_rise_per_recipient_and_device(store: &dyn RelayStore) {
+    let alice = [1u8; 32];
+    let bob = [2u8; 32];
+    let drive = [3u8; 16];
+    assert_eq!(
+        store.next_package_generation(&alice, Some(&drive)).unwrap(),
+        1
+    );
+    assert_eq!(
+        store.next_package_generation(&alice, Some(&drive)).unwrap(),
+        2
+    );
+    assert_eq!(store.next_package_generation(&alice, None).unwrap(), 1);
+    assert_eq!(
+        store.next_package_generation(&bob, Some(&drive)).unwrap(),
+        1
+    );
+    assert_eq!(
+        store.next_package_generation(&alice, Some(&drive)).unwrap(),
+        3
+    );
 }

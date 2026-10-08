@@ -112,6 +112,7 @@ pub struct RelayResponse {
 
 #[wasm_bindgen]
 impl RelayResponse {
+    /// The HTTP status of the answer.
     #[wasm_bindgen(getter)]
     pub fn status(&self) -> u16 {
         self.status
@@ -128,6 +129,9 @@ impl RelayResponse {
 pub struct RelayCore {
     store: SqlRelayStore<DoSql>,
     identity: Option<ProviderIdentity>,
+    /// The provider root the Worker pins (`PROVIDER_ROOT`), see
+    /// [`operator::Context::pinned_root`].
+    pinned_root: Option<[u8; 32]>,
     /// A backup being uploaded: built whole by [`RelayCore::backup_begin`], read
     /// out piece by piece, dropped by [`RelayCore::backup_end`].
     backup: std::cell::RefCell<Option<crate::relay::backup::Snapshot>>,
@@ -152,12 +156,24 @@ impl RelayCore {
     /// `relay_private_key` are the Worker secrets; without both the relay
     /// answers every route but `POST /provider-identity` as usual and that one
     /// with its own refusal, so an official client will not trust it.
+    /// `pinned_root` is the provider root public key the Worker's
+    /// `PROVIDER_ROOT` variable names, which the console's identity check
+    /// runs against; the relay itself verifies nothing against it.
     #[wasm_bindgen(constructor)]
     pub fn new(
         adapter: SqlAdapter,
         certificate: Option<Vec<u8>>,
         relay_private_key: Option<Vec<u8>>,
+        pinned_root: Option<Vec<u8>>,
     ) -> Result<RelayCore, JsError> {
+        let pinned_root = match pinned_root {
+            Some(root) if !root.is_empty() => Some(
+                root.as_slice()
+                    .try_into()
+                    .map_err(|_| JsError::new("the pinned provider root is not 32 bytes"))?,
+            ),
+            _ => None,
+        };
         let identity = match (certificate, relay_private_key) {
             (Some(certificate), Some(key)) if !certificate.is_empty() => {
                 let key = Zeroizing::new(key);
@@ -180,6 +196,7 @@ impl RelayCore {
         Ok(Self {
             store: SqlRelayStore::new(sql, "durable-object"),
             identity,
+            pinned_root,
             backup: std::cell::RefCell::new(None),
         })
     }
@@ -245,6 +262,7 @@ impl RelayCore {
         let context = operator::Context {
             operator,
             lock: lock.as_deref().map(String::as_str),
+            pinned_root: self.pinned_root.as_ref(),
         };
         let reply = operator::operate(&self.store, self.identity.as_ref(), &request, &context, now);
         if reply.changed {

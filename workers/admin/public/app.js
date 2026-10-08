@@ -2,6 +2,7 @@
 // textContent. The operator lock is typed into a field for one action and is
 // never kept: not in a variable, in storage or in the address.
 import { errorText, get } from "./api.js";
+import { disposeAll, watchPageLifecycle } from "./dispose.js";
 import { clear, h, notice } from "./ui.js";
 
 // [route, title, loader, in the menu]
@@ -43,6 +44,9 @@ function drawNav(current) {
 async function render() {
   const { name, params } = parseHash();
   const mine = ++generation;
+  // The view being replaced wipes what it holds (its private keys, its
+  // pending downloads) before anything else is drawn.
+  disposeAll();
   drawNav(name);
   main.setAttribute("aria-busy", "true");
   clear(main);
@@ -89,6 +93,7 @@ async function start() {
   } catch {
     // the form is simply not pre-filled
   }
+  watchPageLifecycle(window, render);
   window.addEventListener("hashchange", () => {
     render().then(() => document.getElementById("page-title")?.focus());
   });

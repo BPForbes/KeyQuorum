@@ -38,6 +38,12 @@ lab = ["dep:wasm-bindgen"]
 # capability only, like `provider`; never combined with `provider` or `lab` in a
 # wasm32 build (the public Worker must not carry mailbox-host code or the lab).
 workers = ["dep:wasm-bindgen", "dep:js-sys"]
+# The operator console's WebAssembly (`src/provider/provision_wasm.rs`): the
+# one export that makes a provider identity in the browser with the crate's
+# own `provider::provision`, built by `workers/scripts/build-console-wasm.mjs`
+# into the admin Worker's static files. Nothing else is exported, and it is
+# never combined with `provider`, `lab` or `workers` in a wasm32 build.
+console = ["dep:wasm-bindgen"]
 # Interactive review terminal UI (`keyquorum file review --interactive`).
 # Presentation only, over `cli::review_view`; native-only, never part of
 # the wasm32 lab build.

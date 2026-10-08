@@ -27,7 +27,7 @@ header at all; none of those belong in `envelope.rs`.
 `src/package.rs` is `.kqpkg` (`KQPK` v1, issue #104), a signed setup package, and is not a
 sealed envelope either: an issuer signature over a purpose (`ClientSetup`, `ClientUpdate`,
 `ProviderInfo`, `ProviderRecovery`), a validity window and components that are the unchanged
-bytes of artifacts other modules own (`KQPC`, `KQRL`, `KQPL`, `KQXB` type 4, `KQPB` kind 20, and `KQXB` type 6, the setup manifest).
+bytes of artifacts other modules own (`KQPC`, `KQRL`, `KQPL`, `KQXB` type 4, `KQPB` kind 20, `KQXB` type 6, the setup manifest, and `KQXB` type 5, the provider recovery payload).
 A client package carries its **setup manifest** (`src/setup_manifest.rs`, `KQXB` type 6, `package::issue_client_package` builds it):
 the steps `setup` runs, as a closed enum of typed operations (`ensure_identity`, `install_certificate`, `install_key`, `use_relay`;
 `deny_unknown_fields`, never shell text), each part named by SHA-256, listed in dependency order and every non-manifest part used by
@@ -44,12 +44,12 @@ kind bytes are wire format: append, never renumber.
 `keyquorum setup <file.kqpkg> --device DIR --label NAME` (`src/cli/setup_package.rs`, a native
 everyday command) opens one: it decodes, checks the validity window and that the signer is the
 relay a root-verified, unrevoked certificate names, and that no file it would write conflicts,
-all before any write; without `--yes` it prints the plan and changes nothing; the package file is read with a size bound (`Env::read_bounded`) and each component has its own cap (`ComponentKind::max_bytes`); the slot must already exist (`setup --enroll-out` first; a package never makes an identity), and the plan first opens every sealed key with it (`precheck_key_component`: it must verify, be for this drive and have been issued by the relay that signed the package), refuses to replace a different key already stored for that relay and scope, prints each key's scope, relay, expiry and licence, and stops before anything is written if one cannot install. A `ClientUpdate` is shown but never installed, and an interrupted setup is a partial installation finished by running it again (no resume ledger, no generation check). With `--yes` it
+all before any write; without `--yes` it prints the plan and changes nothing; the package file is read with a size bound (`Env::read_bounded`) and each component has its own cap (`ComponentKind::max_bytes`); the slot must already exist (`setup --enroll-out` first; a package never makes an identity), and the plan first opens every sealed key with it (`precheck_key_component`: it must verify, be for this drive and have been issued by the relay that signed the package), refuses to replace a different key already stored for that relay and scope, prints each key's scope, relay, expiry and licence, and stops before anything is written if one cannot install. A client manifest is `KQXB` type 6 version 2: it also signs a `package_generation` (the relay's per recipient and device counter, `package_generations`, `RelayStore::next_package_generation`, taken by `host keys create --enrollment` (`--update` makes a `ClientUpdate`) and the console before minting; gaps are harmless) and the SHA-256 of the certificate it travels with. The personal store keeps an install ledger (`src/db/package_ledger.rs`: `package_installs`, `package_baselines`, `package_retired_keys`), keyed by stream (provider id, recipient, device, slot label and container): the same package id and hash already complete is a no-op, a pending one resumes, a different hash under a known id is refused, a generation at or below the stream's baseline is refused, a second package while one is pending is refused (one pending per stream, a unique index) until `setup --abandon ID`, and only a newer `ClientUpdate` may replace a stored key (a `ClientSetup` never does; a `ClientUpdate` without a signed generation is refused). `begin` reserves the generation, raising the baseline (never lowered), before the first write; each step is checked in place, run only if missing, checked again and marked; a replaced key is retired and never reinstalled; the final state is checked before the install is complete. A restored or erased personal store loses its baseline. Several packages in one run (`setup A.kqpkg B.kqpkg`, `cli::setup_package::run_batch`, at most 16 files and 64 MiB together) are all verified and planned before any write (`package_ledger::decide_in_batch` lets a pending package of the same batch pass the preflight), identical files count once, the order is fixed (stream, then signed generation, a setup before its updates), and two files with one id, two packages of one stream at one generation, a setup after another package of its stream, different certificates or default relays, and non-client packages are refused up front (one certificate and one slot make a batch one stream); each package then goes through the same ledger and executor, re-planned against what the ones before it left, with a per-package result, and it is not one transaction. With `--yes` it
 runs `setup`'s identity steps, places the certificate as `provider.kqcert` beside the container
 (identical bytes are kept, different bytes refused) and installs each sealed key through
 `install_key_component`, the path `loadkey --bundle` and `inbox open` use. It is refused where
 `Env::package_setup` is false: the browser lab says no, and the lab must not offer or document
-it. `ProviderRecovery` packages are not installed by `setup`.
+it. `ProviderRecovery` packages are not installed by `setup` (it names the command below). `src/provider/recovery.rs` (issue #107) is provider recovery: a root-signed `ProviderRecovery` `.kqpkg` holding the relay's `KQPC` and a recovery payload (`KQXB` type 5, `ComponentKind::RecoveryPayload` tag 7, allowed in that purpose only, which carries nothing else) sealed to an operator X25519 key and holding the relay's private key and a context the root signs (`signing::provider_recovery_preimage`: purpose, package id, operator key, provider id, serial, relay public key, certificate SHA-256, validity and its own closed operation list, `install_relay_key` then `install_certificate`, `deny_unknown_fields`; it does not use the client setup manifest or its signer). No root key or other secret is in it, and sealing is custody only: `recovery::open` trusts it only under the root the build pins, with every context field matching the package and certificate, the certificate unrevoked and valid now, and `provider::self_check` on the recovered key. `host recovery keygen` makes the operator key (fingerprint printed), `host recovery issue` (root key, relay key, certificate, `--recipient`, `--confirm-fingerprint`, 1 to 7 days, the root must be the pinned one) seals it, and `host recovery install PKG --recipient-key --out DIR [--yes]` writes `relay.key` and `provider.kqcert` into a new or owner-only, non-link directory through a `.part` file and a hard link that never replaces a file (identical files are kept, different ones refused, the directory re-checked before each write, leftovers of a cut-short run removed by the rerun) and checks the result with `self_check` before success, then overwrites and removes the package (`install_and_dispose`; a shown plan or a failed install keeps it). It configures no Worker secret, deploy variable or platform credential.
 `keyquorum setup --enroll-out FILE` writes `.kqreq` (`KQRQ` v1, `src/enrollment.rs`), the client's
 public request: device id, label and the slot's public keys, signed by the slot's signing key,
 no secret. The provider verifies it, compares its fingerprint with the client out of band
@@ -89,7 +89,7 @@ The operator console (`workers/admin/`) issues the same package: `issue` accepts
 bundle (`relay::operator`, `resolve_recipient`, `package::issue_client_package`); `provider_package` (a POST that takes no lock,
 like `checkpoint`) returns a `ProviderInfo` package and the relay certificate, which the page zips. `package::UserType`
 (`CLIENT` or `PROVIDER`) is derived from `Purpose`, never stored. The page's file tool (`files.js`) only reads public framing
-and refuses private key file names unread and key-looking content once read; no private file is ever uploaded. Storing public
+and refuses private key file names unread and key-looking content once read; no private file is ever uploaded. A dropped `.kqpkg` is verified by `package::public::verify` (signature, hashes, purpose, window, signer and certificate against the relay's `pinned_root`, one recipient for every sealed part; nothing sealed opened, no revocation list) through the console wasm's `verify_package` (`package-check.js`): *Unverified* until it passes, and the page shows the native install command and installs nothing, in any browser. Storing public
 files online, and operator actions by signed letter (`docs/operator/admin-letters.md`, a design only), are not built.
 Large sealed letters can be held in a private R2 bucket (`LETTERS`) instead of their row (`docs/operator/r2-blobs.md`, built, not
 deployed or run end to end): the core (`relay::blob`, `SqlRelayStore::with_blob_threshold`) authenticates, validates and inserts the
@@ -102,7 +102,7 @@ Sealed backups of the relay's database can be written to a second private R2 buc
 not deployed or run end to end): the core (`relay::backup`) dumps every table in one synchronous turn, seals each chunk to an
 operator-held backup public key (`EXPORT_BUNDLE` types 7 and 8) and signs the manifest with the relay key; `workers/src/backups.js`
 uploads the chunks and the manifest last from the alarm, keeping the newest few; `keyquorum host backup keygen|inspect|restore` is the
-operator's offline side (restore checks the signature against the pinned root and every chunk's hash before writing, then re-walks the
+operator's offline side (the console's Status page makes the same keypair in the browser, `provision_wasm::backup_keygen`, while backups are off) (restore checks the signature against the pinned root and every chunk's hash before writing, then re-walks the
 audit chains). The backup public key is the `BACKUP_RECIPIENT` deploy variable (never in `wrangler.toml`, whose guard refuses a 64-hex
 value); the private key never reaches a Worker. Letters held in `LETTERS` are not in a backup.
 
@@ -242,7 +242,7 @@ recovered by replacing the key) and no reply holds a bearer or key hash; the
 operator lock is made in two steps (`bootstrap` or `rotate_lock` stages it in
 `licensee_pending` and shows it once, `confirm_lock` promotes it), and an empty
 store cannot be claimed by an ordinary request; the `admin` scope is not issued
-from the console. Until the relay has a trusted identity and the lock, the Overview opens with a four-step first-time setup guide (`workers/admin/public/setup-state.js`, `view-setup.js`: the offline root ceremony with the root pinned, the relay's identity as Worker secrets, the operator lock, then issuing) and Issue keys shows the missing step instead of its form; "trusted" is `operator::identity_check` (`provider::self_check` against the compiled root: signed by it, unexpired, provider capabilities, names the held key), reported as `identity_check` with a reason and the pinned root's public value, and a core that reports no check is unverified; the relay itself requires only an identity and the lock, and a YubiKey option is evaluated, not built (`docs/operator/yubikey-evaluation.md`). There is one operator role (Access decides who is in), and the
+from the console. Until the relay has a trusted identity and the lock, the Overview opens with a four-step first-time setup guide (`workers/admin/public/setup-state.js`, `view-setup.js`: the offline root ceremony with the root pinned, the relay's identity as Worker secrets, the operator lock, then issuing) and Issue keys shows the missing step instead of its form; "trusted" is `operator::identity_check` (`provider::self_check` against the root the Worker's `PROVIDER_ROOT` deploy variable names, `operator::Context::pinned_root`, never a compiled constant: signed by it, unexpired, provider capabilities, names the held key), reported as `identity_check` with a reason (`no_pinned_root` while the variable is unset) and a `pinned_root` field that is null in that case or otherwise holds the pinned root's public value, and a core that reports no check is unverified; the relay itself requires only an identity and the lock, and a YubiKey option is evaluated, not built (`docs/operator/yubikey-evaluation.md`). There is one operator role (Access decides who is in), and the
 console cannot show letter contents or file histories, which are sealed. What has
 not been done and must not be claimed: a deploy to staging, the restore drill, a
 cost or storage measurement, any enforced licence limit, a second role, and a
@@ -291,7 +291,26 @@ store reached over a network is `Error::StoreCommitUnknown`, not a failure:
 and `keys events` before retrying) and removes it only on a failure that is
 certain. `identity
 generate` and `root generate` write the private key only to
-`--private-key-out` (owner-only, never overwritten) and never print it.
+`--private-key-out` (owner-only, never overwritten) and never print it;
+`provider::provision` is the whole ceremony in one step (root keypair, relay
+keypair, the certificate the root signs, a `ProviderInfo` package), built in
+memory and passed through `provider::self_check` before it is handed back;
+`host provision --out DIR` writes it, every file created new in an owner-only
+directory, a failed write removing what the run wrote, and the console's setup
+guide makes the same files in the browser (`provider::provision_wasm`, the
+`console` feature's one export, built by `workers/scripts/build-console-wasm.mjs`
+into the admin Worker's `public/provision-wasm/`, never committed, loaded under
+`script-src 'self' 'wasm-unsafe-eval'`; `workers/admin/public/provision.js`
+turns the result into downloads and sends, stores and keeps nothing). The relay
+pins the root its `PROVIDER_ROOT` deploy variable names (a GitHub environment
+variable like `BACKUP_RECIPIENT`, public, validated as 64 hex by `workers.yml`,
+never in `wrangler.toml`); a client build compiles its root into
+`KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY` from `KEYQUORUM_PROVIDER_ROOT` (the same
+value), else a git-ignored `provider-root.pub` beside `Cargo.toml` (the
+generated `root.pub` copied there), else a placeholder whose private half nobody
+holds, so a client built with neither trusts no relay; no root is ever
+committed, and the relay never reads any of it. The `console` feature stands alone on
+wasm32 (`build.rs`, `lib.rs` refuse it with `provider`, `lab` or `workers`).
 Prompted passphrases, passwords, PINs and pasted API keys are
 `Zeroizing<String>` (`cli::env::prompt_secret`, `transfer::Passphrases`), and
 so are the vault password and the stored relay bearer (whose `Debug` is

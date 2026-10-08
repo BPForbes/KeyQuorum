@@ -85,6 +85,58 @@ The build downloads the Swagger UI assets for `/swagger-ui` once (the
 `SWAGGER_UI_DOWNLOAD_URL` at a local copy of the archive
 (`file:///path/to/v5.x.y.zip`).
 
+## Provisioning a new provider in one step
+
+A provider that has no root yet makes everything at once: the root keypair,
+the relay keypair, the certificate the root signs for the relay and the
+public `provider-info.kqpkg`. The console's setup guide (step 1 on the
+Overview page) does it in the browser, with the relay's own code compiled to
+WebAssembly (`provider::provision`): fill in the provider id, a serial and
+an expiry, and download `root.key`, `relay.key` (private, one download each)
+and the public files as a zip. The page sends nothing anywhere, keeps nothing
+and shows the root it made. The same files come from one command on a
+machine of your own:
+
+```sh
+keyquorum host provision --out /media/root/provider \
+  --provider-id "Acme Security Services" \
+  --serial KQP-000184 \
+  --expires-at "2027-10-01 00:00:00"
+```
+
+It builds the root keypair, the relay keypair and the certificate the root
+signs for the relay in memory, checks them exactly as the relay will
+(`provider::self_check`: signed by that root, unexpired, provider
+capabilities, naming that relay key), and only then writes, into a new
+owner-only directory, `root.key`, `root.pub`, `relay.key`, `relay.pub`,
+`provider.kqcert` and a public `provider-info.kqpkg`. Every file is created
+new (an existing one refuses the run before anything is written), a write
+that fails removes what the run wrote, and neither private key is printed.
+What leaves the offline machine: `relay.key` and `provider.kqcert` for the
+relay's two secrets ("Secret provisioning"), and `root.pub` for pinning.
+`root.key` stays, for later certificates (`host certify`) and revocations
+(`host krl`).
+
+**Pin the root, twice.** The relay pins the root its `PROVIDER_ROOT` deploy
+variable names: set the GitHub environment variable (`cloudflare-staging`,
+then `cloudflare-production`) to the contents of `root.pub` (64 hex
+characters, public, never a secret and never a `[vars]` entry) and run the
+`workers` deploy; the workflow refuses a value that is not a 64-character hex
+key, and warns, deploying a relay that pins nothing, when the variable is
+absent. The console's setup guide then shows the root the running relay pins
+so you can compare it with `root.pub`, and reads `no_pinned_root` until it is
+set. Every official client pins a root too, compiled in at build time
+(`build.rs` turns 64 hex characters into `KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`)
+from `KEYQUORUM_PROVIDER_ROOT` in the build's environment, or else from a
+`provider-root.pub` beside `Cargo.toml`, which is git-ignored: copy `root.pub`
+there. Nothing is committed. A client built with neither carries a placeholder
+whose private half nobody holds, so it trusts no relay at all; a certificate
+under any other root is refused by every client. Build the clients you hand
+out with your root, and record which root each build carries.
+
+The two sections below are the same steps one at a time, for a provider that
+already has a root and needs a certificate for a new relay key.
+
 ## Host identity
 
 On the relay host (or the operator's workstation):
@@ -300,10 +352,11 @@ hosting vendor supplies on its own.
 - **Licence statements are signed text.** `KeyIssue.licence` is carried and
   signed; the relay does not meter seats, suspend by subscription or
   enforce features. Revoking or letting a key expire is the control.
-- **Production trust root.** Confirm that the compiled provider-root public
-  key (`KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`, `src/provider.rs`) is the key
-  from your offline ceremony before you issue anything. Clients trust only
-  that root.
+- **Production trust root.** Confirm that the relay's `PROVIDER_ROOT`
+  variable and the root the clients were built with (`KEYQUORUM_PROVIDER_ROOT`
+  or `provider-root.pub` at build time, compiled into
+  `KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`) are both the `root.pub` your
+  provisioning wrote before you issue anything. Clients trust only that root.
 - **Recovery.** Restore a backup into an isolated environment and verify the
   audit chains against the checkpoint for that restore point before you rely
   on it; run a synthetic client that completes the provider challenge, since
@@ -418,16 +471,18 @@ page opens with a four-step guide (issue #102), each step with its own status
 or, for step 1, `offline, not visible from here`). The steps are distinct on
 purpose:
 
-1. **The offline provider-root ceremony, and pinning the root**: `host root
-   generate` once, offline (the first time only); `host identity generate` on
-   your own machine ("Host identity"); then `host certify` offline ("Offline
-   provider certificate issuance"). It leaves only its result,
-   `provider.kqcert`. **Pin the root before production:** the relay and every
-   official client trust exactly one root public key, compiled in
-   (`KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`, `src/provider.rs`), and the repository
-   ships a placeholder. Replace it with the public half of your root
-   (`root.pub`) and rebuild the relay (the WebAssembly core) and the clients; a
-   certificate under any other root is refused by every client. The relay checks
+1. **The provider-root ceremony, and pinning the root**: the guide makes the
+   root, the relay key pair and the certificate together in the browser, or
+   `host provision` does on a machine of your own ("Provisioning a new
+   provider in one step"); a provider that already has a root runs `host
+   identity generate` and `host certify` instead. It leaves `provider.kqcert`
+   and `relay.key` for step 2. **Pin the root before production:** the relay
+   pins the root its `PROVIDER_ROOT` deploy variable names, and every official
+   client the one it was built with (`KEYQUORUM_PROVIDER_ROOT`, or a
+   git-ignored `provider-root.pub`, into `KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY`;
+   nothing is committed). Set the variable and deploy; build the clients with
+   the public half of your root (`root.pub`); a certificate under any other
+   root is refused by every client. The relay checks
    its identity the way a client does (`provider::self_check`): the certificate
    is signed by the root the relay pins, has not expired, grants the provider
    capabilities and names the key the relay holds. The guide marks this step done
@@ -623,6 +678,21 @@ see the plan (it first opens every sealed key with the slot, so a key that
 cannot install stops it) and add `--yes` to apply it. The fingerprint is the only thing that
 ties the request to the person, so never skip the call.
 
+A client can install several packages in one run (`keyquorum setup A.kqpkg
+B.kqpkg --device DIR --label NAME`, or `*.kqpkg`): at most 16 files and 64 MiB
+together. Every file is verified and planned before anything is written, so a
+bad file anywhere stops the whole run with nothing written; the same file twice
+counts once. They are applied in a fixed order (per provider and slot, by
+signed generation, a setup before its updates), and refused up front are two
+files claiming one package id, two packages for one slot at the same
+generation, a setup package after another for its slot, packages that would
+put different certificates on the drive or name different default relays,
+and anything but client packages (so a batch is always one provider and one
+slot). It is not one transaction: each package goes through the
+ledger on its own, the run reports each one (installed, already installed,
+stopped and pending, not started), and running the same command again skips
+what is installed and resumes the rest.
+
 The package also carries a **setup manifest** (`KQXB` type 6, `src/setup_manifest.rs`):
 the steps `setup` runs, as a closed list of typed operations (`ensure_identity`,
 `install_certificate`, `install_key`, `use_relay`), never shell text. The relay
@@ -631,8 +701,51 @@ is sealed to the person, so only that slot can read it; it names every other par
 by SHA-256 and each part must be used by exactly one step. It is bound to the
 package id, purpose, recipient, device and expiry, so a copy for another person,
 drive or package is refused before any write. A package without a manifest still
-installs by the fixed plan. Not built: a resume ledger, installing a
-`ClientUpdate`, and a recovery package for a lost relay key.
+installs by the fixed plan.
+
+Each client manifest (version 2) signs a package generation, a counter the
+relay keeps per recipient and device, and the SHA-256 of the certificate in
+the package. `host keys create --enrollment ... --update` issues a
+`ClientUpdate` (the console issues `ClientSetup`). The client keeps an install
+ledger in its personal store: a package already installed is a no-op, an
+interrupted one resumes from the first step not verified in place, an older or
+equal generation is refused, and a second package for the same slot waits
+until the pending one finishes or `keyquorum setup --abandon ID` gives it up.
+Only a newer `ClientUpdate` replaces a stored key, and a replaced key is never
+installed again. A client that restores or erases its personal store loses
+that baseline.
+
+### Recovering a relay identity
+
+A relay identity can be restored on a host from a recovery package, made
+offline with the root and sealed to an operator key enrolled for recovery:
+
+1. The operator makes their recovery key and gives the public file to the
+   person holding the root: `keyquorum host recovery keygen --public-key-out
+   recovery.pub --private-key-out recovery.key` (the fingerprint is printed;
+   the private file stays with the operator, offline).
+2. The root holder confirms that fingerprint with the operator by another
+   channel, then issues: `keyquorum host recovery issue --root-key root.key
+   --relay-key relay.key --certificate provider.kqcert --recipient
+   recovery.pub --confirm-fingerprint "..." --valid-days 1 --out
+   recovery.kqpkg`. The root must be the one the build pins, and the identity
+   must pass the relay's own check; the package holds the relay key and
+   certificate only, never the root key, a lock, a token or a client secret.
+3. The operator installs: `keyquorum host recovery install recovery.kqpkg
+   --recipient-key recovery.key --out DIR` shows the plan; add `--yes` to
+   write. `DIR` must be new (its parent existing) or owner-only and not a
+   link; a different file there is refused, never replaced. A run cut short
+   is finished by running it again, and success is reported only after the
+   written files pass the relay's identity check. The package, which carries
+   the relay key, is then overwritten and removed; a shown plan or a failed
+   install leaves it for the retry, and a warning names it if it could not be
+   removed.
+
+A package expires in at most 7 days and with its certificate; a revoked or
+expired certificate, another root or another operator key is refused. To
+replace a lost or expired package, issue a new one. Installing restores files
+only: putting the identity on a Worker (`wrangler secret put`) or a host is a
+separate step with its own approval.
 
 ### From the console
 
@@ -648,10 +761,36 @@ public key only* still gives the original `.kqkey` files.
 files (`provider.kqpkg`, `provider.kqcert`, a README), with `USR_TYPE:
 PROVIDER`. No key is in it and no operator lock is needed. The file tool reads a
 dropped or chosen file's public framing in the page, says what it is and which
-actions apply, and refuses files named like private keys unread and key-looking content (hex
+actions apply, verifies a `.kqpkg` with the crate's own verifier compiled into
+the page (signature, hashes, purpose, validity window, signer and certificate
+against the root this relay pins, and one recipient for every sealed part; it
+says *Unverified* while the relay pins no root or the browser cannot run the
+verifier, and it applies no revocation list and opens nothing sealed), and
+shows the native command that installs it (`keyquorum setup` for a client,
+`keyquorum host recovery install` for recovery); the console itself installs
+nothing, since installing writes to a drive's slot and a personal store or a
+provider host, which no browser runtime here can reach safely, and refuses files named like private keys unread and key-looking content (hex
 or PEM keys) once read. Nothing is uploaded until an action is taken on a file, and storing
 public files online for an account is not built. `USR_TYPE` is `CLIENT` or
 `PROVIDER`, derived from the package's signed purpose, never stored apart from
 it. Operator actions by signed letter are a design only
 (`admin-letters.md`).
+
+**Support matrix for packages.** The console is a verifier with a native-install
+handoff. It does not decrypt sealed contents and installs nothing, so a
+browser installation permission, a destination swap or an interrupted browser
+install does not arise. What each runtime can do:
+
+| Runtime | Verifying a `.kqpkg` | Installing it |
+| --- | --- | --- |
+| Console in a browser that runs WebAssembly (the page allows `wasm-unsafe-eval` for its own scripts) and the relay pins a root (`PROVIDER_ROOT`) | Verified or refused: signature, hashes, purpose, validity window, signer and certificate against the pinned root, one recipient for every sealed part. No revocation list, nothing sealed opened. | Not here. The page shows the native command: `keyquorum setup` for a client package, `keyquorum host recovery install` for recovery. |
+| Console in a browser that cannot run WebAssembly, or whose verifier failed to load | *Unverified*, with text that says to install and check natively. No purpose-specific command is shown. | Native only. |
+| Console while the relay pins no root | *Unverified*. | Native only. |
+| `keyquorum setup` on a native machine | All of the above, plus the sealed parts: the slot opens them, each key's relay challenge and `/keycheck` run, the ledger decides resume, stale and conflict cases before any write. | Yes. This is the only client install route. |
+| `keyquorum host recovery install` on a native machine | Opens the recovery payload with the operator key under the pinned root and runs `provider::self_check`. | Yes, native only. Its permission and inode checks are Unix-specific. |
+| Lab | Not offered. | `setup` with a package is refused (`Env::package_setup` is false). |
+
+A *Verified* result in the page therefore says the public framing is
+authentic. The checks on the decrypted contents, the generation baseline, the
+resume record and the destination checks happen only in the native command.
 

@@ -2,6 +2,8 @@ import { api } from "./api.js";
 import { commit, operation } from "./confirm.js";
 import { MAX_FILE_BYTES, classify, fromBase64, readEnrollment, readPackage, refusedName } from "./files.js";
 import { formatTime } from "./format.js";
+import { NO_INSTALL, checkPackage } from "./package-check.js";
+import { loadProvisioner } from "./provision.js";
 import { stash } from "./stash.js";
 import { badge, clear, h, notice, section } from "./ui.js";
 import { downloadBytes, makeZip } from "./zip.js";
@@ -41,6 +43,68 @@ function providerPackage() {
   );
 }
 
+// The relay's pinned root (`identity_check.pinned_root`), asked once per page.
+// Only an answer is kept: a failed request is forgotten and thrown, so the next
+// file asks again and a failure is never reported as "no root pinned".
+let pinned = null;
+function pinnedRoot() {
+  pinned ??= api("GET", "/api/overview").then(
+    (overview) => overview?.identity_check?.pinned_root ?? null,
+    (error) => {
+      pinned = null;
+      throw error;
+    },
+  );
+  return pinned;
+}
+
+const STATES = {
+  verified: ["Verified", "good"],
+  unverified: ["Unverified", "plain"],
+  refused: ["Refused", "bad"],
+};
+
+// A dropped package: its public framing, then the core's verdict against the
+// relay's pinned root, then the native command that installs it.
+async function packageBody(bytes, name) {
+  const read = readPackage(bytes);
+  let root;
+  try {
+    root = await pinnedRoot();
+  } catch {
+    return [
+      h("p", {}, badge("Unverified", "plain"), " ", badge(`USR_TYPE: ${read.userType}`, "plain"), " ", h("code", { text: read.purpose })),
+      notice("warn", "Could not read the root this relay pins, so the package was not verified. Try the file again."),
+    ];
+  }
+  const result = await checkPackage({ bytes, name, pinnedRoot: root, load: () => loadProvisioner() });
+  const [label, tone] = STATES[result.state];
+  const body = [
+    h("p", {}, badge(label, tone), " ", badge(`USR_TYPE: ${read.userType}`, "plain"), " ", h("code", { text: read.purpose })),
+    h("p", { text: `Valid until ${formatTime(new Date(read.expiresAt * 1000).toISOString())}. Holds: ${read.components.map((c) => c.kind).join(", ")}.` }),
+  ];
+  if (result.state === "verified") {
+    const c = result.checked;
+    body.push(
+      h("p", { text: `Signed by the ${c.signed_by === "root" ? "provider root" : `relay of ${c.provider_id} (serial ${c.serial})`}, checked against the root this relay pins; certificate valid until ${c.certificate_expires_at}.` }),
+      c.sealed_to ? h("p", {}, "Sealed to ", h("code", { text: c.sealed_to }), ". What is sealed is checked only where it is opened.") : null,
+    );
+  } else {
+    body.push(notice(result.state === "refused" ? "bad" : "warn", result.state === "refused" ? `It did not verify: ${result.reason}` : `${result.reason} What is shown above is the public framing only.`));
+  }
+  if (result.handoff) {
+    body.push(
+      h("p", { class: "note", text: NO_INSTALL }),
+      h("p", { text: `Run by ${result.handoff.who}:` }),
+      ...result.handoff.commands.map((command) => h("pre", {}, h("code", { text: command }))),
+      h("p", { class: "note", text: result.handoff.note }),
+    );
+  } else if (result.state === "verified") {
+    body.push(h("p", { class: "note", text: "Provider information: public, nothing to install." }));
+  }
+  return body;
+}
+
 async function describe(file) {
   const refused = refusedName(file.name);
   if (refused) {
@@ -68,12 +132,7 @@ async function describe(file) {
       );
       found.use = () => stash.put({ name: file.name, bytes, ...read });
     } else if (found.kind === "package") {
-      const read = readPackage(bytes);
-      body.push(
-        h("p", {}, badge(`USR_TYPE: ${read.userType}`, "plain"), " ", h("code", { text: read.purpose })),
-        h("p", { text: `Valid until ${formatTime(new Date(read.expiresAt * 1000).toISOString())}. Holds: ${read.components.map((c) => c.kind).join(", ")}.` }),
-        h("p", { class: "note", text: "Read from the package's public header. Its signature is checked by `keyquorum setup`, not here." }),
-      );
+      body.push(...(await packageBody(bytes, file.name)));
     } else if (found.visibility === "public") {
       body.push(h("p", { class: "note", text: "Public: nothing secret is in it. Keeping public files on the relay for the account is not built yet, so this console does not store it." }));
     }
@@ -138,7 +197,7 @@ function fileTool(ctx) {
 
   return section(
     "File tool",
-    h("p", { class: "note", text: "Say what a file is, and act on it. Enrollment requests (.kqreq) go to Issue keys; packages, certificates and sealed keys are described. Files named like private keys are refused unread, key-looking content is refused once read, and anything this console does not handle is refused." }),
+    h("p", { class: "note", text: "Say what a file is, and act on it. Enrollment requests (.kqreq) go to Issue keys; packages are verified against the pinned root and shown with the native command that installs them; certificates and sealed keys are described. Files named like private keys are refused unread, key-looking content is refused once read, and anything this console does not handle is refused." }),
     zone,
     input,
     h("div", { class: "actions" }, clearButton),

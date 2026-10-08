@@ -35,6 +35,8 @@ impl Console {
         self.ask_as(OPERATOR, request, lock, true)
     }
 
+    /// One request as `operator`, with or without the identity, against this
+    /// console's pinned root.
     fn ask_as(
         &self,
         operator: &str,
@@ -47,7 +49,11 @@ impl Console {
             &self.store,
             identity.then_some(&self.identity),
             &body,
-            &Context { operator, lock },
+            &Context {
+                operator,
+                lock,
+                pinned_root: Some(&self.root),
+            },
             "2026-10-06 12:00:00.000",
         );
         (
@@ -101,6 +107,7 @@ fn client() -> (zeroize::Zeroizing<[u8; 32]>, [u8; 32]) {
     keys::generate_encryption_keypair()
 }
 
+/// No operator, an unknown op, a bare request and an oversized body are refused before the store.
 #[test]
 fn nothing_is_answered_without_a_verified_operator_or_for_a_malformed_request() {
     let c = console();
@@ -133,6 +140,7 @@ fn nothing_is_answered_without_a_verified_operator_or_for_a_malformed_request() 
         &Context {
             operator: OPERATOR,
             lock: None,
+            pinned_root: None,
         },
         "now",
     );
@@ -1284,7 +1292,7 @@ fn a_licence_is_recorded_for_a_customer_without_keys_and_a_replacement_voids_the
 mod identity_trust {
     use super::*;
     use crate::provider::test_helpers::issued_identity_with_caps;
-    use crate::provider::{CAP_PROVIDER, CAP_RELAY, KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY};
+    use crate::provider::{CAP_PROVIDER, CAP_RELAY};
 
     const BEFORE_EXPIRY: &str = "2026-10-07 03:00:00.000";
 
@@ -1300,27 +1308,30 @@ mod identity_trust {
         )
     }
 
+    /// The happy path: signed by the pinned root, unexpired, naming the held key.
     #[test]
     fn a_certificate_from_the_pinned_root_for_the_held_key_is_trusted() {
         let (identity, root) = identity_of(issued_identity_with_caps(
             "2099-01-01 00:00:00",
             CAP_PROVIDER,
         ));
-        let check = identity_check(Some(&identity), &root, BEFORE_EXPIRY);
+        let check = identity_check(Some(&identity), Some(&root), BEFORE_EXPIRY);
         assert_eq!(check["state"], "trusted");
         assert_eq!(check["pinned_root"], hex::encode(root));
         assert!(check.get("reason").is_none());
     }
 
+    /// Without secrets the state is `missing`, and the pinned root is still shown.
     #[test]
     fn no_identity_is_missing_and_still_names_the_pinned_root() {
-        let check = identity_check(None, &[7u8; 32], BEFORE_EXPIRY);
+        let check = identity_check(None, Some(&[7u8; 32]), BEFORE_EXPIRY);
         assert_eq!(
             check,
             json!({ "state": "missing", "pinned_root": hex::encode([7u8; 32]) })
         );
     }
 
+    /// Wrong root, expired, swapped key and missing capabilities each have their reason.
     #[test]
     fn each_way_an_identity_is_configured_but_untrusted_names_its_own_reason() {
         let (identity, root) = identity_of(issued_identity_with_caps(
@@ -1328,7 +1339,7 @@ mod identity_trust {
             CAP_PROVIDER,
         ));
         let reason = |identity: &ProviderIdentity, root: &[u8; 32], now: &str| {
-            let check = identity_check(Some(identity), root, now);
+            let check = identity_check(Some(identity), Some(root), now);
             assert_eq!(check["state"], "untrusted");
             check["reason"].as_str().expect("a reason").to_string()
         };
@@ -1370,22 +1381,19 @@ mod identity_trust {
         );
     }
 
+    /// Overview and status agree on the check, and the relay key never appears.
     #[test]
     fn the_overview_and_status_report_the_check_and_leak_no_secret() {
-        // The console's test identity is signed by a throwaway root, not the one
-        // compiled in, which is exactly an operator who has not pinned theirs.
+        // The console pins the root its identity was issued under, so the
+        // check passes; a relay pinning another root, or none, says so.
         let c = console();
         let key_hex = hex::encode(*c.identity.relay_private_key);
         let (_, overview) = c.ask(json!({ "op": "overview" }), None);
         assert_eq!(overview["identity_configured"], true);
-        assert_eq!(overview["identity_check"]["state"], "untrusted");
-        assert_eq!(
-            overview["identity_check"]["reason"],
-            "certificate_not_signed_by_pinned_root"
-        );
+        assert_eq!(overview["identity_check"]["state"], "trusted");
         assert_eq!(
             overview["identity_check"]["pinned_root"],
-            hex::encode(KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY)
+            hex::encode(c.root)
         );
         let (_, status) = c.ask(json!({ "op": "status" }), None);
         assert_eq!(status["identity_check"], overview["identity_check"]);
@@ -1396,6 +1404,58 @@ mod identity_trust {
                 "the relay key never appears in a reply"
             );
         }
+
+        let other = Console {
+            root: [7u8; 32],
+            ..console()
+        };
+        let (_, overview) = other.ask(json!({ "op": "overview" }), None);
+        assert_eq!(overview["identity_check"]["state"], "untrusted");
+        assert_eq!(
+            overview["identity_check"]["reason"],
+            "certificate_not_signed_by_pinned_root"
+        );
+        assert_eq!(
+            overview["identity_check"]["pinned_root"],
+            hex::encode([7u8; 32])
+        );
+    }
+
+    /// No `PROVIDER_ROOT`: `no_pinned_root` with a null `pinned_root`, over the console too.
+    #[test]
+    fn a_relay_that_pins_no_root_cannot_call_its_identity_trusted() {
+        let (identity, _) = identity_of(issued_identity_with_caps(
+            "2099-01-01 00:00:00",
+            CAP_PROVIDER,
+        ));
+        let check = identity_check(Some(&identity), None, BEFORE_EXPIRY);
+        assert_eq!(
+            check,
+            json!({ "state": "untrusted", "reason": "no_pinned_root", "pinned_root": Value::Null })
+        );
+        // The same with no identity either: the missing root is what to fix first.
+        assert_eq!(
+            identity_check(None, None, BEFORE_EXPIRY)["reason"],
+            "no_pinned_root"
+        );
+        // Over the console: the lock still refuses without an identity, and
+        // the overview carries the reason.
+        let c = console();
+        let body = serde_json::to_vec(&json!({ "op": "overview" })).expect("json");
+        let reply = operate(
+            &c.store,
+            Some(&c.identity),
+            &body,
+            &Context {
+                operator: OPERATOR,
+                lock: None,
+                pinned_root: None,
+            },
+            BEFORE_EXPIRY,
+        );
+        let overview: Value = serde_json::from_slice(&reply.body).expect("json");
+        assert_eq!(overview["identity_check"]["reason"], "no_pinned_root");
+        assert!(overview["identity_check"]["pinned_root"].is_null());
     }
 }
 
@@ -1564,4 +1624,46 @@ fn the_provider_package_is_public_provider_only_and_needs_no_lock() {
     assert_eq!(status, 503, "no relay identity, no package");
     let (status, _) = c.ask(json!({ "op": "provider_package", "extra": 1 }), None);
     assert_eq!(status, 400, "no fields beyond the op");
+}
+
+/// The generation a package signs, read from its sealed manifest.
+fn manifest_generation(c: &Console, secret: &[u8; 32], body: &Value) -> u64 {
+    let bytes = STANDARD
+        .decode(body["package"]["package_base64"].as_str().expect("b64"))
+        .expect("base64");
+    let package = crate::package::decode(&bytes).expect("a valid package");
+    let manifest = package
+        .components
+        .iter()
+        .find(|component| component.kind == crate::package::ComponentKind::SetupManifest)
+        .expect("the setup manifest");
+    crate::setup_manifest::open(
+        &manifest.bytes,
+        secret,
+        &c.root,
+        "2026-10-06 12:00:00",
+        &empty_revoked(),
+    )
+    .expect("open the manifest")
+    .body
+    .package_generation
+}
+
+#[test]
+fn successive_packages_for_one_enrollment_sign_rising_generations() {
+    let c = console();
+    let lock = c.lock();
+    let (secret, encoded, fingerprint) = enrollment();
+    let (status, first) = issue_from_enrollment(&c, &lock, &encoded, &fingerprint);
+    assert_eq!(status, 200, "first issue from an enrollment");
+    let (status, second) = issue_from_enrollment(&c, &lock, &encoded, &fingerprint);
+    assert_eq!(status, 200, "second issue from the same enrollment");
+    let (one, two) = (
+        manifest_generation(&c, &secret, &first),
+        manifest_generation(&c, &secret, &second),
+    );
+    assert!(
+        one >= 1 && two > one,
+        "generations rise per recipient and drive"
+    );
 }

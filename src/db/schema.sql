@@ -691,3 +691,58 @@ CREATE TABLE IF NOT EXISTS outbox_refusals (
     refused_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS outbox_refusals_owner ON outbox_refusals (owner_label, id);
+
+-- The package install ledger (`src/db/package_ledger.rs`, issue #106). One row
+-- per package `setup` started: its id, the SHA-256 of its signed bytes, purpose,
+-- issuer, the stream it belongs to (provider id from the root-verified
+-- certificate, recipient public key, device id, slot label) and the container
+-- path it was approved for, its signed generation (NULL for a package with no
+-- setup manifest, which cannot replace anything), the steps done so far and its
+-- state. Never a bearer, key, passphrase or plaintext: hashes, ids and labels.
+CREATE TABLE IF NOT EXISTS package_installs (
+    package_id      TEXT PRIMARY KEY CHECK (length(package_id) = 32),
+    package_sha256  TEXT NOT NULL CHECK (length(package_sha256) = 64),
+    purpose         TEXT NOT NULL CHECK (purpose IN ('client_setup', 'client_update')),
+    issuer          TEXT NOT NULL CHECK (length(issuer) = 64),
+    provider_id     TEXT NOT NULL,
+    recipient       TEXT NOT NULL CHECK (length(recipient) = 64),
+    device_id       TEXT NOT NULL CHECK (length(device_id) = 32),
+    slot_label      TEXT NOT NULL,
+    container       TEXT NOT NULL,
+    generation      INTEGER CHECK (generation IS NULL OR generation >= 1),
+    steps_done      TEXT NOT NULL DEFAULT '',
+    licence_sha256  TEXT CHECK (licence_sha256 IS NULL OR length(licence_sha256) = 64),
+    state           TEXT NOT NULL CHECK (state IN ('pending', 'complete', 'failed')),
+    started_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+-- One package in progress per stream: another waits until it is finished or
+-- explicitly abandoned (`setup --abandon ID`).
+CREATE UNIQUE INDEX IF NOT EXISTS package_installs_one_pending
+    ON package_installs (provider_id, recipient, device_id, slot_label)
+    WHERE state = 'pending';
+
+-- The highest generation accepted for each stream. Taken before a package's
+-- first change and never lowered, also by an abandoned package, so an older
+-- package can never replace what a newer one installed. A new certificate or
+-- relay URL does not reset it: the stream is the provider, not the URL.
+CREATE TABLE IF NOT EXISTS package_baselines (
+    provider_id  TEXT NOT NULL,
+    recipient    TEXT NOT NULL CHECK (length(recipient) = 64),
+    device_id    TEXT NOT NULL CHECK (length(device_id) = 32),
+    slot_label   TEXT NOT NULL,
+    generation   INTEGER NOT NULL CHECK (generation >= 1),
+    PRIMARY KEY (provider_id, recipient, device_id, slot_label)
+);
+
+-- The hashes of keys a package update replaced in a stream. A later package,
+-- however new its generation, never installs one of them again.
+CREATE TABLE IF NOT EXISTS package_retired_keys (
+    provider_id  TEXT NOT NULL,
+    recipient    TEXT NOT NULL CHECK (length(recipient) = 64),
+    device_id    TEXT NOT NULL CHECK (length(device_id) = 32),
+    slot_label   TEXT NOT NULL,
+    key_hash     TEXT NOT NULL CHECK (length(key_hash) = 64),
+    retired_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (provider_id, recipient, device_id, slot_label, key_hash)
+);

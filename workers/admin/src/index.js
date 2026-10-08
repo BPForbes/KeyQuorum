@@ -31,7 +31,10 @@ const SIGNING_POSTS = new Set(["checkpoint", "provider_package"]);
 
 const SECURITY_HEADERS = {
   "content-security-policy":
-    "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; " +
+    // 'wasm-unsafe-eval' lets the page compile its own WebAssembly (the
+    // identity maker in provision-wasm/, served from this origin); it allows
+    // no JavaScript eval and no other origin.
+    "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; img-src 'self'; " +
     "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
   "x-content-type-options": "nosniff",
   "referrer-policy": "no-referrer",

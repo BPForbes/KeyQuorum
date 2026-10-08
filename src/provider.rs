@@ -33,13 +33,11 @@ pub const CAP_MAILBOX: u32 = 1 << 1;
 pub const CAP_API_ADMIN: u32 = 1 << 2;
 pub const CAP_PROVIDER: u32 = CAP_RELAY | CAP_MAILBOX | CAP_API_ADMIN;
 
-/// Offline KeyQuorum provider-root verifying key. Replace with the
-/// official offline-generated root before production issuance. The
-/// matching private key must never appear in git, CI, or this tree.
-pub const KEYQUORUM_PROVIDER_ROOT_PUBLIC_KEY: [u8; 32] = [
-    0xf6, 0x82, 0x4a, 0xad, 0xd7, 0x57, 0x02, 0x42, 0x11, 0x5e, 0x50, 0xd5, 0x4c, 0x15, 0x32, 0xb8,
-    0xcd, 0x9f, 0xa1, 0x2a, 0x9a, 0x5f, 0xc5, 0x49, 0x7b, 0x1c, 0x83, 0x88, 0x36, 0x29, 0x7c, 0x0d,
-];
+// Offline KeyQuorum provider-root verifying key, compiled in by `build.rs`
+// from `KEYQUORUM_PROVIDER_ROOT` or a git-ignored `provider-root.pub` (the
+// `root.pub` the console or `host provision` generated); never committed. A
+// build given neither carries a placeholder whose private half nobody holds.
+include!(concat!(env!("OUT_DIR"), "/provider_root.rs"));
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Certificate {
@@ -460,6 +458,10 @@ pub(crate) fn civil_from_days(days_since_epoch: i64) -> (i32, u32, u32) {
 pub mod authorize;
 pub mod hardware_auth;
 pub mod policy;
+pub mod provision;
+#[cfg(all(feature = "console", target_arch = "wasm32"))]
+pub mod provision_wasm;
+pub mod recovery;
 
 #[cfg(test)]
 #[path = "provider/test_helpers.rs"]

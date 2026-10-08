@@ -25,6 +25,7 @@ mod mailbox;
 pub mod operator;
 pub mod operator_log;
 mod org_tree;
+pub mod package_generation;
 #[cfg(feature = "provider")]
 mod server;
 pub mod service;

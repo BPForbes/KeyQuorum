@@ -26,6 +26,7 @@ const RELAY_AUDIT_CHECKPOINT_DOMAIN: &[u8] = b"KQ-RELAY-AUDIT-CHECKPOINT-v1";
 const RELAY_API_KEY_ISSUE_DOMAIN: &[u8] = b"KQ-RELAY-API-KEY-ISSUE-v1";
 const RELAY_BACKUP_DOMAIN: &[u8] = b"KQ-RELAY-BACKUP-v1";
 const RELAY_SETUP_MANIFEST_DOMAIN: &[u8] = b"KQ-RELAY-SETUP-MANIFEST-v1";
+const PROVIDER_RECOVERY_DOMAIN: &[u8] = b"KQ-PROVIDER-RECOVERY-v1";
 
 /// Verifies `signature` over `message` under `public_key`. Uses
 /// `verify_strict` rather than `verify` — it rejects the non-canonical
@@ -234,6 +235,18 @@ pub fn relay_setup_manifest_preimage(body: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(RELAY_SETUP_MANIFEST_DOMAIN);
     hasher.update(body);
+    hasher.finalize().into()
+}
+
+/// What the offline provider root signs over a recovery payload's context
+/// (`provider::recovery`): the context exactly as sealed, which names the
+/// package, the operator it is sealed to, the relay key and the certificate.
+/// The relay secret is not in it; it is bound by deriving its public half.
+/// Domain-separated from every other preimage.
+pub fn provider_recovery_preimage(context: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(PROVIDER_RECOVERY_DOMAIN);
+    hasher.update(context);
     hasher.finalize().into()
 }
 

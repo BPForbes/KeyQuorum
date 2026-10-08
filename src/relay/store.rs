@@ -268,6 +268,13 @@ pub trait RelayStore: Send + Sync {
 
     /// Whether the operator lock exists yet.
     fn operator_lock_exists(&self) -> Result<bool>;
+    /// The next setup-package generation for this recipient and device
+    /// (`relay::package_generation`), taken in its own unit of work.
+    fn next_package_generation(
+        &self,
+        recipient: &[u8; 32],
+        device: Option<&[u8; 16]>,
+    ) -> Result<u64>;
     /// The ids of keys past their own expiry, by the store's clock.
     fn expired_key_ids(&self) -> Result<HashSet<i64>>;
     /// Stage a new operator lock, shown once and not yet the lock (see
@@ -723,6 +730,15 @@ impl<S: Sql + Send> RelayStore for SqlRelayStore<S> {
         self.with(|conn| {
             key_delivery::rotate_as_bundle(conn, identity, id, recipient, |bytes| write(bytes))
         })
+    }
+
+    /// One increment of `package_generations`, in its own unit of work.
+    fn next_package_generation(
+        &self,
+        recipient: &[u8; 32],
+        device: Option<&[u8; 16]>,
+    ) -> Result<u64> {
+        self.with(|conn| super::package_generation::next(conn, recipient, device))
     }
 
     fn operator_lock_exists(&self) -> Result<bool> {

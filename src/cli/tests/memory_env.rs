@@ -56,6 +56,12 @@ pub struct TestRelay {
     pub fail_uploads: bool,
     /// Let this many uploads through, then fail every later one.
     pub fail_uploads_after: Option<usize>,
+    /// Refuse every request as an unreachable relay would; the root it
+    /// chains to stays pinned.
+    pub unreachable: bool,
+    /// Let the next `/keycheck` be processed by the relay, then drop its
+    /// answer, as a connection lost after the relay replied would.
+    pub lose_keycheck_response: bool,
 }
 
 pub const RELAY_URL: &str = "https://relay.test";
@@ -92,6 +98,9 @@ impl Env for MemoryEnv {
         let Some(relay) = self.relay.as_mut() else {
             return Err(Error::RelayRequest("no relay in this test".into()));
         };
+        if relay.unreachable {
+            return Err(Error::RelayRequest("the relay is unreachable".into()));
+        }
         if request.url.path() == "/provider-identity" {
             relay.identity_challenges += 1;
         }
@@ -111,11 +120,13 @@ impl Env for MemoryEnv {
                 return Err(Error::RelayRequest("connection reset".into()));
             }
         }
-        Ok(relay::service::dispatch(
-            &relay.store,
-            Some(&relay.identity),
-            &request,
-        ))
+        let answer = relay::service::dispatch(&relay.store, Some(&relay.identity), &request);
+        if request.url.path() == "/keycheck" && std::mem::take(&mut relay.lose_keycheck_response) {
+            return Err(Error::RelayRequest(
+                "the connection dropped after the relay answered".into(),
+            ));
+        }
+        Ok(answer)
     }
 
     fn provider_root(&self) -> [u8; 32] {
@@ -203,6 +214,8 @@ impl MemoryEnv {
             key_checks: 0,
             fail_uploads: false,
             fail_uploads_after: None,
+            unreachable: false,
+            lose_keycheck_response: false,
         });
     }
 
@@ -229,6 +242,28 @@ impl MemoryEnv {
             certificate,
             relay_private_key: relay_private,
         }
+    }
+
+    /// Renew the relay's certificate: same provider, same relay key, a new
+    /// serial, signed by the same root, as a provider does when the old one
+    /// nears its end. The relay answers with the renewed one from now on.
+    pub fn renew_certificate(&mut self, serial: &str) {
+        let relay = self.relay.as_mut().expect("a relay");
+        let current = provider::parse_certificate(&relay.identity.certificate)
+            .expect("the current certificate");
+        relay.identity.certificate = provider::issue_certificate(
+            &relay.root_private,
+            &provider::NewCertificate {
+                provider_id: &current.provider_id,
+                serial,
+                relay_public_key: &current.relay_public_key,
+                issued_at: "2026-01-01 00:00:00",
+                expires_at: "2999-12-31 23:59:00",
+                capabilities: provider::CAP_PROVIDER,
+                issuer_id: "TestRoot",
+            },
+        )
+        .expect("renewed certificate");
     }
 
     /// Mint a relay key of `scope` (inbox push needs no recipient).
