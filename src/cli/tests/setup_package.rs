@@ -838,6 +838,86 @@ fn an_interrupted_setup_resumes_where_it_stopped_and_redoes_nothing() {
 }
 
 #[test]
+fn a_key_check_whose_answer_is_lost_stores_nothing_and_running_again_finishes() {
+    let mut env = alice();
+    let bytes = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    // The relay checked the key and answered, but the answer never reached
+    // us: setup cannot tell whether the key was accepted, so it stores nothing.
+    env.relay.as_mut().expect("a relay").lose_keycheck_response = true;
+    let out = setup_file(&mut env, "lost-answer", &bytes, true);
+    assert!(out.is_err(), "setup lost-answer.kqpkg --yes");
+    assert!(stored_key(&env).is_none());
+    assert_eq!(ledger_state(&env, &bytes).as_deref(), Some("pending"));
+
+    setup_file(&mut env, "lost-answer", &bytes, true).expect("setup lost-answer.kqpkg --yes again");
+    assert!(stored_key(&env).is_some());
+    let count: i64 = env
+        .store(DB)
+        .query_row("SELECT COUNT(*) FROM relay_credentials", [], |row| {
+            row.get(0)
+        })
+        .expect("count");
+    assert_eq!(count, 1, "one relay credential after the rerun");
+    assert_eq!(ledger_state(&env, &bytes).as_deref(), Some("complete"));
+}
+
+/// Every stored value in the ledger tables, as bytes, for the secrecy check.
+fn ledger_bytes(env: &MemoryEnv) -> Vec<u8> {
+    use rusqlite::types::Value;
+    let conn = env.store(DB);
+    let mut dump = Vec::new();
+    for table in [
+        "package_installs",
+        "package_baselines",
+        "package_retired_keys",
+    ] {
+        let mut stmt = conn
+            .prepare(&format!("SELECT * FROM {table}"))
+            .expect("prepare");
+        let columns = stmt.column_count();
+        let rows = stmt
+            .query_map([], |row| {
+                (0..columns)
+                    .map(|i| row.get::<_, Value>(i))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .expect("query");
+        for row in rows {
+            for value in row.expect("row") {
+                match value {
+                    Value::Text(text) => dump.extend_from_slice(text.as_bytes()),
+                    Value::Blob(bytes) => dump.extend_from_slice(&bytes),
+                    Value::Integer(number) => dump.extend_from_slice(number.to_string().as_bytes()),
+                    Value::Real(_) | Value::Null => {}
+                }
+                dump.push(b'\n');
+            }
+        }
+    }
+    dump
+}
+
+#[test]
+fn the_ledger_keeps_no_bearer_and_no_passphrase() {
+    let mut env = alice();
+    let bytes = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    setup_file(&mut env, "secrecy", &bytes, true).expect("setup secrecy.kqpkg --yes");
+    let dump = ledger_bytes(&env);
+    assert!(!dump.is_empty(), "the install left ledger rows");
+    assert!(
+        !dump.windows(3).any(|window| window == b"kq_"),
+        "a bearer reached the install ledger"
+    );
+    let passphrase = test_secrets::passphrase();
+    assert!(
+        !dump
+            .windows(passphrase.len())
+            .any(|window| window == passphrase.as_bytes()),
+        "a passphrase reached the install ledger"
+    );
+}
+
+#[test]
 fn a_crash_after_a_step_took_effect_is_finished_without_doing_it_twice() {
     let mut env = alice();
     let bytes = manifest_package_with(&env, Purpose::ClientSetup, 1);
@@ -1247,5 +1327,85 @@ fn the_relay_step_runs_again_when_the_profile_names_another_slot() {
         Some("alice"),
         "setup profile.kqpkg --yes restores the approved slot"
     );
+    assert_eq!(ledger_state(&env, &bytes).as_deref(), Some("complete"));
+}
+
+// --- the database-only relay step is one transaction (issue #106) ---------
+
+/// A failure partway through the default profile's writes (after the relay
+/// URL, before the label) rolls the partial write back, and the step is not
+/// marked; running the same package again finishes it.
+#[test]
+fn a_use_step_that_fails_mid_profile_write_rolls_back_and_reruns() {
+    let mut env = alice();
+    let bytes = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    let url_before = db::profile::get(env.store(DB), db::profile::DEFAULT_RELAY_URL).expect("url");
+    env.store(DB)
+        .execute_batch(
+            "CREATE TRIGGER fail_label_insert BEFORE INSERT ON profile
+               WHEN NEW.key = 'default_label' BEGIN SELECT RAISE(ABORT, 'injected'); END;
+             CREATE TRIGGER fail_label_update BEFORE UPDATE ON profile
+               WHEN NEW.key = 'default_label' BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+        )
+        .expect("triggers");
+    assert!(
+        setup_file(&mut env, "mid-profile", &bytes, true).is_err(),
+        "setup profile.kqpkg --yes, the label write fails"
+    );
+    assert_eq!(
+        db::profile::get(env.store(DB), db::profile::DEFAULT_RELAY_URL).expect("url"),
+        url_before,
+        "the relay URL written before the failure is rolled back"
+    );
+    let record = db::package_ledger::record(
+        env.store(DB),
+        &hex::encode(package::decode(&bytes).unwrap().id),
+    )
+    .expect("ledger")
+    .expect("a record");
+    assert!(
+        !record.steps_done.iter().any(|done| done == "relay"),
+        "the use step is not marked done"
+    );
+    env.store(DB)
+        .execute_batch("DROP TRIGGER fail_label_insert; DROP TRIGGER fail_label_update;")
+        .expect("drop triggers");
+    setup_file(&mut env, "mid-profile", &bytes, true).expect("setup profile.kqpkg --yes, again");
+    assert_eq!(ledger_state(&env, &bytes).as_deref(), Some("complete"));
+    assert!(
+        db::profile::get(env.store(DB), db::profile::DEFAULT_RELAY_URL)
+            .expect("url")
+            .is_some(),
+        "the rerun sets the relay URL"
+    );
+}
+
+/// A failure while recording the use step's completion rolls back the profile
+/// change it was made with, so the two are never split.
+#[test]
+fn a_use_step_whose_completion_mark_fails_leaves_no_profile_change() {
+    let mut env = alice();
+    let bytes = manifest_package_with(&env, Purpose::ClientSetup, 1);
+    let url_before = db::profile::get(env.store(DB), db::profile::DEFAULT_RELAY_URL).expect("url");
+    env.store(DB)
+        .execute_batch(
+            "CREATE TRIGGER fail_relay_mark BEFORE UPDATE ON package_installs
+               WHEN NEW.steps_done LIKE '%relay%' AND OLD.steps_done NOT LIKE '%relay%'
+             BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+        )
+        .expect("trigger");
+    assert!(
+        setup_file(&mut env, "mark-fails", &bytes, true).is_err(),
+        "setup mark-fails.kqpkg --yes, recording the use step fails"
+    );
+    assert_eq!(
+        db::profile::get(env.store(DB), db::profile::DEFAULT_RELAY_URL).expect("url"),
+        url_before,
+        "the profile change is rolled back with its mark"
+    );
+    env.store(DB)
+        .execute_batch("DROP TRIGGER fail_relay_mark;")
+        .expect("drop trigger");
+    setup_file(&mut env, "mark-fails", &bytes, true).expect("setup mark-fails.kqpkg --yes, again");
     assert_eq!(ledger_state(&env, &bytes).as_deref(), Some("complete"));
 }

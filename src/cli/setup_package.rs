@@ -732,6 +732,57 @@ fn run_step(
     }
 }
 
+/// A step with effects outside the database (a certificate file, a sealed key
+/// fetched from the relay): run if missing, checked again, then marked. A crash
+/// between the effect and the mark is reconciled by the next run's check.
+fn run_external_step(
+    conn: &Connection,
+    plan: &Plan,
+    step: &Operation,
+    device: &Path,
+    label: &str,
+    id: &str,
+    number: usize,
+) -> Result<()> {
+    if !step_in_place(conn, plan, step, device, label)? {
+        run_step(conn, plan, step, device, label)?;
+        if !step_in_place(conn, plan, step, device, label)? {
+            return Err(Error::KqpkgRefused(format!(
+                "step {} ran but its result is not in place; nothing further was done",
+                number + 1
+            )));
+        }
+    }
+    package_ledger::mark_step(conn, id, step.id())
+}
+
+/// A step whose only effect is database rows (the default profile): the
+/// handler, its in-place check and the completion mark share one immediate
+/// transaction, so a failure rolls back the profile change and the mark
+/// together and the next run starts the step again.
+fn run_database_step(
+    conn: &Connection,
+    plan: &Plan,
+    step: &Operation,
+    device: &Path,
+    label: &str,
+    id: &str,
+    number: usize,
+) -> Result<()> {
+    crate::db::with_immediate_transaction(conn, || {
+        if !step_in_place(conn, plan, step, device, label)? {
+            run_step(conn, plan, step, device, label)?;
+        }
+        if !step_in_place(conn, plan, step, device, label)? {
+            return Err(Error::KqpkgRefused(format!(
+                "step {} ran but its result is not in place; nothing further was done",
+                number + 1
+            )));
+        }
+        package_ledger::mark_step(conn, id, step.id())
+    })
+}
+
 /// Applies a verified plan through the ledger: the package is recorded pending
 /// and its generation reserved before the first change; each step is checked
 /// against the real state, run only if its effect is missing, checked again,
@@ -764,23 +815,21 @@ pub(super) fn apply(conn: &Connection, plan: &Plan, device: &Path, label: &str) 
             plan.steps.len(),
             step.describe()
         );
-        if !step_in_place(conn, plan, step, device, label)? {
-            if let Err(err) = run_step(conn, plan, step, device, label) {
-                outln!(
-                    "Setup stopped at step {}. Run the same command again to finish it, or \
-                     abandon it with `keyquorum setup --abandon {id}`.",
-                    number + 1
-                );
-                return Err(err);
-            }
-            if !step_in_place(conn, plan, step, device, label)? {
-                return Err(Error::KqpkgRefused(format!(
-                    "step {} ran but its result is not in place; nothing further was done",
-                    number + 1
-                )));
-            }
+        // A step whose only effect is database rows commits with its completion
+        // mark, or not at all (issue #106); the others run outside any transaction.
+        let result = if matches!(step, Operation::UseRelay { .. }) {
+            run_database_step(conn, plan, step, device, label, id, number)
+        } else {
+            run_external_step(conn, plan, step, device, label, id, number)
+        };
+        if let Err(err) = result {
+            outln!(
+                "Setup stopped at step {}. Run the same command again to finish it, or \
+                 abandon it with `keyquorum setup --abandon {id}`.",
+                number + 1
+            );
+            return Err(err);
         }
-        package_ledger::mark_step(conn, id, step.id())?;
     }
     for step in &plan.steps {
         if !step_in_place(conn, plan, step, device, label)? {

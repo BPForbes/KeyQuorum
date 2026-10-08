@@ -236,3 +236,31 @@ fn a_pending_package_in_the_same_batch_does_not_block_the_preflight() {
         Decision::Install
     );
 }
+
+/// The stream is the provider, recipient, device, slot and container. A renewed
+/// certificate or a moved relay URL is not part of it, so the generation
+/// baseline it raised still refuses an older package from the same stream, and
+/// a newer one from a new issuer still installs.
+#[test]
+fn a_renewed_certificate_or_moved_url_keeps_the_stream_and_its_baseline() {
+    let conn = open_in_memory().unwrap();
+    begin(&conn, &incoming(1, Some(2))).unwrap();
+    complete(&conn, &incoming(1, None).package_id).unwrap();
+
+    // A package for the same stream signed under a renewed certificate, at the
+    // generation already reached: refused, because the baseline did not move.
+    let mut renewed = incoming(2, Some(2));
+    renewed.issuer = "dd".repeat(32);
+    assert!(matches!(
+        decide(&conn, &renewed),
+        Err(Error::KqpkgRefused(_))
+    ));
+    assert_eq!(baseline(&conn, &target()).unwrap(), Some(2));
+
+    // The next generation from the renewed certificate installs and moves the
+    // baseline on; the stream is still the one target.
+    let mut next = incoming(3, Some(3));
+    next.issuer = "dd".repeat(32);
+    assert_eq!(begin(&conn, &next).unwrap(), Decision::Install);
+    assert_eq!(baseline(&conn, &target()).unwrap(), Some(3));
+}

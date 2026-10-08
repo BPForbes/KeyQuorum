@@ -59,6 +59,9 @@ pub struct TestRelay {
     /// Refuse every request as an unreachable relay would; the root it
     /// chains to stays pinned.
     pub unreachable: bool,
+    /// Let the next `/keycheck` be processed by the relay, then drop its
+    /// answer, as a connection lost after the relay replied would.
+    pub lose_keycheck_response: bool,
 }
 
 pub const RELAY_URL: &str = "https://relay.test";
@@ -117,11 +120,13 @@ impl Env for MemoryEnv {
                 return Err(Error::RelayRequest("connection reset".into()));
             }
         }
-        Ok(relay::service::dispatch(
-            &relay.store,
-            Some(&relay.identity),
-            &request,
-        ))
+        let answer = relay::service::dispatch(&relay.store, Some(&relay.identity), &request);
+        if request.url.path() == "/keycheck" && std::mem::take(&mut relay.lose_keycheck_response) {
+            return Err(Error::RelayRequest(
+                "the connection dropped after the relay answered".into(),
+            ));
+        }
+        Ok(answer)
     }
 
     fn provider_root(&self) -> [u8; 32] {
@@ -210,6 +215,7 @@ impl MemoryEnv {
             fail_uploads: false,
             fail_uploads_after: None,
             unreachable: false,
+            lose_keycheck_response: false,
         });
     }
 
