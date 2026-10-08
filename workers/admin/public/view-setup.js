@@ -1,4 +1,4 @@
-import { PRIVATE_FILES, expiryText, filesOf, loadProvisioner, nextSteps, problems, publicZip, utcText } from "./provision.js";
+import { PRIVATE_FILES, expiryText, filesOf, loadProvisioner, nextSteps, problems, publicZip, utcText, wipe } from "./provision.js";
 import { identityState, setupSteps, untrustedReason } from "./setup-state.js";
 import { badge, busy, clear, field, h, notice, section } from "./ui.js";
 import { downloadBytes } from "./zip.js";
@@ -32,7 +32,11 @@ function generatePanel() {
   const status = h("div", {});
   const result = h("div", {});
   let made = null;
+  // Revokers for the private downloads this panel started (zip.js).
+  const revokes = [];
+  // Wipes the private bytes, releases their pending downloads, then forgets.
   const forget = () => {
+    wipe(made, revokes);
     made = null;
     clear(result);
   };
@@ -59,7 +63,7 @@ function generatePanel() {
     const downloads = made.files
       .filter((file) => file.private)
       .map((file) =>
-        h("button", { type: "button", text: `Download ${file.name}`, on: { click: () => downloadBytes(file.name, file.bytes, "text/plain") } }),
+        h("button", { type: "button", text: `Download ${file.name}`, on: { click: () => revokes.push(downloadBytes(file.name, file.bytes, "text/plain")) } }),
       );
     downloads.push(
       h("button", {

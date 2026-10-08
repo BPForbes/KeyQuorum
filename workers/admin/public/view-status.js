@@ -1,6 +1,6 @@
 import { get } from "./api.js";
 import { daysUntil, formatBytes, formatTime } from "./format.js";
-import { BACKUP_PRIVATE_FILE, backupFilesOf, backupNextSteps, loadProvisioner } from "./provision.js";
+import { BACKUP_PRIVATE_FILE, backupFilesOf, backupNextSteps, loadProvisioner, wipe } from "./provision.js";
 import { untrustedReason } from "./setup-state.js";
 import { badge, busy, card, clear, h, notice, section } from "./ui.js";
 import { downloadBytes } from "./zip.js";
@@ -121,7 +121,11 @@ function backupSetup(backups) {
   const status = h("div", {});
   const result = h("div", {});
   let made = null;
+  // Revokers for the private downloads this panel started (zip.js).
+  const revokes = [];
+  // Wipes the private bytes, releases their pending downloads, then forgets.
   const forget = () => {
+    wipe(made, revokes);
     made = null;
     clear(result);
   };
@@ -141,7 +145,7 @@ function backupSetup(backups) {
       h(
         "div",
         { class: "actions" },
-        made.files.map((file) => h("button", { type: "button", text: `Download ${file.name}`, on: { click: () => downloadBytes(file.name, file.bytes, "text/plain") } })),
+        made.files.map((file) => h("button", { type: "button", text: `Download ${file.name}`, on: { click: () => revokes.push(downloadBytes(file.name, file.bytes, "text/plain")) } })),
       ),
       h("p", { class: "note", text: `${BACKUP_PRIVATE_FILE} is private: keep it off shared or synced folders and never upload it anywhere, this console included.` }),
       h("ol", {}, backupNextSteps(made.backupPub).map((step) => h("li", { text: step }))),

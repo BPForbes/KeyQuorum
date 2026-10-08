@@ -919,8 +919,9 @@ struct Provisioned {
 /// identity and the certificate in one run, checked as the relay checks
 /// them) written into `out`, a directory this run creates owner-only (an
 /// existing one, whatever its mode, is refused before anything is made),
-/// each file created new; a write that fails removes the files this run
-/// created, and only those, so a retry is never refused by a leftover.
+/// each file created new. On a write failure the cleanup removes only the
+/// files this run created and tries to remove the then-empty directory; a
+/// cleanup that itself fails can leave output to inspect before a retry.
 /// Neither private key is printed.
 fn run_provision(out: &Path, spec: &provision::Spec<'_>) -> Result<Provisioned> {
     let written = Provisioned {
@@ -947,31 +948,41 @@ fn run_provision(out: &Path, spec: &provision::Spec<'_>) -> Result<Provisioned> 
         ..written
     };
     create_owner_only_dir(out)?;
-    // Only a file this run created is removed on failure: one that appeared
-    // in between (its `create_new` write is what fails) is someone else's.
     let root_key = Zeroizing::new(hex::encode(&made.root_private_key[..]));
     let relay_key = Zeroizing::new(hex::encode(&made.relay_private_key[..]));
     let root_pub = hex::encode(made.root_public_key);
     let relay_pub = hex::encode(made.relay_public_key);
-    let files: [(&Path, &[u8]); 6] = [
-        (&written.root_private_key, root_key.as_bytes()),
-        (&written.root_public_key, root_pub.as_bytes()),
-        (&written.relay_private_key, relay_key.as_bytes()),
-        (&written.relay_public_key, relay_pub.as_bytes()),
-        (&written.identity_file, &made.certificate),
-        (&written.package, &made.package),
-    ];
+    write_all_new(
+        out,
+        &[
+            (&written.root_private_key, root_key.as_bytes()),
+            (&written.root_public_key, root_pub.as_bytes()),
+            (&written.relay_private_key, relay_key.as_bytes()),
+            (&written.relay_public_key, relay_pub.as_bytes()),
+            (&written.identity_file, &made.certificate),
+            (&written.package, &made.package),
+        ],
+    )?;
+    Ok(written)
+}
+
+/// Writes each file new and owner-only, in order, into `dir` (which this run
+/// created). On a failure it removes only the files it created, never one
+/// that appeared in between, then tries to remove `dir` itself, which
+/// succeeds only when nothing else is left in it.
+fn write_all_new(dir: &Path, files: &[(&Path, &[u8])]) -> Result<()> {
     let mut created: Vec<&Path> = Vec::new();
     for (path, contents) in files {
         if let Err(err) = locked_files::write_owner_only(path, contents) {
             for path in created {
                 let _ = std::fs::remove_file(path);
             }
+            let _ = std::fs::remove_dir(dir);
             return Err(err);
         }
         created.push(path);
     }
-    Ok(written)
+    Ok(())
 }
 
 /// The output directory, made owner-only by this run and by nothing else:

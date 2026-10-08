@@ -93,6 +93,8 @@ export function makeZip(files, date = new Date()) {
   return out;
 }
 
+// Offers `bytes` as a download. Returns a function that releases the Blob
+// URL at once (idempotent); the URL is also released after ten seconds.
 export function downloadBytes(filename, bytes, type = "application/octet-stream") {
   const url = URL.createObjectURL(new Blob([bytes], { type }));
   const link = document.createElement("a");
@@ -101,5 +103,12 @@ export function downloadBytes(filename, bytes, type = "application/octet-stream"
   document.body.append(link);
   link.click();
   link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  let revoked = false;
+  const revoke = () => {
+    if (revoked) return;
+    revoked = true;
+    URL.revokeObjectURL(url);
+  };
+  setTimeout(revoke, 10_000);
+  return revoke;
 }

@@ -148,6 +148,20 @@ export function backupNextSteps(backupPub) {
   ];
 }
 
+/**
+ * What "Clear from this page" does to a result: every private file's bytes
+ * are overwritten with zeros and every pending private download's Blob URL
+ * is released. It cannot reach copies the browser made itself (the JSON the
+ * WebAssembly returned, a downloaded file), so it narrows, not ends, how long
+ * a key stays in this page.
+ */
+export function wipe(made, revokes) {
+  for (const file of made?.files ?? []) {
+    if (file.private) file.bytes.fill(0);
+  }
+  for (const revoke of revokes.splice(0)) revoke();
+}
+
 let provisioner = null;
 
 /**

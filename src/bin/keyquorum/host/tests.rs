@@ -126,6 +126,35 @@ fn provision_refuses_a_directory_that_already_exists_and_writes_nothing() {
     assert_eq!(std::fs::read(out.join("relay.key")).expect("kept"), b"mine");
 }
 
+/// A write that fails removes the files this run created and the directory
+/// when it is then empty; a file the run did not create keeps both.
+#[test]
+fn a_failed_write_removes_only_what_the_run_created() {
+    let dir = tempfile::tempdir().expect("dir");
+    let out = dir.path().join("provider");
+    create_owner_only_dir(&out).expect("mkdir");
+    let first = out.join("a");
+    let second = out.join("b");
+    // The third write fails: its parent does not exist.
+    let failing = out.join("missing").join("c");
+    let files: [(&Path, &[u8]); 3] = [(&first, b"1"), (&second, b"2"), (&failing, b"3")];
+    assert!(write_all_new(&out, &files).is_err());
+    assert!(
+        !out.exists(),
+        "the empty directory this run made is removed"
+    );
+
+    create_owner_only_dir(&out).expect("mkdir");
+    // A file someone else put where the second write goes: it is kept, the
+    // first file (this run's) is removed, and the directory stays.
+    std::fs::write(&second, b"theirs").expect("foreign");
+    let files: [(&Path, &[u8]); 2] = [(&first, b"1"), (&second, b"2")];
+    assert!(write_all_new(&out, &files).is_err());
+    assert!(!first.exists());
+    assert_eq!(std::fs::read(&second).expect("kept"), b"theirs");
+    assert!(out.exists());
+}
+
 /// The self-check runs before any write, so nothing is left behind.
 #[test]
 fn provision_refuses_a_certificate_that_would_already_be_expired() {

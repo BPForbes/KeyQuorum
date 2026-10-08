@@ -6,7 +6,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BACKUP_PRIVATE_FILE, PRIVATE_FILES, backupFilesOf, backupNextSteps, expiryText, filesOf, loadProvisioner, nextSteps, problems, publicZip, utcText } from "../public/provision.js";
+import { BACKUP_PRIVATE_FILE, PRIVATE_FILES, wipe, backupFilesOf, backupNextSteps, expiryText, filesOf, loadProvisioner, nextSteps, problems, publicZip, utcText } from "../public/provision.js";
 
 const PUBLIC = join(fileURLToPath(new URL("..", import.meta.url)), "public");
 
@@ -105,6 +105,32 @@ test("the backup keypair becomes backup.key (private) and backup.pub, and its ne
   assert.match(steps, /BACKUP_RECIPIENT/);
   assert.match(steps, /host backup inspect \| restore/);
   assert.doesNotMatch(steps, /[0-9a-f]{64}/);
+});
+
+test("Clear zero-fills every private file, leaves the public ones, and releases each pending download once", () => {
+  const { files } = filesOf(result);
+  const made = { files };
+  let released = 0;
+  const revokes = [() => (released += 1), () => (released += 1)];
+  wipe(made, revokes);
+  for (const file of files) {
+    if (file.private) assert.ok(file.bytes.every((b) => b === 0), `${file.name} is wiped`);
+    else assert.ok(file.bytes.some((b) => b !== 0), `${file.name} is left`);
+  }
+  assert.equal(released, 2);
+  assert.equal(revokes.length, 0, "a revoker is called once and dropped");
+  wipe(null, revokes);
+  assert.equal(released, 2);
+});
+
+test("both panels wipe on Clear and track their private downloads", () => {
+  for (const name of ["view-setup.js", "view-status.js"]) {
+    const text = readFileSync(join(PUBLIC, name), "utf8");
+    assert.match(text, /wipe\(made, revokes\)/, name);
+    assert.match(text, /revokes\.push\(downloadBytes\(/, name);
+  }
+  const zip = readFileSync(join(PUBLIC, "zip.js"), "utf8");
+  assert.match(zip, /return revoke;/);
 });
 
 test("the Status page's backup setup makes the keypair in the browser and sends nothing", () => {
