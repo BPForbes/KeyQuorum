@@ -64,8 +64,8 @@ aes-gcm = "0.11"
 rand = "0.10"
 # ed25519-dalek, crypto_box and the Shamir dealer take a rand_core 0.6 RNG.
 rand_core = { version = "0.6", features = ["getrandom"] }
-sha2 = "0.10"
-# Keyed commitments to sensitive content (RustCrypto, same `digest` 0.10 as sha2).
+sha2 = "0.11"
+# Keyed commitments to sensitive content (RustCrypto, same `digest` 0.11 as sha2).
 hmac = "0.13"
 hex = "0.4"
 libc = "0.2"
