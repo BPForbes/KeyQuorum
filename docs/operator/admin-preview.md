@@ -69,6 +69,9 @@ validation record must not precede the real `preview` record in the output
 Cloudflare Builds uses for GitHub reporting. The parent environment and real
 preview command retain Cloudflare's output settings. Validation still runs the
 tests, bundles the candidate and checks the bundle guard before any upload.
+The regular `build` command uses the same wrapper for its production/staging
+dry runs, so `npm run check` used as a public relay build command cannot report
+validation as a deployment ahead of `npm run preview` either.
 
 The production Access application and production secrets must not be changed.
 The owner approved dedicated preview resource creation on 2026-10-08. The
