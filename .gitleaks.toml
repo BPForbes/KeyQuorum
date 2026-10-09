@@ -27,3 +27,28 @@ targetRules = ["generic-api-key"]
 paths = [
   '''(^|/)Cargo\.lock$''',
 ]
+
+# One false positive, approved by the owner (#111): commit d6fa9c20 (#117, the
+# console preview) set the preview's Cloudflare Access application audience
+# tag (ACCESS_AUD) in workers/preview/wrangler.json. An AUD tag identifies the
+# Access application and is carried in the `aud` claim of every Access token;
+# it is not a credential and cannot sign one ("Cloudflare Access assigns a
+# unique AUD tag to each application. The aud claim in the token payload
+# specifies which application the JWT is valid for.",
+# https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/).
+# CLAUDE.md lists ACCESS_AUD as non-secret. The scan reads all history, so no
+# later commit can remove it. Every criterion must match: that commit, that
+# file, that rule and that exact value. Another value, file, commit or rule is
+# still scanned, and the same value anywhere else is still reported.
+[[allowlists]]
+description = "Public Cloudflare Access AUD in the original #117 preview config (one commit)"
+condition = "AND"
+targetRules = ["generic-api-key"]
+commits = ["d6fa9c20b1a86d8424d61c28b42951292108497b"]
+paths = [
+  '''^workers/preview/wrangler\.json$''',
+]
+regexTarget = "secret"
+regexes = [
+  '''^ded33dccc2e39c1a363af6adf996f2ef86becd71d2d0ad92570451cd06c20486$''',
+]

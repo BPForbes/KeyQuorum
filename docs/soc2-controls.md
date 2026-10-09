@@ -199,8 +199,24 @@ These are stated so an auditor need not discover them:
   chose) are outside what zeroization can reach.
 - Lab demo passphrases and seeded data are public on purpose
   (`.gitleaks.toml`) and protect nothing.
+- One gitleaks finding is classified as a false positive and passed: the
+  console preview's Cloudflare Access audience tag (`ACCESS_AUD`, a public
+  application identifier, not a credential) in the one commit that set it
+  (`.gitleaks.toml`, every criterion must match: commit, file, rule, value).
+  Its integrity still matters: a changed AUD changes which tokens the admin
+  Worker accepts.
 
 ## Audit log
+
+### 2026-10-09 (fifteenth pass): a false positive in the secret scan, and the Lab's dev-dependency audit gap (#111)
+
+Dependabot updates #111 to #115 were combined in #111. `secret scan` failed on every pull request because gitleaks scans the full history of every fetched ref and reported `generic-api-key` on commit `d6fa9c20` (draft #117), the console preview's `ACCESS_AUD` in `workers/preview/wrangler.json`. A review of #111 found a high advisory that CI did not report.
+
+| Severity | Criterion | Finding | Fix |
+| --- | --- | --- | --- |
+| high | CC7.1, CC8.1 | `secret scan` failed on every branch and on `main` with a known finding, so a real finding would have been hidden behind it. The value is the Cloudflare Access application audience tag, a public identifier carried in every Access token's `aud` claim ([Cloudflare: validating JWTs](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/)), listed in `CLAUDE.md` as non-secret. Removing it later cannot clear a full-history scan, and narrowing the scan or the rule would reduce coverage. | Classified as a false positive with the owner's approval and passed by one `.gitleaks.toml` entry with `condition = "AND"`: commit `d6fa9c20`, path `^workers/preview/wrangler\.json$`, rule `generic-api-key` and the exact value (`regexTarget = "secret"`). The scan still covers all refs and history, every rule and the same value anywhere else, and still fails on any other finding. Evidence: the `secret scan` run on #111 after this change (passes) against the earlier failing run on #111 (job 113909619810, one finding, that fingerprint). Approach reviewed with CodeRabbit on #111. |
+| high | CC7.1 | `source-map-js` 1.2.1 (GHSA-68fv-2mgg-jv7q, denial of service, CVSS 7.5), a build-time dependency of the Lab through vite and postcss, was not reported: the `lab dependencies` job runs `npm audit --omit=dev`, and the Lab's toolchain is all development dependencies. It never reaches the published bundle. | `lab/package-lock.json` resolves 1.2.2 (#111); a full `npm audit` reports none. The `--omit=dev` scope of the Lab audit is unchanged and remains a known gap; the `workers` audit already includes development dependencies. |
+| minor | none (correctness) | hmac 0.13 and aes-gcm 0.11 moved to the `digest` 0.11 family: `Mac::new_from_slice` moved to `KeyInit`, and `Array::from_slice` is deprecated (lint failed). | `src/crypto.rs` uses `hmac::KeyInit` and borrows the key and nonce as fixed-size arrays (no copy), `sha2` moves to 0.11. Output was checked against AES-256-GCM (McGrew-Viega 13, 15) and HMAC-SHA256 (RFC 4231 2, 6) vectors outside CI; `cargo audit` and `cargo deny` pass with nothing ignored. |
 
 ### 2026-10-07 (fourteenth pass): guided first-time setup in the console, and a YubiKey evaluation (#102)
 
