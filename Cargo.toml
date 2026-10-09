@@ -69,7 +69,7 @@ sha2 = "0.10"
 hmac = "0.12"
 hex = "0.4"
 libc = "0.2"
-base64 = "0.22"
+base64 = "0.23"
 zeroize = "1"
 # Constant-time comparison of derived secrets (already in the graph via aes-gcm).
 subtle = "2"
