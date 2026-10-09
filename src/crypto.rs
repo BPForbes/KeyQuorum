@@ -91,9 +91,9 @@ pub fn derive_key(password: &str, salt: &[u8]) -> Result<Zeroizing<[u8; KEY_LEN]
 /// a plaintext exceeding AES-GCM's ~64GiB limit, far beyond anything this
 /// project encrypts in one call.
 pub fn encrypt(key: &[u8; KEY_LEN], nonce: &[u8; NONCE_LEN], plaintext: &[u8]) -> Vec<u8> {
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let cipher = Aes256Gcm::new(<&Key<Aes256Gcm>>::from(key));
     cipher
-        .encrypt(Nonce::from_slice(nonce), plaintext)
+        .encrypt(<&Nonce<_>>::from(nonce), plaintext)
         .expect("AES-256-GCM encryption should not fail for in-memory plaintext")
 }
 
@@ -106,9 +106,9 @@ pub fn decrypt(
     nonce: &[u8; NONCE_LEN],
     ciphertext: &[u8],
 ) -> Result<Zeroizing<Vec<u8>>, DecryptError> {
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let cipher = Aes256Gcm::new(<&Key<Aes256Gcm>>::from(key));
     cipher
-        .decrypt(Nonce::from_slice(nonce), ciphertext)
+        .decrypt(<&Nonce<_>>::from(nonce), ciphertext)
         .map(Zeroizing::new)
         .map_err(|_| DecryptError)
 }
@@ -123,7 +123,8 @@ pub fn decrypt(
 /// that they hold the same bytes and tells anyone else nothing. Compare two
 /// commitments only with [`commitments_match`].
 pub fn commit(key: &[u8; KEY_LEN], domain: &[u8], data: &[u8]) -> [u8; 32] {
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC takes any key length");
+    let mut mac =
+        <Hmac<Sha256> as hmac::KeyInit>::new_from_slice(key).expect("HMAC takes any key length");
     mac.update(
         &u32::try_from(domain.len())
             .unwrap_or(u32::MAX)
