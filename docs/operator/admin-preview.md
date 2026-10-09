@@ -1,6 +1,6 @@
 # Admin preview investigation (#110)
 
-Research date: 2026-10-08. The dedicated Worker and Access application exist;
+Research date: 2026-10-09. The dedicated Worker and Access application exist;
 the branch build and authenticated preview checks are pending. Keep #110 open
 until the live checks below pass.
 
@@ -70,11 +70,17 @@ audience recorded in the preview configuration. It reuses the operator-only
 `keyquorum-mfa-enrollment` policy and respects global MFA enforcement: security
 key required, eight-hour duration. The policy session is one hour.
 
-Git connection is awaiting owner completion of the credential-creation step.
-Cloudflare offers an automatic build token with account-wide edit permissions
-for Workers and storage, among other services; it is not scoped to this preview.
-The connection form uses the commands above. No authenticated console preview
-or bot link has yet been verified.
+Git connection to `BPForbes/KeyQuorum` was completed on 2026-10-09 with
+root `workers`, production branch `main`, non-production builds enabled, and
+the three commands above. The owner explicitly approved Cloudflare's automatic
+build token after reviewing its account-wide permissions for Workers, storage,
+databases and all-zone routes. This token is not scoped to the preview and is
+an owner-approved exception to the narrower deployment-credential guidance;
+preview resource isolation does not limit this build credential's authority.
+The dashboard confirmed Worker Access covers every production and preview URL,
+and its audience matches the candidate configuration. Fifteen focused local
+routing and Access verification tests passed. The first branch build,
+authenticated console preview and bot link still await live verification.
 
 ## Live acceptance and cleanup
 
