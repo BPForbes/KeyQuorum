@@ -79,8 +79,26 @@ an owner-approved exception to the narrower deployment-credential guidance;
 preview resource isolation does not limit this build credential's authority.
 The dashboard confirmed Worker Access covers every production and preview URL,
 and its audience matches the candidate configuration. Fifteen focused local
-routing and Access verification tests passed. The first branch build,
-authenticated console preview and bot link still await live verification.
+routing and Access verification tests passed. The first branch build failed because the pinned wasm-bindgen CLI lagged
+Cargo.lock; both version and verified release checksum were updated to 0.2.129.
+Build `534d8258-7989-49a1-bc8c-3958b6b3c599` then compiled both WASM modules,
+passed all six console-preview tests and the bundle guard, and deployed commit
+`e82aae89ba16d22a752933872fd71519bb9512ed` successfully.
+
+The dashboard's Preview URLs switch was initially off despite `preview_urls`
+in the candidate config. It is now on for this dedicated Worker, with Access
+still applying. The branch URL is
+https://codex-admin-preview-keyquorum-console-preview.dx8tsbf5gq.workers.dev/relay/admin
+and that deployment's immutable URL is
+https://0477af86-keyquorum-console-preview.dx8tsbf5gq.workers.dev/relay/admin.
+The deployed RELAY binding is the preview-local namespace
+`keyquorum-console-preview_codex-admin-preview_RelayObject`
+(`3f9ed5afd9ed43db813d89943a6b6f72`). No R2 or cross-Worker binding is present.
+Opening the branch admin URL reached Access; the existing Cloudflare login
+was denied. Authorized operator sign-in, post-login assets/API behavior,
+comparison with other live namespaces, synthetic writes and cleanup remain
+pending. A fresh Git-triggered build will verify bot links now that Preview
+URLs are enabled; the manually retried deployment showed no linked PR.
 
 ## Live acceptance and cleanup
 
