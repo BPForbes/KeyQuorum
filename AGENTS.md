@@ -995,3 +995,16 @@ consistent across these files when updating one.
 - Security checks: `.github/workflows/security.yml` runs `cargo audit`, `cargo deny --locked check` (policy in `deny.toml`), `gitleaks` over the full history (allowlist in `.gitleaks.toml`, which passes only the published Lab demo passphrases and lockfile checksums), `npm audit` for `lab/` and `workers/` and CodeQL (security-and-quality suite from `.github/codeql/codeql-config.yml`, for Rust, the Lab's TypeScript, the Worker's JavaScript and the workflows; `.github/scripts/codeql_report.py` prints each finding as source, source quote, quoted lines, SOC 2 criterion and fix, and the `codeql gate` check fails on a high or critical finding in shipped code), on every PR, on `main` and weekly; `.github/workflows/sbom.yml` keeps CycloneDX SBOMs as artifacts. A new dependency must satisfy `deny.toml` (add a licence only after checking it). Dependabot covers Actions, Cargo, npm (`/lab`, `/workers`) and Terraform, but only Actions updates auto-merge; cargo, npm and Terraform updates (which include the cryptographic crates and the deploy tooling) wait for a person. Vulnerabilities are reported privately as `SECURITY.md` describes.
 - SOC 2: `docs/soc2-controls.md` maps each Trust Services Criterion to the control in this repository, its evidence (test or workflow) and what the operator must still provide (TLS termination, rate limiting, backups, log retention). Update it with any change to a control it names.
 - Review rules: the "Review guidelines (strict, SOC 2)" section above is also loaded by CodeRabbit (`.coderabbit.yaml` points its per-path checks at it and runs a "SOC 2 evidence" pre-merge check) and by Codex review. Change the rules in all three agent files together, and keep `.coderabbit.yaml` consistent with them.
+
+## Dedicated console preview candidate (#110)
+
+`workers/preview/` is an explicit exception to the older public-Worker-only
+preview rule above: a separate `keyquorum-console-preview` project combines the
+existing handlers with one Preview-local RelayObject, never a script_name binding.
+It is a candidate awaiting live Access, namespace and bot verification, not a
+production deployment. Production/staging configs remain unchanged. Its whole
+preview must be behind a separate Access application with operator MFA; the admin
+handler still validates the token itself. Do not connect production resources,
+secrets, identities or deployment credentials. Empty Access vars fail closed.
+See docs/operator/admin-preview.md for setup, limitations and cleanup. Keep this
+candidate disabled until the owner approves resource creation and Access setup.

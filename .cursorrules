@@ -968,3 +968,16 @@ Report a finding, with the rule as its Source, for any of these:
 - Legacy commands (`deliver`, `file share|receive|ack`, `relay pull`) changed in behavior,
   or a new command printing a legacy note it should not.
 - Review rules: the "Review guidelines (strict, SOC 2)" section above is also loaded by CodeRabbit (`.coderabbit.yaml` points its per-path checks at it and runs a "SOC 2 evidence" pre-merge check) and by Codex review. Change the rules in all three agent files together, and keep `.coderabbit.yaml` consistent with them.
+
+## Dedicated console preview candidate (#110)
+
+`workers/preview/` is an explicit exception to the older public-Worker-only
+preview rule above: a separate `keyquorum-console-preview` project combines the
+existing handlers with one Preview-local RelayObject, never a script_name binding.
+It is a candidate awaiting live Access, namespace and bot verification, not a
+production deployment. Production/staging configs remain unchanged. Its whole
+preview must be behind a separate Access application with operator MFA; the admin
+handler still validates the token itself. Do not connect production resources,
+secrets, identities or deployment credentials. Empty Access vars fail closed.
+See docs/operator/admin-preview.md for setup, limitations and cleanup. Keep this
+candidate disabled until the owner approves resource creation and Access setup.

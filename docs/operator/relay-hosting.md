@@ -1509,3 +1509,9 @@ are the record of operator sessions (from memory, verify).
 | Restore drill reconciles later revocations | procedure only | run the drill |
 | Staging verification of Access, assets, binding, issuance, alarm, overload | not possible here | all of it |
 | Storage, write amplification, latency and cost measured | not measured | all of it |
+
+### Dedicated console preview candidate
+
+See [admin preview investigation](admin-preview.md) for the isolated project
+candidate for #110, its Access requirements, bot setup and pending live checks.
+It does not enable previews on the production admin Worker.

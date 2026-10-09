@@ -1,0 +1,28 @@
+{
+  "name": "keyquorum-console-preview",
+  "main": "index.js",
+  "compatibility_date": "2025-09-01",
+  "workers_dev": false,
+  "preview_urls": true,
+  "assets": {
+    "directory": "../admin/public",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RelayObject"] }],
+  "previews": {
+    "vars": {
+      "CONSOLE_PREVIEW": "1",
+      "ACCESS_TEAM_DOMAIN": "",
+      "ACCESS_AUD": ""
+    },
+    "durable_objects": {
+      "bindings": [{ "name": "RELAY", "class_name": "RelayObject" }]
+    },
+    "ratelimits": [
+      { "name": "READ_LIMITER", "namespace_id": "4901", "simple": { "limit": 120, "period": 60 } },
+      { "name": "WRITE_LIMITER", "namespace_id": "4902", "simple": { "limit": 20, "period": 60 } },
+      { "name": "RATE_LIMITER", "namespace_id": "4903", "simple": { "limit": 300, "period": 60 } }
+    ]
+  }
+}

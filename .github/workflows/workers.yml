@@ -141,6 +141,9 @@ jobs:
           CI: "true"
           WRANGLER_SEND_METRICS: "false"
         run: npm run build
+      - name: Isolated console preview candidate (dry run, no credentials)
+        working-directory: workers
+        run: npm run check:console-preview
       - name: Bundle guard (no key material, size bound)
         run: npm run guard:bundle
 
