@@ -1,7 +1,8 @@
 # Admin preview investigation (#110)
 
-Research date: 2026-10-08. This is a candidate implementation, not a deployed
-or verified Cloudflare preview. Keep #110 open until the live checks below pass.
+Research date: 2026-10-08. The dedicated Worker and Access application exist;
+the branch build and authenticated preview checks are pending. Keep #110 open
+until the live checks below pass.
 
 ## Why the existing link cannot show the console
 
@@ -62,8 +63,18 @@ serves 503. Static assets use run_worker_first. Production admin previews stay o
    URL correspond to the PR head, rather than an older successful build.
 
 The production Access application and production secrets must not be changed.
-Creating this project, applying Access, building and authenticating remain live
-acceptance work; this PR does not claim that they have happened.
+The owner approved dedicated preview resource creation on 2026-10-08. The
+Worker was created with Access covering all production and preview URLs. Its
+separate application is `eb227e93-8096-44bc-be08-d6f420f0bd1c`, with the public
+audience recorded in the preview configuration. It reuses the operator-only
+`keyquorum-mfa-enrollment` policy and respects global MFA enforcement: security
+key required, eight-hour duration. The policy session is one hour.
+
+Git connection is awaiting owner completion of the credential-creation step.
+Cloudflare offers an automatic build token with account-wide edit permissions
+for Workers and storage, among other services; it is not scoped to this preview.
+The connection form uses the commands above. No authenticated console preview
+or bot link has yet been verified.
 
 ## Live acceptance and cleanup
 

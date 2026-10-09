@@ -13,8 +13,8 @@
   "previews": {
     "vars": {
       "CONSOLE_PREVIEW": "1",
-      "ACCESS_TEAM_DOMAIN": "",
-      "ACCESS_AUD": ""
+      "ACCESS_TEAM_DOMAIN": "ancient-glade-1e7a.cloudflareaccess.com",
+      "ACCESS_AUD": "ded33dccc2e39c1a363af6adf996f2ef86becd71d2d0ad92570451cd06c20486"
     },
     "durable_objects": {
       "bindings": [{ "name": "RELAY", "class_name": "RelayObject" }]
