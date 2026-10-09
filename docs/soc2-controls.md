@@ -507,3 +507,5 @@ operator authorization and binds only its local Preview Durable Object.
 binding selection. [Deployment checks](operator/admin-preview.md) still require
 operator evidence for Access/MFA, real namespace isolation, bot links and cleanup;
 local tests do not establish those controls in Cloudflare.
+
+Secret-scan false-positive exception: .gitleaks.toml limits the public console-preview Access audience exception to its exact AUD line, the dedicated preview config path, and the generic-api-key rule (all conditions required). An audience identifies the application a signed JWT must target; it cannot authenticate a caller. Other values and rules remain scanned, including full history.

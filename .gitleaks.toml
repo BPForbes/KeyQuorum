@@ -6,8 +6,7 @@ useDefault = true
 
 # The Lab is a public demonstration: its seeded people, USB passphrases
 # (`lab-demo-<label>`) and demo password are published on purpose and protect
-# nothing (see the "Default credentials" section of the Lab manual). Nothing
-# else is allowed through.
+# nothing (see the "Default credentials" section of the Lab manual).
 [[allowlists]]
 description = "Published Lab demo passphrases and password"
 regexes = [
@@ -27,3 +26,14 @@ targetRules = ["generic-api-key"]
 paths = [
   '''(^|/)Cargo\.lock$''',
 ]
+
+# Access AUD is a public application identifier, not a bearer credential.
+# Match only this application's exact AUD line in its dedicated preview config;
+# all other values, files and detection rules remain scanned, including history.
+[[allowlists]]
+description = "Public console-preview Access application audience"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(^|/)workers/preview/wrangler\.json$''']
+regexTarget = "line"
+regexes = ['''^\s*"ACCESS_AUD":\s*"ded33dccc2e39c1a363af6adf996f2ef86becd71d2d0ad92570451cd06c20486"\s*,?\s*$''']
