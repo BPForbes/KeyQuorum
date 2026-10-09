@@ -3,9 +3,9 @@
 This is the hosting plan and decision record for issue #88. The owner has
 decided that Cloudflare is the sole hosting provider for the mailbox relay,
 because of cost. This document records that decision, the Cloudflare
-Workers design that follows from it (the public Worker and its Durable Object are built and
-not yet deployed; the admin Worker's console and its back end are built and
-not yet deployed either), the controls
+Workers design that follows from it (the public Worker, Durable Object and
+admin console are built; production deployment and initial setup are evidenced
+below, while full operational acceptance remains pending), the controls
 the earlier AWS-first plan specified and where each one lands on
 Cloudflare, the gaps that remain, and the launch prerequisites from the
 architecture review of PR #87 revalidated against the code as it is today.
@@ -19,17 +19,30 @@ GitHub). Its structure and every control are kept here, with the platform
 swapped. Where the old text was host-independent it is carried over with
 only the platform nouns changed.
 
-Status at the time of writing (2026-10-06):
+## Current deployment status (2026-10-09)
 
-| Item | State |
+The [production evidence](admin-preview.md#production-evidence-for-102-and-104)
+records successful workflow run 37824399333, attempt 2, after private R2 bucket
+creation, plus the owner's 2026-10-08 console screenshot showing Ready, a trusted
+identity and a confirmed operator lock. Identity-secret upload is owner-reported;
+the screenshot and workflow are the evidence, not an independent custody audit.
+
+| Item | Current evidence and limits |
 | --- | --- |
-| Hosting decision | **Cloudflare only.** No other hosting provider. Reason: cost (owner decision, recorded in the #88 comment). |
-| Cloudflare Workers relay (Path B) | **The runtime and the provider's console are built; nothing has been deployed.** The public Worker (`workers/src/worker.js`) and the one SQLite-backed Durable Object (`workers/src/relay-object.js`, around the Rust relay core compiled to WebAssembly) are in this repository. They are tested over the real core under Node and were run under local workerd (`wrangler dev --local`); they have never been deployed to a Cloudflare account. **Missing:** the account setup and a first deploy, and the production-only checks. A customer key is minted from the operator console (below), through the admin Worker's private binding to the same Durable Object, with the operator lock presented per change; the public Worker still has no create or rotate route. Status: **Adopt** (decided 2026-10-06 on the stage 3 spike). The design is in [The Workers relay](#the-workers-relay) and the measurements in [What the spike measured](#what-the-spike-measured-stage-3). |
-| Native `keyquorum host serve` | **Kept as the dev, test and reference host.** `SqliteRelayStore`, `src/relay/server.rs` and `host keys` stay in the code. It is not a production deployment path. |
-| Deployment pipeline and Cloudflare Terraform | **Stage 2, in this repository; not yet exercised against a Cloudflare account.** `workers/` (the public Worker and its Durable Object), `.github/workflows/workers.yml` and `deploy/cloudflare/terraform/` exist and are described in [Provisioning and the deployment pipeline](#provisioning-and-the-deployment-pipeline-stage-2). Honest limits: nothing has been deployed; the Terraform passes CI's `terraform validate` against the pinned provider (`.terraform.lock.hcl`, `cloudflare/cloudflare` 5.27.0) but the repository's authors have never planned or applied it against a real account; Cloudflare Notifications and the R2 retention lock are dashboard steps, not Terraform; and the owner's GitHub and Cloudflare setup is still to be done. |
-| Admin Worker and operator console (stage 4a, issue #99) | **In this repository; never deployed, and Access has never been configured on an account.** `workers/admin/` holds the Worker `keyquorum-relay-admin` (`[env.staging]` is `keyquorum-relay-admin-staging`): it verifies Cloudflare Access's signed token itself and serves the provider's console, a static page and a documented `/api` that reaches the relay only through the private binding `RELAY_ADMIN`. Customers, licences (immutable statement versions), keys with lineage, per-key activity, status, audit and checkpoint, and the two-step operator lock are built; see [The operator console](#the-operator-console-issue-99). Its Terraform (`admin_environments`: a custom domain and an Access application with an MFA policy per environment) and workflow steps exist; CI's `terraform` job checks the whole directory on every push. **Not done:** every check on a real account (Access and MFA, the binding on Cloudflare, staging, restore, overload, cost); see the console section's list. |
-| Relay domain and operator page | **Decided 2026-10-06 (owner).** The relay and the console are mounted under paths of `keyquorum.dev` (`/relay`, `/relay/staging-user`, `/relay/admin`, `/relay/staging-admin`), through Workers routes (owner decision, revised 2026-10-06); the operator page is static files served from the admin Worker behind Access. See [Domain and operator page](#domain-and-operator-page-owner-decisions-2026-10-06). |
-| Live deployment, restore test, overload test | **Not done.** Nothing has been deployed. They need the operator's Cloudflare account and run against a real deployment. The [acceptance checklist](#acceptance-checklist) says which rows this document settles and which the deployment must. |
+| Hosting decision | Cloudflare only; native hosting remains the dev/test reference. |
+| Public Worker, Durable Object and admin console | Production deployment and initial setup are evidenced by the linked run and owner screenshot. This is not a completed customer lifecycle or control-acceptance test. |
+| R2 | Bucket creation is recorded; sealed-letter storage, backup operation and restore remain unverified end to end. |
+| Terraform and account controls | CI validation exists. This evidence does not establish a complete real-account Terraform plan/apply or every Access/MFA, WAF, retention and monitoring acceptance check. |
+| Dedicated console preview | Deployed on 2026-10-09 with a local RELAY namespace and Access-protected preview URLs; see the preview runbook for build, commit, namespace and outstanding authenticated checks. |
+| Remaining acceptance | Issuance, customer enrollment, package installation, rotation, recovery, restore, overload, cost, staging acceptance and cleanup are not established by the production setup evidence. |
+
+### Historical design and implementation record
+
+The sections below preserve the 2026-10-06 design/spike record. Statements there
+such as “nothing is deployed”, “never deployed” and “Access has never been
+configured” describe that dated baseline, not the current account. The current
+status above supersedes those deployment claims. Security requirements and
+uncompleted acceptance checks still apply; deployment alone does not pass them.
 
 Nothing here is deployment approval, and no SOC 2 mapping below claims
 compliance; `docs/soc2-controls.md` says what the software provides and
@@ -1509,3 +1522,9 @@ are the record of operator sessions (from memory, verify).
 | Restore drill reconciles later revocations | procedure only | run the drill |
 | Staging verification of Access, assets, binding, issuance, alarm, overload | not possible here | all of it |
 | Storage, write amplification, latency and cost measured | not measured | all of it |
+
+### Dedicated console preview candidate
+
+See [admin preview investigation](admin-preview.md) for the isolated project
+candidate for #110, its Access requirements, bot setup and pending live checks.
+It does not enable previews on the production admin Worker.

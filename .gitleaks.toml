@@ -6,8 +6,7 @@ useDefault = true
 
 # The Lab is a public demonstration: its seeded people, USB passphrases
 # (`lab-demo-<label>`) and demo password are published on purpose and protect
-# nothing (see the "Default credentials" section of the Lab manual). Nothing
-# else is allowed through.
+# nothing (see the "Default credentials" section of the Lab manual).
 [[allowlists]]
 description = "Published Lab demo passphrases and password"
 regexes = [

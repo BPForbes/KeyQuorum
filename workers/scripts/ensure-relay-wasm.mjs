@@ -30,22 +30,27 @@ export function decide({ present, env }) {
 }
 
 function main() {
-  const action = decide({ present: relayWasmPresent(), env: process.env });
+  const consoleBuild = process.argv.includes("--console");
+  const present = consoleBuild
+    ? ["keyquorum_console.js", "keyquorum_console_bg.wasm"].every((file) =>
+      existsSync(join(workersDir, "admin", "public", "provision-wasm", file)))
+    : relayWasmPresent();
+  const action = decide({ present, env: process.env });
   if (action === "present") return 0;
   if (action === "missing") {
     console.error(
-      "error: relay-wasm/ is not built. Run `npm run build:relay-wasm` first " +
+      `error: WASM is not built. Run npm run build:${consoleBuild ? "console" : "relay"}-wasm first ` +
         "(it needs the Rust wasm32-unknown-unknown target and the wasm-bindgen CLI at the version Cargo.lock pins).",
     );
     return 1;
   }
-  console.log("relay-wasm/ is not built; building it on Workers Builds");
+  console.log(`${consoleBuild ? "console" : "relay"} WASM is not built; building it on Workers Builds`);
   execFileSync("bash", [join(workersDir, "scripts", "builds-toolchain.sh")], { stdio: "inherit" });
   const path = `${join(homedir(), ".cargo", "bin")}${delimiter}${process.env.PATH ?? ""}`;
   // The crate's bundled SQLite is C, compiled for wasm32 by the clang the
   // toolchain script installed; the build image has none of its own.
   const wasiSdk = process.env.WASI_SDK_DIR ?? join(homedir(), ".wasi-sdk");
-  execFileSync("node", [join(workersDir, "scripts", "build-relay-wasm.mjs")], {
+  execFileSync("node", [join(workersDir, "scripts", `build-${consoleBuild ? "console" : "relay"}-wasm.mjs`)], {
     stdio: "inherit",
     env: {
       ...process.env,

@@ -106,7 +106,8 @@ reviews:
         Hosting assets, the Worker and the operator runbook (Cloudflare is the
         only production host; plan of record docs/operator/relay-hosting.md;
         workers/ holds the public Worker, its Durable Object and the admin
-        Worker with the provider's console; none of it is deployed).
+        Worker with the provider's console; production setup evidence is recorded in
+        docs/operator/admin-preview.md, while full live acceptance remains pending).
         No credential, key, bearer or certificate, and no Terraform state, may
         be rendered, baked in or written into wrangler.toml [vars], a .dev.vars
         file, the built bundle, a workflow log or a GitHub secret; Terraform

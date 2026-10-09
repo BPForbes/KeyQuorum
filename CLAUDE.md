@@ -191,7 +191,7 @@ for a Durable Object: `RelayCore` is `SqlRelayStore` over `worker::do_sql::DoSql
 Durable Object's SQL reached through `workers/src/sql-adapter.js` (a cursor per query,
 `transactionSync` per unit of work), running `relay::service::dispatch`. It reads no
 clock (the Worker passes the time in as text), has no mint or rotate route, and holds the
-relay key and certificate only as the bytes the Worker's secrets give it; the public Worker and the Durable Object class around it are built (`workers/src/`) and never deployed. `workers/test/` runs the built module over a Durable
+relay key and certificate only as the bytes the Worker's secrets give it; the public Worker and the Durable Object class around it are built (`workers/src/`) and deployed in production (initial setup evidence: `docs/operator/admin-preview.md`; full live acceptance remains pending). `workers/test/` runs the built module over a Durable
 Object-shaped storage on Node's SQLite. `workers/admin/` is
 the admin Worker: the provider's console (`public/`, no inline
 code, no outside origin, no `innerHTML`) served by the Worker on its own path (`MOUNT_PATH`) behind a
@@ -216,7 +216,7 @@ environment from `main` (production is a manual run into
 `cloudflare-production`) and gates everything behind the one stable check
 `workers`; it uses no third-party deploy action, and the only Cloudflare
 credential in GitHub is the Workers-deploy token and account id per
-environment. Nothing has been deployed. The relay key and certificate (`RELAY_PRIVATE_KEY`, `RELAY_CERTIFICATE`) are Worker secrets the operator sets with `wrangler secret put`, never GitHub secrets; the `kql_` lock and the provider
+environment. Production deployment and initial setup are evidenced in `docs/operator/admin-preview.md`; do not infer that the remaining live checks passed. The relay key and certificate (`RELAY_PRIVATE_KEY`, `RELAY_CERTIFICATE`) are Worker secrets the operator sets with `wrangler secret put`, never GitHub secrets; the `kql_` lock and the provider
 root key never go on a Worker. `docs/operator/relay-deployment.md` is the operator runbook
 (secrets, certificates, bootstrap, rotation, the dev host) and
 `docs/operator/relay-secrets.md` the secret classification; neither is
@@ -953,7 +953,7 @@ Report a finding, with the rule as its Source, for any of these:
   secret, browser storage or a URL; a lock bootstrap that an ordinary request on
   an empty store can claim; the `admin` scope issued from the console; a public
   route to a management operation; the console documented as enforcing licence
-  limits, as showing file contents, or as deployed.
+  limits, as showing file contents, or as deployed beyond the recorded evidence.
 - The Worker's deployment (`workers/`, `deploy/cloudflare/**`,
   `.github/workflows/workers.yml`) letting the admin Worker serve anything without a
   verified Access token, or gaining a route that bypasses Access to an operator
@@ -986,3 +986,20 @@ This repo also carries `AGENTS.md` (Codex and other agent tooling) and `.cursorr
 - Security checks: `.github/workflows/security.yml` runs `cargo audit`, `cargo deny --locked check` (policy in `deny.toml`), `gitleaks` over the full history (allowlist in `.gitleaks.toml`, which passes only the published Lab demo passphrases, lockfile checksums and one owner-approved false positive, the console preview's public Access audience tag, pinned to its commit, file, rule and value), `npm audit` for `lab/` and `workers/` and CodeQL (security-and-quality suite from `.github/codeql/codeql-config.yml`, for Rust, the Lab's TypeScript, the Worker's JavaScript and the workflows; `.github/scripts/codeql_report.py` prints each finding as source, source quote, quoted lines, SOC 2 criterion and fix, and the `codeql gate` check fails on a high or critical finding in shipped code), on every PR, on `main` and weekly; `.github/workflows/sbom.yml` keeps CycloneDX SBOMs as artifacts. A new dependency must satisfy `deny.toml` (add a licence only after checking it). Dependabot covers Actions, Cargo, npm (`/lab`, `/workers`) and Terraform, but only Actions updates auto-merge; cargo, npm and Terraform updates (which include the cryptographic crates and the deploy tooling) wait for a person. Vulnerabilities are reported privately as `SECURITY.md` describes.
 - SOC 2: `docs/soc2-controls.md` maps each Trust Services Criterion to the control in this repository, its evidence (test or workflow) and what the operator must still provide (TLS termination, rate limiting, backups, log retention). Update it with any change to a control it names.
 - Review rules: the "Review guidelines (strict, SOC 2)" section above is also loaded by CodeRabbit (`.coderabbit.yaml` points its per-path checks at it and runs a "SOC 2 evidence" pre-merge check) and by Codex review. Change the rules in all three agent files together, and keep `.coderabbit.yaml` consistent with them.
+
+## Dedicated console preview candidate (#110)
+
+`workers/preview/` is an explicit exception to the older public-Worker-only
+preview rule above: a separate `keyquorum-console-preview` project combines the
+existing handlers with one Preview-local RelayObject, never a script_name binding.
+It is a candidate awaiting live Access, namespace and bot verification, not a
+production deployment. Production/staging configs remain unchanged. Its whole
+preview must be behind a separate Access application with operator MFA; the admin
+handler still validates the token itself. Do not connect production resources,
+secrets, identities or deployment credentials. Empty Access vars fail closed.
+See docs/operator/admin-preview.md for setup, limitations and cleanup. Keep this
+candidate disabled until the owner approves resource creation and Access setup.
+
+## Deployment evidence status (2026-10-09)
+
+Production setup evidence is recorded in `docs/operator/admin-preview.md` (2026-10-08): a successful production workflow and an owner-supplied Ready/status screenshot with trusted identity and confirmed operator lock. This establishes deployment and initial setup only; it does not establish issuance, customer enrollment, restore, overload, rotation, or full live acceptance. The dedicated console preview was deployed on 2026-10-09; authenticated preview acceptance remains pending.
