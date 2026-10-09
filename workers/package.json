@@ -5,7 +5,7 @@
   "description": "Cloudflare Worker for the KeyQuorum relay: the public Worker and the Durable Object that runs the Rust relay core as WebAssembly. `builds:build`, `check` and `preview` are the commands Cloudflare Workers Builds runs once the repository is connected (docs/operator/relay-hosting.md).",
   "scripts": {
     "builds:console": "node scripts/ensure-relay-wasm.mjs && node scripts/ensure-relay-wasm.mjs --console",
-    "check:console-preview": "node --test scripts/console-preview.test.mjs && wrangler deploy --dry-run --config preview/wrangler.json --outdir dist/console-preview && node scripts/guard.mjs --bundle dist/console-preview --max-gzip-bytes 3145728",
+    "check:console-preview": "node --test scripts/console-preview.test.mjs scripts/wrangler-dry-run.test.mjs && node scripts/wrangler-dry-run.mjs --config preview/wrangler.json --outdir dist/console-preview && node scripts/guard.mjs --bundle dist/console-preview --max-gzip-bytes 3145728",
     "preview:console": "npm run builds:console && npm run check:console-preview && wrangler preview --config preview/wrangler.json",
     "test": "node --test \"scripts/*.test.mjs\" \"admin/src/*.test.mjs\" \"test/*.test.mjs\"",
     "build:relay-wasm": "node scripts/build-relay-wasm.mjs",

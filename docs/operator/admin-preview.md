@@ -62,6 +62,14 @@ serves 503. Static assets use run_worker_first. Production admin previews stay o
    root opens the console. Confirm the displayed commit and immutable deployment
    URL correspond to the PR head, rather than an older successful build.
 
+The console validation command clears `WRANGLER_OUTPUT_FILE_PATH` and
+`WRANGLER_OUTPUT_FILE_DIRECTORY` only for its dry-run child process. Wrangler
+4.147.0 emits a structured `deploy` record even for `deploy --dry-run`; that
+validation record must not precede the real `preview` record in the output
+Cloudflare Builds uses for GitHub reporting. The parent environment and real
+preview command retain Cloudflare's output settings. Validation still runs the
+tests, bundles the candidate and checks the bundle guard before any upload.
+
 The production Access application and production secrets must not be changed.
 The owner approved dedicated preview resource creation on 2026-10-08. The
 Worker was created with Access covering all production and preview URLs. Its
