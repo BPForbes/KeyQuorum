@@ -44,3 +44,11 @@ jobs:
       # `provider`); lints that only fire there are checked too.
       - name: clippy (Lab, wasm32)
         run: cargo clippy --locked --lib --target wasm32-unknown-unknown --features lab -- -D warnings
+      # ffi/identity is a standalone crate (its own workspace) that Flinstone
+      # links as libkeyquorum_identity.a; the root build never compiles it.
+      - name: heritage ffi (fmt, clippy, tests)
+        working-directory: ffi/identity
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked

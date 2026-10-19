@@ -44,6 +44,13 @@ jobs:
         run: cargo audit --deny warnings
       - name: Advisories, licences, bans and sources (deny.toml)
         run: cargo deny --locked check
+      # The standalone identity crate (ffi/identity) is its own workspace and
+      # ships in the static library Flinstone links, so it gets the same checks,
+      # with the root deny.toml as its policy.
+      - name: RustSec advisories (ffi/identity)
+        run: cargo audit --file ffi/identity/Cargo.lock --deny warnings
+      - name: Advisories, licences, bans and sources (ffi/identity, root deny.toml)
+        run: cargo deny --locked --manifest-path ffi/identity/Cargo.toml --config deny.toml check
 
   secrets:
     name: secret scan
