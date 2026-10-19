@@ -62,7 +62,8 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 argon2 = "0.5"
 aes-gcm = "0.11"
 rand = "0.10"
-# ed25519-dalek, crypto_box and the Shamir dealer take a rand_core 0.6 RNG.
+# ed25519-dalek and crypto_box take a rand_core 0.6 RNG (blahaj 0.7's Shamir
+# dealer takes rand 0.10's, crypto::os_rng).
 rand_core = { version = "0.6", features = ["getrandom"] }
 sha2 = "0.11"
 # Keyed commitments to sensitive content (RustCrypto, same `digest` 0.11 as sha2).
