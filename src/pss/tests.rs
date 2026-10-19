@@ -3,7 +3,7 @@ use super::*;
 fn split_secret(secret: &[u8], threshold: u8, n: usize) -> Vec<Vec<u8>> {
     let sharks = Sharks(threshold);
     sharks
-        .dealer_rng(secret, &mut OsRng)
+        .dealer_rng(secret, &mut os_rng())
         .take(n)
         .map(|s| Vec::from(&s))
         .collect()

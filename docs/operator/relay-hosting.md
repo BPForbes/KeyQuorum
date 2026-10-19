@@ -501,7 +501,7 @@ the end of this section.
   `outputs.tf`, `terraform.tfvars.example` and a `README.md` complete it. CI
   runs `terraform fmt -check`, `terraform init -backend=false -lockfile=readonly` and `terraform
   validate`, which need no credentials, and the committed
-  `.terraform.lock.hcl` (checked to be tracked) pins the provider (`cloudflare/cloudflare` 5.27.0).
+  `.terraform.lock.hcl` (checked to be tracked) pins the provider (`cloudflare/cloudflare` 5.28.0).
   The `terraform` job checks the whole directory on every push and accepted
   the admin resources and the `admin_access_aud` output against the same
   provider (commit `86bbb8f`).

@@ -33,10 +33,11 @@ impl fmt::Display for DecryptError {
 impl std::error::Error for DecryptError {}
 
 /// The operating system's random source. Panics if it fails, as `rand` 0.8's
-/// `OsRng` did. Libraries that take a `rand_core` 0.6 RNG (`ed25519-dalek`,
-/// `crypto_box`, the Shamir dealer) are given `rand_core::OsRng` instead,
+/// `OsRng` did. It is also the Shamir dealer's RNG (`blahaj` 0.7 takes a
+/// `rand` 0.10 `CryptoRng`). Libraries that take a `rand_core` 0.6 RNG
+/// (`ed25519-dalek`, `crypto_box`) are given `rand_core::OsRng` instead,
 /// which reads the same source.
-fn os_rng() -> UnwrapErr<SysRng> {
+pub(crate) fn os_rng() -> UnwrapErr<SysRng> {
     UnwrapErr(SysRng)
 }
 

@@ -162,7 +162,7 @@ a variable file in this directory, or an agent session.
   `<team>.cloudflareaccess.com/AddMfaDevice` and enrol a second, spare key. This
   is Cloudflare's feature of 2026 and is described from its documentation (MFA
   requirements; Independent MFA), not from a run; whether the pinned provider
-  (5.27.0) can manage it is not established, so it is a dashboard step. Test it
+  (5.28.0) can manage it is not established, so it is a dashboard step. Test it
   with the operator signed out before relying on it, and keep the spare key
   elsewhere: losing every enrolled key locks the operator out of the console.
   Sign in with Apple is not a built-in identity provider, would need the generic
@@ -195,7 +195,7 @@ a variable file in this directory, or an agent session.
 - Not managed here yet: Cloudflare Notifications (Worker and Durable Object error
   alerts) and the R2 bucket's retention lock. They are set in the dashboard until
   a validated resource for them is added.
-- CI's `terraform validate` accepts this configuration against provider 5.27.0,
+- CI's `terraform validate` accepts this configuration against provider 5.28.0,
   which the committed `.terraform.lock.hcl` pins (`init -lockfile=readonly`, so a
   changed selection fails CI; Dependabot proposes provider updates). Validation
   checks the configuration's shape, not the account: it has never been planned

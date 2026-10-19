@@ -281,7 +281,7 @@ fn split_node(
 
             let sharks = Sharks(*threshold);
             let shares: Vec<Share> = sharks
-                .dealer_rng(secret, &mut rand_core::OsRng)
+                .dealer_rng(secret, &mut crate::crypto::os_rng())
                 .take(children.len())
                 .collect();
 
@@ -1145,7 +1145,7 @@ pub fn add_leaf_and_reshare(
     keys::get_active_encryption_key(&tx, new_hardware_id)?;
 
     let new_shares: Vec<Share> = Sharks(threshold as u8)
-        .dealer_rng(&parent_secret, &mut rand_core::OsRng)
+        .dealer_rng(&parent_secret, &mut crate::crypto::os_rng())
         .take(n)
         .collect();
     if new_shares.len() != n {
