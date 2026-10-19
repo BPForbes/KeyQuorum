@@ -116,9 +116,7 @@ pub fn relation(a: &str, b: &str) -> Relation {
         authority::RevisionAuthority::Descendant { .. } => Relation::Descendant,
         authority::RevisionAuthority::Ancestor { .. } => Relation::Ancestor,
         authority::RevisionAuthority::CrossBranch { .. } => {
-            let same_parent = authority::parent_node_label(a).is_some()
-                && authority::parent_node_label(a) == authority::parent_node_label(b);
-            if same_parent {
+            if authority::are_siblings(a, b) {
                 Relation::Sibling
             } else {
                 Relation::OtherBranch

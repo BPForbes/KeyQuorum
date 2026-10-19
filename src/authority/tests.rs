@@ -219,3 +219,14 @@ fn label_evidence_covers_only_the_generations_a_key_was_seen_in() {
         .unwrap()
         .is_empty());
 }
+
+#[test]
+fn siblings_share_a_direct_parent_and_are_distinct() {
+    assert!(are_siblings("M.S.1", "M.S.2"));
+    assert!(are_siblings("M.S", "M.A"));
+    assert!(!are_siblings("M.S.1", "M.S.1"));
+    assert!(!are_siblings("M.S.1", "M.S.2.1"));
+    assert!(!are_siblings("M", "X"));
+    assert!(!are_siblings("M.S.1", "M.A.1"));
+    assert!(!are_siblings("M..S", "M.S"));
+}

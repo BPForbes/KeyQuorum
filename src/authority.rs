@@ -57,6 +57,17 @@ pub fn is_ancestor_or_self(authorizer: &str, subject: &str) -> bool {
         .is_some_and(|rest| rest.starts_with('.'))
 }
 
+/// True when `a` and `b` are distinct labels with the same direct parent
+/// (`M.S.1` and `M.S.2`). Two root labels (`M` and `X`) are not siblings:
+/// they have no parent to share.
+pub fn are_siblings(a: &str, b: &str) -> bool {
+    a != b
+        && is_well_formed(a)
+        && is_well_formed(b)
+        && parent_node_label(a).is_some()
+        && parent_node_label(a) == parent_node_label(b)
+}
+
 /// True when `ancestor` is a strict ancestor of `descendant` (not the same
 /// label).
 pub fn is_ancestor(ancestor: &str, descendant: &str) -> bool {
