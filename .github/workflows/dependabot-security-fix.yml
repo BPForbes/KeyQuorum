@@ -79,6 +79,13 @@ jobs:
               "repos/$REPO/contents/$f?ref=$HEAD_SHA" > "lock/$f"
           done
           gh api "repos/$REPO/contents/Cargo.lock?ref=$HEAD_SHA" --jq .sha > lock-blob.txt
+          # The advisory exceptions security.yml's cargo audit honours (their
+          # reasons and dates are in deny.toml). cargo audit reads them from
+          # .cargo/audit.toml in the directory it runs in; the file is optional.
+          mkdir .cargo
+          gh api -H "Accept: application/vnd.github.raw" \
+            "repos/$REPO/contents/.cargo/audit.toml?ref=$HEAD_SHA" > .cargo/audit.toml \
+            || rm -f .cargo/audit.toml
           cp lock/Cargo.lock before.lock
 
       - name: Audit, readjust flagged crates, audit again

@@ -12,7 +12,17 @@ all-features = true
 # fix is not available yet.
 yanked = "deny"
 unmaintained = "workspace"
-ignore = []
+ignore = [
+  # zip 8.6.0 enters only as a build-dependency of utoipa-swagger-ui 10.0.1
+  # (the native dev host's /swagger-ui), which requires zip ^8.6; its build
+  # script unpacks its own Swagger UI archive with its own loop, never
+  # ZipArchive::extract or ZipStreamReader::extract. The fix is zip 9, which
+  # no utoipa-swagger-ui release accepts yet. Remove these once one does.
+  # Added 2026-10-19; keep .cargo/audit.toml identical.
+  { id = "RUSTSEC-2026-0367", reason = "zip 9 not selectable: utoipa-swagger-ui 10.0.1 requires zip ^8.6 (build-dependency only), added 2026-10-19" },
+  { id = "RUSTSEC-2026-0368", reason = "zip 9 not selectable: utoipa-swagger-ui 10.0.1 requires zip ^8.6 (build-dependency only), added 2026-10-19" },
+  { id = "RUSTSEC-2026-0369", reason = "zip 9 not selectable: utoipa-swagger-ui 10.0.1 requires zip ^8.6 (build-dependency only), added 2026-10-19" },
+]
 
 [licenses]
 confidence-threshold = 0.9
