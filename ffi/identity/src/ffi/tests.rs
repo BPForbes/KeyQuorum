@@ -93,3 +93,132 @@ fn relation_codes_match_the_c_enum() {
         assert_eq!(kq_heritage_relation(a.as_ptr(), a.as_ptr()), 1);
     }
 }
+
+fn password() -> CString {
+    let mut bytes = [0u8; 12];
+    keyquorum::crypto::fill_random(&mut bytes);
+    c(&bytes.iter().map(|b| format!("{b:02x}")).collect::<String>())
+}
+
+#[test]
+fn account_key_seals_opens_and_signs_a_bridge() {
+    let mut secret = [0u8; 32];
+    let mut public = [0u8; 32];
+    let mut sealed = [0u8; account::SEALED_LEN];
+    let mut sealed_len = 0usize;
+    let mut opened = [0u8; 32];
+    let mut derived = [0u8; 32];
+    let mut sig = [0u8; 64];
+    let mut nonce = [0u8; 16];
+    keyquorum::crypto::fill_random(&mut nonce);
+    let pw = password();
+    let (from, to) = (c("Root.Alternative"), c("Root.Flinstone.Bob"));
+    unsafe {
+        assert_eq!(
+            kq_account_keygen(secret.as_mut_ptr(), public.as_mut_ptr()),
+            KQ_ACCOUNT_OK
+        );
+        assert_eq!(
+            kq_account_public(secret.as_ptr(), derived.as_mut_ptr()),
+            KQ_ACCOUNT_OK
+        );
+        assert_eq!(derived, public);
+        assert_eq!(
+            kq_account_seal(
+                pw.as_ptr(),
+                secret.as_ptr(),
+                sealed.as_mut_ptr(),
+                10,
+                &mut sealed_len
+            ),
+            KQ_ACCOUNT_NO_ROOM
+        );
+        assert_eq!(
+            kq_account_seal(
+                pw.as_ptr(),
+                secret.as_ptr(),
+                sealed.as_mut_ptr(),
+                sealed.len(),
+                &mut sealed_len
+            ),
+            KQ_ACCOUNT_OK
+        );
+        assert_eq!(sealed_len, account::SEALED_LEN);
+        assert_eq!(
+            kq_account_open(
+                pw.as_ptr(),
+                sealed.as_ptr(),
+                sealed_len,
+                opened.as_mut_ptr()
+            ),
+            KQ_ACCOUNT_OK
+        );
+        assert_eq!(opened, secret);
+        assert_eq!(
+            kq_account_open(
+                password().as_ptr(),
+                sealed.as_ptr(),
+                sealed_len,
+                opened.as_mut_ptr()
+            ),
+            KQ_ACCOUNT_WRONG_PASSWORD
+        );
+        assert_eq!(
+            kq_account_bridge_sign(
+                KQ_ACCOUNT_BRIDGE_REQUEST,
+                from.as_ptr(),
+                to.as_ptr(),
+                from.as_ptr(),
+                nonce.as_ptr(),
+                secret.as_ptr(),
+                sig.as_mut_ptr()
+            ),
+            KQ_ACCOUNT_OK
+        );
+        let verify = |role| {
+            kq_account_bridge_verify(
+                role,
+                from.as_ptr(),
+                to.as_ptr(),
+                from.as_ptr(),
+                nonce.as_ptr(),
+                public.as_ptr(),
+                sig.as_ptr(),
+            )
+        };
+        assert_eq!(verify(KQ_ACCOUNT_BRIDGE_REQUEST), 1);
+        assert_eq!(verify(KQ_ACCOUNT_BRIDGE_ACCEPT), 0);
+        assert_eq!(verify(3), 0);
+    }
+}
+
+#[test]
+fn account_calls_refuse_null_pointers() {
+    let mut buf = [0u8; 64];
+    unsafe {
+        assert_eq!(
+            kq_account_keygen(std::ptr::null_mut(), buf.as_mut_ptr()),
+            KQ_ACCOUNT_INVALID
+        );
+        assert_eq!(
+            kq_account_public(std::ptr::null(), buf.as_mut_ptr()),
+            KQ_ACCOUNT_INVALID
+        );
+        assert_eq!(
+            kq_account_open(password().as_ptr(), std::ptr::null(), 0, buf.as_mut_ptr()),
+            KQ_ACCOUNT_INVALID
+        );
+        assert_eq!(
+            kq_account_bridge_verify(
+                KQ_ACCOUNT_BRIDGE_REQUEST,
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null()
+            ),
+            0
+        );
+    }
+}
