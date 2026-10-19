@@ -5,22 +5,27 @@
 # `cargo audit` (the `rust dependencies` job in security.yml) would fail on a
 # Dependabot cargo branch, this job moves each flagged crate to the newest
 # version its dependents allow (`cargo update -p name@version`), audits again,
-# and pushes the new Cargo.lock to the same branch only if the audit then
+# and commits the new Cargo.lock to the same branch only if the audit then
 # improves. A fix that needs a major version, a Cargo.toml change or an
 # upstream release is not attempted: the job comments what remains and fails,
 # so a person decides. It never merges (cargo updates always wait for a
 # person, see dependabot-auto-merge.yml) and never adds an advisory ignore.
 #
-# A push made with GITHUB_TOKEN starts no pull_request run, so the job
+# The job holds a write token, so it never checks out the PR. It reads only
+# Cargo.toml and Cargo.lock from the PR's head commit through the API, runs
+# cargo on those two files in an empty directory (no .cargo/config.toml or
+# rust-toolchain.toml from the branch is ever seen, and `cargo update` and
+# `cargo audit` run no build script), and writes Cargo.lock back through the
+# contents API, which refuses the write if the branch's Cargo.lock changed
+# in the meantime.
+#
+# A commit made with GITHUB_TOKEN starts no pull_request run, so the job
 # re-dispatches the PR's workflows (security, lint, deploy-lab, workers) on
 # the branch; their deploy and publish steps are gated on main and do not run.
-# That push also starts no run of this workflow, so it cannot loop.
+# That commit also starts no run of this workflow, so it cannot loop.
 #
 # `@dependabot rebase` or `recreate` drops the fix commit; the resulting
 # synchronize event runs this job again and re-applies it.
-#
-# Nothing from the PR is executed: `cargo update` and `cargo audit` read
-# Cargo.toml and Cargo.lock and run no build script.
 
 name: Dependabot security fix
 
@@ -49,14 +54,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: write # push the readjusted Cargo.lock to the Dependabot branch
-      actions: write # re-dispatch the checks a GITHUB_TOKEN push does not start
+      contents: write # commit the readjusted Cargo.lock to the Dependabot branch
+      actions: write # re-dispatch the checks a GITHUB_TOKEN commit does not start
       pull-requests: write # report what changed and what remains
     steps:
-      # Credentials are kept for the push below; no code from the PR runs.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.head_ref }}
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
         with:
           toolchain: stable
@@ -64,10 +65,27 @@ jobs:
         with:
           tool: cargo-audit
 
+      - name: Fetch Cargo.toml and Cargo.lock from the PR head
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          mkdir lock
+          for f in Cargo.toml Cargo.lock; do
+            gh api -H "Accept: application/vnd.github.raw" \
+              "repos/$REPO/contents/$f?ref=$HEAD_SHA" > "lock/$f"
+          done
+          gh api "repos/$REPO/contents/Cargo.lock?ref=$HEAD_SHA" --jq .sha > lock-blob.txt
+          cp lock/Cargo.lock before.lock
+
       - name: Audit, readjust flagged crates, audit again
         id: fix
         run: |
           set -euo pipefail
+          cd "$RUNNER_TEMP"
           # cargo audit exits 1 on findings; its JSON is what matters.
           flagged() {
             jq -r '[.vulnerabilities.list[].package, (.warnings // {} | .[][].package)]
@@ -79,7 +97,7 @@ jobs:
                          | "| \(.package.name) | \(.package.version) | \(.advisory.id) | \((.versions.patched // []) | join(", ")) |")
                    | unique[]' "$1"
           }
-          cargo audit --json > before.json || true
+          cargo audit --file lock/Cargo.lock --json > before.json || true
           jq -e '.vulnerabilities' before.json > /dev/null
 
           mapfile -t pkgs < <(flagged before.json)
@@ -91,10 +109,11 @@ jobs:
 
           for pkg in "${pkgs[@]}"; do
             echo "::group::cargo update -p $pkg"
-            cargo update -p "$pkg" || echo "::warning::cargo update -p $pkg failed"
+            cargo +stable update --manifest-path lock/Cargo.toml -p "$pkg" \
+              || echo "::warning::cargo update -p $pkg failed"
             echo "::endgroup::"
           done
-          cargo audit --json > after.json || true
+          cargo audit --file lock/Cargo.lock --json > after.json || true
           jq -e '.vulnerabilities' after.json > /dev/null
 
           before_n=$(flagged before.json | wc -l)
@@ -107,7 +126,7 @@ jobs:
             echo
             echo "### Lockfile changes"
             echo '```'
-            git diff -U1 Cargo.lock | grep -E '^( name|[-+]name|[-+]version) ' || echo "(none)"
+            { diff -U1 before.lock lock/Cargo.lock || true; } | grep -E '^( name|[-+]name|[-+]version) ' || echo "(none)"
             echo '```'
           } > report.md
           if [ "$after_n" -gt 0 ]; then
@@ -122,8 +141,7 @@ jobs:
           fi
           cat report.md
 
-          if git diff --quiet Cargo.lock || [ "$after_n" -ge "$before_n" ]; then
-            git checkout -- Cargo.lock
+          if cmp -s before.lock lock/Cargo.lock || [ "$after_n" -ge "$before_n" ]; then
             echo "result=unfixed" >> "$GITHUB_OUTPUT"
           elif [ "$after_n" -gt 0 ]; then
             echo "result=partial" >> "$GITHUB_OUTPUT"
@@ -131,22 +149,25 @@ jobs:
             echo "result=fixed" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Push the readjusted Cargo.lock and re-run the checks
+      - name: Commit the readjusted Cargo.lock and re-run the checks
         if: steps.fix.outputs.result == 'fixed' || steps.fix.outputs.result == 'partial'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
           HEAD_REF: ${{ github.head_ref }}
         run: |
           set -euo pipefail
+          cd "$RUNNER_TEMP"
           ids=$(jq -r '[.vulnerabilities.list[], (.warnings // {} | .[][])]
                        | map(.advisory.id // empty) | unique | join(", ")' before.json)
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.lock
-          git commit -m "chore(deps): readjust Cargo.lock for RustSec advisories" -m "Advisories flagged before: $ids"
-          git push origin "HEAD:$HEAD_REF"
+          base64 -w0 lock/Cargo.lock > lock.b64
+          jq -n --rawfile content lock.b64 --arg sha "$(cat lock-blob.txt)" \
+                --arg branch "$HEAD_REF" \
+                --arg message "$(printf 'chore(deps): readjust Cargo.lock for RustSec advisories\n\nAdvisories flagged before: %s' "$ids")" \
+                '{message: $message, content: $content, sha: $sha, branch: $branch}' > body.json
+          gh api -X PUT "repos/$REPO/contents/Cargo.lock" --input body.json --jq .commit.sha
           for wf in security.yml lint.yml deploy-lab.yml workers.yml; do
-            gh workflow run "$wf" --ref "$HEAD_REF"
+            gh workflow run "$wf" --repo "$REPO" --ref "$HEAD_REF"
           done
 
       - name: Report on the pull request
@@ -158,10 +179,11 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          cd "$RUNNER_TEMP"
           case "$RESULT" in
             fixed) head="cargo audit failed on this branch. The flagged crates were moved to patched versions and the checks re-run." ;;
             partial) head="cargo audit failed on this branch. Some flagged crates were moved to patched versions and the checks re-run; the rest need a person." ;;
-            *) head="cargo audit fails on this branch and no semver-compatible version clears it; nothing was pushed." ;;
+            *) head="cargo audit fails on this branch and no semver-compatible version clears it; nothing was committed." ;;
           esac
           {
             echo "$head"
