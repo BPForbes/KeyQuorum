@@ -6,9 +6,9 @@
 //! added (XOR) into their current shares. The secret is unchanged; any
 //! share that did not receive the update becomes interpolating noise.
 
+use crate::crypto::os_rng;
 use crate::error::{Error, Result};
 use blahaj::{Share, Sharks};
-use rand_core::OsRng;
 use std::collections::{HashMap, HashSet};
 
 /// Builds one zero-constant polynomial of degree `threshold - 1` and
@@ -30,7 +30,7 @@ pub fn generate_zero_deltas(
 
     let zero = vec![0u8; secret_len];
     let sharks = Sharks(threshold);
-    let all: Vec<Share> = sharks.dealer_rng(&zero, &mut OsRng).take(255).collect();
+    let all: Vec<Share> = sharks.dealer_rng(&zero, &mut os_rng()).take(255).collect();
 
     let wanted: HashMap<u8, ()> = xs.iter().copied().map(|x| (x, ())).collect();
     let mut by_x = HashMap::with_capacity(xs.len());
