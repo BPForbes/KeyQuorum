@@ -7,8 +7,9 @@
 # Only the github-actions updates are merged automatically
 # (dependabot-auto-merge.yml). Cargo, npm and Terraform updates, which include
 # the cryptographic crates and the deploy tooling, always wait for a person.
-# A cargo update whose Cargo.lock fails `cargo audit` is readjusted to patched
-# versions by dependabot-security-fix.yml, which also never merges.
+# A cargo update whose Cargo.lock fails `cargo audit` is readjusted to the
+# newest release RustSec calls patched by dependabot-security-fix.yml (a major
+# bump of a direct dependency included), which also never merges.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
