@@ -1,0 +1,19 @@
+[package]
+name = "keyquorum-identity"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "C-callable account heritage (key ids, homes, relations) for Flinstone, built on KeyQuorum's dotted-label authority rules."
+
+# A standalone workspace: it is built on its own (see the Makefile of the
+# consuming repository) and never joins the root crate's default build.
+[workspace]
+
+[lib]
+name = "keyquorum_identity"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# Only the label topology is used. The default feature set stays off so the
+# default KeyQuorum build is unchanged.
+keyquorum = { path = "../..", default-features = false }
