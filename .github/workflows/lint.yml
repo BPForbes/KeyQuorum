@@ -9,6 +9,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # dependabot-security-fix.yml re-runs this on a branch it has pushed to,
+  # since a push made with GITHUB_TOKEN starts no pull_request run.
+  workflow_dispatch:
 
 permissions:
   contents: read

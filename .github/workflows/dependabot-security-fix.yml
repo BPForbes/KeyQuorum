@@ -1,0 +1,179 @@
+# Readjusts a Dependabot Cargo PR whose lockfile fails RustSec.
+#
+# Dependabot picks versions by semver alone and cannot react to a failing
+# check, and its version updates never touch a transitive crate. When
+# `cargo audit` (the `rust dependencies` job in security.yml) would fail on a
+# Dependabot cargo branch, this job moves each flagged crate to the newest
+# version its dependents allow (`cargo update -p name@version`), audits again,
+# and pushes the new Cargo.lock to the same branch only if the audit then
+# improves. A fix that needs a major version, a Cargo.toml change or an
+# upstream release is not attempted: the job comments what remains and fails,
+# so a person decides. It never merges (cargo updates always wait for a
+# person, see dependabot-auto-merge.yml) and never adds an advisory ignore.
+#
+# A push made with GITHUB_TOKEN starts no pull_request run, so the job
+# re-dispatches the PR's workflows (security, lint, deploy-lab, workers) on
+# the branch; their deploy and publish steps are gated on main and do not run.
+# That push also starts no run of this workflow, so it cannot loop.
+#
+# `@dependabot rebase` or `recreate` drops the fix commit; the resulting
+# synchronize event runs this job again and re-applies it.
+#
+# Nothing from the PR is executed: `cargo update` and `cargo audit` read
+# Cargo.toml and Cargo.lock and run no build script.
+
+name: Dependabot security fix
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependabot-security-fix-${{ github.head_ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  cargo:
+    name: dependabot security fix (cargo)
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.head_ref, 'dependabot/cargo/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # push the readjusted Cargo.lock to the Dependabot branch
+      actions: write # re-dispatch the checks a GITHUB_TOKEN push does not start
+      pull-requests: write # report what changed and what remains
+    steps:
+      # Credentials are kept for the push below; no code from the PR runs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.head_ref }}
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        with:
+          tool: cargo-audit
+
+      - name: Audit, readjust flagged crates, audit again
+        id: fix
+        run: |
+          set -euo pipefail
+          # cargo audit exits 1 on findings; its JSON is what matters.
+          flagged() {
+            jq -r '[.vulnerabilities.list[].package, (.warnings // {} | .[][].package)]
+                   | map("\(.name)@\(.version)") | unique[]' "$1"
+          }
+          advisories() {
+            jq -r '[.vulnerabilities.list[], (.warnings // {} | .[][])]
+                   | map(select(.advisory != null)
+                         | "| \(.package.name) | \(.package.version) | \(.advisory.id) | \((.versions.patched // []) | join(", ")) |")
+                   | unique[]' "$1"
+          }
+          cargo audit --json > before.json || true
+          jq -e '.vulnerabilities' before.json > /dev/null
+
+          mapfile -t pkgs < <(flagged before.json)
+          if [ "${#pkgs[@]}" -eq 0 ]; then
+            echo "Cargo.lock passes cargo audit; nothing to readjust."
+            echo "result=clean" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          for pkg in "${pkgs[@]}"; do
+            echo "::group::cargo update -p $pkg"
+            cargo update -p "$pkg" || echo "::warning::cargo update -p $pkg failed"
+            echo "::endgroup::"
+          done
+          cargo audit --json > after.json || true
+          jq -e '.vulnerabilities' after.json > /dev/null
+
+          before_n=$(flagged before.json | wc -l)
+          after_n=$(flagged after.json | wc -l)
+          {
+            echo "### Flagged before"
+            echo "| crate | version | advisory | patched |"
+            echo "| --- | --- | --- | --- |"
+            advisories before.json
+            echo
+            echo "### Lockfile changes"
+            echo '```'
+            git diff -U1 Cargo.lock | grep -E '^( name|[-+]name|[-+]version) ' || echo "(none)"
+            echo '```'
+          } > report.md
+          if [ "$after_n" -gt 0 ]; then
+            {
+              echo
+              echo "### Still flagged"
+              echo "No semver-compatible version clears these. They need a Cargo.toml change, an upstream release, or a recorded exception, which is a person's decision."
+              echo "| crate | version | advisory | patched |"
+              echo "| --- | --- | --- | --- |"
+              advisories after.json
+            } >> report.md
+          fi
+          cat report.md
+
+          if git diff --quiet Cargo.lock || [ "$after_n" -ge "$before_n" ]; then
+            git checkout -- Cargo.lock
+            echo "result=unfixed" >> "$GITHUB_OUTPUT"
+          elif [ "$after_n" -gt 0 ]; then
+            echo "result=partial" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=fixed" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push the readjusted Cargo.lock and re-run the checks
+        if: steps.fix.outputs.result == 'fixed' || steps.fix.outputs.result == 'partial'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          ids=$(jq -r '[.vulnerabilities.list[], (.warnings // {} | .[][])]
+                       | map(.advisory.id // empty) | unique | join(", ")' before.json)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock
+          git commit -m "chore(deps): readjust Cargo.lock for RustSec advisories" -m "Advisories flagged before: $ids"
+          git push origin "HEAD:$HEAD_REF"
+          for wf in security.yml lint.yml deploy-lab.yml workers.yml; do
+            gh workflow run "$wf" --ref "$HEAD_REF"
+          done
+
+      - name: Report on the pull request
+        if: steps.fix.outputs.result == 'fixed' || steps.fix.outputs.result == 'partial' || steps.fix.outputs.result == 'unfixed'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          RESULT: ${{ steps.fix.outputs.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          case "$RESULT" in
+            fixed) head="cargo audit failed on this branch. The flagged crates were moved to patched versions and the checks re-run." ;;
+            partial) head="cargo audit failed on this branch. Some flagged crates were moved to patched versions and the checks re-run; the rest need a person." ;;
+            *) head="cargo audit fails on this branch and no semver-compatible version clears it; nothing was pushed." ;;
+          esac
+          {
+            echo "$head"
+            echo
+            cat report.md
+            echo
+            echo "[Run]($RUN_URL)"
+          } > body.md
+          gh pr comment "$PR_URL" --body-file body.md
+
+      - name: Fail while advisories remain
+        if: steps.fix.outputs.result == 'partial' || steps.fix.outputs.result == 'unfixed'
+        run: |
+          echo "::error::RustSec advisories remain on this branch that no compatible update clears; see the PR comment."
+          exit 1
