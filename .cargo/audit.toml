@@ -1,0 +1,8 @@
+# cargo audit does not read deny.toml. Keep this list identical to the
+# [advisories] ignore list there, which carries each entry's reason and date.
+[advisories]
+ignore = [
+  "RUSTSEC-2026-0367",
+  "RUSTSEC-2026-0368",
+  "RUSTSEC-2026-0369",
+]
