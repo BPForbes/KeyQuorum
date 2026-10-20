@@ -39,6 +39,11 @@ int kq_heritage_home_rel(const char *key, char *out, size_t cap);
  * account's password (KQAK v1, KQ_ACCOUNT_SEALED_LEN bytes), and the
  * signatures on account bridges. Secrets are 32 bytes, public keys 32,
  * signatures 64, bridge nonces 16. The caller wipes every secret buffer.
+ *
+ * Bridge halves are refused unless the signer may sign them: from and to are
+ * valid key ids on different branches, a request is signed by from, and an
+ * acceptance by to or an ancestor of it (sign returns KQ_ACCOUNT_INVALID,
+ * verify returns 0).
  */
 #define KQ_ACCOUNT_OK              0
 #define KQ_ACCOUNT_INVALID        (-1)

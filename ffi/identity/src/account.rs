@@ -12,6 +12,7 @@
 //! "KQAK" | version (1) | salt (16) | nonce (12) | AES-256-GCM(secret) (48)
 //! ```
 
+use crate::heritage::{self, Relation};
 use keyquorum::crypto::{self, NONCE_LEN, SALT_LEN};
 use keyquorum::signing::{self, AccountBridgeRole};
 use zeroize::Zeroizing;
@@ -82,9 +83,30 @@ pub fn open(password: &str, sealed: &[u8]) -> Result<Zeroizing<[u8; SECRET_LEN]>
     Ok(secret)
 }
 
+/// Whether `signer` may sign this half of a bridge between `from` and `to`:
+/// all three are valid key ids, `from` and `to` are on different branches
+/// (one line never needs a bridge), a request is signed by `from` itself, and
+/// an acceptance by `to` or an ancestor of it.
+pub fn signer_may_sign(role: AccountBridgeRole, from: &str, to: &str, signer: &str) -> bool {
+    if !heritage::key_valid(from) || !heritage::key_valid(to) || !heritage::key_valid(signer) {
+        return false;
+    }
+    if !matches!(
+        heritage::relation(from, to),
+        Relation::Sibling | Relation::OtherBranch
+    ) {
+        return false;
+    }
+    match role {
+        AccountBridgeRole::Request => signer == from,
+        AccountBridgeRole::Accept => heritage::is_ancestor_or_self(signer, to),
+    }
+}
+
 /// Signs one half of a bridge between account labels `from` (who asked) and
 /// `to` (who was asked), as `signer`, for the bridge identified by `nonce`.
-/// `None` when a label is too long to encode.
+/// `None` when `signer` may not sign that half ([`signer_may_sign`]) or a
+/// label is too long to encode.
 pub fn sign_bridge(
     role: AccountBridgeRole,
     from: &str,
@@ -93,12 +115,16 @@ pub fn sign_bridge(
     nonce: &[u8; 16],
     secret: &[u8; SECRET_LEN],
 ) -> Option<[u8; 64]> {
+    if !signer_may_sign(role, from, to, signer) {
+        return None;
+    }
     let digest = signing::account_bridge_preimage(role, from, to, signer, nonce).ok()?;
     Some(signing::sign(secret, &digest))
 }
 
 /// Whether `signature` is `signer`'s, under `public`, for that half of the
-/// bridge.
+/// bridge, and `signer` may sign it ([`signer_may_sign`]). A valid signature
+/// from an account that holds no such role never verifies.
 pub fn verify_bridge(
     role: AccountBridgeRole,
     from: &str,
@@ -108,6 +134,9 @@ pub fn verify_bridge(
     public: &[u8; 32],
     signature: &[u8; 64],
 ) -> bool {
+    if !signer_may_sign(role, from, to, signer) {
+        return false;
+    }
     match signing::account_bridge_preimage(role, from, to, signer, nonce) {
         Ok(digest) => signing::verify_signature(public, &digest, signature).is_ok(),
         Err(_) => false,
