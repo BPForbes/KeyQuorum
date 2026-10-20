@@ -2,15 +2,15 @@ use super::*;
 
 /// A password drawn at run time, so no secret is written as a literal.
 fn password() -> String {
-    let mut bytes = [0u8; 12];
-    crypto::fill_random(&mut bytes);
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    crypto::random_salt()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
+/// A bridge nonce drawn at run time (16 random bytes, the salt length).
 fn nonce() -> [u8; 16] {
-    let mut nonce = [0u8; 16];
-    crypto::fill_random(&mut nonce);
-    nonce
+    crypto::random_salt()
 }
 
 #[test]
@@ -37,7 +37,8 @@ fn a_changed_or_truncated_sealed_key_is_refused() {
     let last = sealed.len() - 1;
     sealed[last] ^= 1;
     assert_eq!(open(&pw, &sealed), Err(OpenError::WrongPassword));
-    sealed[0] = b'X';
+    // Swap the first two magic bytes ("KQ" -> "QK"): no longer a sealed key.
+    sealed.swap(0, 1);
     assert_eq!(open(&pw, &sealed), Err(OpenError::Malformed));
 }
 

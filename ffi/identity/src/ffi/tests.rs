@@ -95,8 +95,7 @@ fn relation_codes_match_the_c_enum() {
 }
 
 fn password() -> CString {
-    let mut bytes = [0u8; 12];
-    keyquorum::crypto::fill_random(&mut bytes);
+    let bytes = keyquorum::crypto::random_salt();
     c(&bytes.iter().map(|b| format!("{b:02x}")).collect::<String>())
 }
 
@@ -109,8 +108,7 @@ fn account_key_seals_opens_and_signs_a_bridge() {
     let mut opened = [0u8; 32];
     let mut derived = [0u8; 32];
     let mut sig = [0u8; 64];
-    let mut nonce = [0u8; 16];
-    keyquorum::crypto::fill_random(&mut nonce);
+    let nonce = keyquorum::crypto::random_salt();
     let pw = password();
     let (from, to) = (c("Root.Alternative"), c("Root.Flinstone.Bob"));
     unsafe {

@@ -201,9 +201,9 @@ unsafe fn bytes_in<const N: usize>(p: *const u8) -> Option<[u8; N]> {
     if p.is_null() {
         return None;
     }
-    let mut out = [0u8; N];
-    std::ptr::copy_nonoverlapping(p, out.as_mut_ptr(), N);
-    Some(out)
+    // Copied straight from the caller's bytes: no placeholder value is ever
+    // created, so nothing constant can stand in for a key or nonce.
+    std::slice::from_raw_parts(p, N).try_into().ok()
 }
 
 /// Writes `value` to `out`; false for null.
