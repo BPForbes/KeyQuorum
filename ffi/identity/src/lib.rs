@@ -6,9 +6,13 @@
 //! Flinstone needs: the master is `Root`, names are `[A-Za-z0-9_-]{1,31}`,
 //! at most eight levels deep, and a home directory mirrors the key id.
 //!
-//! Every exported function is pure: no storage, no clock, no allocation
-//! that outlives the call. Buffers are caller-owned and the C header is
-//! `include/keyquorum_identity.h`.
+//! [`account`] adds account keys: an Ed25519 signing key per account, sealed
+//! under its password, and the signatures on account bridges.
+//!
+//! No exported function stores anything or reads a clock; the key functions
+//! read the operating system's random source. Buffers are caller-owned and
+//! the C header is `include/keyquorum_identity.h`.
 
+pub mod account;
 pub mod ffi;
 pub mod heritage;

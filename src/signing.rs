@@ -27,6 +27,7 @@ const RELAY_API_KEY_ISSUE_DOMAIN: &[u8] = b"KQ-RELAY-API-KEY-ISSUE-v1";
 const RELAY_BACKUP_DOMAIN: &[u8] = b"KQ-RELAY-BACKUP-v1";
 const RELAY_SETUP_MANIFEST_DOMAIN: &[u8] = b"KQ-RELAY-SETUP-MANIFEST-v1";
 const PROVIDER_RECOVERY_DOMAIN: &[u8] = b"KQ-PROVIDER-RECOVERY-v1";
+const ACCOUNT_BRIDGE_DOMAIN: &[u8] = b"KQ-ACCOUNT-BRIDGE-v1";
 
 /// Verifies `signature` over `message` under `public_key`. Uses
 /// `verify_strict` rather than `verify` — it rejects the non-canonical
@@ -45,6 +46,45 @@ pub fn verify_signature(public_key: &[u8; 32], message: &[u8], signature: &[u8; 
 pub fn sign(private_key: &[u8; 32], message: &[u8]) -> [u8; 64] {
     let signing_key = SigningKey::from_bytes(private_key);
     signing_key.sign(message).to_bytes()
+}
+
+/// The Ed25519 public key for a 32-byte private seed.
+pub fn public_key(private_key: &[u8; 32]) -> [u8; 32] {
+    SigningKey::from_bytes(private_key)
+        .verifying_key()
+        .to_bytes()
+}
+
+/// Which half of an account bridge a signature stands for. Wire codes: they
+/// feed [`account_bridge_preimage`], so they are appended, never renumbered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum AccountBridgeRole {
+    /// The requesting account asks to be joined to the other.
+    Request = 1,
+    /// The requested account, or an ancestor of it, accepts.
+    Accept = 2,
+}
+
+/// What an account signs to request or accept a bridge between two account
+/// labels (`from` asked, `to` was asked). `signer` is the label whose key
+/// signs, and `bridge_nonce` is the bridge's random id, so a signature for one
+/// bridge never stands for another between the same two accounts.
+pub fn account_bridge_preimage(
+    role: AccountBridgeRole,
+    from: &str,
+    to: &str,
+    signer: &str,
+    bridge_nonce: &[u8; 16],
+) -> Result<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    hasher.update(ACCOUNT_BRIDGE_DOMAIN);
+    hasher.update([role as u8]);
+    hash_len_prefixed(&mut hasher, from.as_bytes())?;
+    hash_len_prefixed(&mut hasher, to.as_bytes())?;
+    hash_len_prefixed(&mut hasher, signer.as_bytes())?;
+    hasher.update(bridge_nonce);
+    Ok(hasher.finalize().into())
 }
 
 /// Fields carried in a private-bridge signature artifact. Salts and the

@@ -304,3 +304,72 @@ fn a_finalization_preimage_is_domain_separated_and_binds_every_field() {
             .unwrap();
     assert_ne!(base, counter);
 }
+
+#[test]
+fn public_key_matches_the_signing_key() {
+    let (signing_key, public) = generate();
+    assert_eq!(public_key(&signing_key.to_bytes()), public);
+}
+
+fn bridge_nonce() -> [u8; 16] {
+    let bytes = crate::test_secrets::bytes32();
+    bytes[..16].try_into().unwrap()
+}
+
+#[test]
+fn account_bridge_preimage_binds_every_field() {
+    let nonce = bridge_nonce();
+    let mut other_nonce = nonce;
+    other_nonce[0] ^= 1;
+    let base = account_bridge_preimage(
+        AccountBridgeRole::Request,
+        "Root.Alternative",
+        "Root.Flinstone.Bob",
+        "Root.Alternative",
+        &nonce,
+    )
+    .unwrap();
+    let variants = [
+        account_bridge_preimage(
+            AccountBridgeRole::Accept,
+            "Root.Alternative",
+            "Root.Flinstone.Bob",
+            "Root.Alternative",
+            &nonce,
+        ),
+        account_bridge_preimage(
+            AccountBridgeRole::Request,
+            "Root.Flinstone.Bob",
+            "Root.Alternative",
+            "Root.Alternative",
+            &nonce,
+        ),
+        account_bridge_preimage(
+            AccountBridgeRole::Request,
+            "Root.Alternative",
+            "Root.Flinstone.Bob",
+            "Root.Flinstone",
+            &nonce,
+        ),
+        account_bridge_preimage(
+            AccountBridgeRole::Request,
+            "Root.Alternative",
+            "Root.Flinstone.Bob",
+            "Root.Alternative",
+            &other_nonce,
+        ),
+    ];
+    for variant in variants {
+        assert_ne!(variant.unwrap(), base);
+    }
+}
+
+#[test]
+fn account_bridge_labels_are_length_prefixed() {
+    let nonce = bridge_nonce();
+    let a = account_bridge_preimage(AccountBridgeRole::Request, "Root.A", "B", "Root.A", &nonce)
+        .unwrap();
+    let b = account_bridge_preimage(AccountBridgeRole::Request, "Root.", "AB", "Root.A", &nonce)
+        .unwrap();
+    assert_ne!(a, b);
+}
