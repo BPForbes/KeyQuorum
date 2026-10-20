@@ -20,8 +20,8 @@ use super::{bytes_in, bytes_out, input};
 use keyquorum::file_delivery::{self, Freshness, OutgoingHistory};
 use keyquorum::file_history::{
     self, current_revision, delivery_readiness, latest_trusted_revision_where, proof_descriptor,
-    select_shareable_revision, BridgeEvidence, DeliveryReadiness, FilePolicy, ImportContext,
-    NewRevision, ProofKind, TrackedFile, TrustContext,
+    select_shareable_revision, BridgeEvidence, DeliveryReadiness, FilePolicy, GenerationEvidence,
+    ImportContext, NewRevision, ProofKind, TrackedFile, TrustContext,
 };
 use keyquorum::signing;
 use sha2::{Digest, Sha256};
@@ -101,6 +101,17 @@ impl TrustContext for TableTrust {
 
     fn bridge_evidence(&self, _: &[u8; 32]) -> BridgeEvidence {
         BridgeEvidence::None
+    }
+
+    /// A key table records no topology, so only generation 0 (no published
+    /// topology) is judged; any other generation stays pending, never
+    /// judged against today's keys.
+    fn generation_evidence(&self, _scope_root: &str, generation: u64) -> GenerationEvidence {
+        if generation == 0 {
+            GenerationEvidence::Current
+        } else {
+            GenerationEvidence::Unavailable
+        }
     }
 }
 
@@ -912,8 +923,9 @@ pub unsafe extern "C" fn kq_file_open_letter(
 }
 
 /// Judges `rev` with history `root` against the `nseen` (revision, root)
-/// pairs, 64 bytes each, the caller accepted before for this file.
-/// `KQ_FILE_FIRST`, `KQ_FILE_NEWER`, `KQ_FILE_REPLAYED` or `KQ_FILE_NOT_NEWER`.
+/// pairs, 64 bytes each, the caller accepted before for this file. `rev`
+/// must be a revision of `c` and `root` its history root, else
+/// `KQ_FILE_INVALID`. `KQ_FILE_FIRST`, `KQ_FILE_NEWER`, `KQ_FILE_REPLAYED` or `KQ_FILE_NOT_NEWER`.
 ///
 /// # Safety
 /// `seen` readable for `nseen` 64-byte pairs (null when zero); `c` readable
@@ -937,6 +949,12 @@ pub unsafe extern "C" fn kq_file_freshness(
     if nseen > 0 && seen.is_null() {
         return KQ_FILE_INVALID;
     }
+    // The judged pair must be this container's: a revision it holds and its
+    // own history root, never metadata the caller supplies apart from it.
+    let graph = file.graph();
+    if graph.get(&rev).is_none() || root != file.history_root() {
+        return KQ_FILE_INVALID;
+    }
     let pairs: Vec<([u8; 32], [u8; 32])> = (0..nseen)
         .map(|i| {
             let pair = &*seen.add(i);
@@ -946,7 +964,6 @@ pub unsafe extern "C" fn kq_file_freshness(
             )
         })
         .collect();
-    let graph = file.graph();
     match file_delivery::freshness_against(
         &pairs,
         &rev,

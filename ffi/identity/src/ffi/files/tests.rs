@@ -613,3 +613,82 @@ fn box_keys_round_trip_through_the_account_seal() {
     );
     assert_eq!(again, public);
 }
+
+#[test]
+fn a_revision_stamped_with_a_topology_generation_is_never_trusted() {
+    let mya = account("Root.Mya");
+    let steve = account("Root.Steve");
+    let trust = Trust::of(&[&mya, &steve]);
+    let mut file = TrackedFile::decode(&new_file("Root.Mya")).unwrap();
+    let policy_hash = file.policy().unwrap().policy_hash().unwrap();
+    let identity = file_history::label_identity("Root.Mya");
+    let rev = file
+        .check_in(
+            NewRevision {
+                parent_revision_ids: Vec::new(),
+                user_label: None,
+                author_identity: Some(identity),
+                author_hcp_label: "Root.Mya".to_string(),
+                created_at_utc: T1.to_string(),
+                topology_generation: 5,
+                policy_hash,
+            },
+            b"generation five\n".to_vec(),
+        )
+        .unwrap();
+    file.sign_revision(&rev, identity, "Root.Mya", &mya.signing_secret)
+        .unwrap();
+    let c = file.encode().unwrap();
+
+    // A key table records no topology, so the revision stays pending: it is
+    // neither ready, nor sealed, even with a valid author signature.
+    let (rc, _, _) = readiness(&c, &rev, &steve, &trust);
+    assert_ne!(rc, KQ_FILE_OK, "kq_file_readiness at generation 5");
+    let table = trust.table();
+    let mut delivery = [0u8; 16];
+    let delivery_ptr = delivery.as_mut_ptr();
+    let (rc, _) = collect(|out, cap, len| unsafe {
+        kq_file_seal_letter(
+            c.as_ptr(),
+            c.len(),
+            rev.as_ptr(),
+            &table,
+            mya.label.as_ptr(),
+            mya.signing_secret.as_ptr(),
+            mya.box_public.as_ptr(),
+            steve.label.as_ptr(),
+            steve.box_public.as_ptr(),
+            out,
+            cap,
+            len,
+            delivery_ptr,
+        )
+    });
+    assert_ne!(rc, KQ_FILE_OK, "kq_file_seal_letter at generation 5");
+}
+
+#[test]
+fn freshness_judges_only_the_containers_own_revision_and_root() {
+    let mya = account("Root.Mya");
+    let (c, rev) = check_in(&new_file("Root.Mya"), &mya, T1, b"v1\n");
+    let mut root = [0u8; 32];
+    assert_eq!(
+        unsafe { kq_file_verify(c.as_ptr(), c.len(), root.as_mut_ptr()) },
+        KQ_FILE_OK,
+        "kq_file_verify"
+    );
+    let fresh = |rev: &[u8; 32], root: &[u8; 32]| unsafe {
+        kq_file_freshness(
+            std::ptr::null(),
+            0,
+            c.as_ptr(),
+            c.len(),
+            rev.as_ptr(),
+            root.as_ptr(),
+        )
+    };
+    assert_eq!(fresh(&rev, &root), KQ_FILE_FIRST);
+    // A revision the container does not hold, or a root that is not its own.
+    assert_eq!(fresh(&[9u8; 32], &root), KQ_FILE_INVALID);
+    assert_eq!(fresh(&rev, &[9u8; 32]), KQ_FILE_INVALID);
+}
