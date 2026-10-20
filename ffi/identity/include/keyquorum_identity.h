@@ -61,6 +61,10 @@ int kq_heritage_home_rel(const char *key, char *out, size_t cap);
 
 int kq_account_keygen(unsigned char *secret_out, unsigned char *public_out);
 int kq_account_public(const unsigned char *secret, unsigned char *public_out);
+/* Box key (X25519): what file letters are sealed to. Seal its secret with
+ * kq_account_seal like the signing key; the caller wipes secret_out. */
+int kq_account_box_keygen(unsigned char secret_out[32], unsigned char public_out[32]);
+int kq_account_box_public(const unsigned char secret[32], unsigned char public_out[32]);
 int kq_account_seal(const char *password, const unsigned char *secret,
                     unsigned char *out, size_t cap, size_t *out_len);
 int kq_account_open(const char *password, const unsigned char *sealed, size_t len,

@@ -26,6 +26,9 @@ pub enum ProofKind {
     Countersignature = 2,
     /// The scope owner or an ancestor marks a trusted revision final.
     Finalization = 3,
+    /// A delivery's recipient co-authors the revision before it is released
+    /// to them. It never makes a revision trusted; delivery checks it.
+    CoAuthor = 4,
 }
 
 impl ProofKind {
@@ -34,6 +37,7 @@ impl ProofKind {
             1 => Ok(Self::Content),
             2 => Ok(Self::Countersignature),
             3 => Ok(Self::Finalization),
+            4 => Ok(Self::CoAuthor),
             _ => Err(Error::InvalidTrackedFile),
         }
     }
@@ -82,6 +86,18 @@ impl RevisionProof {
             )),
             (ProofKind::Countersignature, Some(author_hash), Some(author)) => {
                 signing::file_countersign_preimage(
+                    &revision.file_id,
+                    &revision.revision_id,
+                    &author,
+                    &author_hash,
+                    &self.signer_identity,
+                    &self.signer_label,
+                    self.topology_generation,
+                    &self.policy_hash,
+                )
+            }
+            (ProofKind::CoAuthor, Some(author_hash), Some(author)) => {
+                signing::file_coauthor_preimage(
                     &revision.file_id,
                     &revision.revision_id,
                     &author,
@@ -387,5 +403,92 @@ impl TrackedFile {
         } else {
             Err(Error::InvalidTrackedFile)
         }
+    }
+
+    /// Co-author a revision as a delivery's recipient, backing the author
+    /// proof that verifies under `ctx` (the first when none does). The
+    /// signer must not be the author. Whether this co-signature completes a
+    /// delivery is `policy::delivery_readiness`'s question.
+    pub fn coauthor_revision(
+        &mut self,
+        revision_id: &[u8; 32],
+        coauthor_identity: [u8; 16],
+        coauthor_label: &str,
+        secret: &[u8; 32],
+        ctx: &dyn TrustContext,
+    ) -> Result<()> {
+        let revision = self
+            .graph()
+            .get(revision_id)
+            .ok_or(Error::InvalidTrackedFile)?;
+        let revision = &revision.revision;
+        if revision.author_hcp_label == coauthor_label
+            || revision.author_identity == Some(coauthor_identity)
+        {
+            return Err(Error::InvalidTrackedFile);
+        }
+        let author_hash = self
+            .proofs_for(revision_id, ProofKind::Content)
+            .find(|proof| super::policy::proof_verifies(revision, proof, ctx))
+            .or_else(|| self.proofs_for(revision_id, ProofKind::Content).next())
+            .map(RevisionProof::signature_hash)
+            .ok_or(Error::InvalidTrackedFile)?;
+        let mut proof = RevisionProof {
+            revision_id: *revision_id,
+            kind: ProofKind::CoAuthor,
+            signer_identity: coauthor_identity,
+            signer_label: coauthor_label.to_string(),
+            author_signature_hash: Some(author_hash),
+            topology_generation: revision.topology_generation,
+            policy_hash: revision.policy_hash,
+            signature: [0; 64],
+        };
+        proof.signature = signing::sign(secret, &proof.preimage(revision)?);
+        if self.add_proof(proof) {
+            Ok(())
+        } else {
+            Err(Error::InvalidTrackedFile)
+        }
+    }
+
+    /// Attach a co-author signature made elsewhere, over the revision's
+    /// public fields (`signing::file_coauthor_preimage`), backing the author
+    /// proof whose signature hashes to `author_signature_hash`. A delivery's
+    /// recipient signs before the letter is released, without the
+    /// container; once it opens the letter it attaches that signature here.
+    /// Nothing is verified: `policy::delivery_readiness` checks it.
+    pub fn attach_coauthor_signature(
+        &mut self,
+        revision_id: &[u8; 32],
+        author_signature_hash: &[u8; 32],
+        coauthor_identity: [u8; 16],
+        coauthor_label: &str,
+        signature: [u8; 64],
+    ) -> Result<()> {
+        let revision = self
+            .graph()
+            .get(revision_id)
+            .ok_or(Error::InvalidTrackedFile)?;
+        let revision = &revision.revision;
+        if revision.author_hcp_label == coauthor_label
+            || revision.author_identity == Some(coauthor_identity)
+            || !self
+                .proofs_for(revision_id, ProofKind::Content)
+                .any(|proof| proof.signature_hash() == *author_signature_hash)
+        {
+            return Err(Error::InvalidTrackedFile);
+        }
+        let proof = RevisionProof {
+            revision_id: *revision_id,
+            kind: ProofKind::CoAuthor,
+            signer_identity: coauthor_identity,
+            signer_label: coauthor_label.to_string(),
+            author_signature_hash: Some(*author_signature_hash),
+            topology_generation: revision.topology_generation,
+            policy_hash: revision.policy_hash,
+            signature,
+        };
+        self.add_proof(proof);
+        Ok(())
     }
 }

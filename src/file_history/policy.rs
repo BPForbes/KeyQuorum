@@ -605,16 +605,105 @@ pub fn latest_trusted_revision(
     policy: &FilePolicy,
     ctx: &dyn TrustContext,
 ) -> Option<[u8; 32]> {
+    latest_trusted_revision_where(file, policy, ctx, |_| true)
+}
+
+/// [`latest_trusted_revision`] among the revisions `accept` admits: a host
+/// passes the ones it accepted at or before a request time (its own clock,
+/// never the editor's `created_at_utc`), so a read cannot see a revision
+/// that arrived after it asked.
+pub fn latest_trusted_revision_where(
+    file: &TrackedFile,
+    policy: &FilePolicy,
+    ctx: &dyn TrustContext,
+    accept: impl Fn(&[u8; 32]) -> bool,
+) -> Option<[u8; 32]> {
     file.revisions()
         .iter()
         .rev()
         .map(|stored| stored.revision.revision_id)
+        .filter(|id| accept(id))
         .find(|id| {
             matches!(
                 evaluate_revision_trust(file, id, policy, ctx),
                 Ok(TrustState::Trusted)
             )
         })
+}
+
+/// What a co-signed delivery of one revision to one recipient holds so far.
+/// Each satisfied condition is one unit of potential; the delivery may be
+/// released only when all [`DeliveryReadiness::THRESHOLD`] are met.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeliveryReadiness {
+    /// Two heads: no revision is "the" file until someone merges.
+    pub forked: bool,
+    /// The author's content proof verifies.
+    pub author_signed: bool,
+    /// The revision is trusted under the file's policy (which may need
+    /// more than the author's signature: a countersignature or a bridge).
+    pub trusted: bool,
+    /// The recipient's co-author proof backs that author signature and verifies.
+    pub coauthored: bool,
+}
+
+impl DeliveryReadiness {
+    pub const THRESHOLD: u32 = 3;
+
+    pub fn potential(&self) -> u32 {
+        u32::from(self.author_signed) + u32::from(self.trusted) + u32::from(self.coauthored)
+    }
+
+    pub fn ready(&self) -> bool {
+        !self.forked && self.potential() >= Self::THRESHOLD
+    }
+}
+
+/// Judge a co-signed delivery of `revision_id` to `recipient_label`. The
+/// author proof, trust and the co-author proof are all checked against keys
+/// `ctx` knows; nothing is taken from the container's say-so. Errors only
+/// when the revision is unknown.
+pub fn delivery_readiness(
+    file: &TrackedFile,
+    revision_id: &[u8; 32],
+    recipient_identity: &[u8; 16],
+    recipient_label: &str,
+    policy: &FilePolicy,
+    ctx: &dyn TrustContext,
+) -> Result<DeliveryReadiness> {
+    let revision = &file
+        .graph()
+        .get(revision_id)
+        .ok_or(Error::InvalidTrackedFile)?
+        .revision;
+    let forked = current_revision(file).is_none();
+    let content = file
+        .proofs_for(revision_id, ProofKind::Content)
+        .filter(|proof| {
+            proof.signer_label == revision.author_hcp_label
+                && Some(proof.signer_identity) == revision.author_identity
+        })
+        .find(|proof| proof_verifies(revision, proof, ctx));
+    let trusted = matches!(
+        evaluate_revision_trust(file, revision_id, policy, ctx)?,
+        TrustState::Trusted
+    );
+    let coauthored = content.is_some_and(|content| {
+        let author_hash = content.signature_hash();
+        file.proofs_for(revision_id, ProofKind::CoAuthor)
+            .filter(|proof| {
+                proof.signer_label == recipient_label
+                    && &proof.signer_identity == recipient_identity
+                    && proof.author_signature_hash == Some(author_hash)
+            })
+            .any(|proof| proof_verifies(revision, proof, ctx))
+    });
+    Ok(DeliveryReadiness {
+        forked,
+        author_signed: content.is_some(),
+        trusted,
+        coauthored,
+    })
 }
 
 /// Whether the scope owner or an ancestor has finalized `revision_id`: it

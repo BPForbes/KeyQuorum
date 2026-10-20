@@ -638,7 +638,24 @@ Container v7 adds optional `EventProof`s after the events (the event's own actor
 signing `signing::file_history_event_preimage`), written only when one exists;
 `rename`, `expire` and `resolve --reject` sign the events they append, and
 `policy::event_attested` / `file history` report a signature only where this store's
-key for that actor verifies it. Unsigned events stay hash-chained, never attested. `file checkout`, `file verify` and `export tracked-file` append
+key for that actor verifies it. Unsigned events stay hash-chained, never attested. Container v8 is v7 that holds a `CoAuthor` proof (`ProofKind` 4,
+`signing::file_coauthor_preimage`: the same fields as a countersignature under its own domain): a
+delivery's recipient co-signing a revision before it is released to them. It is written only when one
+is held (its event-proof list is then always present, possibly empty) and never makes a revision
+trusted; `policy::delivery_readiness` judges a co-signed delivery (author proof verifies, revision
+trusted, recipient's co-author proof backs that author signature; `DeliveryReadiness::THRESHOLD` 3,
+never ready while forked). `coauthor_revision` signs with the container in hand;
+`attach_coauthor_signature` adds one made over the public fields alone, which is how a recipient
+co-signs before the host releases the sealed letter. Store-free variants for a caller with no
+KeyQuorum database: `file_history::label_identity` (the fallback of `identity_for`),
+`policy::latest_trusted_revision_where` (only the revisions a host accepted by a request time, on its
+own clock), `file_delivery::freshness_against` (the pure part of `freshness`) and
+`open_history_{letter,ack}_with_key` (the sender's or recipient's key supplied by the caller's own
+registry, looked up by the label it expects). `ffi/identity` exports them to C for Flinstone:
+`include/keyquorum_files.h` (`kq_file_*`, `KQ_FILE_ABI_VERSION`, the trust table the caller fills
+from its registry, the public `kq_file_offer_t` a host verifies without the content) beside
+`keyquorum_identity.h`, and account box keys (`kq_account_box_keygen`, X25519, sealed like the
+signing key). One Rust archive carries both headers: a second would duplicate std and SQLite. `file checkout`, `file verify` and `export tracked-file` append
 `REVISION_CHECKED_OUT` (36), `VERIFICATION_RUN` (37) and `HISTORY_EXPORTED` (38)
 only under `--record`, attributed only to the label `--as` names; that label is a
 claim, so the event is hash-chained and never attested. `label_authority_evidence` (owned by `authority`: `record_label_evidence`,

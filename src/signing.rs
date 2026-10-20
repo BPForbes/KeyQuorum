@@ -19,6 +19,7 @@ const SIGN_DOMAIN: &[u8] = b"KQBRIDGE-SIGN-v1";
 const FILE_REVISION_DOMAIN: &[u8] = b"KQ-FILE-REVISION-v1";
 const FILE_COUNTERSIGN_DOMAIN: &[u8] = b"KQ-FILE-COUNTERSIGN-v1";
 const FILE_FINALIZE_DOMAIN: &[u8] = b"KQ-FILE-FINALIZE-v1";
+const FILE_COAUTHOR_DOMAIN: &[u8] = b"KQ-FILE-COAUTHOR-v1";
 const FILE_HISTORY_EVENT_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-EVENT-v1";
 const FILE_BRIDGE_APPROVAL_DOMAIN: &[u8] = b"KQ-FILE-BRIDGE-APPROVAL-v1";
 const RELAY_AUDIT_ANCHOR_DOMAIN: &[u8] = b"KQ-RELAY-AUDIT-ANCHOR-v1";
@@ -170,6 +171,34 @@ pub fn file_countersign_preimage(
     hasher.update(author_signature_hash);
     hasher.update(supervisor);
     hash_len_prefixed(&mut hasher, supervisor_label.as_bytes())?;
+    hasher.update(topology_generation.to_be_bytes());
+    hasher.update(policy_hash);
+    Ok(hasher.finalize().into())
+}
+
+/// A delivery's recipient co-authoring a revision before it is released to
+/// them: the same fields as a countersignature (bound to that exact author
+/// signature, the co-author's label as well as identity), under its own
+/// domain so neither can stand in for the other.
+#[allow(clippy::too_many_arguments)] // every argument is a distinct signed field
+pub fn file_coauthor_preimage(
+    file_id: &[u8; 16],
+    revision_id: &[u8; 32],
+    author: &[u8; 16],
+    author_signature_hash: &[u8; 32],
+    coauthor: &[u8; 16],
+    coauthor_label: &str,
+    topology_generation: u64,
+    policy_hash: &[u8; 32],
+) -> Result<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    hasher.update(FILE_COAUTHOR_DOMAIN);
+    hasher.update(file_id);
+    hasher.update(revision_id);
+    hasher.update(author);
+    hasher.update(author_signature_hash);
+    hasher.update(coauthor);
+    hash_len_prefixed(&mut hasher, coauthor_label.as_bytes())?;
     hasher.update(topology_generation.to_be_bytes());
     hasher.update(policy_hash);
     Ok(hasher.finalize().into())

@@ -896,6 +896,7 @@ name = "keyquorum-identity"
 version = "0.1.0"
 dependencies = [
  "keyquorum",
+ "sha2 0.11.1",
  "zeroize",
 ]
 

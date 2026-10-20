@@ -47,6 +47,17 @@ pub fn public_key(secret: &[u8; SECRET_LEN]) -> [u8; 32] {
     signing::public_key(secret)
 }
 
+/// A new random X25519 box key and its public key: what senders seal file
+/// letters to. Sealed under the password the same way as the signing key.
+pub fn generate_box() -> (Zeroizing<[u8; SECRET_LEN]>, [u8; 32]) {
+    keyquorum::keys::generate_encryption_keypair()
+}
+
+/// The X25519 public key for a box `secret`.
+pub fn box_public_key(secret: &[u8; SECRET_LEN]) -> [u8; 32] {
+    keyquorum::keys::encryption_public_from_secret(secret)
+}
+
 /// Seals `secret` under `password`. Fails only if key derivation fails.
 pub fn seal(password: &str, secret: &[u8; SECRET_LEN]) -> Option<Vec<u8>> {
     let salt = crypto::random_salt();

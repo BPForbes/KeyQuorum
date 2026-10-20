@@ -37,10 +37,11 @@ pub use merge::{
     LineChange,
 };
 pub use policy::{
-    current_revision, evaluate_revision_trust, event_attested, finalized_checkpoints, is_finalized,
-    latest_finalized_ancestor, latest_trusted_revision, proof_descriptor,
-    select_shareable_revision, BridgeEvidence, DeliveryDecision, DeliveryDecisionKind, FilePolicy,
-    GenerationEvidence, Requirement, TrustContext, TrustReason, TrustState,
+    current_revision, delivery_readiness, evaluate_revision_trust, event_attested,
+    finalized_checkpoints, is_finalized, latest_finalized_ancestor, latest_trusted_revision,
+    latest_trusted_revision_where, proof_descriptor, select_shareable_revision, BridgeEvidence,
+    DeliveryDecision, DeliveryDecisionKind, DeliveryReadiness, FilePolicy, GenerationEvidence,
+    Requirement, TrustContext, TrustReason, TrustState,
 };
 pub use proof::{EventProof, ProofKind, RevisionProof};
 pub use resolve::{Divergence, OpenConflict, Resolution, ResolverSelection, SelectionRule};
@@ -51,6 +52,22 @@ pub use revision::{
 pub use snapshot::{HistorySnapshot, SNAPSHOT_MAGIC, SNAPSHOT_VERSION};
 pub use sync::{HistoryMerge, HistoryRelation, ImportContext};
 pub use verify::verify_tracked_file;
+
+/// The 16-byte identity a label gets when no enrolled identity is known:
+/// the first 16 bytes of `SHA-256("KQ-FILE-IDENTITY-v1" || u16be len || label)`.
+/// Stable while the label is; a store that enrolled a different identity for
+/// the label (`transfer::identity`) uses that one instead.
+pub fn label_identity(label: &str) -> [u8; 16] {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::new()
+        .chain_update(b"KQ-FILE-IDENTITY-v1")
+        .chain_update((label.len() as u16).to_be_bytes())
+        .chain_update(label.as_bytes())
+        .finalize();
+    let mut id = [0u8; 16];
+    id.copy_from_slice(&digest[..16]);
+    id
+}
 
 #[cfg(test)]
 mod tests;

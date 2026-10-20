@@ -1174,14 +1174,7 @@ fn identity_for(conn: &Connection, label: &str) -> Result<[u8; 16]> {
     if let Some(info) = transfer::identity(conn, label)? {
         return Ok(info.id);
     }
-    let digest = Sha256::new()
-        .chain_update(b"KQ-FILE-IDENTITY-v1")
-        .chain_update((label.len() as u16).to_be_bytes())
-        .chain_update(label.as_bytes())
-        .finalize();
-    let mut id = [0u8; 16];
-    id.copy_from_slice(&digest[..16]);
-    Ok(id)
+    Ok(crate::file_history::label_identity(label))
 }
 
 /// A ghost keeps its place in the hierarchy but has given up its private

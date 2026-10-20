@@ -530,3 +530,101 @@ fn a_snapshot_signed_by_someone_else_is_refused() {
     assert!(recipient_owns_key(&conn, "M.A", &david.encryption_secret).unwrap());
     assert!(!recipient_owns_key(&conn, "M.S.1", &david.encryption_secret).unwrap());
 }
+
+// ---- store-free opening and freshness ---------------------------------------
+
+fn signing_public_of(conn: &Connection, label: &str) -> [u8; 32] {
+    crate::private_bridge::signing_public_for_label(conn, label).unwrap()
+}
+
+#[test]
+fn a_history_letter_opens_the_same_with_a_supplied_key_as_with_the_store() {
+    let conn = db::open_in_memory().unwrap();
+    let alice = register(&conn, "M.S.1");
+    let david = register(&conn, "M.A");
+    let sealed = history_from(&alice, &david);
+    let from_store = open_history_letter(&conn, &david.encryption_secret, &sealed.bytes).unwrap();
+    let with_key = open_history_letter_with_key(
+        &david.encryption_secret,
+        &signing_public_of(&conn, "M.S.1"),
+        &sealed.bytes,
+    )
+    .unwrap();
+    assert_eq!(with_key.delivery_id, from_store.delivery_id);
+    assert_eq!(with_key.sender_label, from_store.sender_label);
+    assert_eq!(with_key.revision_id, from_store.revision_id);
+    assert_eq!(with_key.history_root, from_store.history_root);
+    assert_eq!(with_key.container, from_store.container);
+    assert_eq!(
+        with_key.container_commitment,
+        from_store.container_commitment
+    );
+
+    // Any other key refuses it, so a caller that looks the sender up by the
+    // label it expects cannot be fooled by a letter claiming another sender.
+    assert!(open_history_letter_with_key(
+        &david.encryption_secret,
+        &signing_public_of(&conn, "M.A"),
+        &sealed.bytes,
+    )
+    .is_err());
+}
+
+#[test]
+fn a_history_ack_opens_the_same_with_a_supplied_key_as_with_the_store() {
+    let conn = db::open_in_memory().unwrap();
+    let alice = register(&conn, "M.S.1");
+    let david = register(&conn, "M.A");
+    let sealed = history_from(&alice, &david);
+    let letter = open_history_letter(&conn, &david.encryption_secret, &sealed.bytes).unwrap();
+    let ack = seal_history_ack(&letter, &david.signing_secret, true).unwrap();
+    let from_store = open_history_ack(&conn, &alice.encryption_secret, &ack).unwrap();
+    let with_key = open_history_ack_with_key(
+        &alice.encryption_secret,
+        &signing_public_of(&conn, "M.A"),
+        &ack,
+    )
+    .unwrap();
+    assert_eq!(with_key, from_store);
+    assert!(open_history_ack_with_key(
+        &alice.encryption_secret,
+        &signing_public_of(&conn, "M.S.1"),
+        &ack
+    )
+    .is_err());
+}
+
+#[test]
+fn freshness_against_judges_first_replayed_newer_and_not_newer() {
+    let (r1, root1) = ([1u8; 32], [11u8; 32]);
+    let (r2, root2) = ([2u8; 32], [22u8; 32]);
+    let yes = |_: &[u8; 32]| true;
+    let no = |_: &[u8; 32]| false;
+    assert_eq!(
+        freshness_against(&[], &r1, &root1, yes, yes),
+        Freshness::First
+    );
+    let seen = [(r1, root1)];
+    assert_eq!(
+        freshness_against(&seen, &r1, &root1, yes, yes),
+        Freshness::Replayed
+    );
+    assert_eq!(
+        freshness_against(&seen, &r2, &root2, yes, yes),
+        Freshness::Newer
+    );
+    // Does not hold what was accepted before, or does not extend its chain.
+    assert_eq!(
+        freshness_against(&seen, &r2, &root2, no, yes),
+        Freshness::NotNewer
+    );
+    assert_eq!(
+        freshness_against(&seen, &r2, &root2, yes, no),
+        Freshness::NotNewer
+    );
+    // The same revision under another chain is not newer.
+    assert_eq!(
+        freshness_against(&seen, &r1, &root2, yes, yes),
+        Freshness::NotNewer
+    );
+}

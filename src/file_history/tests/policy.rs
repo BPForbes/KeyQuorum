@@ -1070,3 +1070,193 @@ fn an_unsigned_merge_of_two_finalized_heads_is_not_final() {
         .unwrap();
     assert!(finalized(&file, &merge, &ctx));
 }
+
+// Co-signed delivery: the recipient co-authors a revision before it is released.
+
+fn readiness(file: &TrackedFile, id: &[u8; 32], who: u8, label: &str) -> DeliveryReadiness {
+    delivery_readiness(file, id, &ident(who), label, &policy(), &Ctx::new()).unwrap()
+}
+
+#[test]
+fn a_delivery_fires_only_when_author_trust_and_recipient_coauthor_are_all_present() {
+    let (mut file, id) = one("M.A", 2);
+    let ctx = Ctx::new();
+    let unsigned = readiness(&file, &id, 3, "M.A.1");
+    assert_eq!(unsigned.potential(), 0);
+    assert!(!unsigned.ready());
+
+    file.sign_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    let signed = readiness(&file, &id, 3, "M.A.1");
+    assert!(signed.author_signed && signed.trusted && !signed.coauthored);
+    assert_eq!(signed.potential(), 2);
+    assert!(!signed.ready());
+
+    file.coauthor_revision(&id, ident(3), "M.A.1", &secret(3), &ctx)
+        .unwrap();
+    let cosigned = readiness(&file, &id, 3, "M.A.1");
+    assert_eq!(cosigned.potential(), DeliveryReadiness::THRESHOLD);
+    assert!(cosigned.ready());
+}
+
+#[test]
+fn a_coauthor_proof_counts_only_for_the_recipient_it_names() {
+    let (mut file, id) = one("M.A", 2);
+    file.sign_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    file.coauthor_revision(&id, ident(3), "M.A.1", &secret(3), &Ctx::new())
+        .unwrap();
+    assert!(!readiness(&file, &id, 5, "M.B").coauthored);
+    assert!(readiness(&file, &id, 3, "M.A.1").coauthored);
+}
+
+#[test]
+fn the_author_cannot_coauthor_their_own_revision() {
+    let (mut file, id) = one("M.A", 2);
+    file.sign_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    assert!(file
+        .coauthor_revision(&id, ident(2), "M.A", &secret(2), &Ctx::new())
+        .is_err());
+}
+
+#[test]
+fn a_coauthor_proof_signed_with_the_wrong_key_does_not_count() {
+    let (mut file, id) = one("M.A", 2);
+    file.sign_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    // Claims to be M.A.1 but signs with M.B's key.
+    file.coauthor_revision(&id, ident(3), "M.A.1", &secret(5), &Ctx::new())
+        .unwrap();
+    let r = readiness(&file, &id, 3, "M.A.1");
+    assert!(!r.coauthored);
+    assert!(!r.ready());
+}
+
+#[test]
+fn a_coauthor_proof_backs_one_author_signature_and_needs_a_verified_author() {
+    let (mut file, id) = one("M.A", 2);
+    // No author signature yet: nothing to co-author.
+    assert!(file
+        .coauthor_revision(&id, ident(3), "M.A.1", &secret(3), &Ctx::new())
+        .is_err());
+}
+
+#[test]
+fn a_forked_file_is_never_ready_for_delivery() {
+    let (mut file, base) = one("M.A", 2);
+    let left = revision_by(&mut file, vec![base], "M.A", 2, &policy(), T2);
+    let right = revision_by(
+        &mut file,
+        vec![base],
+        "M.A",
+        2,
+        &policy(),
+        "2026-10-03T10:00:00.000Z",
+    );
+    let ctx = Ctx::new();
+    for id in [base, left, right] {
+        file.sign_revision(&id, ident(2), "M.A", &secret(2))
+            .unwrap();
+    }
+    file.coauthor_revision(&left, ident(3), "M.A.1", &secret(3), &ctx)
+        .unwrap();
+    let r = readiness(&file, &left, 3, "M.A.1");
+    assert!(r.forked);
+    assert_eq!(r.potential(), DeliveryReadiness::THRESHOLD);
+    assert!(!r.ready());
+}
+
+#[test]
+fn a_coauthored_container_is_version_8_and_round_trips() {
+    let (mut file, id) = one("M.A", 2);
+    file.sign_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    assert!(file.encode().unwrap()[4] < 8);
+    file.coauthor_revision(&id, ident(3), "M.A.1", &secret(3), &Ctx::new())
+        .unwrap();
+    let bytes = file.encode().unwrap();
+    assert_eq!(bytes[4], 8);
+    let back = TrackedFile::decode(&bytes).unwrap();
+    assert_eq!(back, file);
+    assert!(readiness(&back, &id, 3, "M.A.1").ready());
+
+    // The same bytes labelled version 7 are refused: a co-author proof
+    // needs version 8.
+    let mut relabelled = bytes.clone();
+    relabelled[4] = 7;
+    assert!(TrackedFile::decode(&relabelled).is_err());
+}
+
+#[test]
+fn the_newest_trusted_revision_can_be_limited_to_accepted_ones() {
+    let (mut file, first) = one("M.A", 2);
+    let second = revision_by(&mut file, vec![first], "M.A", 2, &policy(), T2);
+    let ctx = Ctx::new();
+    file.sign_revision(&first, ident(2), "M.A", &secret(2))
+        .unwrap();
+    file.sign_revision(&second, ident(2), "M.A", &secret(2))
+        .unwrap();
+    assert_eq!(
+        latest_trusted_revision(&file, &policy(), &ctx),
+        Some(second)
+    );
+    // A host that accepted only `first` by the request time serves `first`.
+    assert_eq!(
+        latest_trusted_revision_where(&file, &policy(), &ctx, |id| *id == first),
+        Some(first)
+    );
+    assert_eq!(
+        latest_trusted_revision_where(&file, &policy(), &ctx, |_| false),
+        None
+    );
+}
+
+#[test]
+fn label_identity_is_the_documented_sha256_prefix() {
+    use sha2::{Digest, Sha256};
+    let label = "Root.Mya";
+    let digest = Sha256::new()
+        .chain_update(b"KQ-FILE-IDENTITY-v1")
+        .chain_update((label.len() as u16).to_be_bytes())
+        .chain_update(label.as_bytes())
+        .finalize();
+    assert_eq!(crate::file_history::label_identity(label), digest[..16]);
+    assert_ne!(
+        crate::file_history::label_identity("Root.Mya"),
+        crate::file_history::label_identity("Root.Steve")
+    );
+}
+
+#[test]
+fn a_coauthor_signature_made_without_the_container_can_be_attached() {
+    let (mut file, id) = one("M.A", 2);
+    file.sign_revision(&id, ident(2), "M.A", &secret(2))
+        .unwrap();
+    let revision = file.graph().get(&id).unwrap().revision.clone();
+    let author_hash = file
+        .proofs_for(&id, ProofKind::Content)
+        .next()
+        .unwrap()
+        .signature_hash();
+    // The recipient signs the public fields only, before release.
+    let digest = crate::signing::file_coauthor_preimage(
+        &revision.file_id,
+        &revision.revision_id,
+        &revision.author_identity.unwrap(),
+        &author_hash,
+        &ident(3),
+        "M.A.1",
+        revision.topology_generation,
+        &revision.policy_hash,
+    )
+    .unwrap();
+    let signature = crate::signing::sign(&secret(3), &digest);
+    file.attach_coauthor_signature(&id, &author_hash, ident(3), "M.A.1", signature)
+        .unwrap();
+    assert!(readiness(&file, &id, 3, "M.A.1").ready());
+    // Backing an author signature the file does not hold is refused.
+    assert!(file
+        .attach_coauthor_signature(&id, &[9; 32], ident(3), "M.A.1", signature)
+        .is_err());
+}
