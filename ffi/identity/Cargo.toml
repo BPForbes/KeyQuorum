@@ -17,4 +17,5 @@ crate-type = ["staticlib", "rlib"]
 # The label topology, signing and crypto modules are used. The default feature
 # set stays off so the default KeyQuorum build is unchanged.
 keyquorum = { path = "../..", default-features = false }
+sha2 = "0.11"
 zeroize = "1"

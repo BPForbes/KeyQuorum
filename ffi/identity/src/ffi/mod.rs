@@ -234,6 +234,40 @@ pub unsafe extern "C" fn kq_account_keygen(secret_out: *mut u8, public_out: *mut
     KQ_ACCOUNT_OK
 }
 
+/// Generates an account box key (X25519, what file letters are sealed to):
+/// 32 secret bytes into `secret_out`, the public key into `public_out`. Seal
+/// the secret with `kq_account_seal`; the caller wipes `secret_out`.
+///
+/// # Safety
+/// `secret_out` and `public_out` must be null or writable for 32 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn kq_account_box_keygen(secret_out: *mut u8, public_out: *mut u8) -> c_int {
+    if secret_out.is_null() || public_out.is_null() {
+        return KQ_ACCOUNT_INVALID;
+    }
+    let (secret, public) = account::generate_box();
+    bytes_out(&secret[..], secret_out);
+    bytes_out(&public, public_out);
+    KQ_ACCOUNT_OK
+}
+
+/// Writes the box public key for a 32-byte box secret into `public_out`.
+///
+/// # Safety
+/// `secret` must be null or readable for 32 bytes; `public_out` must be null
+/// or writable for 32 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn kq_account_box_public(secret: *const u8, public_out: *mut u8) -> c_int {
+    let Some(secret) = bytes_in::<32>(secret).map(Zeroizing::new) else {
+        return KQ_ACCOUNT_INVALID;
+    };
+    if bytes_out(&account::box_public_key(&secret), public_out) {
+        KQ_ACCOUNT_OK
+    } else {
+        KQ_ACCOUNT_INVALID
+    }
+}
+
 /// Writes the public key for a 32-byte secret into `public_out`.
 ///
 /// # Safety
@@ -378,6 +412,8 @@ pub unsafe extern "C" fn kq_account_bridge_verify(
     };
     account::verify_bridge(role, from, to, signer, &nonce, &public, &sig) as c_int
 }
+
+pub mod files;
 
 #[cfg(test)]
 #[path = "tests.rs"]

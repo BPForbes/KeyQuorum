@@ -13,6 +13,8 @@
 //! version 4 added the file's policy after the history root.
 //! Version 7 appends `event_proof_count(u32) | event proofs…` after the
 //! events; it is written only when an event proof exists.
+//! Version 8 is version 7 whose proofs include a co-author proof; its
+//! event proof list is always present and may be empty.
 
 use super::codec::{bad, take_fixed};
 use super::event::{genesis_hash, verify_chain, HistoryEvent, NewEvent};
@@ -29,7 +31,9 @@ pub const CONTAINER_MAGIC: &[u8; 4] = b"KQTF";
 /// Version 6 adds the finalization proof kind; versions 4 and 5 never
 /// carry one and still decode. Version 7 adds optional event proofs after
 /// the events; a container without any is still written as 5 or 6.
-pub const CONTAINER_VERSION: u8 = 7;
+/// Version 8 adds the co-author proof kind and is written only when one is
+/// held, so containers without one stay readable by older builds.
+pub const CONTAINER_VERSION: u8 = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackedFile {
@@ -187,11 +191,17 @@ impl TrackedFile {
             .proofs
             .iter()
             .any(|proof| proof.kind == super::proof::ProofKind::Finalization);
-        out.push(match (self.event_proofs.is_empty(), finalized) {
-            (false, _) => CONTAINER_VERSION,
-            (true, true) => 6,
-            (true, false) => 5,
-        });
+        let coauthored = self
+            .proofs
+            .iter()
+            .any(|proof| proof.kind == super::proof::ProofKind::CoAuthor);
+        let version = match (coauthored, self.event_proofs.is_empty(), finalized) {
+            (true, _, _) => 8,
+            (false, false, _) => 7,
+            (false, true, true) => 6,
+            (false, true, false) => 5,
+        };
+        out.push(version);
         out.extend_from_slice(&self.file_id);
         push_len_prefixed(&mut out, self.logical_name.as_bytes())?;
         out.extend_from_slice(&self.history_root());
@@ -218,7 +228,7 @@ impl TrackedFile {
         for event in &self.events {
             event.encode(&mut out)?;
         }
-        if !self.event_proofs.is_empty() {
+        if version >= 7 {
             let proof_count =
                 u32::try_from(self.event_proofs.len()).map_err(|_| Error::BundleFieldTooLarge)?;
             out.extend_from_slice(&proof_count.to_be_bytes());
@@ -265,6 +275,14 @@ impl TrackedFile {
         {
             return Err(Error::InvalidTrackedFile);
         }
+        // Version 8 is exactly "holds a co-author proof"; anything else would
+        // be a second encoding of the same file.
+        let coauthored = proofs
+            .iter()
+            .any(|proof| proof.kind == super::proof::ProofKind::CoAuthor);
+        if coauthored != (version == 8) {
+            return Err(Error::InvalidTrackedFile);
+        }
         let count = bad(take_u32(&mut data))?;
         let mut events = Vec::new();
         for _ in 0..count {
@@ -273,9 +291,9 @@ impl TrackedFile {
         let mut event_proofs = Vec::new();
         if version >= 7 {
             let proof_count = bad(take_u32(&mut data))?;
-            // Written only when there is one; an empty list would be a
-            // second encoding of the same file.
-            if proof_count == 0 {
+            // Version 7 writes the list only when there is one; an empty
+            // list would be a second encoding of the same file.
+            if proof_count == 0 && version == 7 {
                 return Err(Error::InvalidTrackedFile);
             }
             for _ in 0..proof_count {

@@ -71,6 +71,12 @@ pub(super) fn verify_structure(file: &TrackedFile) -> Result<[u8; 32]> {
             }
             ProofKind::Countersignature => proof.author_signature_hash.is_some(),
             ProofKind::Finalization => proof.author_signature_hash.is_none(),
+            // A co-author backs the author's signature and is never the author.
+            ProofKind::CoAuthor => {
+                proof.author_signature_hash.is_some()
+                    && proof.signer_label != revision.author_hcp_label
+                    && Some(proof.signer_identity) != revision.author_identity
+            }
         };
         // A slot may hold competing proofs (an unverified import must not
         // block the real one), but never the same signature twice and never

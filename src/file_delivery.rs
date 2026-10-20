@@ -411,6 +411,30 @@ pub fn open_history_letter(
     recipient_secret: &[u8; 32],
     bytes: &[u8],
 ) -> Result<HistoryLetter> {
+    open_history_letter_verified(recipient_secret, bytes, |label, preimage, signature| {
+        verify_signed_by(conn, label, preimage, signature)
+    })
+}
+
+/// [`open_history_letter`] for a caller with no KeyQuorum store: the sender's
+/// signature is checked against `sender_signing_public`, the key the caller's
+/// own registry holds for the sender label the letter claims. The caller must
+/// look that key up by the label it expects, never by one the letter names.
+pub fn open_history_letter_with_key(
+    recipient_secret: &[u8; 32],
+    sender_signing_public: &[u8; 32],
+    bytes: &[u8],
+) -> Result<HistoryLetter> {
+    open_history_letter_verified(recipient_secret, bytes, |_, preimage, signature| {
+        signing::verify_signature(sender_signing_public, preimage, signature)
+    })
+}
+
+fn open_history_letter_verified(
+    recipient_secret: &[u8; 32],
+    bytes: &[u8],
+    verify: impl FnOnce(&str, &[u8; 32], &[u8; 64]) -> Result<()>,
+) -> Result<HistoryLetter> {
     let (recipient_public, payload) =
         open_kind(bytes, recipient_secret, envelope::KIND_FILE_HISTORY)?;
     let mut data = payload.as_slice();
@@ -445,7 +469,7 @@ pub fn open_history_letter(
         content_proof: &content_proof,
         container_commitment: &container_commitment,
     })?;
-    verify_signed_by(conn, &sender_label, &preimage, &signature)?;
+    verify(&sender_label, &preimage, &signature)?;
     Ok(HistoryLetter {
         delivery_id,
         sender_label,
@@ -503,6 +527,28 @@ pub fn open_history_ack(
     sender_secret: &[u8; 32],
     bytes: &[u8],
 ) -> Result<HistoryAck> {
+    open_history_ack_verified(sender_secret, bytes, |label, preimage, signature| {
+        verify_signed_by(conn, label, preimage, signature)
+    })
+}
+
+/// [`open_history_ack`] checked against `recipient_signing_public`, the key
+/// the caller's own registry holds for the recipient it delivered to.
+pub fn open_history_ack_with_key(
+    sender_secret: &[u8; 32],
+    recipient_signing_public: &[u8; 32],
+    bytes: &[u8],
+) -> Result<HistoryAck> {
+    open_history_ack_verified(sender_secret, bytes, |_, preimage, signature| {
+        signing::verify_signature(recipient_signing_public, preimage, signature)
+    })
+}
+
+fn open_history_ack_verified(
+    sender_secret: &[u8; 32],
+    bytes: &[u8],
+    verify: impl FnOnce(&str, &[u8; 32], &[u8; 64]) -> Result<()>,
+) -> Result<HistoryAck> {
     let (return_public, payload) =
         open_kind(bytes, sender_secret, envelope::KIND_FILE_HISTORY_ACK)?;
     let mut data = payload.as_slice();
@@ -522,7 +568,7 @@ pub fn open_history_ack(
         accepted,
     };
     let preimage = history_ack_preimage(&ack, &return_public)?;
-    verify_signed_by(conn, &ack.recipient_label, &preimage, &signature)?;
+    verify(&ack.recipient_label, &preimage, &signature)?;
     Ok(ack)
 }
 
@@ -812,28 +858,51 @@ pub fn freshness(
             Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    if rows.is_empty() {
-        return Ok(Freshness::First);
+    let seen = rows
+        .into_iter()
+        .map(|(revision, root)| {
+            let revision: [u8; 32] = revision.try_into().map_err(|_| Error::InvalidTrackedFile)?;
+            let root: [u8; 32] = root.try_into().map_err(|_| Error::InvalidTrackedFile)?;
+            Ok((revision, root))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(freshness_against(
+        &seen,
+        &letter.revision_id,
+        &letter.history_root,
+        holds,
+        passes_through,
+    ))
+}
+
+/// The comparison [`freshness`] makes, against `seen`: the (revision,
+/// history root) pairs the caller accepted before for this file, from
+/// wherever it keeps them. `revision_id` and `history_root` are the
+/// authenticated ones being judged.
+pub fn freshness_against(
+    seen: &[([u8; 32], [u8; 32])],
+    revision_id: &[u8; 32],
+    history_root: &[u8; 32],
+    holds: impl Fn(&[u8; 32]) -> bool,
+    passes_through: impl Fn(&[u8; 32]) -> bool,
+) -> Freshness {
+    if seen.is_empty() {
+        return Freshness::First;
     }
-    let mut revisions = Vec::new();
-    let mut roots = Vec::new();
-    for (revision, root) in rows {
-        let revision: [u8; 32] = revision.try_into().map_err(|_| Error::InvalidTrackedFile)?;
-        let root: [u8; 32] = root.try_into().map_err(|_| Error::InvalidTrackedFile)?;
-        if revision == letter.revision_id && root == letter.history_root {
-            return Ok(Freshness::Replayed);
-        }
-        revisions.push(revision);
-        roots.push(root);
+    if seen
+        .iter()
+        .any(|(revision, root)| revision == revision_id && root == history_root)
+    {
+        return Freshness::Replayed;
     }
-    let covers_all = revisions.iter().all(&holds);
-    let extends_all = roots.iter().all(&passes_through);
-    let adds = !revisions.contains(&letter.revision_id);
-    Ok(if covers_all && extends_all && adds {
+    let covers_all = seen.iter().all(|(revision, _)| holds(revision));
+    let extends_all = seen.iter().all(|(_, root)| passes_through(root));
+    let adds = !seen.iter().any(|(revision, _)| revision == revision_id);
+    if covers_all && extends_all && adds {
         Freshness::Newer
     } else {
         Freshness::NotNewer
-    })
+    }
 }
 
 /// Remember that this store accepted `letter`'s history, for later
