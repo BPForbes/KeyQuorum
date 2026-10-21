@@ -862,6 +862,45 @@ pub unsafe extern "C" fn kq_file_permits_newer(
     }
 }
 
+/// Adds `supervisor`'s countersignature over `rev` into `out` (the container with it). The
+/// signer is judged later, by [`kq_file_permits_newer`]; this only records the signature.
+/// `KQ_FILE_INVALID` when `rev` is unknown, has no verifiable author signature under `trust`, or
+/// the input is malformed.
+///
+/// # Safety
+/// `c` readable for `clen`, `rev` for 32, `supervisor` NUL-terminated, `secret` for 32,
+/// `trust` as [`KqFileTrust`]; `out` null or writable for `cap`; `out_len` writable.
+#[no_mangle]
+pub unsafe extern "C" fn kq_file_countersign(
+    c: *const u8,
+    clen: usize,
+    rev: *const u8,
+    supervisor: *const c_char,
+    secret: *const u8,
+    trust: *const KqFileTrust,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> c_int {
+    let (Some(mut file), Some(rev), Some(supervisor), Some(secret), Some(trust)) = (
+        container_in(c, clen),
+        bytes_in::<32>(rev),
+        input(supervisor),
+        bytes_in::<32>(secret).map(Zeroizing::new),
+        trust_in(trust),
+    ) else {
+        return KQ_FILE_INVALID;
+    };
+    let identity = file_history::label_identity(supervisor);
+    if file
+        .countersign_revision_checked(&rev, identity, supervisor, &secret, &trust)
+        .is_err()
+    {
+        return KQ_FILE_INVALID;
+    }
+    file_out(&file, out, cap, out_len)
+}
+
 /// The revision a read at some moment may return: the newest trusted one
 /// among the `naccepted` ids the host accepted by then (by its own clock).
 /// `KQ_FILE_FORKED` on two heads; `KQ_FILE_NO_REVISION` when none qualifies.

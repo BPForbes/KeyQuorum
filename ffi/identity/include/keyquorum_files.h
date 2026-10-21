@@ -152,6 +152,14 @@ int kq_file_freshness(const unsigned char (*seen)[64], size_t nseen, const unsig
 int kq_file_events(const unsigned char *c, size_t clen, unsigned char *out, size_t cap,
                    size_t *out_len);
 
+/* Adds supervisor's countersignature over rev into out (the container with it).
+ * KQ_FILE_INVALID when rev is unknown or has no author signature that verifies under
+ * trust; KQ_FILE_NO_ROOM when out is too small (*out_len gets the size). */
+int kq_file_countersign(const unsigned char *c, size_t clen, const unsigned char rev[32],
+                        const char *supervisor, const unsigned char secret[32],
+                        const kq_file_trust_t *trust, unsigned char *out, size_t cap,
+                        size_t *out_len);
+
 /* KQ_FILE_OK when a supervisor of the file's scope countersigned rev over the
  * author's verified signature; KQ_FILE_UNTRUSTED when none has. A checkpoint
  * requires this before it accepts a newer copy of a file it already holds. */

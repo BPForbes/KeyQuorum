@@ -693,16 +693,24 @@ fn freshness_judges_only_the_containers_own_revision_and_root() {
     assert_eq!(fresh(&rev, &[9u8; 32]), KQ_FILE_INVALID);
 }
 
-fn countersign(c: &[u8], rev: &[u8; 32], label: &str, supervisor: &Account) -> Vec<u8> {
-    let mut file = TrackedFile::decode(c).expect("decode the container");
-    file.countersign_revision(
-        rev,
-        file_history::label_identity(label),
-        label,
-        &supervisor.signing_secret,
-    )
-    .expect("countersign the revision");
-    file.encode().expect("encode the container")
+fn countersign(c: &[u8], rev: &[u8; 32], label: &str, supervisor: &Account, trust: &Trust) -> Vec<u8> {
+    let table = trust.table();
+    let label = s(label);
+    let (rc, out) = collect(|out, cap, len| unsafe {
+        kq_file_countersign(
+            c.as_ptr(),
+            c.len(),
+            rev.as_ptr(),
+            label.as_ptr(),
+            supervisor.signing_secret.as_ptr(),
+            &table,
+            out,
+            cap,
+            len,
+        )
+    });
+    assert_eq!(rc, KQ_FILE_OK, "kq_file_countersign");
+    out
 }
 
 fn permits(c: &[u8], rev: &[u8; 32], trust: &Trust) -> c_int {
@@ -722,7 +730,7 @@ fn a_newer_copy_is_permitted_only_by_a_supervisor_countersignature() {
     assert_eq!(permits(&c, &rev1, &trust), KQ_FILE_UNTRUSTED, "no countersignature yet");
 
     // The scope owner's ancestor countersigns the first revision: it is permitted.
-    let c = countersign(&c, &rev1, "Root", &root);
+    let c = countersign(&c, &rev1, "Root", &root, &trust);
     assert_eq!(permits(&c, &rev1, &trust), KQ_FILE_OK);
 
     // A newer revision has its own signature, so the first countersignature does not cover it.
@@ -730,10 +738,10 @@ fn a_newer_copy_is_permitted_only_by_a_supervisor_countersignature() {
     assert_eq!(permits(&c, &rev2, &trust), KQ_FILE_UNTRUSTED);
 
     // Someone outside the scope's ancestry does not permit it.
-    let refused = countersign(&c, &rev2, "Root.Steve", &steve);
+    let refused = countersign(&c, &rev2, "Root.Steve", &steve, &trust);
     assert_eq!(permits(&refused, &rev2, &trust), KQ_FILE_UNTRUSTED);
 
-    let c = countersign(&c, &rev2, "Root", &root);
+    let c = countersign(&c, &rev2, "Root", &root, &trust);
     assert_eq!(permits(&c, &rev2, &trust), KQ_FILE_OK);
 }
 
@@ -745,7 +753,7 @@ fn a_countersignature_over_a_different_author_signature_does_not_permit() {
 
     let c = new_file("Root.Mya");
     let (c, rev) = check_in(&c, &mya, T1, b"plan v1\n");
-    let c = countersign(&c, &rev, "Root", &root);
+    let c = countersign(&c, &rev, "Root", &root, &trust);
     assert_eq!(permits(&c, &rev, &trust), KQ_FILE_OK);
 
     // With no key for the author, the author's signature cannot be verified and nothing is permitted.
