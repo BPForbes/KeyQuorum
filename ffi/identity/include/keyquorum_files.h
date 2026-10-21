@@ -144,6 +144,20 @@ int kq_file_open_letter(const unsigned char *letter, size_t llen,
 int kq_file_freshness(const unsigned char (*seen)[64], size_t nseen, const unsigned char *c,
                       size_t clen, const unsigned char rev[32], const unsigned char root[32]);
 
+/* The history of the container, oldest first, one line per event, tab-separated:
+ *   sequence, time, type code, outcome code, actor, revision (hex or empty),
+ *   details as key=value pairs joined by ';'.
+ * Needs only the container, so it works offline. KQ_FILE_NO_ROOM when out is too
+ * small (*out_len gets the size); KQ_FILE_INVALID for a container it cannot read. */
+int kq_file_events(const unsigned char *c, size_t clen, unsigned char *out, size_t cap,
+                   size_t *out_len);
+
+/* KQ_FILE_OK when a supervisor of the file's scope countersigned rev over the
+ * author's verified signature; KQ_FILE_UNTRUSTED when none has. A checkpoint
+ * requires this before it accepts a newer copy of a file it already holds. */
+int kq_file_permits_newer(const unsigned char *c, size_t clen, const unsigned char rev[32],
+                          const kq_file_trust_t *trust);
+
 #ifdef __cplusplus
 }
 #endif
