@@ -20,9 +20,9 @@ use super::{bytes_in, bytes_out, input};
 use keyquorum::file_delivery::{self, Freshness, OutgoingHistory};
 use keyquorum::file_history::{
     self, current_revision, delivery_readiness, latest_trusted_revision_where, proof_descriptor,
-    select_shareable_revision, supervisor_permits, BridgeEvidence, DeliveryReadiness, FilePolicy,
-    EventDetails, GenerationEvidence, HistoryEvent, HistoryEventType, HistoryOutcome,
-    ImportContext, NewEvent, NewRevision, ProofKind, TrackedFile, TrustContext,
+    select_shareable_revision, supervisor_permits, BridgeEvidence, DeliveryReadiness, EventDetails,
+    FilePolicy, GenerationEvidence, HistoryEvent, HistoryEventType, HistoryOutcome, ImportContext,
+    NewEvent, NewRevision, ProofKind, TrackedFile, TrustContext,
 };
 use keyquorum::signing;
 use sha2::{Digest, Sha256};

@@ -693,7 +693,13 @@ fn freshness_judges_only_the_containers_own_revision_and_root() {
     assert_eq!(fresh(&rev, &[9u8; 32]), KQ_FILE_INVALID);
 }
 
-fn countersign(c: &[u8], rev: &[u8; 32], label: &str, supervisor: &Account, trust: &Trust) -> Vec<u8> {
+fn countersign(
+    c: &[u8],
+    rev: &[u8; 32],
+    label: &str,
+    supervisor: &Account,
+    trust: &Trust,
+) -> Vec<u8> {
     let table = trust.table();
     let label = s(label);
     let (rc, out) = collect(|out, cap, len| unsafe {
@@ -727,7 +733,11 @@ fn a_newer_copy_is_permitted_only_by_a_supervisor_countersignature() {
 
     let c = new_file("Root.Mya");
     let (c, rev1) = check_in(&c, &mya, T1, b"plan v1\n");
-    assert_eq!(permits(&c, &rev1, &trust), KQ_FILE_UNTRUSTED, "no countersignature yet");
+    assert_eq!(
+        permits(&c, &rev1, &trust),
+        KQ_FILE_UNTRUSTED,
+        "no countersignature yet"
+    );
 
     // The scope owner's ancestor countersigns the first revision: it is permitted.
     let c = countersign(&c, &rev1, "Root", &root, &trust);
@@ -767,14 +777,17 @@ fn the_file_history_reads_offline_one_line_per_event_in_order() {
     let c = new_file("Root.Mya");
     let (c, rev) = check_in(&c, &mya, T1, b"plan v1\n");
 
-    let (rc, text) = collect(|out, cap, len| unsafe {
-        kq_file_events(c.as_ptr(), c.len(), out, cap, len)
-    });
+    let (rc, text) =
+        collect(|out, cap, len| unsafe { kq_file_events(c.as_ptr(), c.len(), out, cap, len) });
     assert_eq!(rc, KQ_FILE_OK);
     let text = String::from_utf8(text).expect("utf-8 history");
     let lines: Vec<&str> = text.lines().collect();
     // Type codes are wire format: 2 is EditCheckedIn, 3 is RevisionSigned.
-    assert_eq!(lines.len(), 2, "the check-in and its signature are recorded");
+    assert_eq!(
+        lines.len(),
+        2,
+        "the check-in and its signature are recorded"
+    );
     assert_eq!(lines[0].split('\t').nth(2), Some("2"));
     assert_eq!(lines[1].split('\t').nth(2), Some("3"));
 
@@ -786,8 +799,12 @@ fn the_file_history_reads_offline_one_line_per_event_in_order() {
     }
     let revision: String = rev.iter().map(|byte| format!("{byte:02x}")).collect();
     assert!(
-        lines.iter().any(|line| line.split('\t').nth(5) == Some(revision.as_str())),
+        lines
+            .iter()
+            .any(|line| line.split('\t').nth(5) == Some(revision.as_str())),
         "the check-in appears with its revision"
     );
-    assert!(lines.iter().any(|line| line.split('\t').nth(4) == Some("Root.Mya")));
+    assert!(lines
+        .iter()
+        .any(|line| line.split('\t').nth(4) == Some("Root.Mya")));
 }
