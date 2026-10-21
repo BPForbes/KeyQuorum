@@ -20,8 +20,9 @@ use super::{bytes_in, bytes_out, input};
 use keyquorum::file_delivery::{self, Freshness, OutgoingHistory};
 use keyquorum::file_history::{
     self, current_revision, delivery_readiness, latest_trusted_revision_where, proof_descriptor,
-    select_shareable_revision, BridgeEvidence, DeliveryReadiness, FilePolicy, GenerationEvidence,
-    ImportContext, NewRevision, ProofKind, TrackedFile, TrustContext,
+    select_shareable_revision, supervisor_permits, BridgeEvidence, DeliveryReadiness, EventDetails,
+    FilePolicy, GenerationEvidence, HistoryEvent, HistoryEventType, HistoryOutcome, ImportContext,
+    NewEvent, NewRevision, ProofKind, TrackedFile, TrustContext,
 };
 use keyquorum::signing;
 use sha2::{Digest, Sha256};
@@ -310,13 +311,42 @@ pub unsafe extern "C" fn kq_file_check_in(
         topology_generation: 0,
         policy_hash,
     };
+    let base = new.parent_revision_ids.first().copied();
     let Ok(revision) = file.check_in(new, payload.to_vec()) else {
         return KQ_FILE_INVALID;
     };
+    // The same two events the CLI's `file checkin` records, so a check-in made through the FFI
+    // is as visible in the history as one made from the command line.
+    let mut details = EventDetails::new();
+    if let Some(base) = base {
+        details = details.with("base_revision", &hex(&base));
+    }
+    let checked_in = event_for(
+        HistoryEventType::EditCheckedIn,
+        Some(revision),
+        created_at,
+        identity,
+        author,
+        details,
+    );
+    if file.append(checked_in).is_err() {
+        return KQ_FILE_INVALID;
+    }
     if file
         .sign_revision(&revision, identity, author, &secret)
         .is_err()
     {
+        return KQ_FILE_INVALID;
+    }
+    let signed = event_for(
+        HistoryEventType::RevisionSigned,
+        Some(revision),
+        created_at,
+        identity,
+        author,
+        EventDetails::new(),
+    );
+    if file.append(signed).is_err() {
         return KQ_FILE_INVALID;
     }
     let rc = file_out(&file, out, cap, out_len);
@@ -345,6 +375,88 @@ pub unsafe extern "C" fn kq_file_verify(c: *const u8, clen: usize, root_out: *mu
         }
         Err(_) => KQ_FILE_INVALID,
     }
+}
+
+/// Lowercase hex of `bytes`, as the CLI prints ids.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// A successful event by `actor` on `revision`, at the caller's time.
+fn event_for(
+    kind: HistoryEventType,
+    revision: Option<[u8; 32]>,
+    at: &str,
+    identity: [u8; 16],
+    actor: &str,
+    details: EventDetails,
+) -> NewEvent {
+    NewEvent {
+        revision_id: revision,
+        occurred_at: at.to_string(),
+        actor_identity: Some(identity),
+        actor_label: Some(actor.to_string()),
+        topology_generation: Some(0),
+        event_type: kind,
+        outcome: HistoryOutcome::Success,
+        details,
+    }
+}
+
+/// One line for `event`: sequence, time, type code, outcome code, actor, revision (hex, empty when
+/// none) and the details as `key=value` pairs joined by `;`, tab-separated. `None` when a field
+/// holds a tab, a newline, a carriage return or a `;` that would blur the line.
+fn event_line(event: &HistoryEvent) -> Option<String> {
+    let blurs = |text: &str| text.contains(['\t', '\n', '\r', ';']);
+    let mut details = Vec::new();
+    for (key, value) in event.details.entries() {
+        if blurs(key) || blurs(value) {
+            return None;
+        }
+        details.push(format!("{key}={value}"));
+    }
+    let actor = event.actor_label.clone().unwrap_or_default();
+    let revision = event.revision_id.map(|id| hex(&id)).unwrap_or_default();
+    let fields = [
+        event.sequence.to_string(),
+        event.occurred_at.clone(),
+        (event.event_type as u8).to_string(),
+        (event.outcome as u8).to_string(),
+        actor,
+        revision,
+        details.join(";"),
+    ];
+    if fields.iter().take(6).any(|field| blurs(field)) {
+        return None;
+    }
+    Some(fields.join("\t"))
+}
+
+/// The events of the container, oldest first, one line each into `out` (see [`event_line`]).
+/// This is the offline view of a file's history: it needs only the container.
+///
+/// # Safety
+/// `c` readable for `clen`; `out` null or writable for `cap`; `out_len` writable.
+#[no_mangle]
+pub unsafe extern "C" fn kq_file_events(
+    c: *const u8,
+    clen: usize,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> c_int {
+    let Some(file) = container_in(c, clen) else {
+        return KQ_FILE_INVALID;
+    };
+    let mut text = String::new();
+    for event in file.events() {
+        let Some(line) = event_line(event) else {
+            return KQ_FILE_INVALID;
+        };
+        text.push_str(&line);
+        text.push('\n');
+    }
+    buf_out(text.as_bytes(), out, cap, out_len)
 }
 
 /// The single head into `rev_out`; `KQ_FILE_FORKED` with two heads,
@@ -723,6 +835,70 @@ pub unsafe extern "C" fn kq_file_readiness(
     } else {
         KQ_FILE_BELOW_THRESHOLD
     }
+}
+
+/// `KQ_FILE_OK` when a supervisor of the file's scope has countersigned `rev` over the author's
+/// verified signature, `KQ_FILE_UNTRUSTED` when none has, `KQ_FILE_INVALID` on bad input. A
+/// checkpoint requires this before it accepts a newer copy of a file it already holds.
+///
+/// # Safety
+/// `c` readable for `clen`, `rev` for 32; `trust` as [`KqFileTrust`].
+#[no_mangle]
+pub unsafe extern "C" fn kq_file_permits_newer(
+    c: *const u8,
+    clen: usize,
+    rev: *const u8,
+    trust: *const KqFileTrust,
+) -> c_int {
+    let (Some(file), Some(rev), Some(trust)) =
+        (container_in(c, clen), bytes_in::<32>(rev), trust_in(trust))
+    else {
+        return KQ_FILE_INVALID;
+    };
+    if supervisor_permits(&file, &rev, &trust) {
+        KQ_FILE_OK
+    } else {
+        KQ_FILE_UNTRUSTED
+    }
+}
+
+/// Adds `supervisor`'s countersignature over `rev` into `out` (the container with it). The
+/// signer is judged later, by [`kq_file_permits_newer`]; this only records the signature.
+/// `KQ_FILE_INVALID` when `rev` is unknown, has no verifiable author signature under `trust`, or
+/// the input is malformed.
+///
+/// # Safety
+/// `c` readable for `clen`, `rev` for 32, `supervisor` NUL-terminated, `secret` for 32,
+/// `trust` as [`KqFileTrust`]; `out` null or writable for `cap`; `out_len` writable.
+#[no_mangle]
+pub unsafe extern "C" fn kq_file_countersign(
+    c: *const u8,
+    clen: usize,
+    rev: *const u8,
+    supervisor: *const c_char,
+    secret: *const u8,
+    trust: *const KqFileTrust,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> c_int {
+    let (Some(mut file), Some(rev), Some(supervisor), Some(secret), Some(trust)) = (
+        container_in(c, clen),
+        bytes_in::<32>(rev),
+        input(supervisor),
+        bytes_in::<32>(secret).map(Zeroizing::new),
+        trust_in(trust),
+    ) else {
+        return KQ_FILE_INVALID;
+    };
+    let identity = file_history::label_identity(supervisor);
+    if file
+        .countersign_revision_checked(&rev, identity, supervisor, &secret, &trust)
+        .is_err()
+    {
+        return KQ_FILE_INVALID;
+    }
+    file_out(&file, out, cap, out_len)
 }
 
 /// The revision a read at some moment may return: the newest trusted one

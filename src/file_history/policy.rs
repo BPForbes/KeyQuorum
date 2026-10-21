@@ -706,6 +706,38 @@ pub fn delivery_readiness(
     })
 }
 
+/// Whether a supervisor of the file's scope has permitted `revision_id` to go out as a newer copy:
+/// a countersignature by the scope root or one of its ancestors, over the author's own verified
+/// content signature, whose signature verifies under a key `ctx` knows. It backs the revision; it
+/// never makes one trusted, so a recipient still checks trust, co-signing and freshness.
+pub fn supervisor_permits(
+    file: &TrackedFile,
+    revision_id: &[u8; 32],
+    ctx: &dyn TrustContext,
+) -> bool {
+    let (Some(stored), Some(policy)) = (file.graph().get(revision_id), file.policy()) else {
+        return false;
+    };
+    let revision = &stored.revision;
+    let content = file
+        .proofs_for(revision_id, ProofKind::Content)
+        .filter(|proof| {
+            proof.signer_label == revision.author_hcp_label
+                && Some(proof.signer_identity) == revision.author_identity
+        })
+        .find(|proof| proof_verifies(revision, proof, ctx));
+    let Some(content) = content else {
+        return false;
+    };
+    let author_signature = content.signature_hash();
+    file.proofs_for(revision_id, ProofKind::Countersignature)
+        .any(|proof| {
+            authority::is_ancestor_or_self(&proof.signer_label, &policy.scope_root)
+                && proof.author_signature_hash == Some(author_signature)
+                && proof_verifies(revision, proof, ctx)
+        })
+}
+
 /// Whether the scope owner or an ancestor has finalized `revision_id`: it
 /// must itself be trusted under `policy`, and carry a finalization proof
 /// whose signer holds the scope root or one of its ancestors and whose

@@ -39,9 +39,9 @@ pub use merge::{
 pub use policy::{
     current_revision, delivery_readiness, evaluate_revision_trust, event_attested,
     finalized_checkpoints, is_finalized, latest_finalized_ancestor, latest_trusted_revision,
-    latest_trusted_revision_where, proof_descriptor, select_shareable_revision, BridgeEvidence,
-    DeliveryDecision, DeliveryDecisionKind, DeliveryReadiness, FilePolicy, GenerationEvidence,
-    Requirement, TrustContext, TrustReason, TrustState,
+    latest_trusted_revision_where, proof_descriptor, select_shareable_revision, supervisor_permits,
+    BridgeEvidence, DeliveryDecision, DeliveryDecisionKind, DeliveryReadiness, FilePolicy,
+    GenerationEvidence, Requirement, TrustContext, TrustReason, TrustState,
 };
 pub use proof::{EventProof, ProofKind, RevisionProof};
 pub use resolve::{Divergence, OpenConflict, Resolution, ResolverSelection, SelectionRule};
