@@ -4,13 +4,13 @@
 # workflow for why it is pinned to a commit rather than a branch), Rust crates,
 # the Lab's and the Worker's npm packages, and the Cloudflare Terraform provider.
 #
-# Only the github-actions updates are merged automatically
-# (dependabot-auto-merge.yml). Cargo, npm and Terraform updates, which include
-# the cryptographic crates and the deploy tooling, always wait for a person.
+# Every update, of any ecosystem here, is merged automatically once every check
+# on its head commit is green (dependabot-auto-merge.yml). A red check, the
+# `do-not-merge` label or a person's commit on the branch leaves it for a person.
 # A cargo update whose Cargo.lock (the root or ffi/identity's) fails `cargo
 # audit` is readjusted to the
 # newest release RustSec calls patched by dependabot-security-fix.yml (a major
-# bump of a direct dependency included), which also never merges. That job
+# bump of a direct dependency included), which never merges itself. That job
 # also runs daily on main, so a new advisory gets a fix pull request without
 # waiting for one of these updates.
 version: 2

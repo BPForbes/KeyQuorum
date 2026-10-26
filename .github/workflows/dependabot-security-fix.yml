@@ -17,8 +17,8 @@
 # What still cannot move (a dependent that does not accept the patched
 # release yet, or no patched release published) is named in a PR comment and
 # the job fails, so a person decides. A major bump may need code changes; the
-# re-run checks show it. It never merges (cargo updates always wait for a
-# person, see dependabot-auto-merge.yml) and never adds an advisory ignore;
+# re-run checks show it. It never merges (dependabot-auto-merge.yml merges a
+# Dependabot PR only once every check on it is green) and never adds an advisory ignore;
 # it honours the exceptions already recorded in .cargo/audit.toml.
 #
 # The job holds a write token, so it never checks out the PR. It reads only
@@ -39,7 +39,7 @@
 #
 # The same job also runs daily on main (and by hand from main). Advisories
 # appear without any change here, and before this run a fix could only land
-# on a Dependabot branch that waits for a person, so main and every other
+# on a Dependabot branch whose checks must pass first, so main and every other
 # branch stayed red in the meantime. On main the readjusted files are
 # committed on top of main to the bot-owned branch security/rustsec-readjust
 # (reset to main plus that one commit on each run that changes it, so do not
