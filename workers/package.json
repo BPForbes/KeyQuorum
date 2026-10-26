@@ -19,7 +19,7 @@
     "smoke": "node scripts/smoke.mjs"
   },
   "devDependencies": {
-    "wrangler": "4.151.1"
+    "wrangler": "4.151.2"
   },
   "overrides": {
     "sharp": "0.35.5",
