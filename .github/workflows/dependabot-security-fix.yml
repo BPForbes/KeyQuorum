@@ -3,7 +3,8 @@
 # Dependabot picks versions by semver alone and cannot react to a failing
 # check, and its version updates never touch a transitive crate. When
 # `cargo audit` (the `rust dependencies` job in security.yml) would fail on a
-# Dependabot cargo branch, this job:
+# Dependabot cargo branch, this job, for each lockfile that job audits (the
+# root Cargo.lock and the standalone ffi/identity workspace's):
 #   1. moves each flagged crate to the newest version its dependents allow
 #      (`cargo update -p name@version`);
 #   2. for each crate still flagged, looks up the newest published release
@@ -11,17 +12,17 @@
 #      direct dependency gets its Cargo.toml requirement raised (a new major
 #      version included), a transitive one is pinned with
 #      `cargo update --precise` if its dependents accept it;
-#   3. audits again and commits Cargo.toml and Cargo.lock to the same branch
-#      only if the audit improved.
+#   3. audits again and commits the changed Cargo.toml and Cargo.lock files
+#      to the same branch only if the audit improved.
 # What still cannot move (a dependent that does not accept the patched
 # release yet, or no patched release published) is named in a PR comment and
 # the job fails, so a person decides. A major bump may need code changes; the
-# re-run checks show it. It never merges (cargo updates always wait for a
-# person, see dependabot-auto-merge.yml) and never adds an advisory ignore;
+# re-run checks show it. It never merges (dependabot-auto-merge.yml merges a
+# Dependabot PR only once every check on it is green) and never adds an advisory ignore;
 # it honours the exceptions already recorded in .cargo/audit.toml.
 #
 # The job holds a write token, so it never checks out the PR. It reads only
-# Cargo.toml, Cargo.lock and .cargo/audit.toml from the PR's head commit
+# the two Cargo.toml and Cargo.lock pairs and .cargo/audit.toml from the PR's head commit
 # through the API, runs cargo on them in an empty directory (no
 # .cargo/config.toml or rust-toolchain.toml from the branch is ever seen, and
 # `cargo update` and `cargo audit` run no build script), and writes one
@@ -35,6 +36,17 @@
 #
 # `@dependabot rebase` or `recreate` drops the fix commit; the resulting
 # synchronize event runs this job again and re-applies it.
+#
+# The same job also runs daily on main (and by hand from main). Advisories
+# appear without any change here, and before this run a fix could only land
+# on a Dependabot branch whose checks must pass first, so main and every other
+# branch stayed red in the meantime. On main the readjusted files are
+# committed on top of main to the bot-owned branch security/rustsec-readjust
+# (reset to main plus that one commit on each run that changes it, so do not
+# push to it by hand) and one pull request from it is opened or updated. It
+# still never merges. Opening that pull request needs the repository setting
+# "Allow GitHub Actions to create and approve pull requests"; without it the
+# branch is still pushed and the run fails saying so.
 
 name: Dependabot security fix
 
@@ -42,12 +54,15 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
+  schedule:
+    - cron: "41 6 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: dependabot-security-fix-${{ github.head_ref }}
+  group: dependabot-security-fix-${{ github.head_ref || 'main' }}
   cancel-in-progress: true
 
 env:
@@ -57,15 +72,22 @@ jobs:
   cargo:
     name: dependabot security fix (cargo)
     if: >-
-      github.event.pull_request.user.login == 'dependabot[bot]' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.head_ref, 'dependabot/cargo/')
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.user.login == 'dependabot[bot]' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       startsWith(github.head_ref, 'dependabot/cargo/')) ||
+      (github.event_name != 'pull_request' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: write # commit the readjusted Cargo.toml and Cargo.lock to the Dependabot branch
+      contents: write # commit the readjusted Cargo.toml and Cargo.lock to the Dependabot branch or security/rustsec-readjust
       actions: write # re-dispatch the checks a GITHUB_TOKEN commit does not start
-      pull-requests: write # report what changed and what remains
+      pull-requests: write # report what changed and what remains, or open the readjust pull request
+    env:
+      # The commit read: the PR head, or main's head on a scheduled run.
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      # Where the fix commit goes on main.
+      FIX_BRANCH: security/rustsec-readjust
     steps:
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
         with:
@@ -74,19 +96,26 @@ jobs:
         with:
           tool: cargo-audit
 
-      - name: Fetch Cargo.toml and Cargo.lock from the PR head
+      - name: Fetch the Cargo manifests and lockfiles from the PR head (or main)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
-          mkdir lock
-          for f in Cargo.toml Cargo.lock; do
+          # Every workspace security.yml audits: the root crate and the
+          # standalone ffi/identity workspace, which has its own Cargo.lock.
+          for f in Cargo.toml Cargo.lock ffi/identity/Cargo.toml ffi/identity/Cargo.lock; do
+            mkdir -p "lock/$(dirname "$f")"
             gh api -H "Accept: application/vnd.github.raw" \
               "repos/$REPO/contents/$f?ref=$HEAD_SHA" > "lock/$f"
           done
+          # ffi/identity's library target is discovered from src/lib.rs, which
+          # cargo needs to exist to read the manifest. An empty placeholder is
+          # enough for `cargo update`; it is never committed. (The root
+          # manifest names its targets' paths explicitly.)
+          mkdir -p lock/ffi/identity/src
+          : > lock/ffi/identity/src/lib.rs
           # The advisory exceptions security.yml's cargo audit honours (their
           # reasons and dates are in deny.toml). cargo audit reads them from
           # .cargo/audit.toml in the directory it runs in; the file is optional.
@@ -94,8 +123,7 @@ jobs:
           gh api -H "Accept: application/vnd.github.raw" \
             "repos/$REPO/contents/.cargo/audit.toml?ref=$HEAD_SHA" > .cargo/audit.toml \
             || rm -f .cargo/audit.toml
-          cp lock/Cargo.lock before.lock
-          cp lock/Cargo.toml before.toml
+          cp -r lock before
 
       - name: Audit, readjust flagged crates, audit again
         id: fix
@@ -113,29 +141,38 @@ jobs:
                          | "| \(.package.name) | \(.package.version) | \(.advisory.id) | \((.versions.patched // []) | join(", ")) |")
                    | unique[]' "$1"
           }
-          cargo audit --file lock/Cargo.lock --json > before.json || true
-          jq -e '.vulnerabilities' before.json > /dev/null
+          # Each workspace's prefix inside the repository ("" is the root).
+          before_n=0
+          after_n=0
+          changed=0
+          : > report.md
+          for ws in "" "ffi/identity/"; do
+            dir="lock/$ws"
+            out="out/$ws"
+            mkdir -p "$out"
+            cargo audit --file "${dir}Cargo.lock" --json > "${out}before.json" || true
+            jq -e '.vulnerabilities' "${out}before.json" > /dev/null
 
-          mapfile -t pkgs < <(flagged before.json)
-          if [ "${#pkgs[@]}" -eq 0 ]; then
-            echo "Cargo.lock passes cargo audit; nothing to readjust."
-            echo "result=clean" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+            mapfile -t pkgs < <(flagged "${out}before.json")
+            if [ "${#pkgs[@]}" -eq 0 ]; then
+              echo "${ws}Cargo.lock passes cargo audit; nothing to readjust."
+              continue
+            fi
+            before_n=$((before_n + ${#pkgs[@]}))
 
-          for pkg in "${pkgs[@]}"; do
-            echo "::group::cargo update -p $pkg"
-            cargo +stable update --manifest-path lock/Cargo.toml -p "$pkg" \
-              || echo "::warning::cargo update -p $pkg failed"
-            echo "::endgroup::"
-          done
-          cargo audit --file lock/Cargo.lock --json > after.json || true
-          jq -e '.vulnerabilities' after.json > /dev/null
+            for pkg in "${pkgs[@]}"; do
+              echo "::group::cargo update -p $pkg (${ws}Cargo.toml)"
+              cargo +stable update --manifest-path "${dir}Cargo.toml" -p "$pkg" \
+                || echo "::warning::cargo update -p $pkg failed in ${ws}Cargo.toml"
+              echo "::endgroup::"
+            done
+            cargo audit --file "${dir}Cargo.lock" --json > "${out}after.json" || true
+            jq -e '.vulnerabilities' "${out}after.json" > /dev/null
 
-          # Second pass: the newest release the advisories call patched.
-          : > advice.md
-          if [ "$(flagged after.json | wc -l)" -gt 0 ]; then
-            python3 - after.json <<'PY'
+            # Second pass: the newest release the advisories call patched.
+            : > "${out}advice.md"
+            if [ "$(flagged "${out}after.json" | wc -l)" -gt 0 ]; then
+              python3 - "${out}after.json" "${dir}Cargo.toml" "${out}advice.md" <<'PY'
           import json, pathlib, re, subprocess, sys, tomllib, urllib.request
 
           # Second pass for crates `cargo update -p` could not clear: move each to the
@@ -144,7 +181,7 @@ jobs:
           # `cargo update --precise` if its dependents allow it, else its blocker is
           # reported. Writes one Markdown line per crate to advice.md.
           audit = json.load(open(sys.argv[1]))
-          manifest = pathlib.Path("lock/Cargo.toml")
+          manifest = pathlib.Path(sys.argv[2])
           SECTIONS = ("dependencies", "dev-dependencies", "build-dependencies")
 
 
@@ -266,73 +303,81 @@ jobs:
                   else:
                       why = " ".join(l.strip() for l in r.stderr.splitlines() if "required by" in l or "versions that meet" in l)
                       out.append(f"- `{name} {version}` → `{target}`: transitive, and a dependent does not accept it yet ({why or r.stderr.strip().splitlines()[-1]}).")
-          pathlib.Path("advice.md").write_text("\n".join(out) + ("\n" if out else ""))
+          pathlib.Path(sys.argv[3]).write_text("\n".join(out) + ("\n" if out else ""))
           print("\n".join(out))
           PY
-          fi
-          cargo audit --file lock/Cargo.lock --json > final.json || true
-          jq -e '.vulnerabilities' final.json > /dev/null
-
-          before_n=$(flagged before.json | wc -l)
-          after_n=$(flagged final.json | wc -l)
-          {
-            echo "### Flagged before"
-            echo "| crate | version | advisory | patched |"
-            echo "| --- | --- | --- | --- |"
-            advisories before.json
-            if [ -s advice.md ]; then
-              echo
-              echo "### Recommended releases"
-              cat advice.md
             fi
-            echo
-            echo "### Cargo.toml changes"
-            echo '```'
-            { diff -U0 before.toml lock/Cargo.toml || true; } | grep -E '^[-+][^-+]' || echo "(none)"
-            echo '```'
-            echo
-            echo "### Lockfile changes"
-            echo '```'
-            { diff -U1 before.lock lock/Cargo.lock || true; } | grep -E '^( name|[-+]name|[-+]version) ' || echo "(none)"
-            echo '```'
-          } > report.md
-          if [ "$after_n" -gt 0 ]; then
+            cargo audit --file "${dir}Cargo.lock" --json > "${out}final.json" || true
+            jq -e '.vulnerabilities' "${out}final.json" > /dev/null
+
+            left=$(flagged "${out}final.json" | wc -l)
+            after_n=$((after_n + left))
+            if ! { cmp -s "before/${ws}Cargo.lock" "${dir}Cargo.lock" \
+                   && cmp -s "before/${ws}Cargo.toml" "${dir}Cargo.toml"; }; then
+              changed=1
+            fi
             {
+              echo "## \`${ws}Cargo.lock\`"
               echo
-              echo "### Still flagged"
-              echo "No published release clears these that this graph accepts (see above for the crate holding each back). They need an upstream release, a dependency change, or a recorded exception, which is a person's decision."
+              echo "### Flagged before"
               echo "| crate | version | advisory | patched |"
               echo "| --- | --- | --- | --- |"
-              advisories final.json
+              advisories "${out}before.json"
+              if [ -s "${out}advice.md" ]; then
+                echo
+                echo "### Recommended releases"
+                cat "${out}advice.md"
+              fi
+              echo
+              echo "### Cargo.toml changes"
+              echo '```'
+              { diff -U0 "before/${ws}Cargo.toml" "${dir}Cargo.toml" || true; } | grep -E '^[-+][^-+]' || echo "(none)"
+              echo '```'
+              echo
+              echo "### Lockfile changes"
+              echo '```'
+              { diff -U1 "before/${ws}Cargo.lock" "${dir}Cargo.lock" || true; } | grep -E '^( name|[-+]name|[-+]version) ' || echo "(none)"
+              echo '```'
+              if [ "$left" -gt 0 ]; then
+                echo
+                echo "### Still flagged"
+                echo "No published release clears these that this graph accepts (see above for the crate holding each back). They need an upstream release, a dependency change, or a recorded exception, which is a person's decision."
+                echo "| crate | version | advisory | patched |"
+                echo "| --- | --- | --- | --- |"
+                advisories "${out}final.json"
+              fi
+              echo
             } >> report.md
-          fi
+          done
           cat report.md
 
-          if { cmp -s before.lock lock/Cargo.lock && cmp -s before.toml lock/Cargo.toml; } \
-             || [ "$after_n" -ge "$before_n" ]; then
+          if [ "$before_n" -eq 0 ]; then
+            echo "Every Cargo.lock passes cargo audit; nothing to readjust."
+            echo "result=clean" >> "$GITHUB_OUTPUT"
+          elif [ "$changed" -eq 0 ] || [ "$after_n" -ge "$before_n" ]; then
             echo "result=unfixed" >> "$GITHUB_OUTPUT"
           elif [ "$after_n" -gt 0 ]; then
             echo "result=partial" >> "$GITHUB_OUTPUT"
           else
             echo "result=fixed" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Commit the readjusted manifest and lockfile and re-run the checks
+      - name: Commit the readjusted manifests and lockfiles and re-run the checks
+        id: commit
         if: steps.fix.outputs.result == 'fixed' || steps.fix.outputs.result == 'partial'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           HEAD_REF: ${{ github.head_ref }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
-          ids=$(jq -r '[.vulnerabilities.list[], (.warnings // {} | .[][])]
-                       | map(.advisory.id // empty) | unique | join(", ")' before.json)
-          # One commit for both files, on top of the commit that was read.
+          ids=$(find out -name before.json -exec cat {} + \
+                | jq -rs '[.[] | .vulnerabilities.list[], (.warnings // {} | .[][])]
+                          | map(.advisory.id // empty) | unique | join(", ")')
+          # One commit for every changed file, on top of the commit that was read.
           entries='[]'
-          for f in Cargo.toml Cargo.lock; do
-            cmp -s "before.${f#Cargo.}" "lock/$f" && continue
+          for f in Cargo.toml Cargo.lock ffi/identity/Cargo.toml ffi/identity/Cargo.lock; do
+            cmp -s "before/$f" "lock/$f" && continue
             base64 -w0 "lock/$f" > blob.b64
             jq -n --rawfile content blob.b64 '{content: $content, encoding: "base64"}' > blob.json
             blob=$(gh api -X POST "repos/$REPO/git/blobs" --input blob.json --jq .sha)
@@ -346,19 +391,43 @@ jobs:
                      --arg message "$(printf 'chore(deps): readjust to RustSec-recommended versions\n\nAdvisories flagged before: %s' "$ids")" \
                      '{message: $message, tree: $tree, parents: [$parent]}' \
             | gh api -X POST "repos/$REPO/git/commits" --input - --jq .sha)
-          # force=false: refused unless the branch is still at HEAD_SHA.
-          jq -n --arg sha "$commit" '{sha: $sha, force: false}' \
-            | gh api -X PATCH "repos/$REPO/git/refs/heads/$HEAD_REF" --input - --jq .object.sha
+          if [ -n "$HEAD_REF" ]; then
+            # A Dependabot branch. force=false: refused unless the branch is
+            # still at HEAD_SHA.
+            jq -n --arg sha "$commit" '{sha: $sha, force: false}' \
+              | gh api -X PATCH "repos/$REPO/git/refs/heads/$HEAD_REF" --input - --jq .object.sha
+            target="$HEAD_REF"
+          else
+            # main: the bot-owned branch becomes main plus this commit, unless
+            # it already holds exactly this tree (nothing new, no re-run).
+            target="$FIX_BRANCH"
+            current=$(gh api "repos/$REPO/git/ref/heads/$FIX_BRANCH" --jq .object.sha 2>/dev/null || true)
+            if [ -z "$current" ]; then
+              jq -n --arg ref "refs/heads/$FIX_BRANCH" --arg sha "$commit" '{ref: $ref, sha: $sha}' \
+                | gh api -X POST "repos/$REPO/git/refs" --input - --jq .object.sha
+            elif [ "$(gh api "repos/$REPO/git/commits/$current" --jq .tree.sha)" = "$tree" ]; then
+              echo "$FIX_BRANCH already holds this readjustment; nothing to update."
+              echo "updated=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            else
+              jq -n --arg sha "$commit" '{sha: $sha, force: true}' \
+                | gh api -X PATCH "repos/$REPO/git/refs/heads/$FIX_BRANCH" --input - --jq .object.sha
+            fi
+          fi
+          echo "updated=true" >> "$GITHUB_OUTPUT"
           for wf in security.yml lint.yml deploy-lab.yml workers.yml; do
-            gh workflow run "$wf" --repo "$REPO" --ref "$HEAD_REF"
+            gh workflow run "$wf" --repo "$REPO" --ref "$target"
           done
 
       - name: Report on the pull request
-        if: steps.fix.outputs.result == 'fixed' || steps.fix.outputs.result == 'partial' || steps.fix.outputs.result == 'unfixed'
+        if: >-
+          (steps.fix.outputs.result == 'fixed' || steps.fix.outputs.result == 'partial' || steps.fix.outputs.result == 'unfixed') &&
+          steps.commit.outputs.updated != 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           RESULT: ${{ steps.fix.outputs.result }}
+          REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -368,6 +437,9 @@ jobs:
             partial) head="cargo audit failed on this branch. Some flagged crates were moved to patched versions and the checks re-run; the rest need a person." ;;
             *) head="cargo audit fails on this branch and no release this graph accepts clears it; nothing was committed." ;;
           esac
+          if [ -z "$PR_URL" ]; then
+            head="${head/this branch/main}"
+          fi
           {
             echo "$head"
             echo
@@ -375,10 +447,24 @@ jobs:
             echo
             echo "[Run]($RUN_URL)"
           } > body.md
-          gh pr comment "$PR_URL" --body-file body.md
+          cat body.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$PR_URL" ]; then
+            gh pr comment "$PR_URL" --body-file body.md
+            exit 0
+          fi
+          # main: nothing to open when nothing was committed.
+          [ "$RESULT" = unfixed ] && exit 0
+          open=$(gh pr list --repo "$REPO" --head "$FIX_BRANCH" --base main --state open --json url --jq '.[0].url // empty')
+          if [ -n "$open" ]; then
+            gh pr edit "$open" --repo "$REPO" --body-file body.md
+          elif ! gh pr create --repo "$REPO" --base main --head "$FIX_BRANCH" \
+                 --title "chore(deps): readjust to RustSec-recommended versions" --body-file body.md; then
+            echo "::error::Pushed $FIX_BRANCH but could not open its pull request. Enable \"Allow GitHub Actions to create and approve pull requests\" (Settings, Actions, General) or open it by hand."
+            exit 1
+          fi
 
       - name: Fail while advisories remain
         if: steps.fix.outputs.result == 'partial' || steps.fix.outputs.result == 'unfixed'
         run: |
-          echo "::error::RustSec advisories remain on this branch that no accepted release clears; see the PR comment."
+          echo "::error::RustSec advisories remain that no accepted release clears; see the PR comment or this run's summary."
           exit 1

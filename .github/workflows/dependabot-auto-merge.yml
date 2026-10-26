@@ -1,47 +1,119 @@
-# Merges every Dependabot PR (github-actions ecosystem, per .github/dependabot.yml)
-# automatically once its checks pass, so a pinned Action or reusable-workflow
-# SHA never sits stale waiting on a human to click merge.
+# Merges a Dependabot PR, of any ecosystem in .github/dependabot.yml, once
+# every check on its current head commit is green.
 #
-# `pull_request_target` (not `pull_request`) so the workflow runs with the base
-# repository's token and permissions even though Dependabot's default token
-# would otherwise be read-only for this event -- this only calls `gh pr merge`
-# on the existing PR, it never checks out or executes the PR's own code, so the
-# usual pull_request_target "runs untrusted code with elevated permissions"
-# risk does not apply here.
+# It runs whenever one of the workflows that report checks on a pull request
+# finishes. It then reads every check run and commit status on the PR's head
+# commit and merges only when none is pending and each one passed (success,
+# or skipped / neutral for a job that did not apply). One red or unfinished
+# check, required by branch protection or not, leaves the PR open; the run of
+# the last workflow to finish is the one that merges. The merge names the
+# head commit it judged (`--match-head-commit`), so a commit pushed in the
+# meantime (a readjustment by dependabot-security-fix.yml, say) is never
+# merged unchecked, and branch protection on main still applies.
 #
-# `--auto` enables GitHub's native auto-merge: the actual merge waits for any
-# required status checks and branch-protection rules configured on `main`
-# before completing, rather than merging immediately. This job only requests
-# that merge; it does not bypass any check.
+# This covers Cargo, npm and Terraform updates too, which include the
+# cryptographic crates and the deploy tooling: their review is the checks
+# (cargo audit and cargo deny, npm audit, CodeQL, the test groups, the Worker
+# build), whoever pushed to the branch. A PR someone wants to hold back gets
+# the `do-not-merge` label, which stops this job.
+#
+# `workflow_run` runs with the base repository's token and this file from
+# main. It never checks out or runs the PR's code; it only reads check results
+# and calls `gh pr merge`.
 #
 # One-time repo setup this depends on (cannot be done from a workflow file):
-#   - Settings -> General -> Pull Requests -> "Allow auto-merge"
 #   - Settings -> Actions -> General -> Workflow permissions -> "Read and
 #     write permissions" (or leave `permissions:` below sufficient if the repo
 #     default is already read/write)
+#
+# A merge by GITHUB_TOKEN starts no push run on main, so the job dispatches
+# main's Security, Lint, Lab (which publishes, as a push would) and Workers
+# runs itself. A dispatched Workers run builds and checks but deploys neither
+# staging (push only) nor production (its `production` input stays false), so
+# staging follows an automatic merge at the next push to main.
 
 name: Dependabot auto-merge
 
 on:
-  pull_request_target:
-    branches: [main]
+  workflow_run:
+    workflows:
+      - Security
+      - Lint
+      - Deploy KeyQuorum Lab
+      - Cloudflare Workers
+      - Dependabot security fix
+      - Legacy checks
+    types: [completed]
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+
+concurrency:
+  group: dependabot-auto-merge-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
 
 jobs:
   auto-merge:
-    # Only GitHub Actions updates merge themselves. Cargo and npm updates (which
-    # include the cryptographic crates) are left for a person to review.
     if: >-
-      github.actor == 'dependabot[bot]' &&
-      startsWith(github.head_ref, 'dependabot/github_actions/')
+      startsWith(github.event.workflow_run.head_branch, 'dependabot/') &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: write # merge the pull request
+      pull-requests: write # merge the pull request
+      checks: read # read every check run on the head commit
+      actions: write # dispatch main's checks, which a GITHUB_TOKEN merge does not start
+      statuses: read # read every commit status on the head commit
     steps:
-      - name: Enable auto-merge for this Dependabot PR
+      - name: Merge the Dependabot PR once every check on its head is green
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-        run: gh pr merge --auto --squash "$PR_URL"
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          pr=$(gh pr list --repo "$REPO" --head "$BRANCH" --base main --state open \
+                 --json number,author,headRefOid,labels --jq '.[0] // empty')
+          if [ -z "$pr" ]; then
+            echo "No open pull request from $BRANCH into main."
+            exit 0
+          fi
+          number=$(jq -r .number <<<"$pr")
+          sha=$(jq -r .headRefOid <<<"$pr")
+          if [ "$(jq -r .author.login <<<"$pr")" != "app/dependabot" ]; then
+            echo "#$number was not opened by Dependabot; leaving it."
+            exit 0
+          fi
+          if jq -e '.labels | any(.name == "do-not-merge")' <<<"$pr" > /dev/null; then
+            echo "#$number is labelled do-not-merge; leaving it."
+            exit 0
+          fi
+
+          runs=$(gh api --paginate "repos/$REPO/commits/$sha/check-runs?filter=latest&per_page=100" \
+                   --jq '.check_runs[] | {name, status, conclusion}' | jq -s .)
+          statuses=$(gh api "repos/$REPO/commits/$sha/status" --jq '.statuses')
+          echo "$runs" | jq -r '.[] | "\(.name): \(.status) \(.conclusion // "")"'
+          echo "$statuses" | jq -r '.[] | "\(.context): \(.state)"'
+          if [ "$(jq length <<<"$runs")" -eq 0 ]; then
+            echo "No checks on $sha yet."
+            exit 0
+          fi
+          pending=$(jq '[.[] | select(.status != "completed")] | length' <<<"$runs")
+          failed=$(jq '[.[] | select(.status == "completed" and
+                         (.conclusion | IN("success", "skipped", "neutral") | not))] | length' <<<"$runs")
+          s_pending=$(jq '[.[] | select(.state == "pending")] | length' <<<"$statuses")
+          s_failed=$(jq '[.[] | select(.state == "failure" or .state == "error")] | length' <<<"$statuses")
+          if [ "$failed" -gt 0 ] || [ "$s_failed" -gt 0 ]; then
+            echo "#$number has failing checks on $sha; not merging."
+            exit 0
+          fi
+          if [ "$pending" -gt 0 ] || [ "$s_pending" -gt 0 ]; then
+            echo "#$number still has checks running on $sha; the last one to finish decides."
+            exit 0
+          fi
+          echo "Every check on $sha is green; merging #$number."
+          gh pr merge "$number" --repo "$REPO" --squash --match-head-commit "$sha"
+          for wf in security.yml lint.yml deploy-lab.yml workers.yml; do
+            gh workflow run "$wf" --repo "$REPO" --ref main
+          done

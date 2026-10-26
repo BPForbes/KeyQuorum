@@ -517,9 +517,10 @@ the end of this section.
   rate-limit binding `RATE_LIMITER` and the non-secret `ALLOWED_HOSTS`, each
   repeated for staging because wrangler does not inherit them, and the
   `[previews]` tables), `src/` (below), `package.json` and `package-lock.json`
-  with wrangler pinned to an exact version and `sharp`, which wrangler's
-  `miniflare` pins below a fixed advisory, overridden to 0.35.5 (drop the
-  override when wrangler ships a `miniflare` that depends on 0.35.5 or later),
+  with wrangler pinned to an exact version and `sharp` and `undici`, which
+  wrangler's `miniflare` pins below fixed advisories, overridden to 0.35.5 and
+  7.30.1 (drop each override when wrangler ships a `miniflare` that depends on
+  that version or later),
   `.node-version` (22, what Workers Builds runs) and the `builds:build`,
   `check` and `preview` scripts Workers Builds runs (above); the admin Worker
   is in `workers/admin/` (below). `src/index.js` exports the handler and the
