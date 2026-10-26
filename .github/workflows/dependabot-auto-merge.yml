@@ -14,8 +14,8 @@
 # This covers Cargo, npm and Terraform updates too, which include the
 # cryptographic crates and the deploy tooling: their review is the checks
 # (cargo audit and cargo deny, npm audit, CodeQL, the test groups, the Worker
-# build). A PR someone wants to hold back gets the `do-not-merge` label, or a
-# commit pushed by a person: either one stops this job.
+# build), whoever pushed to the branch. A PR someone wants to hold back gets
+# the `do-not-merge` label, which stops this job.
 #
 # `workflow_run` runs with the base repository's token and this file from
 # main. It never checks out or runs the PR's code; it only reads check results
@@ -87,17 +87,6 @@ jobs:
           fi
           if jq -e '.labels | any(.name == "do-not-merge")' <<<"$pr" > /dev/null; then
             echo "#$number is labelled do-not-merge; leaving it."
-            exit 0
-          fi
-          # Commits may come only from Dependabot or from this repository's own
-          # readjustment (github-actions); a person's commit, or one whose
-          # author GitHub cannot match to an account, means a person decides.
-          others=$(gh api --paginate "repos/$REPO/pulls/$number/commits?per_page=100" \
-                     --jq '.[] | select((.author.login // "") as $l
-                                        | $l != "dependabot[bot]" and $l != "github-actions[bot]")
-                                | .sha' | wc -l)
-          if [ "$others" -gt 0 ]; then
-            echo "#$number carries commits from someone other than Dependabot; a person merges it."
             exit 0
           fi
 

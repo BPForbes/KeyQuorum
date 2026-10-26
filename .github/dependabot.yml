@@ -5,8 +5,8 @@
 # the Lab's and the Worker's npm packages, and the Cloudflare Terraform provider.
 #
 # Every update, of any ecosystem here, is merged automatically once every check
-# on its head commit is green (dependabot-auto-merge.yml). A red check, the
-# `do-not-merge` label or a person's commit on the branch leaves it for a person.
+# on its head commit is green or skipped (dependabot-auto-merge.yml). A red or
+# unfinished check, or the `do-not-merge` label, leaves it for a person.
 # A cargo update whose Cargo.lock (the root or ffi/identity's) fails `cargo
 # audit` is readjusted to the
 # newest release RustSec calls patched by dependabot-security-fix.yml (a major
