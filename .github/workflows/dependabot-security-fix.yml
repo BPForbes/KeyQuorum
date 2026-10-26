@@ -36,6 +36,17 @@
 #
 # `@dependabot rebase` or `recreate` drops the fix commit; the resulting
 # synchronize event runs this job again and re-applies it.
+#
+# The same job also runs daily on main (and by hand from main). Advisories
+# appear without any change here, and before this run a fix could only land
+# on a Dependabot branch that waits for a person, so main and every other
+# branch stayed red in the meantime. On main the readjusted files are
+# committed on top of main to the bot-owned branch security/rustsec-readjust
+# (reset to main plus that one commit on each run that changes it, so do not
+# push to it by hand) and one pull request from it is opened or updated. It
+# still never merges. Opening that pull request needs the repository setting
+# "Allow GitHub Actions to create and approve pull requests"; without it the
+# branch is still pushed and the run fails saying so.
 
 name: Dependabot security fix
 
@@ -43,12 +54,15 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
+  schedule:
+    - cron: "41 6 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: dependabot-security-fix-${{ github.head_ref }}
+  group: dependabot-security-fix-${{ github.head_ref || 'main' }}
   cancel-in-progress: true
 
 env:
@@ -58,15 +72,22 @@ jobs:
   cargo:
     name: dependabot security fix (cargo)
     if: >-
-      github.event.pull_request.user.login == 'dependabot[bot]' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.head_ref, 'dependabot/cargo/')
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.user.login == 'dependabot[bot]' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       startsWith(github.head_ref, 'dependabot/cargo/')) ||
+      (github.event_name != 'pull_request' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: write # commit the readjusted Cargo.toml and Cargo.lock to the Dependabot branch
+      contents: write # commit the readjusted Cargo.toml and Cargo.lock to the Dependabot branch or security/rustsec-readjust
       actions: write # re-dispatch the checks a GITHUB_TOKEN commit does not start
-      pull-requests: write # report what changed and what remains
+      pull-requests: write # report what changed and what remains, or open the readjust pull request
+    env:
+      # The commit read: the PR head, or main's head on a scheduled run.
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      # Where the fix commit goes on main.
+      FIX_BRANCH: security/rustsec-readjust
     steps:
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
         with:
@@ -75,11 +96,10 @@ jobs:
         with:
           tool: cargo-audit
 
-      - name: Fetch the Cargo manifests and lockfiles from the PR head
+      - name: Fetch the Cargo manifests and lockfiles from the PR head (or main)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
@@ -342,12 +362,12 @@ jobs:
             echo "result=fixed" >> "$GITHUB_OUTPUT"
           fi
       - name: Commit the readjusted manifests and lockfiles and re-run the checks
+        id: commit
         if: steps.fix.outputs.result == 'fixed' || steps.fix.outputs.result == 'partial'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           HEAD_REF: ${{ github.head_ref }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
@@ -371,19 +391,43 @@ jobs:
                      --arg message "$(printf 'chore(deps): readjust to RustSec-recommended versions\n\nAdvisories flagged before: %s' "$ids")" \
                      '{message: $message, tree: $tree, parents: [$parent]}' \
             | gh api -X POST "repos/$REPO/git/commits" --input - --jq .sha)
-          # force=false: refused unless the branch is still at HEAD_SHA.
-          jq -n --arg sha "$commit" '{sha: $sha, force: false}' \
-            | gh api -X PATCH "repos/$REPO/git/refs/heads/$HEAD_REF" --input - --jq .object.sha
+          if [ -n "$HEAD_REF" ]; then
+            # A Dependabot branch. force=false: refused unless the branch is
+            # still at HEAD_SHA.
+            jq -n --arg sha "$commit" '{sha: $sha, force: false}' \
+              | gh api -X PATCH "repos/$REPO/git/refs/heads/$HEAD_REF" --input - --jq .object.sha
+            target="$HEAD_REF"
+          else
+            # main: the bot-owned branch becomes main plus this commit, unless
+            # it already holds exactly this tree (nothing new, no re-run).
+            target="$FIX_BRANCH"
+            current=$(gh api "repos/$REPO/git/ref/heads/$FIX_BRANCH" --jq .object.sha 2>/dev/null || true)
+            if [ -z "$current" ]; then
+              jq -n --arg ref "refs/heads/$FIX_BRANCH" --arg sha "$commit" '{ref: $ref, sha: $sha}' \
+                | gh api -X POST "repos/$REPO/git/refs" --input - --jq .object.sha
+            elif [ "$(gh api "repos/$REPO/git/commits/$current" --jq .tree.sha)" = "$tree" ]; then
+              echo "$FIX_BRANCH already holds this readjustment; nothing to update."
+              echo "updated=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            else
+              jq -n --arg sha "$commit" '{sha: $sha, force: true}' \
+                | gh api -X PATCH "repos/$REPO/git/refs/heads/$FIX_BRANCH" --input - --jq .object.sha
+            fi
+          fi
+          echo "updated=true" >> "$GITHUB_OUTPUT"
           for wf in security.yml lint.yml deploy-lab.yml workers.yml; do
-            gh workflow run "$wf" --repo "$REPO" --ref "$HEAD_REF"
+            gh workflow run "$wf" --repo "$REPO" --ref "$target"
           done
 
       - name: Report on the pull request
-        if: steps.fix.outputs.result == 'fixed' || steps.fix.outputs.result == 'partial' || steps.fix.outputs.result == 'unfixed'
+        if: >-
+          (steps.fix.outputs.result == 'fixed' || steps.fix.outputs.result == 'partial' || steps.fix.outputs.result == 'unfixed') &&
+          steps.commit.outputs.updated != 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           RESULT: ${{ steps.fix.outputs.result }}
+          REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -393,6 +437,9 @@ jobs:
             partial) head="cargo audit failed on this branch. Some flagged crates were moved to patched versions and the checks re-run; the rest need a person." ;;
             *) head="cargo audit fails on this branch and no release this graph accepts clears it; nothing was committed." ;;
           esac
+          if [ -z "$PR_URL" ]; then
+            head="${head/this branch/main}"
+          fi
           {
             echo "$head"
             echo
@@ -400,10 +447,24 @@ jobs:
             echo
             echo "[Run]($RUN_URL)"
           } > body.md
-          gh pr comment "$PR_URL" --body-file body.md
+          cat body.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$PR_URL" ]; then
+            gh pr comment "$PR_URL" --body-file body.md
+            exit 0
+          fi
+          # main: nothing to open when nothing was committed.
+          [ "$RESULT" = unfixed ] && exit 0
+          open=$(gh pr list --repo "$REPO" --head "$FIX_BRANCH" --base main --state open --json url --jq '.[0].url // empty')
+          if [ -n "$open" ]; then
+            gh pr edit "$open" --repo "$REPO" --body-file body.md
+          elif ! gh pr create --repo "$REPO" --base main --head "$FIX_BRANCH" \
+                 --title "chore(deps): readjust to RustSec-recommended versions" --body-file body.md; then
+            echo "::error::Pushed $FIX_BRANCH but could not open its pull request. Enable \"Allow GitHub Actions to create and approve pull requests\" (Settings, Actions, General) or open it by hand."
+            exit 1
+          fi
 
       - name: Fail while advisories remain
         if: steps.fix.outputs.result == 'partial' || steps.fix.outputs.result == 'unfixed'
         run: |
-          echo "::error::RustSec advisories remain on this branch that no accepted release clears; see the PR comment."
+          echo "::error::RustSec advisories remain that no accepted release clears; see the PR comment or this run's summary."
           exit 1

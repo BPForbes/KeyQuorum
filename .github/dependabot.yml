@@ -10,7 +10,9 @@
 # A cargo update whose Cargo.lock (the root or ffi/identity's) fails `cargo
 # audit` is readjusted to the
 # newest release RustSec calls patched by dependabot-security-fix.yml (a major
-# bump of a direct dependency included), which also never merges.
+# bump of a direct dependency included), which also never merges. That job
+# also runs daily on main, so a new advisory gets a fix pull request without
+# waiting for one of these updates.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
