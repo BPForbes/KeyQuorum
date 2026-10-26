@@ -3,7 +3,8 @@
 # Dependabot picks versions by semver alone and cannot react to a failing
 # check, and its version updates never touch a transitive crate. When
 # `cargo audit` (the `rust dependencies` job in security.yml) would fail on a
-# Dependabot cargo branch, this job:
+# Dependabot cargo branch, this job, for each lockfile that job audits (the
+# root Cargo.lock and the standalone ffi/identity workspace's):
 #   1. moves each flagged crate to the newest version its dependents allow
 #      (`cargo update -p name@version`);
 #   2. for each crate still flagged, looks up the newest published release
@@ -11,8 +12,8 @@
 #      direct dependency gets its Cargo.toml requirement raised (a new major
 #      version included), a transitive one is pinned with
 #      `cargo update --precise` if its dependents accept it;
-#   3. audits again and commits Cargo.toml and Cargo.lock to the same branch
-#      only if the audit improved.
+#   3. audits again and commits the changed Cargo.toml and Cargo.lock files
+#      to the same branch only if the audit improved.
 # What still cannot move (a dependent that does not accept the patched
 # release yet, or no patched release published) is named in a PR comment and
 # the job fails, so a person decides. A major bump may need code changes; the
@@ -21,7 +22,7 @@
 # it honours the exceptions already recorded in .cargo/audit.toml.
 #
 # The job holds a write token, so it never checks out the PR. It reads only
-# Cargo.toml, Cargo.lock and .cargo/audit.toml from the PR's head commit
+# the two Cargo.toml and Cargo.lock pairs and .cargo/audit.toml from the PR's head commit
 # through the API, runs cargo on them in an empty directory (no
 # .cargo/config.toml or rust-toolchain.toml from the branch is ever seen, and
 # `cargo update` and `cargo audit` run no build script), and writes one
@@ -74,7 +75,7 @@ jobs:
         with:
           tool: cargo-audit
 
-      - name: Fetch Cargo.toml and Cargo.lock from the PR head
+      - name: Fetch the Cargo manifests and lockfiles from the PR head
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -82,11 +83,19 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
-          mkdir lock
-          for f in Cargo.toml Cargo.lock; do
+          # Every workspace security.yml audits: the root crate and the
+          # standalone ffi/identity workspace, which has its own Cargo.lock.
+          for f in Cargo.toml Cargo.lock ffi/identity/Cargo.toml ffi/identity/Cargo.lock; do
+            mkdir -p "lock/$(dirname "$f")"
             gh api -H "Accept: application/vnd.github.raw" \
               "repos/$REPO/contents/$f?ref=$HEAD_SHA" > "lock/$f"
           done
+          # ffi/identity's library target is discovered from src/lib.rs, which
+          # cargo needs to exist to read the manifest. An empty placeholder is
+          # enough for `cargo update`; it is never committed. (The root
+          # manifest names its targets' paths explicitly.)
+          mkdir -p lock/ffi/identity/src
+          : > lock/ffi/identity/src/lib.rs
           # The advisory exceptions security.yml's cargo audit honours (their
           # reasons and dates are in deny.toml). cargo audit reads them from
           # .cargo/audit.toml in the directory it runs in; the file is optional.
@@ -94,8 +103,7 @@ jobs:
           gh api -H "Accept: application/vnd.github.raw" \
             "repos/$REPO/contents/.cargo/audit.toml?ref=$HEAD_SHA" > .cargo/audit.toml \
             || rm -f .cargo/audit.toml
-          cp lock/Cargo.lock before.lock
-          cp lock/Cargo.toml before.toml
+          cp -r lock before
 
       - name: Audit, readjust flagged crates, audit again
         id: fix
@@ -113,29 +121,38 @@ jobs:
                          | "| \(.package.name) | \(.package.version) | \(.advisory.id) | \((.versions.patched // []) | join(", ")) |")
                    | unique[]' "$1"
           }
-          cargo audit --file lock/Cargo.lock --json > before.json || true
-          jq -e '.vulnerabilities' before.json > /dev/null
+          # Each workspace's prefix inside the repository ("" is the root).
+          before_n=0
+          after_n=0
+          changed=0
+          : > report.md
+          for ws in "" "ffi/identity/"; do
+            dir="lock/$ws"
+            out="out/$ws"
+            mkdir -p "$out"
+            cargo audit --file "${dir}Cargo.lock" --json > "${out}before.json" || true
+            jq -e '.vulnerabilities' "${out}before.json" > /dev/null
 
-          mapfile -t pkgs < <(flagged before.json)
-          if [ "${#pkgs[@]}" -eq 0 ]; then
-            echo "Cargo.lock passes cargo audit; nothing to readjust."
-            echo "result=clean" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+            mapfile -t pkgs < <(flagged "${out}before.json")
+            if [ "${#pkgs[@]}" -eq 0 ]; then
+              echo "${ws}Cargo.lock passes cargo audit; nothing to readjust."
+              continue
+            fi
+            before_n=$((before_n + ${#pkgs[@]}))
 
-          for pkg in "${pkgs[@]}"; do
-            echo "::group::cargo update -p $pkg"
-            cargo +stable update --manifest-path lock/Cargo.toml -p "$pkg" \
-              || echo "::warning::cargo update -p $pkg failed"
-            echo "::endgroup::"
-          done
-          cargo audit --file lock/Cargo.lock --json > after.json || true
-          jq -e '.vulnerabilities' after.json > /dev/null
+            for pkg in "${pkgs[@]}"; do
+              echo "::group::cargo update -p $pkg (${ws}Cargo.toml)"
+              cargo +stable update --manifest-path "${dir}Cargo.toml" -p "$pkg" \
+                || echo "::warning::cargo update -p $pkg failed in ${ws}Cargo.toml"
+              echo "::endgroup::"
+            done
+            cargo audit --file "${dir}Cargo.lock" --json > "${out}after.json" || true
+            jq -e '.vulnerabilities' "${out}after.json" > /dev/null
 
-          # Second pass: the newest release the advisories call patched.
-          : > advice.md
-          if [ "$(flagged after.json | wc -l)" -gt 0 ]; then
-            python3 - after.json <<'PY'
+            # Second pass: the newest release the advisories call patched.
+            : > "${out}advice.md"
+            if [ "$(flagged "${out}after.json" | wc -l)" -gt 0 ]; then
+              python3 - "${out}after.json" "${dir}Cargo.toml" "${out}advice.md" <<'PY'
           import json, pathlib, re, subprocess, sys, tomllib, urllib.request
 
           # Second pass for crates `cargo update -p` could not clear: move each to the
@@ -144,7 +161,7 @@ jobs:
           # `cargo update --precise` if its dependents allow it, else its blocker is
           # reported. Writes one Markdown line per crate to advice.md.
           audit = json.load(open(sys.argv[1]))
-          manifest = pathlib.Path("lock/Cargo.toml")
+          manifest = pathlib.Path(sys.argv[2])
           SECTIONS = ("dependencies", "dev-dependencies", "build-dependencies")
 
 
@@ -266,58 +283,65 @@ jobs:
                   else:
                       why = " ".join(l.strip() for l in r.stderr.splitlines() if "required by" in l or "versions that meet" in l)
                       out.append(f"- `{name} {version}` → `{target}`: transitive, and a dependent does not accept it yet ({why or r.stderr.strip().splitlines()[-1]}).")
-          pathlib.Path("advice.md").write_text("\n".join(out) + ("\n" if out else ""))
+          pathlib.Path(sys.argv[3]).write_text("\n".join(out) + ("\n" if out else ""))
           print("\n".join(out))
           PY
-          fi
-          cargo audit --file lock/Cargo.lock --json > final.json || true
-          jq -e '.vulnerabilities' final.json > /dev/null
-
-          before_n=$(flagged before.json | wc -l)
-          after_n=$(flagged final.json | wc -l)
-          {
-            echo "### Flagged before"
-            echo "| crate | version | advisory | patched |"
-            echo "| --- | --- | --- | --- |"
-            advisories before.json
-            if [ -s advice.md ]; then
-              echo
-              echo "### Recommended releases"
-              cat advice.md
             fi
-            echo
-            echo "### Cargo.toml changes"
-            echo '```'
-            { diff -U0 before.toml lock/Cargo.toml || true; } | grep -E '^[-+][^-+]' || echo "(none)"
-            echo '```'
-            echo
-            echo "### Lockfile changes"
-            echo '```'
-            { diff -U1 before.lock lock/Cargo.lock || true; } | grep -E '^( name|[-+]name|[-+]version) ' || echo "(none)"
-            echo '```'
-          } > report.md
-          if [ "$after_n" -gt 0 ]; then
+            cargo audit --file "${dir}Cargo.lock" --json > "${out}final.json" || true
+            jq -e '.vulnerabilities' "${out}final.json" > /dev/null
+
+            left=$(flagged "${out}final.json" | wc -l)
+            after_n=$((after_n + left))
+            if ! { cmp -s "before/${ws}Cargo.lock" "${dir}Cargo.lock" \
+                   && cmp -s "before/${ws}Cargo.toml" "${dir}Cargo.toml"; }; then
+              changed=1
+            fi
             {
+              echo "## \`${ws}Cargo.lock\`"
               echo
-              echo "### Still flagged"
-              echo "No published release clears these that this graph accepts (see above for the crate holding each back). They need an upstream release, a dependency change, or a recorded exception, which is a person's decision."
+              echo "### Flagged before"
               echo "| crate | version | advisory | patched |"
               echo "| --- | --- | --- | --- |"
-              advisories final.json
+              advisories "${out}before.json"
+              if [ -s "${out}advice.md" ]; then
+                echo
+                echo "### Recommended releases"
+                cat "${out}advice.md"
+              fi
+              echo
+              echo "### Cargo.toml changes"
+              echo '```'
+              { diff -U0 "before/${ws}Cargo.toml" "${dir}Cargo.toml" || true; } | grep -E '^[-+][^-+]' || echo "(none)"
+              echo '```'
+              echo
+              echo "### Lockfile changes"
+              echo '```'
+              { diff -U1 "before/${ws}Cargo.lock" "${dir}Cargo.lock" || true; } | grep -E '^( name|[-+]name|[-+]version) ' || echo "(none)"
+              echo '```'
+              if [ "$left" -gt 0 ]; then
+                echo
+                echo "### Still flagged"
+                echo "No published release clears these that this graph accepts (see above for the crate holding each back). They need an upstream release, a dependency change, or a recorded exception, which is a person's decision."
+                echo "| crate | version | advisory | patched |"
+                echo "| --- | --- | --- | --- |"
+                advisories "${out}final.json"
+              fi
+              echo
             } >> report.md
-          fi
+          done
           cat report.md
 
-          if { cmp -s before.lock lock/Cargo.lock && cmp -s before.toml lock/Cargo.toml; } \
-             || [ "$after_n" -ge "$before_n" ]; then
+          if [ "$before_n" -eq 0 ]; then
+            echo "Every Cargo.lock passes cargo audit; nothing to readjust."
+            echo "result=clean" >> "$GITHUB_OUTPUT"
+          elif [ "$changed" -eq 0 ] || [ "$after_n" -ge "$before_n" ]; then
             echo "result=unfixed" >> "$GITHUB_OUTPUT"
           elif [ "$after_n" -gt 0 ]; then
             echo "result=partial" >> "$GITHUB_OUTPUT"
           else
             echo "result=fixed" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Commit the readjusted manifest and lockfile and re-run the checks
+      - name: Commit the readjusted manifests and lockfiles and re-run the checks
         if: steps.fix.outputs.result == 'fixed' || steps.fix.outputs.result == 'partial'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -327,12 +351,13 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
-          ids=$(jq -r '[.vulnerabilities.list[], (.warnings // {} | .[][])]
-                       | map(.advisory.id // empty) | unique | join(", ")' before.json)
-          # One commit for both files, on top of the commit that was read.
+          ids=$(find out -name before.json -exec cat {} + \
+                | jq -rs '[.[] | .vulnerabilities.list[], (.warnings // {} | .[][])]
+                          | map(.advisory.id // empty) | unique | join(", ")')
+          # One commit for every changed file, on top of the commit that was read.
           entries='[]'
-          for f in Cargo.toml Cargo.lock; do
-            cmp -s "before.${f#Cargo.}" "lock/$f" && continue
+          for f in Cargo.toml Cargo.lock ffi/identity/Cargo.toml ffi/identity/Cargo.lock; do
+            cmp -s "before/$f" "lock/$f" && continue
             base64 -w0 "lock/$f" > blob.b64
             jq -n --rawfile content blob.b64 '{content: $content, encoding: "base64"}' > blob.json
             blob=$(gh api -X POST "repos/$REPO/git/blobs" --input blob.json --jq .sha)
