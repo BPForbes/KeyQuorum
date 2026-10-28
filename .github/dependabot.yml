@@ -7,6 +7,12 @@
 # Every update, of any ecosystem here, is merged automatically once every check
 # on its head commit is green or skipped (dependabot-auto-merge.yml). A red or
 # unfinished check, or the `do-not-merge` label, leaves it for a person.
+# Version updates for one ecosystem directory share one pull request (`groups`
+# below, every dependency, major included). Dependabot adds a later update to
+# that open pull request instead of opening another. Security updates stay
+# their own pull requests, so a failing major does not hold a patched advisory.
+# A group does not cross `directory` entries: the root crate and `/ffi/identity`
+# are still two pull requests, and so are `/lab` and `/workers`.
 # A cargo update whose Cargo.lock (the root or ffi/identity's) fails `cargo
 # audit` is readjusted to the
 # newest release RustSec calls patched by dependabot-security-fix.yml (a major
@@ -23,8 +29,13 @@ updates:
       prefix: "chore(deps)"
     groups:
       github-actions:
+        applies-to: version-updates
         patterns:
           - "*"
+        update-types:
+          - "major"
+          - "minor"
+          - "patch"
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
@@ -32,8 +43,12 @@ updates:
     commit-message:
       prefix: "chore(deps)"
     groups:
-      cargo-minor-and-patch:
+      cargo:
+        applies-to: version-updates
+        patterns:
+          - "*"
         update-types:
+          - "major"
           - "minor"
           - "patch"
   # The standalone FFI workspace has its own Cargo.lock, which security.yml
@@ -48,8 +63,12 @@ updates:
     commit-message:
       prefix: "chore(deps)"
     groups:
-      cargo-minor-and-patch:
+      cargo:
+        applies-to: version-updates
+        patterns:
+          - "*"
         update-types:
+          - "major"
           - "minor"
           - "patch"
   - package-ecosystem: "npm"
@@ -59,8 +78,12 @@ updates:
     commit-message:
       prefix: "chore(deps)"
     groups:
-      npm-minor-and-patch:
+      npm:
+        applies-to: version-updates
+        patterns:
+          - "*"
         update-types:
+          - "major"
           - "minor"
           - "patch"
   - package-ecosystem: "npm"
@@ -70,8 +93,12 @@ updates:
     commit-message:
       prefix: "chore(deps)"
     groups:
-      npm-minor-and-patch:
+      npm:
+        applies-to: version-updates
+        patterns:
+          - "*"
         update-types:
+          - "major"
           - "minor"
           - "patch"
   - package-ecosystem: "terraform"
@@ -80,3 +107,12 @@ updates:
       interval: "weekly"
     commit-message:
       prefix: "chore(deps)"
+    groups:
+      terraform:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - "major"
+          - "minor"
+          - "patch"
