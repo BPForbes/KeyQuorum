@@ -62,7 +62,7 @@ pub fn generate_encryption_keypair() -> (Zeroizing<[u8; 32]>, [u8; 32]) {
 
 /// Pure, no I/O: generates a new Ed25519 keypair for signature verification.
 pub fn generate_signing_keypair() -> (Zeroizing<[u8; 32]>, [u8; 32]) {
-    let signing_key = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
+    let signing_key = ed25519_dalek::SigningKey::generate(&mut crate::crypto::os_rng());
     let public = signing_key.verifying_key().to_bytes();
     (Zeroizing::new(signing_key.to_bytes()), public)
 }
