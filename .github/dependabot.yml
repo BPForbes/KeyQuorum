@@ -37,7 +37,10 @@ updates:
           - "minor"
           - "patch"
   # The standalone FFI workspace has its own Cargo.lock, which security.yml
-  # audits separately; the root entry above never touches it.
+  # audits separately; the root entry above never touches it. An update here
+  # follows the path dependency and can change the root Cargo.toml without
+  # rewriting the root Cargo.lock, and a root update leaves this lockfile.
+  # dependabot-security-fix.yml refreshes whichever lockfile that leaves stale.
   - package-ecosystem: "cargo"
     directory: "/ffi/identity"
     schedule:

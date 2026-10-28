@@ -34,9 +34,9 @@ impl std::error::Error for DecryptError {}
 
 /// The operating system's random source. Panics if it fails, as `rand` 0.8's
 /// `OsRng` did. It is also the Shamir dealer's RNG (`blahaj` 0.7 takes a
-/// `rand` 0.10 `CryptoRng`). Libraries that take a `rand_core` 0.6 RNG
-/// (`ed25519-dalek`, `crypto_box`) are given `rand_core::OsRng` instead,
-/// which reads the same source.
+/// `rand` 0.10 `CryptoRng`) and the RNG `ed25519-dalek` 3 takes (`rand_core`
+/// 0.10). `crypto_box` still takes a `rand_core` 0.6 RNG (`rand_core::OsRng`).
+/// Both read the same source.
 pub(crate) fn os_rng() -> UnwrapErr<SysRng> {
     UnwrapErr(SysRng)
 }

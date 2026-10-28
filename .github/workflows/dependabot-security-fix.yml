@@ -21,6 +21,20 @@
 # Dependabot PR only once every check on it is green) and never adds an advisory ignore;
 # it honours the exceptions already recorded in .cargo/audit.toml.
 #
+# The same job also refreshes a lockfile the other workspace left stale.
+# Dependabot keeps a cargo entry per workspace. An update under /ffi/identity
+# follows that crate's path dependency on the root and rewrites the root
+# Cargo.toml plus ffi/identity/Cargo.lock, but not the root Cargo.lock. A root
+# update does the reverse. Either one makes every `cargo --locked` check fail
+# (`cannot update the lock file ... because --locked was passed`) before the
+# code is even built, which is why those pull requests never go green and
+# never auto-merge. When `cargo metadata --locked` fails for that reason, the
+# job runs `cargo metadata` (no `--locked`), which rewrites only the packages
+# the manifest no longer accepts and does not float the rest the way
+# `cargo update` with no `-p` does, then commits that lockfile even when
+# `cargo audit` is already clean and re-dispatches the checks. A major bump
+# can still need source changes; this only removes the stale-lockfile failure.
+#
 # The job holds a write token, so it never checks out the PR. It reads only
 # the two Cargo.toml and Cargo.lock pairs and .cargo/audit.toml from the PR's head commit
 # through the API, runs cargo on them in an empty directory (no
@@ -130,6 +144,26 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
+          # A cargo update in one workspace can change the other workspace's
+          # manifest through the path dependency and leave that workspace's
+          # lockfile stale. Refresh only a lockfile cargo reports as stale.
+          # `cargo metadata` without --locked rewrites the packages the
+          # manifest no longer accepts; it does not float every dependency.
+          for ws in "" "ffi/identity/"; do
+            dir="lock/$ws"
+            err="${dir}locked.err"
+            if cargo +stable metadata --locked --format-version 1 --manifest-path "${dir}Cargo.toml" >/dev/null 2>"$err"; then
+              echo "${dir}Cargo.lock matches its manifest."
+              continue
+            fi
+            if ! grep -q 'because --locked was passed' "$err"; then
+              echo "::error::cargo metadata --locked failed for ${dir}Cargo.toml"
+              cat "$err"
+              exit 1
+            fi
+            echo "${dir}Cargo.lock is stale; refreshing it to match the manifest."
+            cargo +stable metadata --format-version 1 --manifest-path "${dir}Cargo.toml" >/dev/null
+          done
           # cargo audit exits 1 on findings; its JSON is what matters.
           flagged() {
             jq -r '[.vulnerabilities.list[].package, (.warnings // {} | .[][].package)]
@@ -351,9 +385,32 @@ jobs:
           done
           cat report.md
 
+          stale=0
+          for f in Cargo.toml Cargo.lock ffi/identity/Cargo.toml ffi/identity/Cargo.lock; do
+            cmp -s "before/$f" "lock/$f" || stale=1
+          done
           if [ "$before_n" -eq 0 ]; then
-            echo "Every Cargo.lock passes cargo audit; nothing to readjust."
-            echo "result=clean" >> "$GITHUB_OUTPUT"
+            if [ "$stale" -eq 1 ]; then
+              echo "cargo audit is clean, and a stale lockfile was refreshed."
+              {
+                echo "## Lockfile"
+                echo
+                echo "Refreshed the lockfile the other workspace left stale:"
+                echo
+                for f in Cargo.lock ffi/identity/Cargo.lock; do
+                  cmp -s "before/$f" "lock/$f" && continue
+                  echo "### \`$f\`"
+                  echo '```'
+                  { diff -U1 "before/$f" "lock/$f" || true; } | grep -E '^( name|[-+]name|[-+]version) ' || echo "(no package lines)"
+                  echo '```'
+                  echo
+                done
+              } >> report.md
+              echo "result=lockfile" >> "$GITHUB_OUTPUT"
+            else
+              echo "Every Cargo.lock passes cargo audit; nothing to readjust."
+              echo "result=clean" >> "$GITHUB_OUTPUT"
+            fi
           elif [ "$changed" -eq 0 ] || [ "$after_n" -ge "$before_n" ]; then
             echo "result=unfixed" >> "$GITHUB_OUTPUT"
           elif [ "$after_n" -gt 0 ]; then
@@ -363,11 +420,12 @@ jobs:
           fi
       - name: Commit the readjusted manifests and lockfiles and re-run the checks
         id: commit
-        if: steps.fix.outputs.result == 'fixed' || steps.fix.outputs.result == 'partial'
+        if: steps.fix.outputs.result == 'fixed' || steps.fix.outputs.result == 'partial' || steps.fix.outputs.result == 'lockfile'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           HEAD_REF: ${{ github.head_ref }}
+          RESULT: ${{ steps.fix.outputs.result }}
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
@@ -387,8 +445,15 @@ jobs:
           base_tree=$(gh api "repos/$REPO/git/commits/$HEAD_SHA" --jq .tree.sha)
           tree=$(jq -n --arg base "$base_tree" --argjson tree "$entries" '{base_tree: $base, tree: $tree}' \
             | gh api -X POST "repos/$REPO/git/trees" --input - --jq .sha)
+          if [ "$RESULT" = "lockfile" ]; then
+            message=$(printf '%s\n\n%s' \
+              'chore(deps): refresh the lockfile Dependabot left stale' \
+              'A cargo update in one workspace rewrote that lockfile and, through the path dependency, the other workspace'\''s manifest, but not its lockfile. Every --locked check then fails. This rewrites only the stale lockfile.')
+          else
+            message=$(printf 'chore(deps): readjust to RustSec-recommended versions\n\nAdvisories flagged before: %s' "$ids")
+          fi
           commit=$(jq -n --arg tree "$tree" --arg parent "$HEAD_SHA" \
-                     --arg message "$(printf 'chore(deps): readjust to RustSec-recommended versions\n\nAdvisories flagged before: %s' "$ids")" \
+                     --arg message "$message" \
                      '{message: $message, tree: $tree, parents: [$parent]}' \
             | gh api -X POST "repos/$REPO/git/commits" --input - --jq .sha)
           if [ -n "$HEAD_REF" ]; then
@@ -421,7 +486,7 @@ jobs:
 
       - name: Report on the pull request
         if: >-
-          (steps.fix.outputs.result == 'fixed' || steps.fix.outputs.result == 'partial' || steps.fix.outputs.result == 'unfixed') &&
+          (steps.fix.outputs.result == 'fixed' || steps.fix.outputs.result == 'partial' || steps.fix.outputs.result == 'unfixed' || steps.fix.outputs.result == 'lockfile') &&
           steps.commit.outputs.updated != 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -435,6 +500,7 @@ jobs:
           case "$RESULT" in
             fixed) head="cargo audit failed on this branch. The flagged crates were moved to patched versions and the checks re-run." ;;
             partial) head="cargo audit failed on this branch. Some flagged crates were moved to patched versions and the checks re-run; the rest need a person." ;;
+            lockfile) head="A Dependabot cargo update left one workspace's Cargo.lock stale, because the path dependency changed the other workspace's manifest without rewriting its lockfile. The stale lockfile was refreshed and the checks re-run." ;;
             *) head="cargo audit fails on this branch and no release this graph accepts clears it; nothing was committed." ;;
           esac
           if [ -z "$PR_URL" ]; then
@@ -458,7 +524,7 @@ jobs:
           if [ -n "$open" ]; then
             gh pr edit "$open" --repo "$REPO" --body-file body.md
           elif ! gh pr create --repo "$REPO" --base main --head "$FIX_BRANCH" \
-                 --title "chore(deps): readjust to RustSec-recommended versions" --body-file body.md; then
+                 --title "$(if [ "$RESULT" = lockfile ]; then echo 'chore(deps): refresh the lockfile Dependabot left stale'; else echo 'chore(deps): readjust to RustSec-recommended versions'; fi)" --body-file body.md; then
             echo "::error::Pushed $FIX_BRANCH but could not open its pull request. Enable \"Allow GitHub Actions to create and approve pull requests\" (Settings, Actions, General) or open it by hand."
             exit 1
           fi
