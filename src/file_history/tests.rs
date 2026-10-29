@@ -7,6 +7,7 @@ mod event_proof;
 mod expiry;
 mod index;
 mod merge;
+mod names;
 mod policy;
 mod resolve;
 mod sync;

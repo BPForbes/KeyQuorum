@@ -138,6 +138,25 @@ fn readiness(c: &[u8], rev: &[u8; 32], recipient: &Account, trust: &Trust) -> (c
 }
 
 #[test]
+fn event_and_outcome_names_cross_the_boundary() {
+    use std::ffi::CStr;
+
+    let text = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_str().unwrap().to_owned();
+    assert_eq!(text(kq_file_event_name(1)), "TrackingStarted");
+    assert_eq!(text(kq_file_event_name(2)), "EditCheckedIn");
+    assert_eq!(text(kq_file_event_name(47)), "LetterOpened");
+    assert!(kq_file_event_name(0).is_null());
+    assert!(kq_file_event_name(48).is_null());
+    assert!(kq_file_event_name(255).is_null());
+    assert_eq!(text(kq_file_outcome_name(1)), "Success");
+    assert_eq!(text(kq_file_outcome_name(4)), "Info");
+    assert!(kq_file_outcome_name(0).is_null());
+    assert!(kq_file_outcome_name(5).is_null());
+    // The same pointer every time: a static, so the caller has nothing to free.
+    assert_eq!(kq_file_event_name(3), kq_file_event_name(3));
+}
+
+#[test]
 fn abi_version_and_label_identity_match_the_library() {
     assert_eq!(kq_file_abi_version(), KQ_FILE_ABI_VERSION);
     let mut id = [0u8; 16];

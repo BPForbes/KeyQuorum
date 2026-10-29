@@ -653,7 +653,10 @@ own clock), `file_delivery::freshness_against` (the pure part of `freshness`) an
 `open_history_{letter,ack}_with_key` (the sender's or recipient's key supplied by the caller's own
 registry, looked up by the label it expects). `ffi/identity` exports them to C for Flinstone:
 `include/keyquorum_files.h` (`kq_file_*`, `KQ_FILE_ABI_VERSION`, the trust table the caller fills
-from its registry, the public `kq_file_offer_t` a host verifies without the content) beside
+from its registry, the public `kq_file_offer_t` a host verifies without the content; ABI version 2
+adds `kq_file_event_name` / `kq_file_outcome_name`, the static names of a history event type and
+outcome code, from `HistoryEventType::name_c` / `HistoryOutcome::name_c`, so the host prints them
+without a table of its own) beside
 `keyquorum_identity.h`, and account box keys (`kq_account_box_keygen`, X25519, sealed like the
 signing key). One Rust archive carries both headers: a second would duplicate std and SQLite. `file checkout`, `file verify` and `export tracked-file` append
 `REVISION_CHECKED_OUT` (36), `VERIFICATION_RUN` (37) and `HISTORY_EXPORTED` (38)
