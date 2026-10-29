@@ -45,7 +45,7 @@ extern "C" {
 #define KQ_FILE_FIRST            1
 #define KQ_FILE_NEWER            2
 
-#define KQ_FILE_ABI_VERSION      1
+#define KQ_FILE_ABI_VERSION      2
 #define KQ_FILE_ID_LEN          16u
 #define KQ_FILE_REV_LEN         32u
 #define KQ_FILE_DELIVERY_ID_LEN 16u
@@ -75,6 +75,11 @@ typedef struct {
 } kq_file_offer_t;
 
 int kq_file_abi_version(void);
+/* The name of a history event type or outcome code ("EditCheckedIn", "Success", ...): a static
+ * NUL-terminated string the caller never frees, or NULL for a code this library does not know
+ * (a history written by a newer build). Added in ABI version 2. */
+const char *kq_file_event_name(unsigned char code);
+const char *kq_file_outcome_name(unsigned char code);
 int kq_file_label_identity(const char *label, unsigned char id_out[16]);
 
 /* A new file with no revisions, owned by scope_root under the standard policy. */

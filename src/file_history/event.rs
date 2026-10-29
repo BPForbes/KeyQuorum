@@ -134,6 +134,68 @@ impl HistoryEventType {
         }
     }
 
+    /// The variant's name as a static NUL-terminated string, for a C caller
+    /// that prints a history (`kq_file_event_name`). Presentation only, not
+    /// part of the wire format; the exhaustive match keeps it in step with
+    /// the enum.
+    pub fn name_c(self) -> &'static std::ffi::CStr {
+        match self {
+            Self::TrackingStarted => c"TrackingStarted",
+            Self::EditCheckedIn => c"EditCheckedIn",
+            Self::RevisionSigned => c"RevisionSigned",
+            Self::CountersignatureAdded => c"CountersignatureAdded",
+            Self::PolicyDecision => c"PolicyDecision",
+            Self::ShareAttempted => c"ShareAttempted",
+            Self::ShareDelivered => c"ShareDelivered",
+            Self::FileExpired => c"FileExpired",
+            Self::ContentDestroyed => c"ContentDestroyed",
+            Self::TamperDetected => c"TamperDetected",
+            Self::AutoMergeAttempted => c"AutoMergeAttempted",
+            Self::AutoMergeFastForward => c"AutoMergeFastForward",
+            Self::AutoMergeEquivalent => c"AutoMergeEquivalent",
+            Self::AutoMergeClean => c"AutoMergeClean",
+            Self::AutoMergeBlocked => c"AutoMergeBlocked",
+            Self::AutoMergeRequiresHuman => c"AutoMergeRequiresHuman",
+            Self::HistoryForkDetected => c"HistoryForkDetected",
+            Self::ContentConflictDetected => c"ContentConflictDetected",
+            Self::ConflictReviewAssigned => c"ConflictReviewAssigned",
+            Self::ConflictReviewEscalated => c"ConflictReviewEscalated",
+            Self::BridgeUsed => c"BridgeUsed",
+            Self::ConflictUnresolved => c"ConflictUnresolved",
+            Self::HistoryImported => c"HistoryImported",
+            Self::QuorumUnlockAttempted => c"QuorumUnlockAttempted",
+            Self::PasswordUnlockAttempted => c"PasswordUnlockAttempted",
+            Self::ExpiredAccessAttempt => c"ExpiredAccessAttempt",
+            Self::GateLinked => c"GateLinked",
+            Self::ShareLinkCreated => c"ShareLinkCreated",
+            Self::ShareLinkRedeemed => c"ShareLinkRedeemed",
+            Self::ShareLinkRevoked => c"ShareLinkRevoked",
+            Self::ExpiryScheduled => c"ExpiryScheduled",
+            Self::FileRenamed => c"FileRenamed",
+            Self::RevisionFinalized => c"RevisionFinalized",
+            Self::ConflictResolved => c"ConflictResolved",
+            Self::MergeRejected => c"MergeRejected",
+            Self::RevisionCheckedOut => c"RevisionCheckedOut",
+            Self::VerificationRun => c"VerificationRun",
+            Self::HistoryExported => c"HistoryExported",
+            Self::FileRequested => c"FileRequested",
+            Self::ChangeRequested => c"ChangeRequested",
+            Self::RequestAnswered => c"RequestAnswered",
+            Self::LetterQueued => c"LetterQueued",
+            Self::LetterSent => c"LetterSent",
+            Self::LetterDropped => c"LetterDropped",
+            Self::LetterRefused => c"LetterRefused",
+            Self::LetterReceived => c"LetterReceived",
+            Self::LetterOpened => c"LetterOpened",
+        }
+    }
+
+    /// `name_c` for a stored code, or `None` for a code this build does not
+    /// know (a history written by a newer build).
+    pub fn name_of(code: u8) -> Option<&'static std::ffi::CStr> {
+        Self::from_u8(code).ok().map(Self::name_c)
+    }
+
     pub(super) fn from_u8(value: u8) -> Result<Self> {
         Ok(match value {
             1 => Self::TrackingStarted,
@@ -199,7 +261,23 @@ pub enum HistoryOutcome {
 }
 
 impl HistoryOutcome {
-    fn from_u8(value: u8) -> Result<Self> {
+    /// The variant's name as a static NUL-terminated string
+    /// (`kq_file_outcome_name`); presentation only.
+    pub fn name_c(self) -> &'static std::ffi::CStr {
+        match self {
+            Self::Success => c"Success",
+            Self::Failure => c"Failure",
+            Self::Denied => c"Denied",
+            Self::Info => c"Info",
+        }
+    }
+
+    /// `name_c` for a stored code, or `None` for one this build does not know.
+    pub fn name_of(code: u8) -> Option<&'static std::ffi::CStr> {
+        Self::from_u8(code).ok().map(Self::name_c)
+    }
+
+    pub(super) fn from_u8(value: u8) -> Result<Self> {
         Ok(match value {
             1 => Self::Success,
             2 => Self::Failure,

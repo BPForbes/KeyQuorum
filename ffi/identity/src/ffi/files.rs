@@ -52,7 +52,7 @@ pub const KQ_FILE_FIRST: c_int = 1;
 /// Freshness: extends everything accepted before and adds a revision.
 pub const KQ_FILE_NEWER: c_int = 2;
 /// Bumped when a signature or struct in the header changes.
-pub const KQ_FILE_ABI_VERSION: c_int = 1;
+pub const KQ_FILE_ABI_VERSION: c_int = 2;
 
 /// A signing key the caller's registry holds for a label.
 #[repr(C)]
@@ -220,6 +220,22 @@ fn coauthor_preimage(offer: &KqFileOffer, coauthor: &str) -> Option<[u8; 32]> {
 #[no_mangle]
 pub extern "C" fn kq_file_abi_version() -> c_int {
     KQ_FILE_ABI_VERSION
+}
+
+/// The name of history event type `code` ("TrackingStarted", ...), a static
+/// NUL-terminated string the caller never frees, or null for a code this
+/// build does not know. Added in ABI version 2.
+#[no_mangle]
+pub extern "C" fn kq_file_event_name(code: u8) -> *const c_char {
+    file_history::HistoryEventType::name_of(code).map_or(std::ptr::null(), |n| n.as_ptr())
+}
+
+/// The name of history outcome `code` ("Success", ...), a static NUL-terminated
+/// string the caller never frees, or null for a code this build does not know.
+/// Added in ABI version 2.
+#[no_mangle]
+pub extern "C" fn kq_file_outcome_name(code: u8) -> *const c_char {
+    file_history::HistoryOutcome::name_of(code).map_or(std::ptr::null(), |n| n.as_ptr())
 }
 
 /// Writes the 16-byte identity of `label` into `id_out`.
