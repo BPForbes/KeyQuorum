@@ -21,7 +21,8 @@
  *   B: kq_file_coauthor_sign (before release) -> kq_file_open_letter
  *      -> kq_file_attach_coauthor -> kq_file_readiness == KQ_FILE_OK
  *
- * Keep in step with ffi/identity/src/ffi/files.rs.
+ * Keep in step with ffi/identity/src/ffi/files.rs. Error reports (KQER) are in
+ * keyquorum_error.h.
  */
 #ifndef KEYQUORUM_FILES_H
 #define KEYQUORUM_FILES_H
@@ -45,7 +46,7 @@ extern "C" {
 #define KQ_FILE_FIRST            1
 #define KQ_FILE_NEWER            2
 
-#define KQ_FILE_ABI_VERSION      2
+#define KQ_FILE_ABI_VERSION      3
 #define KQ_FILE_ID_LEN          16u
 #define KQ_FILE_REV_LEN         32u
 #define KQ_FILE_DELIVERY_ID_LEN 16u

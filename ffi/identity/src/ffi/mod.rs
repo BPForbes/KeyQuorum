@@ -415,6 +415,7 @@ pub unsafe extern "C" fn kq_account_bridge_verify(
     account::verify_bridge(role, from, to, signer, &nonce, &public, &sig) as c_int
 }
 
+pub mod error;
 pub mod files;
 
 #[cfg(test)]

@@ -33,6 +33,7 @@ pub mod authority;
 pub mod crypto;
 pub mod envelope;
 pub mod error;
+pub mod error_report;
 pub mod file_delivery;
 pub mod file_history;
 pub mod keys;

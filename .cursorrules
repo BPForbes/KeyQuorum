@@ -813,6 +813,17 @@ unlocking through the same `unlock_quorum_file` as `access quorum --state 1`, so
 Each seeded person has `use` and `device bind` run for their own slot (re-run for the owner by
 `move_slot`), and the lab can run `doctor`, `use` and `device bind` for the active person.
 
+`src/error_report.rs` is `KQER` (v1, issue #170): a signed error report about one artifact, a sidecar named
+by the artifact's SHA-256 (a `KQPB` cannot carry it in place). It has its own magic and version and uses
+`envelope`'s length-prefixed codec; `signing::error_report_preimage` owns the signature domain. It holds no free
+text: `ErrorCode` and `Class` are closed append-only sets, `object_ref` is a SHA-256, the label and time are
+charset-checked and `detail` takes only `shares`, `threshold`, `devices`, `minimum_devices` with short word
+values. `verify` checks the signature and that the report names the artifact the caller holds; `inject`
+appends a history event `ErrorReported` (48) whose details are derived (`error_class` a fixed word, `error_code`
+a decimal, `error_ref` the hex of `object_ref`), never copied from the report. The C side is
+`ffi/identity/src/ffi/error.rs` and `include/keyquorum_error.h` (`kq_error_name`, `kq_error_class_name`,
+`kq_error_sign`, `kq_error_inject`; `KQ_FILE_ABI_VERSION` 3).
+
 The `host` Cargo feature (on by default; the enabled dependency features are the same as before it
 existed) is the whole hosted crate: SQLite, the CLI, the relay, files and the network, with `std`.
 `cargo build --no-default-features` builds only the pure modules as `no_std` + `alloc` (`signing`,

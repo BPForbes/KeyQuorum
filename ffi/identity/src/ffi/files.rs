@@ -53,8 +53,10 @@ pub const KQ_FILE_BELOW_THRESHOLD: c_int = -11;
 pub const KQ_FILE_FIRST: c_int = 1;
 /// Freshness: extends everything accepted before and adds a revision.
 pub const KQ_FILE_NEWER: c_int = 2;
-/// Bumped when a signature or struct in the header changes.
-pub const KQ_FILE_ABI_VERSION: c_int = 2;
+/// Bumped when a signature or struct in the header changes, or functions are added
+/// (3: the `kq_error_*` exports of `keyquorum_error.h` and the kind-17 snapshot
+/// exports, `KQ_FILE_DIVERGED`).
+pub const KQ_FILE_ABI_VERSION: c_int = 3;
 
 /// A signing key the caller's registry holds for a label.
 #[repr(C)]
@@ -136,7 +138,7 @@ unsafe fn trust_in(trust: *const KqFileTrust) -> Option<TableTrust> {
 
 /// # Safety
 /// `p` must be null or readable for `len` bytes.
-unsafe fn slice_in<'a>(p: *const u8, len: usize) -> Option<&'a [u8]> {
+pub(crate) unsafe fn slice_in<'a>(p: *const u8, len: usize) -> Option<&'a [u8]> {
     if p.is_null() {
         return (len == 0).then_some(&[][..]);
     }
@@ -145,7 +147,7 @@ unsafe fn slice_in<'a>(p: *const u8, len: usize) -> Option<&'a [u8]> {
 
 /// # Safety
 /// `p` must be null or readable for `len` bytes.
-unsafe fn container_in(p: *const u8, len: usize) -> Option<TrackedFile> {
+pub(crate) unsafe fn container_in(p: *const u8, len: usize) -> Option<TrackedFile> {
     TrackedFile::decode(slice_in(p, len)?).ok()
 }
 
@@ -154,7 +156,7 @@ unsafe fn container_in(p: *const u8, len: usize) -> Option<TrackedFile> {
 /// # Safety
 /// `out` must be null or writable for `cap` bytes; `out_len` must be null or
 /// writable.
-unsafe fn buf_out(value: &[u8], out: *mut u8, cap: usize, out_len: *mut usize) -> c_int {
+pub(crate) unsafe fn buf_out(value: &[u8], out: *mut u8, cap: usize, out_len: *mut usize) -> c_int {
     if out_len.is_null() {
         return KQ_FILE_INVALID;
     }
@@ -168,7 +170,12 @@ unsafe fn buf_out(value: &[u8], out: *mut u8, cap: usize, out_len: *mut usize) -
 
 /// # Safety
 /// As [`buf_out`].
-unsafe fn file_out(file: &TrackedFile, out: *mut u8, cap: usize, out_len: *mut usize) -> c_int {
+pub(crate) unsafe fn file_out(
+    file: &TrackedFile,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> c_int {
     match file.encode() {
         Ok(bytes) => buf_out(&bytes, out, cap, out_len),
         Err(_) => KQ_FILE_INVALID,

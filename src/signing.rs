@@ -30,6 +30,7 @@ const RELAY_API_KEY_ISSUE_DOMAIN: &[u8] = b"KQ-RELAY-API-KEY-ISSUE-v1";
 const RELAY_BACKUP_DOMAIN: &[u8] = b"KQ-RELAY-BACKUP-v1";
 const RELAY_SETUP_MANIFEST_DOMAIN: &[u8] = b"KQ-RELAY-SETUP-MANIFEST-v1";
 const PROVIDER_RECOVERY_DOMAIN: &[u8] = b"KQ-PROVIDER-RECOVERY-v1";
+const ERROR_REPORT_DOMAIN: &[u8] = b"KQ-ERROR-REPORT-v1";
 const ACCOUNT_BRIDGE_DOMAIN: &[u8] = b"KQ-ACCOUNT-BRIDGE-v1";
 
 /// Verifies `signature` over `message` under `public_key`. Uses
@@ -318,6 +319,15 @@ pub fn provider_recovery_preimage(context: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(PROVIDER_RECOVERY_DOMAIN);
     hasher.update(context);
+    hasher.finalize().into()
+}
+
+/// What a reporter signs over a `KQER` error report (`error_report`): every byte of the
+/// report before its signature. Domain-separated from every other preimage.
+pub fn error_report_preimage(body: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(ERROR_REPORT_DOMAIN);
+    hasher.update(body);
     hasher.finalize().into()
 }
 

@@ -202,6 +202,9 @@ pub enum Error {
     /// committed (a lost commit response). Nothing may be undone or repeated
     /// on a guess. No backend raises it today; `host keys` already handles it.
     StoreCommitUnknown,
+    /// A `KQER` error report is malformed, oversized, carries free text or an unlisted
+    /// detail key, or is not a version this build reads.
+    InvalidErrorReport,
 }
 
 impl fmt::Display for Error {
@@ -537,6 +540,7 @@ impl fmt::Display for Error {
                 f,
                 "only an empty outbox can be resized: send or drop what it holds first"
             ),
+            Error::InvalidErrorReport => write!(f, "error report is not valid"),
             Error::OutboxItemRefused => write!(
                 f,
                 "the outbox carries only sealed letters (.kqpb) between people: \
