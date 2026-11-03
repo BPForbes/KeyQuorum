@@ -18,17 +18,33 @@ Declared in `ffi/identity/include/keyquorum_identity.h`, "Embedder must provide"
   library installs a `#[global_allocator]` over them). Zero freed memory.
 - `kq_platform_panic()`: never returns; fail the check closed.
 
-## What else stays undefined in the archive
+## x86_64-unknown-none (checked)
 
-Compiler runtime and libc routines the dependencies call: `fma`, `fmaximum_num`,
-`fminimum_num`, `memcmp`, `strlen`. Provide them from `compiler-builtins` (with its `mem`
-feature) or the kernel's libc. `nm -u libkeyquorum_identity.a` lists the full set; the
-four hooks above are the only `kq_` names.
+```
+cd ffi/identity
+cargo build --locked --release --no-default-features --target x86_64-unknown-none
+```
 
-## Targets
+This works because `.cargo/config.toml` (in this repository, applying to that target only) adds
+`--cfg curve25519_dalek_backend="serial" --cfg poly1305_force_soft --cfg polyval_backend="soft"
+--cfg sha2_backend="soft" --cfg aes_backend="soft"`. Without them rustc's LLVM crashes ("Do not know
+how to split the result of this operator!", then SIGILL) while compiling `polyval`, `poly1305`,
+`curve25519-dalek`, `sha2` and `aes` for the soft-float, no-SSE target, in debug and release. If you
+build from a copy of `ffi/identity` that does not sit under this repository's `.cargo/`, pass the same
+five flags as `RUSTFLAGS`. Opt-level, `-C target-feature` and `-C target-cpu` changes did not help;
+the cfgs are the fix. Needs no `build-std` and no nightly.
 
-`x86_64-unknown-none` does not build: rustc's LLVM crashes ("Do not know how to split the
-result of this operator", or SIGILL) compiling `curve25519-dalek`, `poly1305` and
-`polyval`, in debug and release, with or without `-C target-feature=+sse,+sse2`. It is in
-those third-party crates, not in KeyQuorum. Use a custom target spec or a toolchain that
-compiles them; this was not found. The linked image size is not measured.
+Checked: the archive's only undefined symbols are the four hooks (the portable backends bring no libc
+calls on this target). It was linked with a C stub built `-ffreestanding -mgeneral-regs-only
+-mno-red-zone -mcmodel=kernel` and the four hooks, with `ld --gc-sections`: the linked image holds no
+SSE/AVX instruction, `kq_account_keygen` and `kq_heritage_depth` ran correctly as a static Linux
+process (the hook fed deterministic bytes, so that proves linking and execution, not entropy). The
+image size (about 69 KiB of text for those two calls) is the reachable code for that stub only; the
+size of an image that uses every export is not measured.
+
+## Other bare-metal targets
+
+`thumbv7em-none-eabi` (CI checks clippy, and the archive builds) has no SIMD backends, but leaves
+`fma`, `fmaximum_num`, `fminimum_num`, `memcmp` and `strlen` undefined: provide them from
+`compiler-builtins` (with its `mem` feature) or the kernel's libc. `nm -u libkeyquorum_identity.a`
+lists the full set; the four hooks above are the only `kq_` names.

@@ -864,8 +864,11 @@ how to link it. `src/nostd.rs` is the allocation prelude the pure modules import
 `BTreeMap`/`BTreeSet`, never `HashMap`/`HashSet`, and `core`/`alloc` paths; their unit tests need the
 database and run under `host` only. `blahaj` is `host`-only because it forces `rand`'s `thread_rng`
 (and so `getrandom`), which has no bare-metal backend. Checked: `cargo build --no-default-features`
-(also for `thumbv7em-none-eabi` and `wasm32-unknown-unknown`); `x86_64-unknown-none` is not, since
-rustc's LLVM crashes while compiling `curve25519-dalek`, `poly1305` and `polyval` there.
+(also for `thumbv7em-none-eabi`, `wasm32-unknown-unknown` and `x86_64-unknown-none`). The last needs the portable
+crypto backends, which `.cargo/config.toml` selects for that target only (`curve25519_dalek_backend="serial"`,
+`poly1305_force_soft`, `polyval_backend="soft"`, `sha2_backend="soft"`, `aes_backend="soft"`): rustc's LLVM
+crashes on the SIMD backends without SSE. The `ffi/identity` release staticlib links with the four embedder
+hooks alone (`docs/operator/embedding-no-std.md`).
 
 - Keep changes minimal and scoped to what's asked. Don't add speculative abstractions,
   unrelated tooling, or unfinished scaffolding.

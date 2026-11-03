@@ -45,6 +45,11 @@ jobs:
         run: |
           rustup target add thumbv7em-none-eabi
           cargo clippy --locked --lib --no-default-features --target thumbv7em-none-eabi -- -D warnings
+      # The freestanding x86_64 target; .cargo/config.toml selects the portable crypto backends.
+      - name: build (no default features, x86_64-unknown-none)
+        run: |
+          rustup target add x86_64-unknown-none
+          cargo clippy --locked --lib --no-default-features --target x86_64-unknown-none -- -D warnings
       # The no_std entropy path: the test is the embedder's `kq_platform_random`.
       - name: test (no default features, embedder entropy hook)
         run: cargo test --locked --no-default-features --features std --test platform_entropy
@@ -63,3 +68,5 @@ jobs:
           # The kernel build: no_std + alloc, embedder-supplied entropy, panic and heap.
           rustup target add thumbv7em-none-eabi
           cargo clippy --locked --lib --release --no-default-features --target thumbv7em-none-eabi -- -D warnings
+          rustup target add x86_64-unknown-none
+          cargo build --locked --release --no-default-features --target x86_64-unknown-none

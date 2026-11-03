@@ -91,9 +91,10 @@ int kq_account_bridge_verify(int role, const char *from, const char *to, const c
  * Embedder must provide (freestanding build, `--no-default-features`)
  *
  * Without the "std" feature libkeyquorum_identity.a leaves exactly these four
- * symbols undefined (plus compiler runtime and libc routines: fma, fmaximum_num,
- * fminimum_num, memcmp, strlen; see docs/operator/embedding-no-std.md). The
- * hosted build defines none of them and does not need them.
+ * symbols undefined (on x86_64-unknown-none that is all; on thumbv7em-none-eabi also
+ * the libc routines fma, fmaximum_num, fminimum_num, memcmp and strlen; see
+ * docs/operator/embedding-no-std.md). The hosted build defines none of them and
+ * does not need them.
  *
  * None of them may be called back into KeyQuorum, and all must be safe to call
  * from any thread the embedder runs KeyQuorum on.
