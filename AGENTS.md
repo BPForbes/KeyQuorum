@@ -828,6 +828,11 @@ a decimal, `error_ref` the hex of `object_ref`), never copied from the report. T
 `ffi/identity/src/ffi/error.rs` and `include/keyquorum_error.h` (`kq_error_name`, `kq_error_class_name`,
 `kq_error_sign`, `kq_error_inject`; `KQ_FILE_ABI_VERSION` 3).
 
+The kind-17 snapshot letter opens without a store too: `file_delivery::open_history_snapshot_with_key` (the
+sender's key comes from the caller's registry) shares one verifying body with the host `open_history_snapshot`.
+C: `kq_file_seal_snapshot`, `kq_file_open_snapshot` and `kq_file_snapshot_covers` (extract is a prefix of the
+snapshot, else `KQ_FILE_DIVERGED` -12) in `keyquorum_files.h`, with `KQ_FILE_ABI_VERSION` 3.
+
 The `host` Cargo feature (on by default; the enabled dependency features are the same as before it
 existed) is the whole hosted crate: SQLite, the CLI, the relay, files and the network, with `std`.
 `cargo build --no-default-features` builds only the pure modules as `no_std` + `alloc` (`signing`,

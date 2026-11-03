@@ -758,6 +758,31 @@ pub fn open_history_snapshot(
     recipient_secret: &[u8; 32],
     bytes: &[u8],
 ) -> Result<SnapshotLetter> {
+    open_history_snapshot_verified(recipient_secret, bytes, |label, preimage, signature| {
+        verify_signed_by(conn, label, preimage, signature)
+    })
+}
+
+/// [`open_history_snapshot`] for a caller with no KeyQuorum store: the sender's
+/// signature is checked against `sender_signing_public`, the key the caller's own
+/// registry holds for the label it expects (the caller compares the letter's
+/// `sender_label` with that label). Same pattern as [`open_history_letter_with_key`];
+/// both variants share one verifying body.
+pub fn open_history_snapshot_with_key(
+    recipient_secret: &[u8; 32],
+    sender_signing_public: &[u8; 32],
+    bytes: &[u8],
+) -> Result<SnapshotLetter> {
+    open_history_snapshot_verified(recipient_secret, bytes, |_, preimage, signature| {
+        signing::verify_signature(sender_signing_public, preimage, signature)
+    })
+}
+
+fn open_history_snapshot_verified(
+    recipient_secret: &[u8; 32],
+    bytes: &[u8],
+    verify: impl FnOnce(&str, &[u8; 32], &[u8; 64]) -> Result<()>,
+) -> Result<SnapshotLetter> {
     let (recipient_public, payload) = open_kind(
         bytes,
         recipient_secret,
@@ -782,7 +807,7 @@ pub fn open_history_snapshot(
         event_count,
         &snapshot,
     )?;
-    verify_signed_by(conn, &head.sender_label, &preimage, &signature)?;
+    verify(&head.sender_label, &preimage, &signature)?;
     Ok(SnapshotLetter {
         delivery_id: head.delivery_id,
         sender_label: head.sender_label,

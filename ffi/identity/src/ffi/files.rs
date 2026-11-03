@@ -22,10 +22,11 @@ use crate::nostd::*;
 use core::ffi::{c_char, c_int};
 use keyquorum::file_delivery::{self, Freshness, OutgoingHistory};
 use keyquorum::file_history::{
-    self, current_revision, delivery_readiness, latest_trusted_revision_where, proof_descriptor,
-    select_shareable_revision, supervisor_permits, BridgeEvidence, DeliveryReadiness, EventDetails,
-    FilePolicy, GenerationEvidence, HistoryEvent, HistoryEventType, HistoryOutcome, ImportContext,
-    NewEvent, NewRevision, ProofKind, TrackedFile, TrustContext,
+    self, current_revision, delivery_readiness, genesis_hash, latest_trusted_revision_where,
+    proof_descriptor, select_shareable_revision, supervisor_permits, BridgeEvidence,
+    DeliveryReadiness, EventDetails, FilePolicy, GenerationEvidence, HistoryEvent,
+    HistoryEventType, HistoryOutcome, HistorySnapshot, ImportContext, NewEvent, NewRevision,
+    ProofKind, TrackedFile, TrustContext,
 };
 use keyquorum::signing;
 use sha2::{Digest, Sha256};
@@ -49,6 +50,8 @@ pub const KQ_FILE_REPLAYED: c_int = -8;
 pub const KQ_FILE_NO_REVISION: c_int = -10;
 /// A delivery holds fewer valid signatures than it needs.
 pub const KQ_FILE_BELOW_THRESHOLD: c_int = -11;
+/// A history extract is not a prefix of the snapshot it was sent with.
+pub const KQ_FILE_DIVERGED: c_int = -12;
 /// Freshness: nothing from this file was accepted before.
 pub const KQ_FILE_FIRST: c_int = 1;
 /// Freshness: extends everything accepted before and adds a revision.
@@ -1121,6 +1124,175 @@ pub unsafe extern "C" fn kq_file_open_letter(
         bytes_out(&opened.history_root, root_out);
     }
     rc
+}
+
+/// Seals a `KQHS` (kind 17) of the first `upto_events` events of the file's history,
+/// signed by `sender` and sealed to `recipient`'s box key. `upto_events` may be 0 (the
+/// empty history) up to the number of events the file holds, else `KQ_FILE_INVALID`.
+/// The letter goes to `out`, its delivery id to `delivery_id_out` (16 bytes). Added in
+/// ABI version 3.
+///
+/// # Safety
+/// As [`kq_file_seal_letter`], without `rev` and `trust`.
+#[no_mangle]
+pub unsafe extern "C" fn kq_file_seal_snapshot(
+    c: *const u8,
+    clen: usize,
+    upto_events: u32,
+    sender: *const c_char,
+    sender_secret: *const u8,
+    sender_box_public: *const u8,
+    recipient: *const c_char,
+    recipient_box_public: *const u8,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+    delivery_id_out: *mut u8,
+) -> c_int {
+    let (
+        Some(file),
+        Some(sender),
+        Some(sender_secret),
+        Some(sender_box_public),
+        Some(recipient),
+        Some(recipient_box_public),
+    ) = (
+        container_in(c, clen),
+        input(sender),
+        bytes_in::<32>(sender_secret).map(Zeroizing::new),
+        bytes_in::<32>(sender_box_public),
+        input(recipient),
+        bytes_in::<32>(recipient_box_public),
+    )
+    else {
+        return KQ_FILE_INVALID;
+    };
+    let count = upto_events as usize;
+    if delivery_id_out.is_null() || count > file.events().len() {
+        return KQ_FILE_INVALID;
+    }
+    let events = file.events()[..count].to_vec();
+    let history_root = match events.last() {
+        Some(last) => last.event_hash,
+        None => genesis_hash(&file.file_id),
+    };
+    let snapshot = HistorySnapshot {
+        file_id: file.file_id,
+        history_root,
+        events,
+    };
+    let Ok(encoded) = snapshot.encode() else {
+        return KQ_FILE_INVALID;
+    };
+    let sealed = file_delivery::seal_history_snapshot(&file_delivery::OutgoingSnapshot {
+        sender_label: sender,
+        sender_signing_secret: &sender_secret,
+        sender_encryption_public: &sender_box_public,
+        recipient_label: recipient,
+        recipient_encryption_public: &recipient_box_public,
+        file_name: &file.logical_name,
+        file_id: file.file_id,
+        history_root,
+        event_count: upto_events,
+        snapshot: &encoded,
+    });
+    let Ok((delivery_id, bytes)) = sealed else {
+        return KQ_FILE_INVALID;
+    };
+    let rc = buf_out(&bytes, out, cap, out_len);
+    if rc == KQ_FILE_OK {
+        bytes_out(&delivery_id, delivery_id_out);
+    }
+    rc
+}
+
+/// Opens a kind-17 letter with the recipient's box secret: signed by `expected_sender`
+/// under `sender_public` (the key the caller's registry holds for that label, not one
+/// the letter names), addressed to `expected_recipient`, and its snapshot decoding to
+/// the file id, history root and event count the signed header states, else
+/// `KQ_FILE_UNTRUSTED`. Writes the snapshot (`KQHS` bytes) to `snap_out`, its root to
+/// `root_out` (32 bytes) and its event count to `event_count_out`. Added in ABI version 3.
+///
+/// # Safety
+/// `letter` readable for `llen`; `box_secret` and `sender_public` for 32; strings
+/// NUL-terminated; `snap_out` null or writable for `cap`; `snap_len` writable;
+/// `root_out` writable for 32; `event_count_out` writable.
+#[no_mangle]
+pub unsafe extern "C" fn kq_file_open_snapshot(
+    letter: *const u8,
+    llen: usize,
+    box_secret: *const u8,
+    expected_sender: *const c_char,
+    expected_recipient: *const c_char,
+    sender_public: *const u8,
+    snap_out: *mut u8,
+    cap: usize,
+    snap_len: *mut usize,
+    root_out: *mut u8,
+    event_count_out: *mut u32,
+) -> c_int {
+    let (Some(letter), Some(box_secret), Some(sender), Some(recipient), Some(sender_public)) = (
+        slice_in(letter, llen),
+        bytes_in::<32>(box_secret).map(Zeroizing::new),
+        input(expected_sender),
+        input(expected_recipient),
+        bytes_in::<32>(sender_public),
+    ) else {
+        return KQ_FILE_INVALID;
+    };
+    if root_out.is_null() || event_count_out.is_null() {
+        return KQ_FILE_INVALID;
+    }
+    let Ok(opened) =
+        file_delivery::open_history_snapshot_with_key(&box_secret, &sender_public, letter)
+    else {
+        return KQ_FILE_UNTRUSTED;
+    };
+    if opened.sender_label != sender || opened.recipient_label != recipient {
+        return KQ_FILE_UNTRUSTED;
+    }
+    let Ok(snapshot) = HistorySnapshot::decode(&opened.snapshot) else {
+        return KQ_FILE_UNTRUSTED;
+    };
+    if snapshot.file_id != opened.file_id
+        || snapshot.history_root != opened.history_root
+        || snapshot.events.len() != opened.event_count as usize
+    {
+        return KQ_FILE_UNTRUSTED;
+    }
+    let rc = buf_out(&opened.snapshot, snap_out, cap, snap_len);
+    if rc == KQ_FILE_OK {
+        bytes_out(&opened.history_root, root_out);
+        *event_count_out = opened.event_count;
+    }
+    rc
+}
+
+/// `KQ_FILE_OK` when the history of the extract `extract` (a `KQTF`, as delivered in a
+/// kind-15 letter) is a prefix of the snapshot `snapshot` (`KQHS`, from a kind-17 letter),
+/// `KQ_FILE_DIVERGED` when it is not, `KQ_FILE_INVALID` when either does not decode.
+/// Added in ABI version 3.
+///
+/// # Safety
+/// Both buffers readable for their lengths.
+#[no_mangle]
+pub unsafe extern "C" fn kq_file_snapshot_covers(
+    extract: *const u8,
+    elen: usize,
+    snapshot: *const u8,
+    slen: usize,
+) -> c_int {
+    let (Some(file), Some(bytes)) = (container_in(extract, elen), slice_in(snapshot, slen)) else {
+        return KQ_FILE_INVALID;
+    };
+    let Ok(full) = HistorySnapshot::decode(bytes) else {
+        return KQ_FILE_INVALID;
+    };
+    if file.history_snapshot().is_prefix_of_snapshot(&full) {
+        KQ_FILE_OK
+    } else {
+        KQ_FILE_DIVERGED
+    }
 }
 
 /// Judges `rev` with history `root` against the `nseen` (revision, root)

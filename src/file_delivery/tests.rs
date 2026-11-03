@@ -628,3 +628,39 @@ fn freshness_against_judges_first_replayed_newer_and_not_newer() {
         Freshness::NotNewer
     );
 }
+
+#[test]
+fn a_snapshot_letter_opens_the_same_with_a_supplied_key_as_with_the_store() {
+    let conn = db::open_in_memory().unwrap();
+    let alice = register(&conn, "M.S.1");
+    let david = register(&conn, "M.A");
+    let (_, bytes) = snapshot_from(&alice, &david);
+    let from_store = open_history_snapshot(&conn, &david.encryption_secret, &bytes).unwrap();
+    let with_key = open_history_snapshot_with_key(
+        &david.encryption_secret,
+        &signing_public_of(&conn, "M.S.1"),
+        &bytes,
+    )
+    .unwrap();
+    assert_eq!(with_key.delivery_id, from_store.delivery_id);
+    assert_eq!(with_key.sender_label, from_store.sender_label);
+    assert_eq!(with_key.recipient_label, from_store.recipient_label);
+    assert_eq!(with_key.file_id, from_store.file_id);
+    assert_eq!(with_key.history_root, from_store.history_root);
+    assert_eq!(with_key.event_count, from_store.event_count);
+    assert_eq!(with_key.snapshot, from_store.snapshot);
+    // Any other key, or a tampered letter, is refused.
+    assert!(open_history_snapshot_with_key(
+        &david.encryption_secret,
+        &signing_public_of(&conn, "M.A"),
+        &bytes,
+    )
+    .is_err());
+    let altered = tampered(&bytes, &david, envelope::KIND_FILE_HISTORY_SNAPSHOT, 86);
+    assert!(open_history_snapshot_with_key(
+        &david.encryption_secret,
+        &signing_public_of(&conn, "M.S.1"),
+        &altered,
+    )
+    .is_err());
+}

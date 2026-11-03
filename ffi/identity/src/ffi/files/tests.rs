@@ -160,6 +160,8 @@ fn event_and_outcome_names_cross_the_boundary() {
 #[test]
 fn abi_version_and_label_identity_match_the_library() {
     assert_eq!(kq_file_abi_version(), KQ_FILE_ABI_VERSION);
+    assert_eq!(KQ_FILE_ABI_VERSION, 3);
+    assert_eq!(KQ_FILE_DIVERGED, -12);
     let mut id = [0u8; 16];
     let label = s("Root.Mya");
     assert_eq!(
@@ -827,4 +829,242 @@ fn the_file_history_reads_offline_one_line_per_event_in_order() {
     assert!(lines
         .iter()
         .any(|line| line.split('\t').nth(4) == Some("Root.Mya")));
+}
+
+fn event_count(c: &[u8]) -> u32 {
+    TrackedFile::decode(c).unwrap().events().len() as u32
+}
+
+fn seal_snapshot(c: &[u8], upto: u32, from: &Account, to: &Account) -> (c_int, Vec<u8>, [u8; 16]) {
+    let mut delivery_id = [0u8; 16];
+    let id_ptr = delivery_id.as_mut_ptr();
+    let (rc, letter) = collect(|out, cap, len| unsafe {
+        kq_file_seal_snapshot(
+            c.as_ptr(),
+            c.len(),
+            upto,
+            from.label.as_ptr(),
+            from.signing_secret.as_ptr(),
+            from.box_public.as_ptr(),
+            to.label.as_ptr(),
+            to.box_public.as_ptr(),
+            out,
+            cap,
+            len,
+            id_ptr,
+        )
+    });
+    (rc, letter, delivery_id)
+}
+
+fn open_snapshot(
+    letter: &[u8],
+    box_secret: &[u8; 32],
+    sender: &Account,
+    recipient: &Account,
+    sender_key: &[u8; 32],
+) -> (c_int, Vec<u8>, [u8; 32], u32) {
+    let (mut root, mut count) = ([0u8; 32], 0u32);
+    let (root_ptr, count_ptr) = (root.as_mut_ptr(), &mut count as *mut u32);
+    let (rc, snapshot) = collect(|out, cap, len| unsafe {
+        kq_file_open_snapshot(
+            letter.as_ptr(),
+            letter.len(),
+            box_secret.as_ptr(),
+            sender.label.as_ptr(),
+            recipient.label.as_ptr(),
+            sender_key.as_ptr(),
+            out,
+            cap,
+            len,
+            root_ptr,
+            count_ptr,
+        )
+    });
+    (rc, snapshot, root, count)
+}
+
+fn extract_of(c: &[u8], rev: &[u8; 32]) -> Vec<u8> {
+    let (rc, copy) = collect(|out, cap, len| unsafe {
+        kq_file_extract(c.as_ptr(), c.len(), rev.as_ptr(), out, cap, len)
+    });
+    assert_eq!(rc, KQ_FILE_OK, "kq_file_extract");
+    copy
+}
+
+/// The kind-15 + kind-17 bundle: the extract of a revision and a snapshot of the history it
+/// is a point of. Mya seals both to Steve; Steve opens the snapshot from his own registry
+/// key and checks the extract against it.
+#[test]
+fn a_history_snapshot_letter_opens_store_free_and_covers_the_extract() {
+    let (mya, steve, eve) = (
+        account("Root.Mya"),
+        account("Root.Steve"),
+        account("Root.Eve"),
+    );
+    let c = new_file("Root.Mya");
+    let (c, rev1) = check_in(&c, &mya, T1, b"v1");
+    let (c, _rev2) = check_in(&c, &mya, T2, b"v2");
+    let extract = extract_of(&c, &rev1);
+    let total = event_count(&c);
+    assert!(event_count(&extract) < total);
+
+    let (rc, letter, delivery_id) = seal_snapshot(&c, total, &mya, &steve);
+    assert_eq!(rc, KQ_FILE_OK, "kq_file_seal_snapshot");
+    assert_ne!(delivery_id, [0u8; 16]);
+
+    let (rc, snapshot, root, count) = open_snapshot(
+        &letter,
+        &steve.box_secret,
+        &mya,
+        &steve,
+        &mya.signing_public,
+    );
+    assert_eq!(rc, KQ_FILE_OK, "kq_file_open_snapshot");
+    assert_eq!(count, total);
+    assert_eq!(
+        root,
+        TrackedFile::decode(&c).unwrap().history_root(),
+        "the root is the file's own"
+    );
+    assert_eq!(
+        unsafe {
+            kq_file_snapshot_covers(
+                extract.as_ptr(),
+                extract.len(),
+                snapshot.as_ptr(),
+                snapshot.len(),
+            )
+        },
+        KQ_FILE_OK
+    );
+    // The full container is covered too; a snapshot of fewer events is not covering a longer one.
+    let (_, short_letter, _) = seal_snapshot(&c, event_count(&extract) - 1, &mya, &steve);
+    let (rc, short, _, _) = open_snapshot(
+        &short_letter,
+        &steve.box_secret,
+        &mya,
+        &steve,
+        &mya.signing_public,
+    );
+    assert_eq!(rc, KQ_FILE_OK);
+    assert_eq!(
+        unsafe {
+            kq_file_snapshot_covers(extract.as_ptr(), extract.len(), short.as_ptr(), short.len())
+        },
+        KQ_FILE_DIVERGED
+    );
+    // Another file's extract does not diverge silently into OK.
+    let other = new_file("Root.Mya");
+    let (other, other_rev) = check_in(&other, &mya, T3, b"unrelated");
+    let foreign = extract_of(&other, &other_rev);
+    assert_eq!(
+        unsafe {
+            kq_file_snapshot_covers(
+                foreign.as_ptr(),
+                foreign.len(),
+                snapshot.as_ptr(),
+                snapshot.len(),
+            )
+        },
+        KQ_FILE_DIVERGED
+    );
+    // Garbage on either side is invalid, not a verdict.
+    assert_eq!(
+        unsafe { kq_file_snapshot_covers(extract.as_ptr(), extract.len(), [0u8; 4].as_ptr(), 4) },
+        KQ_FILE_INVALID
+    );
+    assert_eq!(
+        unsafe { kq_file_snapshot_covers([0u8; 4].as_ptr(), 4, snapshot.as_ptr(), snapshot.len()) },
+        KQ_FILE_INVALID
+    );
+
+    // Refusals: the wrong registry key, the wrong expected labels, the wrong recipient key,
+    // and a tampered letter are all untrusted; nothing comes out.
+    let wrong_key = open_snapshot(
+        &letter,
+        &steve.box_secret,
+        &mya,
+        &steve,
+        &eve.signing_public,
+    );
+    assert_eq!(wrong_key.0, KQ_FILE_UNTRUSTED);
+    assert!(wrong_key.1.is_empty());
+    assert_eq!(
+        open_snapshot(
+            &letter,
+            &steve.box_secret,
+            &eve,
+            &steve,
+            &mya.signing_public
+        )
+        .0,
+        KQ_FILE_UNTRUSTED
+    );
+    assert_eq!(
+        open_snapshot(&letter, &steve.box_secret, &mya, &eve, &mya.signing_public).0,
+        KQ_FILE_UNTRUSTED
+    );
+    assert_eq!(
+        open_snapshot(&letter, &eve.box_secret, &mya, &steve, &mya.signing_public).0,
+        KQ_FILE_UNTRUSTED
+    );
+    let mut tampered = letter.clone();
+    let last = tampered.len() - 1;
+    tampered[last] ^= 1;
+    assert_eq!(
+        open_snapshot(
+            &tampered,
+            &steve.box_secret,
+            &mya,
+            &steve,
+            &mya.signing_public
+        )
+        .0,
+        KQ_FILE_UNTRUSTED
+    );
+}
+
+#[test]
+fn a_snapshot_of_no_events_and_one_beyond_the_history_are_handled() {
+    let (mya, steve) = (account("Root.Mya"), account("Root.Steve"));
+    let c = new_file("Root.Mya");
+    let (c, _) = check_in(&c, &mya, T1, b"v1");
+    let total = event_count(&c);
+    let (rc, letter, _) = seal_snapshot(&c, 0, &mya, &steve);
+    assert_eq!(rc, KQ_FILE_OK);
+    let (rc, _, _, count) = open_snapshot(
+        &letter,
+        &steve.box_secret,
+        &mya,
+        &steve,
+        &mya.signing_public,
+    );
+    assert_eq!((rc, count), (KQ_FILE_OK, 0));
+    assert_eq!(
+        seal_snapshot(&c, total + 1, &mya, &steve).0,
+        KQ_FILE_INVALID
+    );
+    // A small buffer reports the size needed and writes nothing.
+    let mut len = 0usize;
+    let mut id = [0u8; 16];
+    let rc = unsafe {
+        kq_file_seal_snapshot(
+            c.as_ptr(),
+            c.len(),
+            total,
+            mya.label.as_ptr(),
+            mya.signing_secret.as_ptr(),
+            mya.box_public.as_ptr(),
+            steve.label.as_ptr(),
+            steve.box_public.as_ptr(),
+            std::ptr::null_mut(),
+            0,
+            &mut len,
+            id.as_mut_ptr(),
+        )
+    };
+    assert_eq!(rc, KQ_FILE_NO_ROOM);
+    assert!(len > 0);
+    assert_eq!(id, [0u8; 16]);
 }

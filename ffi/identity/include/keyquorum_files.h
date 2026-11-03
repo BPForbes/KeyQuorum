@@ -43,6 +43,7 @@ extern "C" {
 #define KQ_FILE_REPLAYED       (-8)
 #define KQ_FILE_NO_REVISION    (-10)
 #define KQ_FILE_BELOW_THRESHOLD (-11)
+#define KQ_FILE_DIVERGED       (-12)
 #define KQ_FILE_FIRST            1
 #define KQ_FILE_NEWER            2
 
@@ -171,6 +172,36 @@ int kq_file_countersign(const unsigned char *c, size_t clen, const unsigned char
  * requires this before it accepts a newer copy of a file it already holds. */
 int kq_file_permits_newer(const unsigned char *c, size_t clen, const unsigned char rev[32],
                           const kq_file_trust_t *trust);
+
+/* ABI version 3: the kind-17 history snapshot letter (with kq_file_seal_letter and
+ * kq_file_open_letter, kind 15, it makes the history bundle). */
+
+/* Seal a KQHS (kind 17) of the first upto_events events of the file's history (0 up
+ * to the number held, else KQ_FILE_INVALID), signed by `sender`, sealed to the
+ * recipient's box key. The letter goes to out, its delivery id to delivery_id_out. */
+int kq_file_seal_snapshot(const unsigned char *c, size_t clen, uint32_t upto_events,
+                          const char *sender, const unsigned char sender_secret[32],
+                          const unsigned char sender_box_public[32],
+                          const char *recipient, const unsigned char recipient_box_public[32],
+                          unsigned char *out, size_t cap, size_t *out_len,
+                          unsigned char delivery_id_out[16]);
+
+/* Open a kind-17 letter. The sender's signing key comes from the caller's registry
+ * (sender_public), never from the letter. KQ_FILE_UNTRUSTED when the signature, the
+ * labels or the snapshot (which must match the signed file id, root and count) do not
+ * check out. Writes the KQHS bytes to snap_out, its root to root_out, its count to
+ * event_count_out. */
+int kq_file_open_snapshot(const unsigned char *letter, size_t llen,
+                          const unsigned char box_secret[32],
+                          const char *expected_sender, const char *expected_recipient,
+                          const unsigned char sender_public[32],
+                          unsigned char *snap_out, size_t cap, size_t *snap_len,
+                          unsigned char root_out[32], uint32_t *event_count_out);
+
+/* KQ_FILE_OK when the extract's history (a KQTF) is a prefix of the snapshot (KQHS),
+ * KQ_FILE_DIVERGED when it is not, KQ_FILE_INVALID when either does not decode. */
+int kq_file_snapshot_covers(const unsigned char *extract, size_t elen,
+                            const unsigned char *snapshot, size_t slen);
 
 #ifdef __cplusplus
 }
