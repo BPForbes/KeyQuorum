@@ -115,3 +115,27 @@ fn a_commitment_depends_on_its_key_domain_and_content() {
         &base
     ));
 }
+
+/// `PlatformRng` is `fill_random` behind both RNG trait families (`rand` 0.10 and
+/// `rand_core` 0.6), so the crates that take an RNG object draw from the one seam.
+#[test]
+fn the_platform_rng_serves_both_rng_trait_families_from_fill_random() {
+    use rand::RngExt;
+    use rand_core::RngCore;
+
+    let mut rng = os_rng();
+    let mut first = [0u8; 32];
+    let mut second = [0u8; 32];
+    RngCore::fill_bytes(&mut rng, &mut first);
+    rng.try_fill_bytes(&mut second).unwrap();
+    assert_ne!(first, [0u8; 32]);
+    assert_ne!(first, second);
+
+    let drawn: [u8; 32] = rng.random();
+    assert_ne!(drawn, first);
+    assert_ne!(rng.next_u64(), rng.next_u64());
+    assert_ne!(rng.random::<u32>(), rng.random::<u32>());
+
+    // An empty request is a no-op, never a call into the platform with a null length.
+    fill_random(&mut []);
+}

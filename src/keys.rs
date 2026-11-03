@@ -4,7 +4,10 @@
 //! private keys.
 
 use crate::error::{Error, Result};
+#[allow(unused_imports)]
+use crate::nostd::*;
 use base64::Engine as _;
+#[cfg(feature = "host")]
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -25,6 +28,7 @@ impl KeyType {
         }
     }
 
+    #[cfg(feature = "host")]
     fn from_db_str(s: &str) -> Self {
         match s {
             "encryption" => KeyType::Encryption,
@@ -55,7 +59,7 @@ pub fn fingerprint(public_key: &[u8]) -> String {
 
 /// Pure, no I/O: generates a new X25519 keypair for wrapping quorum shares.
 pub fn generate_encryption_keypair() -> (Zeroizing<[u8; 32]>, [u8; 32]) {
-    let secret = crypto_box::SecretKey::generate(&mut rand_core::OsRng);
+    let secret = crypto_box::SecretKey::generate(&mut crate::crypto::os_rng());
     let public = *secret.public_key().as_bytes();
     (Zeroizing::new(secret.to_bytes()), public)
 }
@@ -67,8 +71,10 @@ pub fn generate_signing_keypair() -> (Zeroizing<[u8; 32]>, [u8; 32]) {
     (Zeroizing::new(signing_key.to_bytes()), public)
 }
 
+#[cfg(feature = "host")]
 const SELECT_COLUMNS: &str = "id, label, key_type, fingerprint, public_key, created_at, revoked_at";
 
+#[cfg(feature = "host")]
 fn row_to_key(row: &Row) -> rusqlite::Result<HardwareKey> {
     let key_type: String = row.get(2)?;
     Ok(HardwareKey {
@@ -82,6 +88,7 @@ fn row_to_key(row: &Row) -> rusqlite::Result<HardwareKey> {
     })
 }
 
+#[cfg(feature = "host")]
 pub fn register_key(
     conn: &Connection,
     label: &str,
@@ -99,6 +106,7 @@ pub fn register_key(
     Ok(conn.last_insert_rowid())
 }
 
+#[cfg(feature = "host")]
 pub fn list_keys(conn: &Connection) -> Result<Vec<HardwareKey>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {SELECT_COLUMNS} FROM hardware_keys ORDER BY id"
@@ -108,6 +116,7 @@ pub fn list_keys(conn: &Connection) -> Result<Vec<HardwareKey>> {
     Ok(keys)
 }
 
+#[cfg(feature = "host")]
 pub fn get_key(conn: &Connection, id: i64) -> Result<HardwareKey> {
     let key = conn.query_row(
         &format!("SELECT {SELECT_COLUMNS} FROM hardware_keys WHERE id = ?1"),
@@ -117,6 +126,7 @@ pub fn get_key(conn: &Connection, id: i64) -> Result<HardwareKey> {
     Ok(key)
 }
 
+#[cfg(feature = "host")]
 pub fn get_key_by_public_key(conn: &Connection, public_key: &[u8]) -> Result<HardwareKey> {
     conn.query_row(
         &format!("SELECT {SELECT_COLUMNS} FROM hardware_keys WHERE public_key = ?1"),
@@ -127,6 +137,7 @@ pub fn get_key_by_public_key(conn: &Connection, public_key: &[u8]) -> Result<Har
     .ok_or(Error::InvalidPublicKey)
 }
 
+#[cfg(feature = "host")]
 pub fn get_key_by_fingerprint(conn: &Connection, fingerprint: &str) -> Result<HardwareKey> {
     conn.query_row(
         &format!("SELECT {SELECT_COLUMNS} FROM hardware_keys WHERE fingerprint = ?1"),
@@ -142,6 +153,7 @@ pub fn get_key_by_fingerprint(conn: &Connection, fingerprint: &str) -> Result<Ha
 /// person normally has exactly one key of each purpose, but nothing in
 /// the schema enforces that, so "which one did you mean" is a question
 /// only the caller can answer.
+#[cfg(feature = "host")]
 pub fn active_keys_for(
     conn: &Connection,
     label: &str,
@@ -159,6 +171,7 @@ pub fn active_keys_for(
 /// Whether `public_key` is one of `label`'s unrevoked keys of `key_type`.
 /// The one check behind "this letter is addressed to a key this store holds
 /// for that person" (`org_update`, `file_delivery`, `outbox`).
+#[cfg(feature = "host")]
 pub fn is_active_key(
     conn: &Connection,
     label: &str,
@@ -185,6 +198,7 @@ pub fn is_active_key(
 /// under a different label than its registry entry. A caller for whom
 /// `label` *is* meant to be a stable identity (see
 /// `org_update::register_reissued_key`) must check that itself.
+#[cfg(feature = "host")]
 pub fn get_or_register(
     conn: &Connection,
     label: &str,
@@ -202,6 +216,7 @@ pub fn get_or_register(
     }
 }
 
+#[cfg(feature = "host")]
 pub fn get_or_register_encryption(
     conn: &Connection,
     label: &str,
@@ -349,6 +364,7 @@ fn read_ssh_string<'a>(data: &mut &'a [u8]) -> Option<&'a [u8]> {
     Some(head)
 }
 
+#[cfg(feature = "host")]
 pub fn revoke_key(conn: &Connection, id: i64) -> Result<()> {
     conn.execute(
         "UPDATE hardware_keys SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?1",
@@ -361,6 +377,7 @@ pub fn revoke_key(conn: &Connection, id: i64) -> Result<()> {
 /// with `keep_public_key` — what a hardware-key reissue does to the token
 /// it replaces. Re-revoking an already-revoked row is a no-op, so this is
 /// safe to apply twice.
+#[cfg(feature = "host")]
 pub fn revoke_superseded(
     conn: &Connection,
     label: &str,
@@ -379,6 +396,7 @@ pub fn revoke_superseded(
 /// Clear a revocation, for a key an authority has announced as current
 /// again. Separate from [`register_key`] because un-retiring a key is a
 /// decision, not a side effect of seeing its bytes.
+#[cfg(feature = "host")]
 pub fn unrevoke_key(conn: &Connection, id: i64) -> Result<()> {
     conn.execute(
         "UPDATE hardware_keys SET revoked_at = NULL WHERE id = ?1",
@@ -387,6 +405,7 @@ pub fn unrevoke_key(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "host")]
 pub fn remove_key(conn: &Connection, id: i64) -> Result<()> {
     conn.execute("DELETE FROM hardware_keys WHERE id = ?1", params![id])?;
     Ok(())
@@ -394,6 +413,7 @@ pub fn remove_key(conn: &Connection, id: i64) -> Result<()> {
 
 /// Used internally by `key_tree::validate` — enforces the application
 /// policy that only active encryption-purpose keys may back a quorum leaf.
+#[cfg(feature = "host")]
 pub(crate) fn get_active_encryption_key(conn: &Connection, id: i64) -> Result<HardwareKey> {
     let key = get_key(conn, id)?;
     if key.key_type != KeyType::Encryption {
@@ -405,6 +425,6 @@ pub(crate) fn get_active_encryption_key(conn: &Connection, id: i64) -> Result<Ha
     Ok(key)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "host"))]
 #[path = "keys_tests/tests.rs"]
 mod tests;

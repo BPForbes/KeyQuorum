@@ -10,6 +10,8 @@
 use super::container::TrackedFile;
 use super::event::{EventDetails, HistoryEvent, HistoryEventType, HistoryOutcome, NewEvent};
 use crate::error::{Error, Result};
+#[allow(unused_imports)]
+use crate::nostd::*;
 
 /// Who is acting, and when, for the events recorded here.
 #[derive(Clone, Debug)]
@@ -45,8 +47,8 @@ impl ExpiryContext {
 /// time order.
 fn is_instant(value: &str) -> bool {
     let b = value.as_bytes();
-    let digits = |r: std::ops::Range<usize>| b[r].iter().all(u8::is_ascii_digit);
-    let num = |r: std::ops::Range<usize>| value[r].parse::<u32>().unwrap_or(u32::MAX);
+    let digits = |r: core::ops::Range<usize>| b[r].iter().all(u8::is_ascii_digit);
+    let num = |r: core::ops::Range<usize>| value[r].parse::<u32>().unwrap_or(u32::MAX);
     b.len() == 20
         && digits(0..4)
         && b[4] == b'-'

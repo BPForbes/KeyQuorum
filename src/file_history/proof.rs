@@ -11,6 +11,8 @@ use super::event::HistoryEvent;
 use super::policy::{BridgeEvidence, TrustContext};
 use super::revision::FileRevision;
 use crate::error::{Error, Result};
+#[allow(unused_imports)]
+use crate::nostd::*;
 use crate::signing;
 use sha2::{Digest, Sha256};
 

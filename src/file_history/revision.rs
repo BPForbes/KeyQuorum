@@ -12,8 +12,10 @@ use super::codec::{
 };
 use crate::envelope::{push_len_prefixed_u32, take_len_prefixed_u32};
 use crate::error::{Error, Result};
+#[allow(unused_imports)]
+use crate::nostd::*;
+use alloc::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
 
 const REVISION_ID_DOMAIN: &[u8] = b"KQ-FILE-REVISION-ID-v1";
 const CONTENT_DOMAIN: &[u8] = b"KQ-FILE-CONTENT-v1";
@@ -355,7 +357,7 @@ impl<'a> RevisionGraph<'a> {
     /// Revisions no other revision names as a parent, in storage order.
     /// More than one head means the history has forked.
     pub fn heads(&self) -> Vec<[u8; 32]> {
-        let parents: HashSet<&[u8; 32]> = self
+        let parents: BTreeSet<&[u8; 32]> = self
             .revisions
             .iter()
             .flat_map(|stored| stored.revision.parent_revision_ids.iter())
@@ -371,7 +373,7 @@ impl<'a> RevisionGraph<'a> {
         self.heads().len() > 1
     }
 
-    fn index_of(&self) -> HashMap<[u8; 32], usize> {
+    fn index_of(&self) -> BTreeMap<[u8; 32], usize> {
         self.revisions
             .iter()
             .enumerate()
@@ -386,7 +388,7 @@ impl<'a> RevisionGraph<'a> {
         if !index.contains_key(ancestor) {
             return false;
         }
-        let mut seen: HashSet<[u8; 32]> = HashSet::new();
+        let mut seen: BTreeSet<[u8; 32]> = BTreeSet::new();
         let mut stack = vec![*descendant];
         while let Some(id) = stack.pop() {
             if &id == ancestor {
@@ -412,7 +414,7 @@ impl<'a> RevisionGraph<'a> {
     /// in one pass. Use it when many revisions are tested against the same
     /// descendant, instead of calling [`RevisionGraph::is_ancestor_or_self`]
     /// once per revision. Unknown ids give an empty set.
-    pub fn ancestor_set(&self, id: &[u8; 32]) -> HashSet<[u8; 32]> {
+    pub fn ancestor_set(&self, id: &[u8; 32]) -> BTreeSet<[u8; 32]> {
         let index = self.index_of();
         let marked = self.mark_ancestors(&index, id);
         self.revisions
@@ -424,7 +426,7 @@ impl<'a> RevisionGraph<'a> {
     }
 
     /// Marks, by storage index, `id` and everything reachable from it.
-    fn mark_ancestors(&self, index: &HashMap<[u8; 32], usize>, id: &[u8; 32]) -> Vec<bool> {
+    fn mark_ancestors(&self, index: &BTreeMap<[u8; 32], usize>, id: &[u8; 32]) -> Vec<bool> {
         let mut marked = vec![false; self.revisions.len()];
         let mut stack = vec![*id];
         while let Some(next) = stack.pop() {

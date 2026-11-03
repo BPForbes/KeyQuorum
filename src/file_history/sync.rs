@@ -21,7 +21,9 @@ use super::proof::MAX_PROOFS_PER_SLOT;
 use super::revision::StoredRevision;
 use super::verify::verify_structure;
 use crate::error::{Error, Result};
-use std::collections::{HashMap, HashSet};
+#[allow(unused_imports)]
+use crate::nostd::*;
+use alloc::collections::{BTreeMap, BTreeSet};
 
 /// How the incoming copy relates to the local one, by revisions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,12 +146,12 @@ impl TrackedFile {
         context: &ImportContext,
     ) -> Result<HistoryMerge> {
         // One id index per side, built once: the loops below are linear.
-        let local: HashMap<[u8; 32], &StoredRevision> = self
+        let local: BTreeMap<[u8; 32], &StoredRevision> = self
             .revisions
             .iter()
             .map(|stored| (stored.revision.revision_id, stored))
             .collect();
-        let remote: HashSet<[u8; 32]> = other
+        let remote: BTreeSet<[u8; 32]> = other
             .revisions
             .iter()
             .map(|stored| stored.revision.revision_id)
@@ -190,7 +192,7 @@ impl TrackedFile {
         type Slot = ([u8; 32], u8, String);
         let slot_of =
             |p: &RevisionProof| -> Slot { (p.revision_id, p.kind as u8, p.signer_label.clone()) };
-        let mut held: HashMap<Slot, Vec<[u8; 64]>> = HashMap::new();
+        let mut held: BTreeMap<Slot, Vec<[u8; 64]>> = BTreeMap::new();
         for p in &self.proofs {
             held.entry(slot_of(p)).or_default().push(p.signature);
         }

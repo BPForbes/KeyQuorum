@@ -3,15 +3,15 @@
 //! commitment that stands in for a hash of sensitive content.
 
 use crate::error::Error;
+#[allow(unused_imports)]
+use crate::nostd::*;
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
 use argon2::{Algorithm, Argon2, Params, Version};
+use core::fmt;
 use hmac::{Hmac, Mac};
-use rand::rand_core::UnwrapErr;
-use rand::rngs::SysRng;
-use rand::{Rng, RngExt};
+use rand::RngExt;
 use sha2::Sha256;
-use std::fmt;
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
@@ -30,20 +30,103 @@ impl fmt::Display for DecryptError {
     }
 }
 
-impl std::error::Error for DecryptError {}
+impl core::error::Error for DecryptError {}
 
-/// The operating system's random source. Panics if it fails, as `rand` 0.8's
-/// `OsRng` did. It is also the Shamir dealer's RNG (`blahaj` 0.7 takes a
-/// `rand` 0.10 `CryptoRng`) and the RNG `ed25519-dalek` 3 takes (`rand_core`
-/// 0.10). `crypto_box` still takes a `rand_core` 0.6 RNG (`rand_core::OsRng`).
-/// Both read the same source.
-pub(crate) fn os_rng() -> UnwrapErr<SysRng> {
-    UnwrapErr(SysRng)
+/// Fills `dest` from the platform's random source, which is the one place this crate
+/// reads entropy. Everything that needs randomness (salts, nonces, data keys, the
+/// Shamir dealer, `ed25519-dalek` and `crypto_box` key generation) goes through it,
+/// by [`fill_random`] or by [`os_rng`], which wraps it.
+///
+/// With the `host` feature it is the operating system's random source and panics if
+/// that fails, as `rand` 0.8's `OsRng` did. Without it (a kernel build) the embedder
+/// supplies the bytes: see [`kq_platform_random`](#embedder-hook).
+#[cfg(feature = "host")]
+pub fn fill_random(dest: &mut [u8]) {
+    use rand::rand_core::UnwrapErr;
+    use rand::rngs::SysRng;
+    use rand::Rng;
+    UnwrapErr(SysRng).fill_bytes(dest);
 }
 
-/// Fills `dest` from the operating system's random source.
+#[cfg(not(feature = "host"))]
+extern "C" {
+    /// # Embedder hook
+    ///
+    /// Supplied by the embedder (Flinstone: `kq_platform_random`). Writes `len` random
+    /// bytes at `buf` and returns 0, or returns non-zero if it cannot. There is no
+    /// fallback in this crate.
+    fn kq_platform_random(buf: *mut u8, len: usize) -> i32;
+}
+
+/// Without `host`: the embedder's entropy through `kq_platform_random`. Fails closed:
+/// if the platform cannot supply entropy this panics rather than return weak bytes
+/// (the kernel build is `panic = "abort"`, so the C shim sees a refused call).
+#[cfg(not(feature = "host"))]
 pub fn fill_random(dest: &mut [u8]) {
-    os_rng().fill_bytes(dest);
+    if dest.is_empty() {
+        return;
+    }
+    // SAFETY: `dest` is a valid, writable slice of exactly `dest.len()` bytes.
+    let status = unsafe { kq_platform_random(dest.as_mut_ptr(), dest.len()) };
+    assert!(status == 0, "the platform could not supply entropy");
+}
+
+/// [`fill_random`] as an RNG object, for the crates that take one: the Shamir dealer
+/// (`blahaj` 0.7 takes a `rand` 0.10 `CryptoRng`), `ed25519-dalek` 3 (`rand_core` 0.10)
+/// and `crypto_box` (`rand_core` 0.6). Infallible, like `fill_random`.
+pub struct PlatformRng;
+
+impl rand::rand_core::TryRng for PlatformRng {
+    type Error = core::convert::Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        let mut bytes = [0u8; 4];
+        fill_random(&mut bytes);
+        Ok(u32::from_le_bytes(bytes))
+    }
+
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        let mut bytes = [0u8; 8];
+        fill_random(&mut bytes);
+        Ok(u64::from_le_bytes(bytes))
+    }
+
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+        fill_random(dst);
+        Ok(())
+    }
+}
+
+impl rand::rand_core::TryCryptoRng for PlatformRng {}
+
+impl rand_core::RngCore for PlatformRng {
+    fn next_u32(&mut self) -> u32 {
+        let mut bytes = [0u8; 4];
+        fill_random(&mut bytes);
+        u32::from_le_bytes(bytes)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut bytes = [0u8; 8];
+        fill_random(&mut bytes);
+        u64::from_le_bytes(bytes)
+    }
+
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        fill_random(dest);
+    }
+
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
+        fill_random(dest);
+        Ok(())
+    }
+}
+
+impl rand_core::CryptoRng for PlatformRng {}
+
+/// The platform's random source as an RNG object (see [`PlatformRng`]).
+pub(crate) fn os_rng() -> PlatformRng {
+    PlatformRng
 }
 
 /// A fresh salt from the operating system's random source. Drawn directly into
@@ -142,6 +225,6 @@ pub fn commitments_match(a: &[u8; 32], b: &[u8; 32]) -> bool {
     a.ct_eq(b).into()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "host"))]
 #[path = "crypto/tests.rs"]
 mod tests;

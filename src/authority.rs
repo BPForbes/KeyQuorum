@@ -17,11 +17,17 @@
 //! This is not the private-bridge supervisor role. That role is notified
 //! and holds no signing key.
 
+#[cfg(feature = "host")]
 use crate::device::{PresentedDevice, UsedLeaf};
 use crate::envelope::hash_len_prefixed;
 use crate::error::{Error, Result};
+#[allow(unused_imports)]
+use crate::nostd::*;
+#[cfg(feature = "host")]
 use crate::private_bridge;
+#[cfg(feature = "host")]
 use crate::signing;
+#[cfg(feature = "host")]
 use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 
@@ -181,6 +187,7 @@ pub fn is_routine_employee_reissue(authorizer_label: &str, subject_label: &str) 
 /// Check opt-in parent approval. `grants` may be empty when the tree's
 /// policy is `none`. Device ids are bound into the preimage so a signature
 /// cannot be replayed against a different set of presented devices.
+#[cfg(feature = "host")]
 pub fn require_unlock_approval(
     conn: &Connection,
     key_id: i64,
@@ -245,7 +252,7 @@ fn segment_count(label: &str) -> usize {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "host"))]
 #[path = "authority/tests.rs"]
 mod tests;
 
@@ -253,6 +260,7 @@ mod tests;
 /// store held `generation` of the tree rooted at `scope_root`. The range of
 /// generations a key was seen in only ever widens, and a retired key's range
 /// stops where the last observation of it did.
+#[cfg(feature = "host")]
 pub fn record_label_evidence(
     conn: &Connection,
     scope_root: &str,
@@ -283,6 +291,7 @@ pub fn record_label_evidence(
 /// The signing keys this store saw `identity` hold for `label` at
 /// `generation`: every recorded key whose observed range covers it. Empty
 /// when the store never saw one, which is not evidence either way.
+#[cfg(feature = "host")]
 pub fn historical_signing_publics(
     conn: &Connection,
     label: &str,

@@ -24,6 +24,8 @@ use super::revision::{FileRevision, NewRevision, RevisionGraph, StoredRevision};
 use super::verify::verify_structure;
 use crate::envelope::{push_len_prefixed, take_len_prefixed, take_u32, utf8};
 use crate::error::{Error, Result};
+#[allow(unused_imports)]
+use crate::nostd::*;
 
 pub const CONTAINER_MAGIC: &[u8; 4] = b"KQTF";
 /// Version 5 lets a revision's payload be absent (destroyed at expiry).

@@ -40,6 +40,11 @@ jobs:
       # --all-features is provider, lab, tui and legacy-tests together.
       - name: clippy (all features, all targets, warnings are errors)
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      # The pure modules build without the `host` feature (no SQLite, no std).
+      - name: clippy (no default features, bare metal)
+        run: |
+          rustup target add thumbv7em-none-eabi
+          cargo clippy --locked --lib --no-default-features --target thumbv7em-none-eabi -- -D warnings
       # The browser Lab builds the library for wasm32 with `lab` (never
       # `provider`); lints that only fire there are checked too.
       - name: clippy (Lab, wasm32)

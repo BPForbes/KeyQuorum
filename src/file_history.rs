@@ -16,6 +16,7 @@ mod codec;
 mod container;
 mod event;
 mod expiry;
+#[cfg(feature = "host")]
 pub mod index;
 mod merge;
 mod policy;
@@ -69,5 +70,5 @@ pub fn label_identity(label: &str) -> [u8; 16] {
     id
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "host"))]
 mod tests;

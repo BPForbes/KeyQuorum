@@ -1,8 +1,13 @@
-use std::fmt;
+#[allow(unused_imports)]
+use crate::nostd::*;
+use alloc::string::String;
+use core::fmt;
 
 #[derive(Debug)]
 pub enum Error {
+    #[cfg(feature = "host")]
     Db(rusqlite::Error),
+    #[cfg(feature = "std")]
     Io(std::io::Error),
     InvalidPath,
     /// A command-line usage mistake, reported with exit code 2.
@@ -202,7 +207,9 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            #[cfg(feature = "host")]
             Error::Db(e) => write!(f, "database error: {e}"),
+            #[cfg(feature = "std")]
             Error::Io(e) => write!(f, "I/O error: {e}"),
             Error::InvalidPath => write!(f, "path is not valid UTF-8"),
             Error::Usage(message) => f.write_str(message),
@@ -540,18 +547,21 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+// `core::error::Error` is the trait `std::error::Error` re-exports, so one impl serves both.
+impl core::error::Error for Error {}
 
+#[cfg(feature = "host")]
 impl From<rusqlite::Error> for Error {
     fn from(e: rusqlite::Error) -> Self {
         Error::Db(e)
     }
 }
 
+#[cfg(feature = "std")]
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
         Error::Io(e)
     }
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = core::result::Result<T, Error>;

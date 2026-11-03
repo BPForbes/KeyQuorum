@@ -8,7 +8,9 @@ use super::expiry::destroys_this_content;
 use super::proof::{ProofKind, MAX_PROOFS_PER_SLOT};
 use super::revision::content_commitment;
 use crate::error::{Error, Result};
-use std::collections::{HashMap, HashSet};
+#[allow(unused_imports)]
+use crate::nostd::*;
+use alloc::collections::{BTreeMap, BTreeSet};
 
 /// One proof slot: revision, role, signer label.
 type SlotKey<'a> = ([u8; 32], u8, &'a str);
@@ -29,7 +31,7 @@ type SlotKey<'a> = ([u8; 32], u8, &'a str);
 ///   (not a linked gate's, which names its `gate`), and once it
 ///   does, no payload survives and no revision is added after it.
 pub(super) fn verify_structure(file: &TrackedFile) -> Result<[u8; 32]> {
-    let mut seen: HashSet<[u8; 32]> = HashSet::new();
+    let mut seen: BTreeSet<[u8; 32]> = BTreeSet::new();
     for (index, stored) in file.revisions.iter().enumerate() {
         let revision = &stored.revision;
         let parents = &revision.parent_revision_ids;
@@ -38,7 +40,7 @@ pub(super) fn verify_structure(file: &TrackedFile) -> Result<[u8; 32]> {
             && revision.generated_label_is_consistent()
             && !seen.contains(&revision.revision_id)
             && parents.iter().all(|parent| seen.contains(parent))
-            && parents.iter().collect::<HashSet<_>>().len() == parents.len()
+            && parents.iter().collect::<BTreeSet<_>>().len() == parents.len()
             && (index == 0) == parents.is_empty()
             && stored.payload.as_ref().is_none_or(|payload| {
                 revision.content_commitment == content_commitment(&file.file_id, payload)
@@ -48,14 +50,14 @@ pub(super) fn verify_structure(file: &TrackedFile) -> Result<[u8; 32]> {
         }
         seen.insert(revision.revision_id);
     }
-    let by_id: HashMap<[u8; 32], usize> = file
+    let by_id: BTreeMap<[u8; 32], usize> = file
         .revisions
         .iter()
         .enumerate()
         .map(|(index, stored)| (stored.revision.revision_id, index))
         .collect();
     // Signatures already seen in each slot (revision, role, signer label).
-    let mut slots: HashMap<SlotKey<'_>, Vec<[u8; 64]>> = HashMap::new();
+    let mut slots: BTreeMap<SlotKey<'_>, Vec<[u8; 64]>> = BTreeMap::new();
     for proof in &file.proofs {
         let Some(&position) = by_id.get(&proof.revision_id) else {
             return Err(Error::InvalidTrackedFile);
@@ -111,7 +113,7 @@ pub(super) fn verify_structure(file: &TrackedFile) -> Result<[u8; 32]> {
     // An event proof names an existing event, is by that event's own actor,
     // and appears once per signer. Whether its signature verifies is a
     // store's question (`policy::event_attested`), as for revision proofs.
-    let mut signed: HashSet<(u64, &str)> = HashSet::new();
+    let mut signed: BTreeSet<(u64, &str)> = BTreeSet::new();
     for proof in &file.event_proofs {
         let event = usize::try_from(proof.sequence)
             .ok()

@@ -34,6 +34,8 @@
 //! is still open (see README's Roadmap).
 
 use crate::error::{Error, Result};
+#[allow(unused_imports)]
+use crate::nostd::*;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
@@ -153,7 +155,7 @@ pub fn seal(
         return Err(Error::InvalidPublicKey);
     }
     let sealed = crypto_box::PublicKey::from_bytes(*recipient_public_key)
-        .seal(&mut rand_core::OsRng, payload)
+        .seal(&mut crate::crypto::os_rng(), payload)
         .expect("crypto_box sealing should not fail for an in-memory payload");
     let payload_len = u32::try_from(sealed.len()).map_err(|_| Error::BundleFieldTooLarge)?;
     let mut out = Vec::with_capacity(42 + sealed.len());
@@ -350,11 +352,11 @@ pub fn take_len_prefixed_u32<'a>(data: &mut &'a [u8]) -> Result<&'a [u8]> {
 }
 
 pub fn utf8(bytes: &[u8]) -> Result<String> {
-    std::str::from_utf8(bytes)
+    core::str::from_utf8(bytes)
         .map(|s| s.to_string())
         .map_err(|_| Error::InvalidBridgePackage)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "host"))]
 #[path = "envelope/tests.rs"]
 mod tests;

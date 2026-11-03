@@ -10,6 +10,8 @@ use crate::envelope::{
     hash_len_prefixed, push_len_prefixed, take_array, take_len_prefixed, take_n, take_u8, utf8,
 };
 use crate::error::{Error, Result};
+#[allow(unused_imports)]
+use crate::nostd::*;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 
@@ -503,6 +505,6 @@ pub fn decode_bridge_signature(bytes: &[u8]) -> Result<BridgeSignature> {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "host"))]
 #[path = "signing/tests.rs"]
 mod tests;

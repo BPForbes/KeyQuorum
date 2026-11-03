@@ -11,6 +11,8 @@ use super::codec::{
 };
 use crate::envelope::{push_len_prefixed, take_len_prefixed};
 use crate::error::{Error, Result};
+#[allow(unused_imports)]
+use crate::nostd::*;
 use sha2::{Digest, Sha256};
 
 const HISTORY_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-v1";
@@ -142,7 +144,7 @@ impl HistoryEventType {
     /// that prints a history (`kq_file_event_name`). Presentation only, not
     /// part of the wire format; the exhaustive match keeps it in step with
     /// the enum.
-    pub fn name_c(self) -> &'static std::ffi::CStr {
+    pub fn name_c(self) -> &'static core::ffi::CStr {
         match self {
             Self::TrackingStarted => c"TrackingStarted",
             Self::EditCheckedIn => c"EditCheckedIn",
@@ -197,7 +199,7 @@ impl HistoryEventType {
 
     /// `name_c` for a stored code, or `None` for a code this build does not
     /// know (a history written by a newer build).
-    pub fn name_of(code: u8) -> Option<&'static std::ffi::CStr> {
+    pub fn name_of(code: u8) -> Option<&'static core::ffi::CStr> {
         Self::from_u8(code).ok().map(Self::name_c)
     }
 
@@ -269,7 +271,7 @@ pub enum HistoryOutcome {
 impl HistoryOutcome {
     /// The variant's name as a static NUL-terminated string
     /// (`kq_file_outcome_name`); presentation only.
-    pub fn name_c(self) -> &'static std::ffi::CStr {
+    pub fn name_c(self) -> &'static core::ffi::CStr {
         match self {
             Self::Success => c"Success",
             Self::Failure => c"Failure",
@@ -279,7 +281,7 @@ impl HistoryOutcome {
     }
 
     /// `name_c` for a stored code, or `None` for one this build does not know.
-    pub fn name_of(code: u8) -> Option<&'static std::ffi::CStr> {
+    pub fn name_of(code: u8) -> Option<&'static core::ffi::CStr> {
         Self::from_u8(code).ok().map(Self::name_c)
     }
 

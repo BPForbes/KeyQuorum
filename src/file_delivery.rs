@@ -39,8 +39,12 @@ use crate::envelope::{
     take_len_prefixed, take_len_prefixed_u32, take_u8, utf8, PACKAGE,
 };
 use crate::error::{Error, Result};
+#[allow(unused_imports)]
+use crate::nostd::*;
+#[cfg(feature = "host")]
 use crate::private_bridge;
 use crate::signing;
+#[cfg(feature = "host")]
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -58,9 +62,11 @@ const SNAPSHOT_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-SNAPSHOT-v1";
 
 pub mod exchange;
 mod request;
+#[cfg(feature = "host")]
+pub use request::{open_request, open_request_answer};
 pub use request::{
-    open_request, open_request_answer, seal_request, seal_request_answer, FileRequest,
-    OutgoingRequest, RequestAnswer, RequestKind, SealedRequest, MAX_REQUEST_MESSAGE,
+    seal_request, seal_request_answer, FileRequest, OutgoingRequest, RequestAnswer, RequestKind,
+    SealedRequest, MAX_REQUEST_MESSAGE,
 };
 
 /// What the sender needs to seal one letter.
@@ -156,6 +162,7 @@ pub fn seal_letter(outgoing: &Outgoing<'_>) -> Result<SealedLetter> {
 
 /// Unseal with the recipient's encryption secret and check the sender's
 /// signature against the signing key `conn` has registered for that label.
+#[cfg(feature = "host")]
 pub fn open_letter(
     conn: &Connection,
     recipient_secret: &[u8; 32],
@@ -220,6 +227,7 @@ pub fn seal_ack(
 
 /// Unseal with the sender's encryption secret and check the recipient's
 /// signature against the signing key `conn` has registered for that label.
+#[cfg(feature = "host")]
 pub fn open_ack(conn: &Connection, sender_secret: &[u8; 32], bytes: &[u8]) -> Result<DeliveryAck> {
     let (return_public, payload) =
         open_kind(bytes, sender_secret, envelope::KIND_FILE_DELIVERY_ACK)?;
@@ -406,6 +414,7 @@ pub fn seal_history_letter(outgoing: &OutgoingHistory<'_>) -> Result<SealedHisto
 
 /// Unseal with the recipient's encryption secret and check the sender's
 /// signature against the signing key `conn` has registered for that label.
+#[cfg(feature = "host")]
 pub fn open_history_letter(
     conn: &Connection,
     recipient_secret: &[u8; 32],
@@ -522,6 +531,7 @@ pub fn seal_history_ack(
 
 /// Unseal with the sender's encryption secret and check the recipient's
 /// signature against the signing key `conn` has registered for that label.
+#[cfg(feature = "host")]
 pub fn open_history_ack(
     conn: &Connection,
     sender_secret: &[u8; 32],
@@ -642,6 +652,7 @@ fn take_accepted(data: &mut &[u8]) -> Result<bool> {
 
 /// Every letter and answer is checked against the signing key *this store*
 /// has registered for the label it claims, never a key it carries.
+#[cfg(feature = "host")]
 fn verify_signed_by(
     conn: &Connection,
     label: &str,
@@ -656,6 +667,7 @@ fn verify_signed_by(
 /// store has registered for the letter's claimed recipient label. The
 /// sender chooses and signs that label, so a letter sealed to one key must
 /// not be recorded as received by another label. Both letter kinds use it.
+#[cfg(feature = "host")]
 pub fn recipient_owns_key(
     conn: &Connection,
     recipient_label: &str,
@@ -740,6 +752,7 @@ pub fn seal_history_snapshot(outgoing: &OutgoingSnapshot<'_>) -> Result<([u8; 16
 
 /// Unseal a snapshot letter and check the sender's signature against the
 /// signing key `conn` has registered for that label.
+#[cfg(feature = "host")]
 pub fn open_history_snapshot(
     conn: &Connection,
     recipient_secret: &[u8; 32],
@@ -845,6 +858,7 @@ impl Freshness {
 /// includes a revision id, and `passes_through` whether its event chain
 /// contains a history root; the caller supplies both from the decoded
 /// container, so this module never decodes one.
+#[cfg(feature = "host")]
 pub fn freshness(
     conn: &Connection,
     letter: &HistoryLetter,
@@ -907,6 +921,7 @@ pub fn freshness_against(
 
 /// Remember that this store accepted `letter`'s history, for later
 /// [`freshness`] checks. Recording the same one twice is harmless.
+#[cfg(feature = "host")]
 pub fn record_seen_root(conn: &Connection, letter: &HistoryLetter) -> Result<()> {
     conn.execute(
         "INSERT OR IGNORE INTO tracked_seen_roots
@@ -969,6 +984,6 @@ fn history_ack_preimage(ack: &HistoryAck, return_public: &[u8; 32]) -> Result<[u
     Ok(hasher.finalize().into())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "host"))]
 #[path = "file_delivery/tests.rs"]
 mod tests;
