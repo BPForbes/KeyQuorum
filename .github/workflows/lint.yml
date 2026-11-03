@@ -57,3 +57,6 @@ jobs:
           cargo fmt --check
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked
+          # The kernel build: no_std + alloc, embedder-supplied entropy, panic and heap.
+          rustup target add thumbv7em-none-eabi
+          cargo clippy --locked --lib --release --no-default-features --target thumbv7em-none-eabi -- -D warnings

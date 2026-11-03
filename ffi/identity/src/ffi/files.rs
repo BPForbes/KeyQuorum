@@ -17,6 +17,9 @@
 //! co-signature after opening it and checks the delivery is complete.
 
 use super::{bytes_in, bytes_out, input};
+#[allow(unused_imports)]
+use crate::nostd::*;
+use core::ffi::{c_char, c_int};
 use keyquorum::file_delivery::{self, Freshness, OutgoingHistory};
 use keyquorum::file_history::{
     self, current_revision, delivery_readiness, latest_trusted_revision_where, proof_descriptor,
@@ -26,7 +29,6 @@ use keyquorum::file_history::{
 };
 use keyquorum::signing;
 use sha2::{Digest, Sha256};
-use std::ffi::{c_char, c_int};
 use zeroize::Zeroizing;
 
 /// The call succeeded (and, for a readiness check, the delivery may fire).
@@ -138,7 +140,7 @@ unsafe fn slice_in<'a>(p: *const u8, len: usize) -> Option<&'a [u8]> {
     if p.is_null() {
         return (len == 0).then_some(&[][..]);
     }
-    Some(std::slice::from_raw_parts(p, len))
+    Some(core::slice::from_raw_parts(p, len))
 }
 
 /// # Safety
@@ -160,7 +162,7 @@ unsafe fn buf_out(value: &[u8], out: *mut u8, cap: usize, out_len: *mut usize) -
     if out.is_null() || cap < value.len() {
         return KQ_FILE_NO_ROOM;
     }
-    std::ptr::copy_nonoverlapping(value.as_ptr(), out, value.len());
+    core::ptr::copy_nonoverlapping(value.as_ptr(), out, value.len());
     KQ_FILE_OK
 }
 
@@ -227,7 +229,7 @@ pub extern "C" fn kq_file_abi_version() -> c_int {
 /// build does not know. Added in ABI version 2.
 #[no_mangle]
 pub extern "C" fn kq_file_event_name(code: u8) -> *const c_char {
-    file_history::HistoryEventType::name_of(code).map_or(std::ptr::null(), |n| n.as_ptr())
+    file_history::HistoryEventType::name_of(code).map_or(core::ptr::null(), |n| n.as_ptr())
 }
 
 /// The name of history outcome `code` ("Success", ...), a static NUL-terminated
@@ -235,7 +237,7 @@ pub extern "C" fn kq_file_event_name(code: u8) -> *const c_char {
 /// Added in ABI version 2.
 #[no_mangle]
 pub extern "C" fn kq_file_outcome_name(code: u8) -> *const c_char {
-    file_history::HistoryOutcome::name_of(code).map_or(std::ptr::null(), |n| n.as_ptr())
+    file_history::HistoryOutcome::name_of(code).map_or(core::ptr::null(), |n| n.as_ptr())
 }
 
 /// Writes the 16-byte identity of `label` into `id_out`.
@@ -942,7 +944,7 @@ pub unsafe extern "C" fn kq_file_select_read(
     let accepted: &[[u8; 32]] = if naccepted == 0 {
         &[]
     } else {
-        std::slice::from_raw_parts(accepted, naccepted)
+        core::slice::from_raw_parts(accepted, naccepted)
     };
     let Some(policy) = policy_of(&file) else {
         return KQ_FILE_INVALID;
@@ -1151,8 +1153,8 @@ pub unsafe extern "C" fn kq_file_freshness(
         .map(|i| {
             let pair = &*seen.add(i);
             (
-                std::array::from_fn(|j| pair[j]),
-                std::array::from_fn(|j| pair[32 + j]),
+                core::array::from_fn(|j| pair[j]),
+                core::array::from_fn(|j| pair[32 + j]),
             )
         })
         .collect();

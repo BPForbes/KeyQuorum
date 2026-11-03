@@ -7,8 +7,10 @@
 
 use crate::account;
 use crate::heritage::{self, ChildError, Relation};
+#[allow(unused_imports)]
+use crate::nostd::*;
+use core::ffi::{c_char, c_int, CStr};
 use keyquorum::signing::AccountBridgeRole;
-use std::ffi::{c_char, c_int, CStr};
 use zeroize::Zeroizing;
 
 /// The key id was written.
@@ -44,7 +46,7 @@ unsafe fn output(value: &str, out: *mut c_char, cap: usize) -> c_int {
         *out = 0;
         return KQ_HERITAGE_NO_ROOM;
     }
-    std::ptr::copy_nonoverlapping(value.as_ptr(), out.cast::<u8>(), value.len());
+    core::ptr::copy_nonoverlapping(value.as_ptr(), out.cast::<u8>(), value.len());
     *out.add(value.len()) = 0;
     KQ_HERITAGE_OK
 }
@@ -203,7 +205,7 @@ unsafe fn bytes_in<const N: usize>(p: *const u8) -> Option<[u8; N]> {
     }
     // Copied straight from the caller's bytes: no placeholder value is ever
     // created, so nothing constant can stand in for a key or nonce.
-    std::slice::from_raw_parts(p, N).try_into().ok()
+    core::slice::from_raw_parts(p, N).try_into().ok()
 }
 
 /// Writes `value` to `out`; false for null.
@@ -214,7 +216,7 @@ unsafe fn bytes_out(value: &[u8], out: *mut u8) -> bool {
     if out.is_null() {
         return false;
     }
-    std::ptr::copy_nonoverlapping(value.as_ptr(), out, value.len());
+    core::ptr::copy_nonoverlapping(value.as_ptr(), out, value.len());
     true
 }
 
@@ -338,7 +340,7 @@ pub unsafe extern "C" fn kq_account_open(
     if sealed.is_null() || secret_out.is_null() {
         return KQ_ACCOUNT_INVALID;
     }
-    let sealed = std::slice::from_raw_parts(sealed, len);
+    let sealed = core::slice::from_raw_parts(sealed, len);
     match account::open(password, sealed) {
         Ok(secret) => {
             bytes_out(&secret[..], secret_out);

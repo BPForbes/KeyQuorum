@@ -17,10 +17,58 @@
 //! table the caller fills from its own registry, never from a container.
 //!
 //! No exported function stores anything or reads a clock; the key functions
-//! read the operating system's random source. Buffers are caller-owned and
-//! the C headers are `include/keyquorum_identity.h` and
+//! take their randomness from the operating system in the `std` build and from
+//! the embedder's `kq_platform_random` in the `no_std` build. Buffers are
+//! caller-owned and the C headers are `include/keyquorum_identity.h` and
 //! `include/keyquorum_files.h`.
+
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
 
 pub mod account;
 pub mod ffi;
 pub mod heritage;
+mod nostd;
+
+/// What a panic means in the kernel build: the embedder decides (Flinstone fails the
+/// check closed). A silent spin on a login path would be a denial of service.
+#[cfg(not(feature = "std"))]
+#[panic_handler]
+fn on_panic(_: &core::panic::PanicInfo) -> ! {
+    extern "C" {
+        fn kq_platform_panic() -> !;
+    }
+    // SAFETY: the embedder's function takes no arguments and never returns.
+    unsafe { kq_platform_panic() }
+}
+
+/// The kernel's heap, supplied by the embedder: a `no_std` staticlib needs a global
+/// allocator and this crate owns none. A null return is an allocation failure (the
+/// `alloc` crate then aborts through the panic handler above).
+#[cfg(not(feature = "std"))]
+mod platform_heap {
+    use core::alloc::{GlobalAlloc, Layout};
+
+    extern "C" {
+        fn kq_platform_alloc(size: usize, align: usize) -> *mut u8;
+        fn kq_platform_free(ptr: *mut u8, size: usize, align: usize);
+    }
+
+    struct PlatformHeap;
+
+    // SAFETY: `GlobalAlloc`'s contract is passed straight to the embedder's functions,
+    // which must return memory of at least `size` bytes aligned to `align`, or null.
+    unsafe impl GlobalAlloc for PlatformHeap {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            kq_platform_alloc(layout.size(), layout.align())
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            kq_platform_free(ptr, layout.size(), layout.align());
+        }
+    }
+
+    #[global_allocator]
+    static HEAP: PlatformHeap = PlatformHeap;
+}
