@@ -23,7 +23,7 @@ fn every_event_code_has_its_variant_name() {
             }
         }
     }
-    assert_eq!(known, HistoryEventType::LetterOpened as u8);
+    assert_eq!(known, HistoryEventType::ErrorReported as u8);
     assert!(HistoryEventType::name_of(0).is_none());
 }
 

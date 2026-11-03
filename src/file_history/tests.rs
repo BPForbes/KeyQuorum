@@ -236,7 +236,8 @@ fn every_event_code_decodes_to_itself_and_the_next_one_is_unknown() {
     assert_eq!(HistoryEventType::LetterRefused as u8, 45);
     assert_eq!(HistoryEventType::LetterReceived as u8, 46);
     assert_eq!(HistoryEventType::LetterOpened as u8, 47);
-    assert!(event::HistoryEventType::from_u8(48).is_err());
+    assert_eq!(HistoryEventType::ErrorReported as u8, 48);
+    assert!(event::HistoryEventType::from_u8(49).is_err());
     assert!(event::HistoryEventType::from_u8(0).is_err());
     // The new conflict events round-trip through a container.
     let mut file = tracked_file();

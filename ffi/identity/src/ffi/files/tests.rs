@@ -146,7 +146,8 @@ fn event_and_outcome_names_cross_the_boundary() {
     assert_eq!(text(kq_file_event_name(2)), "EditCheckedIn");
     assert_eq!(text(kq_file_event_name(47)), "LetterOpened");
     assert!(kq_file_event_name(0).is_null());
-    assert!(kq_file_event_name(48).is_null());
+    assert_eq!(text(kq_file_event_name(48)), "ErrorReported");
+    assert!(kq_file_event_name(49).is_null());
     assert!(kq_file_event_name(255).is_null());
     assert_eq!(text(kq_file_outcome_name(1)), "Success");
     assert_eq!(text(kq_file_outcome_name(4)), "Info");

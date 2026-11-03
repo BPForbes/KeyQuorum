@@ -75,6 +75,9 @@ pub enum HistoryEventType {
     LetterReceived = 46,
     /// A held letter was opened and its slot released.
     LetterOpened = 47,
+    /// A verified error report was recorded against this history (outcome `Failure` or
+    /// `Denied`). Detail keys: `error_class`, `error_code`, `error_ref`.
+    ErrorReported = 48,
 }
 
 impl HistoryEventType {
@@ -120,7 +123,8 @@ impl HistoryEventType {
             | E::LetterDropped
             | E::LetterRefused
             | E::LetterReceived
-            | E::LetterOpened => "sharing",
+            | E::LetterOpened
+            | E::ErrorReported => "sharing",
             E::AutoMergeBlocked
             | E::AutoMergeRequiresHuman
             | E::HistoryForkDetected
@@ -187,6 +191,7 @@ impl HistoryEventType {
             Self::LetterRefused => c"LetterRefused",
             Self::LetterReceived => c"LetterReceived",
             Self::LetterOpened => c"LetterOpened",
+            Self::ErrorReported => c"ErrorReported",
         }
     }
 
@@ -245,6 +250,7 @@ impl HistoryEventType {
             45 => Self::LetterRefused,
             46 => Self::LetterReceived,
             47 => Self::LetterOpened,
+            48 => Self::ErrorReported,
             _ => return Err(Error::InvalidTrackedFile),
         })
     }
@@ -315,6 +321,9 @@ pub const SAFE_DETAIL_KEYS: &[&str] = &[
     "decision",
     "delivery_id",
     "devices",
+    "error_class",
+    "error_code",
+    "error_ref",
     "expires_at",
     "fallback_reason",
     "for_actor",
@@ -353,6 +362,7 @@ pub const SAFE_DETAIL_KEYS: &[&str] = &[
     "share",
     "shareable",
     "shares",
+    "signing_mode",
     "slot",
     "state",
     "threshold",
