@@ -39,6 +39,7 @@ pub mod file_history;
 pub mod keys;
 pub(crate) mod nostd;
 pub mod signing;
+pub mod slot_token;
 
 // Host-only: SQLite, files, the terminal, the network, the relay.
 #[cfg(feature = "host")]

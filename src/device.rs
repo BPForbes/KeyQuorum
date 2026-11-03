@@ -16,11 +16,12 @@
 //! the slot being opened. Logical mode lets several of those slots satisfy
 //! Shamir together; it does not make them count as several devices.
 
-use crate::crypto::{self, NONCE_LEN, SALT_LEN};
 use crate::envelope::{push_len_prefixed, take_array, take_len_prefixed, take_u8, utf8};
 use crate::error::{Error, Result};
 use crate::keys::{self, KeyType};
 use crate::signing;
+use crate::slot_token;
+pub use crate::slot_token::{SlotSecrets, DEVICE_ID_LEN};
 use crate::storage::{NativeStorage, Storage};
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
@@ -30,10 +31,7 @@ use zeroize::Zeroizing;
 
 const DEVICE_MAGIC: &[u8; 4] = b"KQDV";
 const DEVICE_VERSION: u8 = 2;
-const TOKEN_MAGIC: &[u8; 4] = b"KQST";
-const TOKEN_VERSION: u8 = 2;
 const DESC_DOMAIN: &[u8] = b"KQ-DEVICE-DESC-v2";
-const DEVICE_ID_LEN: usize = 16;
 const SOLO_DOMAIN: &[u8] = b"KQ-SOLO-DEVICE-v1";
 
 /// How a split treats keys that share a physical device.
@@ -130,15 +128,6 @@ impl Container {
     pub fn slot(&self, label: &str) -> Option<&SlotRecord> {
         self.slots.iter().find(|slot| slot.label == label)
     }
-}
-
-/// Secrets unwrapped from one slot. Dropped values are zeroized.
-pub struct SlotSecrets {
-    pub label: String,
-    pub encryption_secret: Zeroizing<[u8; 32]>,
-    pub signing_secret: Zeroizing<[u8; 32]>,
-    pub encryption_public: [u8; 32],
-    pub signing_public: [u8; 32],
 }
 
 /// What [`provision`] minted. The CLI prints only the public halves.
@@ -270,24 +259,14 @@ pub fn open_slot_in(
 ) -> Result<SlotSecrets> {
     let record = container.slot(label).ok_or(Error::InvalidSlot)?;
     let bytes = storage.read(&token_path(container, label)?)?;
-    let plain = decrypt_token(&bytes, passphrase)?;
-    let (token_label, token_device, encryption_secret, signing_secret) =
-        decode_token_plain(&plain)?;
-    if token_label != label || token_device != container.device_id {
-        return Err(Error::InvalidSlot);
-    }
-    let encryption_public = keys::encryption_public_from_secret(&encryption_secret);
-    let signing_public = signing_public_from_secret(&signing_secret);
-    if encryption_public != record.encryption_public || signing_public != record.signing_public {
-        return Err(Error::InvalidSlot);
-    }
-    Ok(SlotSecrets {
-        label: label.to_string(),
-        encryption_secret,
-        signing_secret,
-        encryption_public,
-        signing_public,
-    })
+    slot_token::open_slot_token(
+        &bytes,
+        label,
+        passphrase,
+        &container.device_id,
+        &record.signing_public,
+        &record.encryption_public,
+    )
 }
 
 /// Move a slot onto another container. The keypair does not change; the
@@ -428,7 +407,7 @@ pub fn install_slot_in(
     let record = SlotRecord {
         label: label.to_string(),
         encryption_public: keys::encryption_public_from_secret(encryption_secret),
-        signing_public: signing_public_from_secret(signing_secret),
+        signing_public: signing::public_key(signing_secret),
     };
     container.slots.push(record.clone());
     store_descriptor(storage, container)?;
@@ -448,7 +427,7 @@ pub fn slot_matches(
         return Ok(false);
     };
     if record.encryption_public != keys::encryption_public_from_secret(encryption_secret)
-        || record.signing_public != signing_public_from_secret(signing_secret)
+        || record.signing_public != signing::public_key(signing_secret)
     {
         return Err(Error::InvalidSlot);
     }
@@ -760,71 +739,14 @@ fn write_token(
     if let Some(dir) = path.parent() {
         storage.create_dir_all(dir)?;
     }
-    let plain = encode_token_plain(
+    let bytes = slot_token::seal_token(
         label,
         &container.device_id,
         encryption_secret,
         signing_secret,
+        passphrase,
     )?;
-    let salt = crypto::random_salt();
-    let nonce = crypto::random_nonce();
-    let key = crypto::derive_key(passphrase, &salt)?;
-    let ciphertext = crypto::encrypt(&key, &nonce, &plain);
-    let mut bytes = Vec::with_capacity(4 + 1 + SALT_LEN + NONCE_LEN + ciphertext.len());
-    bytes.extend_from_slice(TOKEN_MAGIC);
-    bytes.push(TOKEN_VERSION);
-    bytes.extend_from_slice(&salt);
-    bytes.extend_from_slice(&nonce);
-    bytes.extend_from_slice(&ciphertext);
     storage.write_new(&path, &bytes)
-}
-
-fn decrypt_token(bytes: &[u8], passphrase: &str) -> Result<Zeroizing<Vec<u8>>> {
-    if bytes.len() < 4 + 1 + SALT_LEN + NONCE_LEN + 16 || &bytes[..4] != TOKEN_MAGIC {
-        return Err(Error::InvalidDevice);
-    }
-    let mut data = &bytes[4..];
-    let version = take_u8(&mut data)?;
-    if version != TOKEN_VERSION {
-        return Err(Error::InvalidDevice);
-    }
-    let salt: [u8; SALT_LEN] = take_array(&mut data)?;
-    let nonce: [u8; NONCE_LEN] = take_array(&mut data)?;
-    let key = crypto::derive_key(passphrase, &salt)?;
-    crypto::decrypt(&key, &nonce, data).map_err(|_| Error::InvalidPassword)
-}
-
-fn encode_token_plain(
-    label: &str,
-    device_id: &[u8; DEVICE_ID_LEN],
-    encryption: &[u8; 32],
-    signing: &[u8; 32],
-) -> Result<Vec<u8>> {
-    let mut out = Vec::new();
-    push_len_prefixed(&mut out, label.as_bytes())?;
-    out.extend_from_slice(device_id);
-    out.extend_from_slice(encryption);
-    out.extend_from_slice(signing);
-    Ok(out)
-}
-
-type TokenPlain = (
-    String,
-    [u8; DEVICE_ID_LEN],
-    Zeroizing<[u8; 32]>,
-    Zeroizing<[u8; 32]>,
-);
-
-fn decode_token_plain(bytes: &[u8]) -> Result<TokenPlain> {
-    let mut data = bytes;
-    let label = utf8(take_len_prefixed(&mut data)?)?;
-    let device_id = take_array(&mut data)?;
-    let encryption = Zeroizing::new(take_array(&mut data)?);
-    let signing = Zeroizing::new(take_array(&mut data)?);
-    if !data.is_empty() {
-        return Err(Error::InvalidDevice);
-    }
-    Ok((label, device_id, encryption, signing))
 }
 
 fn store_descriptor(storage: &mut dyn Storage, container: &Container) -> Result<()> {
@@ -923,12 +845,6 @@ fn decode_descriptor(bytes: &[u8]) -> Result<([u8; DEVICE_ID_LEN], [u8; 32], Vec
     let preimage = descriptor_preimage(&device_id, &verify_key, &slots)?;
     crate::signing::verify_signature(&verify_key, &preimage, &signature)?;
     Ok((device_id, verify_key, slots))
-}
-
-fn signing_public_from_secret(secret: &[u8; 32]) -> [u8; 32] {
-    ed25519_dalek::SigningKey::from_bytes(secret)
-        .verifying_key()
-        .to_bytes()
 }
 
 #[cfg(test)]

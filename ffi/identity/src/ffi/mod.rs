@@ -417,6 +417,7 @@ pub unsafe extern "C" fn kq_account_bridge_verify(
 
 pub mod error;
 pub mod files;
+pub mod slot;
 
 #[cfg(test)]
 #[path = "tests.rs"]

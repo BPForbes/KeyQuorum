@@ -833,6 +833,12 @@ sender's key comes from the caller's registry) shares one verifying body with th
 C: `kq_file_seal_snapshot`, `kq_file_open_snapshot` and `kq_file_snapshot_covers` (extract is a prefix of the
 snapshot, else `KQ_FILE_DIVERGED` -12) in `keyquorum_files.h`, with `KQ_FILE_ABI_VERSION` 3.
 
+`src/slot_token.rs` is the store-free part of `device` (`KQST` v2): `seal_token` and `open_slot_token`
+(passphrase plus the label, device id and the two public keys the caller expects; `InvalidPassword` for a wrong
+passphrase, `InvalidSlot` for any mismatch). `device::open_slot_in` and `write_token` call it, so there is one
+rule; `device` re-exports `SlotSecrets`. In the pure set (`no_std`). C: `kq_slot_open` in
+`include/keyquorum_slots.h` (`KQ_ACCOUNT_OK`, `KQ_ACCOUNT_WRONG_PASSWORD`, `KQ_ACCOUNT_INVALID`).
+
 The `host` Cargo feature (on by default; the enabled dependency features are the same as before it
 existed) is the whole hosted crate: SQLite, the CLI, the relay, files and the network, with `std`.
 `cargo build --no-default-features` builds only the pure modules as `no_std` + `alloc` (`signing`,
