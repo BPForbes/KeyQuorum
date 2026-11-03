@@ -307,7 +307,7 @@ fn seal_share(hardware_key: &keys::HardwareKey, share: &[u8]) -> Result<Vec<u8>>
         .map_err(|_| Error::InvalidPublicKey)?;
     let public_key = crypto_box::PublicKey::from_bytes(public_key_bytes);
     Ok(public_key
-        .seal(&mut rand_core::OsRng, share)
+        .seal(&mut crate::crypto::os_rng(), share)
         .expect("crypto_box sealing should not fail for an in-memory share"))
 }
 

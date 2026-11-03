@@ -817,17 +817,22 @@ unlocking through the same `unlock_quorum_file` as `access quorum --state 1`, so
 Each seeded person has `use` and `device bind` run for their own slot (re-run for the owner by
 `move_slot`), and the lab can run `doctor`, `use` and `device bind` for the active person.
 
-The `host` Cargo feature (on by default, so every existing build is unchanged) is the whole hosted
-crate: SQLite, the CLI, the relay, files and the network, with `std`. `cargo build --no-default-features`
-builds only the pure modules as `no_std` + `alloc` (`signing`, `crypto`, `envelope`, `error`, `keys`' key
-generation and parsing, `authority`'s label rules and preimages, `file_history` and `file_delivery`'s
-sealing, verification and `*_with_key` openers); each database-bound function inside them is
-`#[cfg(feature = "host")]`, and `file_history::index`, `device`, `private_bridge`, `quorum` and the rest
-are host-only (`src/lib.rs`). `Error::Db` needs `host` and `Error::Io` needs `std`. Randomness has one
-seam, `crypto::fill_random` (and `crypto::PlatformRng`, the RNG object for `blahaj`, `ed25519-dalek`
-and `crypto_box`): the operating system with `host`, otherwise the embedder's C function
+The `host` Cargo feature (on by default; the enabled dependency features are the same as before it
+existed) is the whole hosted crate: SQLite, the CLI, the relay, files and the network, with `std`.
+`cargo build --no-default-features` builds only the pure modules as `no_std` + `alloc` (`signing`,
+`crypto`, `envelope`, `error`, `keys`' key generation and parsing, `authority`'s label rules and
+preimages, `file_history` and `file_delivery`'s sealing, verification and `*_with_key` openers); each
+database-bound function inside them is `#[cfg(feature = "host")]`, and `file_history::index`, `device`,
+`private_bridge`, `quorum` and the rest are host-only (`src/lib.rs`). `Error::Db` needs `host` and
+`Error::Io` needs `std`. Randomness has one seam, `crypto::fill_random` (and `crypto::PlatformRng`,
+the RNG object for `blahaj`, `ed25519-dalek` and `crypto_box`), and every module draws from it: the
+operating system with `host`, otherwise the embedder's C function
 `int kq_platform_random(uint8_t *buf, size_t len)` (0 is success; a non-zero return panics, so the
-call fails closed). `src/nostd.rs` is the allocation prelude the pure modules import. Pure modules use
+call fails closed; `tests/platform_entropy.rs` is the embedder in a test). `ffi/identity` has a `std`
+feature (default, `keyquorum/host`); without it the archive is `no_std` and leaves four symbols for the
+embedder, declared in `include/keyquorum_identity.h`: `kq_platform_random`, `kq_platform_alloc`,
+`kq_platform_free` and `kq_platform_panic` (never returns); `docs/operator/embedding-no-std.md` says
+how to link it. `src/nostd.rs` is the allocation prelude the pure modules import. Pure modules use
 `BTreeMap`/`BTreeSet`, never `HashMap`/`HashSet`, and `core`/`alloc` paths; their unit tests need the
 database and run under `host` only. `blahaj` is `host`-only because it forces `rand`'s `thread_rng`
 (and so `getrandom`), which has no bare-metal backend. Checked: `cargo build --no-default-features`

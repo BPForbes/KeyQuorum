@@ -746,3 +746,43 @@ fn an_ancestor_set_agrees_with_asking_about_each_revision() {
     assert_eq!(graph.ancestor_set(&merged).len(), 4);
     assert!(graph.ancestor_set(&[9; 32]).is_empty());
 }
+
+/// An `ErrorReported` event (48) carries the four report keys, survives a container
+/// round trip with its values intact, and a key outside the allow-list is still refused.
+#[test]
+fn an_error_report_event_round_trips_and_an_unlisted_key_is_refused() {
+    let mut file = tracked_file();
+    let mut event = new_event(HistoryEventType::ErrorReported, None);
+    event.outcome = HistoryOutcome::Failure;
+    event.details = EventDetails::new()
+        .with("error_class", "integrity")
+        .with("error_code", "3")
+        .with("error_ref", &"ab".repeat(32))
+        .with("signing_mode", "own");
+    file.append(event).unwrap();
+
+    let decoded = TrackedFile::decode(&file.encode().unwrap()).unwrap();
+    assert_eq!(decoded, file);
+    let stored = &decoded.events()[0];
+    assert_eq!(stored.event_type, HistoryEventType::ErrorReported);
+    assert_eq!(stored.outcome, HistoryOutcome::Failure);
+    let detail = |key: &str| {
+        stored
+            .details
+            .entries()
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.as_str())
+    };
+    assert_eq!(detail("error_class"), Some("integrity"));
+    assert_eq!(detail("error_code"), Some("3"));
+    assert_eq!(detail("error_ref"), Some("ab".repeat(32).as_str()));
+    assert_eq!(detail("signing_mode"), Some("own"));
+
+    let mut refused = new_event(HistoryEventType::ErrorReported, None);
+    refused.details = EventDetails::new().with("error_detail", "x");
+    assert!(matches!(
+        decoded.clone().append(refused),
+        Err(Error::InvalidTrackedFile)
+    ));
+}

@@ -45,6 +45,9 @@ jobs:
         run: |
           rustup target add thumbv7em-none-eabi
           cargo clippy --locked --lib --no-default-features --target thumbv7em-none-eabi -- -D warnings
+      # The no_std entropy path: the test is the embedder's `kq_platform_random`.
+      - name: test (no default features, embedder entropy hook)
+        run: cargo test --locked --no-default-features --features std --test platform_entropy
       # The browser Lab builds the library for wasm32 with `lab` (never
       # `provider`); lints that only fire there are checked too.
       - name: clippy (Lab, wasm32)

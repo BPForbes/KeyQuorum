@@ -39,7 +39,8 @@ impl core::error::Error for DecryptError {}
 ///
 /// With the `host` feature it is the operating system's random source and panics if
 /// that fails, as `rand` 0.8's `OsRng` did. Without it (a kernel build) the embedder
-/// supplies the bytes: see [`kq_platform_random`](#embedder-hook).
+/// supplies the bytes through the C function `kq_platform_random` (see
+/// `include/keyquorum_identity.h` in `ffi/identity` for its contract).
 #[cfg(feature = "host")]
 pub fn fill_random(dest: &mut [u8]) {
     use rand::rand_core::UnwrapErr;
@@ -50,17 +51,15 @@ pub fn fill_random(dest: &mut [u8]) {
 
 #[cfg(not(feature = "host"))]
 extern "C" {
-    /// # Embedder hook
-    ///
-    /// Supplied by the embedder (Flinstone: `kq_platform_random`). Writes `len` random
-    /// bytes at `buf` and returns 0, or returns non-zero if it cannot. There is no
-    /// fallback in this crate.
-    fn kq_platform_random(buf: *mut u8, len: usize) -> i32;
+    /// Supplied by the embedder. Writes `len` random bytes at `buf` and returns 0, or
+    /// returns non-zero if it cannot. There is no fallback in this crate.
+    fn kq_platform_random(buf: *mut u8, len: usize) -> core::ffi::c_int;
 }
 
 /// Without `host`: the embedder's entropy through `kq_platform_random`. Fails closed:
-/// if the platform cannot supply entropy this panics rather than return weak bytes
-/// (the kernel build is `panic = "abort"`, so the C shim sees a refused call).
+/// if the platform cannot supply entropy this panics rather than return weak bytes. In
+/// the `ffi/identity` kernel build the panic handler runs (it calls the embedder's
+/// `kq_platform_panic`, which never returns), so the call never returns to its caller.
 #[cfg(not(feature = "host"))]
 pub fn fill_random(dest: &mut [u8]) {
     if dest.is_empty() {

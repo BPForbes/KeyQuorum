@@ -182,7 +182,7 @@ pub fn issue(spec: &Issue<'_>) -> Result<Vec<u8>> {
         return Err(refused("the certificate expires too soon"));
     }
     let mut id = [0u8; 16];
-    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut id);
+    rand_core::RngCore::fill_bytes(&mut crate::crypto::os_rng(), &mut id);
     let context = Context {
         version: VERSION,
         purpose: PURPOSE.to_string(),

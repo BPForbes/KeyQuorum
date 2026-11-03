@@ -25,17 +25,17 @@ host = [
     "rand/sys_rng",
     "rand/thread_rng",
     "rand_core/getrandom",
+    "sha2/alloc",
     "sha2/oid",
     "hex/std",
     "base64/std",
-    "zeroize/std",
+    "base64/simd-unsafe",
     "subtle/std",
     "dep:blahaj",
     "blahaj/std",
     "aes-gcm/getrandom",
     "argon2/getrandom",
     "argon2/password-hash",
-    "crypto_box/std",
     "crypto_box/getrandom",
     "dep:rusqlite",
     "dep:clap",
@@ -85,6 +85,12 @@ console = ["host", "dep:wasm-bindgen"]
 # Presentation only, over `cli::review_view`; native-only, never part of
 # the wasm32 lab build.
 tui = ["host", "dep:ratatui"]
+
+# The `no_std` entropy path, with the test standing in for the embedder's C hook.
+[[test]]
+name = "platform_entropy"
+path = "tests/platform_entropy.rs"
+required-features = ["std"]
 
 [[bin]]
 name = "keyquorum"

@@ -3,13 +3,16 @@
  *
  * Link against libkeyquorum_identity.a. Buffers are caller-owned, and a key
  * id written into `out` is NUL terminated. Nothing is stored and no clock is
- * read; the account key functions read the operating system's random source.
+ * read; the account key functions take their randomness from the operating
+ * system in the hosted ("std") build and from the embedder's
+ * kq_platform_random() in the freestanding build (see the section at the end).
  * Keep in step with ffi/identity/src/ffi/mod.rs.
  */
 #ifndef KEYQUORUM_IDENTITY_H
 #define KEYQUORUM_IDENTITY_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -75,6 +78,55 @@ int kq_account_bridge_sign(int role, const char *from, const char *to, const cha
 int kq_account_bridge_verify(int role, const char *from, const char *to, const char *signer,
                              const unsigned char *nonce, const unsigned char *public_key,
                              const unsigned char *sig);
+
+/*
+ * Embedder must provide (freestanding build, `--no-default-features`)
+ *
+ * Without the "std" feature libkeyquorum_identity.a leaves exactly these four
+ * symbols undefined (plus compiler runtime and libc routines: fma, fmaximum_num,
+ * fminimum_num, memcmp, strlen; see docs/operator/embedding-no-std.md). The
+ * hosted build defines none of them and does not need them.
+ *
+ * None of them may be called back into KeyQuorum, and all must be safe to call
+ * from any thread the embedder runs KeyQuorum on.
+ */
+
+/*
+ * Fill buf[0..len) with cryptographically secure random bytes and return 0.
+ * Return non-zero if that cannot be done (entropy not yet seeded, device
+ * error): the library then panics, so the check fails closed. Never write
+ * predictable bytes and return 0. len is never 0 (an empty request makes no
+ * call). Seeds salts, nonces, data keys and key pairs.
+ */
+int kq_platform_random(uint8_t *buf, size_t len);
+
+/*
+ * Return len bytes of heap aligned to `align` (a power of two), or NULL when
+ * none is available (the library then panics through kq_platform_panic). The
+ * memory need not be zeroed.
+ */
+uint8_t *kq_platform_alloc(size_t len, size_t align);
+
+/*
+ * Release memory obtained from kq_platform_alloc with the same len and align.
+ * Secrets the library owns are held in zeroizing buffers and wiped before this
+ * call, but copies can pass through other allocations; the embedder should zero
+ * freed memory (or return it to a pool that is zeroed on reuse).
+ */
+void kq_platform_free(uint8_t *ptr, size_t len, size_t align);
+
+/*
+ * A panic inside the library (an allocation failure, a failed
+ * kq_platform_random, a broken invariant) calls this. It must never return:
+ * fail the check closed (deny the login or access in progress, halt, or
+ * reset). Spinning silently on a login path is a denial of service. The
+ * library is built with panic=abort and never unwinds through C.
+ */
+#ifdef __cplusplus
+[[noreturn]] void kq_platform_panic(void);
+#else
+_Noreturn void kq_platform_panic(void);
+#endif
 
 #ifdef __cplusplus
 }
