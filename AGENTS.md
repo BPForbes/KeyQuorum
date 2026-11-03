@@ -839,6 +839,16 @@ passphrase, `InvalidSlot` for any mismatch). `device::open_slot_in` and `write_t
 rule; `device` re-exports `SlotSecrets`. In the pure set (`no_std`). C: `kq_slot_open` in
 `include/keyquorum_slots.h` (`KQ_ACCOUNT_OK`, `KQ_ACCOUNT_WRONG_PASSWORD`, `KQ_ACCOUNT_INVALID`).
 
+`src/bridge_proof.rs` is the private-bridge proof without a database: `prove_with` / `prove` (what `sign_message`
+decides: member, sealed key held, keys match the roster, the unsealed secret is this bridge's, then
+`signing::sign_with_bridge`) and `verify_with` / `verify` (what `verify_message` decides: live bridge, generation
+and salt, signer and verifier are members, roster key). `private_bridge::sign_message` and `verify_message` build
+the same `BridgeFacts` from SQLite and call them, with the registry comparison as a hook, so there is one rule;
+`seal_bridge_secret` / `unseal_bridge_secret` live there too. Pure (`no_std`). C: `kq_bridge_prove` and
+`kq_bridge_verify` in `include/keyquorum_bridge.h` (`KQ_BRIDGE_OK`, `INVALID`, `NO_ROOM`, `REFUSED`, `STALE`; the
+caller passes the sealed bridge key and its wrap salt, and the live bridge's facts), and `kq_bridge_connects`
+(`authority::bridge_connects`, the shape of the hierarchy only) in `keyquorum_identity.h`.
+
 The `host` Cargo feature (on by default; the enabled dependency features are the same as before it
 existed) is the whole hosted crate: SQLite, the CLI, the relay, files and the network, with `std`.
 `cargo build --no-default-features` builds only the pure modules as `no_std` + `alloc` (`signing`,

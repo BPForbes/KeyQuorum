@@ -35,6 +35,14 @@ int kq_heritage_child(const char *parent, const char *name, char *out, size_t ca
 int kq_heritage_parent(const char *key, char *out, size_t cap);
 int kq_heritage_is_ancestor_or_self(const char *a, const char *b);
 int kq_heritage_relation(const char *a, const char *b);
+
+/* 1 when a bridge between end_a and end_b connects actor to scope (one end holds the
+ * actor or an ancestor of it, the other sits on the scope's line: the scope, an
+ * ancestor of it, or a node inside it), else 0. Judges only the shape of the
+ * hierarchy, one hop (bridges do not chain); that the bridge exists and is live is the
+ * caller's check (kq_bridge_verify, keyquorum_bridge.h). */
+int kq_bridge_connects(const char *end_a, const char *end_b, const char *actor,
+                       const char *scope);
 int kq_heritage_home_rel(const char *key, char *out, size_t cap);
 
 /*

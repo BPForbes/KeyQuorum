@@ -156,6 +156,30 @@ pub unsafe extern "C" fn kq_heritage_relation(a: *const c_char, b: *const c_char
     }
 }
 
+/// `1` when a bridge between `end_a` and `end_b` connects `actor` to `scope`: one end holds
+/// `actor` or an ancestor of it, and the other end sits on the scope's line (the scope, an
+/// ancestor of it, or a node inside it); `0` otherwise, and for a null or non-UTF-8 argument.
+/// Judges only the shape of the hierarchy (`keyquorum::authority::bridge_connects`): that
+/// the bridge exists and is live is the caller's check (`kq_bridge_verify`). A single hop;
+/// two bridges do not chain.
+///
+/// # Safety
+/// Every argument must be null or a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn kq_bridge_connects(
+    end_a: *const c_char,
+    end_b: *const c_char,
+    actor: *const c_char,
+    scope: *const c_char,
+) -> c_int {
+    match (input(end_a), input(end_b), input(actor), input(scope)) {
+        (Some(a), Some(b), Some(actor), Some(scope)) => {
+            keyquorum::authority::bridge_connects(a, b, actor, scope) as c_int
+        }
+        _ => 0,
+    }
+}
+
 /// Writes the home directory relative to the jail root: `home` for `Root`,
 /// `home/Flinstone/Bob` for `Root.Flinstone.Bob`.
 ///
@@ -415,6 +439,7 @@ pub unsafe extern "C" fn kq_account_bridge_verify(
     account::verify_bridge(role, from, to, signer, &nonce, &public, &sig) as c_int
 }
 
+pub mod bridge;
 pub mod error;
 pub mod files;
 pub mod slot;

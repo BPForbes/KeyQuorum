@@ -30,6 +30,7 @@ compile_error!(
 // Pure modules: always compiled. Their database-bound functions are gated
 // inside with `#[cfg(feature = "host")]`.
 pub mod authority;
+pub mod bridge_proof;
 pub mod crypto;
 pub mod envelope;
 pub mod error;
