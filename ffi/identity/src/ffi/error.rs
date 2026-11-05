@@ -37,6 +37,18 @@ pub extern "C" fn kq_error_class_name(class: u8) -> *const c_char {
     })
 }
 
+/// The optional detail pair: none when both are null, `None` when only one is usable.
+///
+/// # Safety
+/// Each pointer must be null or a valid NUL-terminated string.
+unsafe fn detail_in(key: *const c_char, value: *const c_char) -> Option<Vec<(String, String)>> {
+    match (input(key), input(value)) {
+        (Some(key), Some(value)) => Some(vec![(key.to_string(), value.to_string())]),
+        _ if key.is_null() && value.is_null() => Some(Vec::new()),
+        _ => None,
+    }
+}
+
 /// Writes a signed `KQER` sidecar for a refused artifact. `object_ref` is the SHA-256 of
 /// the artifact; `actor_label` the reporter's label; `occurred_at` UTC text. `detail_key`
 /// and `detail_value` are one optional detail pair (both null for none); the key must be
@@ -68,12 +80,9 @@ pub unsafe extern "C" fn kq_error_sign(
     ) else {
         return KQ_FILE_INVALID;
     };
-    let mut detail = Vec::new();
-    match (input(detail_key), input(detail_value)) {
-        (Some(key), Some(value)) => detail.push((key.to_string(), value.to_string())),
-        _ if detail_key.is_null() && detail_value.is_null() => {}
-        _ => return KQ_FILE_INVALID,
-    }
+    let Some(detail) = detail_in(detail_key, detail_value) else {
+        return KQ_FILE_INVALID;
+    };
     let (Ok(code), Ok(class)) = (ErrorCode::from_u16(code), Class::from_u8(class)) else {
         return KQ_FILE_INVALID;
     };
