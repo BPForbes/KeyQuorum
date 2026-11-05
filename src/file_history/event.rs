@@ -88,8 +88,8 @@ impl HistoryEventType {
     /// Which group of activity this event belongs to, for a reader that
     /// filters a history: `file`, `revision`, `security`, `sharing` or
     /// `conflict`. Presentation only; it is not part of the wire format.
-    /// `ErrorReported` is `sharing` as the KQ-12 issue (#169) specifies: a report is
-    /// about a delivery that failed after it was handed over.
+    /// `ErrorReported` is `sharing`: a report is about a delivery that failed after it
+    /// was handed over.
     pub fn category(self) -> &'static str {
         use HistoryEventType as E;
         match self {
@@ -315,7 +315,7 @@ pub struct EventDetails(Vec<(String, String)>);
 /// closed set (never message text), `error_code` a decimal integer, `error_ref` an
 /// opaque identifier of the failed artifact (lower-case hex of its SHA-256, never its
 /// content and never an error string). `signing_mode` is `own` or `assembled`; it is
-/// reserved for the signing producer of KQ-18 and nothing in this crate writes it yet.
+/// reserved for a signing producer and nothing in this crate writes it yet.
 pub const SAFE_DETAIL_KEYS: &[&str] = &[
     "action",
     "answers",

@@ -1,7 +1,7 @@
 //! C exports for `KQER` error reports (`include/keyquorum_error.h`): the static names of
 //! the closed code and class sets, signing a report, and verifying a sidecar and appending
 //! its `ErrorReported` event to a tracked file. The rules live in `keyquorum::error_report`;
-//! nothing here judges anything. Added in ABI version 3.
+//! nothing here judges anything.
 
 use super::files::{buf_out, container_in, file_out, slice_in, KQ_FILE_INVALID};
 use super::{bytes_in, input};

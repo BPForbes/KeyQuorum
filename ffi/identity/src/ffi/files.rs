@@ -1126,7 +1126,6 @@ pub unsafe extern "C" fn kq_file_open_letter(
     rc
 }
 
-/// The sender and recipient of a snapshot letter, as the caller passed them.
 struct SnapshotParties<'a> {
     sender: &'a str,
     sender_secret: Zeroizing<[u8; 32]>,
@@ -1193,8 +1192,7 @@ fn sealed_snapshot(
 /// Seals a `KQHS` (kind 17) of the first `upto_events` events of the file's history,
 /// signed by `sender` and sealed to `recipient`'s box key. `upto_events` may be 0 (the
 /// empty history) up to the number of events the file holds, else `KQ_FILE_INVALID`.
-/// The letter goes to `out`, its delivery id to `delivery_id_out` (16 bytes). Added in
-/// ABI version 3.
+/// The letter goes to `out`, its delivery id to `delivery_id_out` (16 bytes).
 ///
 /// # Safety
 /// As [`kq_file_seal_letter`], without `rev` and `trust`.
@@ -1253,7 +1251,7 @@ fn snapshot_matches_header(opened: &file_delivery::SnapshotLetter) -> bool {
 /// the letter names), addressed to `expected_recipient`, and its snapshot decoding to
 /// the file id, history root and event count the signed header states, else
 /// `KQ_FILE_UNTRUSTED`. Writes the snapshot (`KQHS` bytes) to `snap_out`, its root to
-/// `root_out` (32 bytes) and its event count to `event_count_out`. Added in ABI version 3.
+/// `root_out` (32 bytes) and its event count to `event_count_out`.
 ///
 /// # Safety
 /// `letter` readable for `llen`; `box_secret` and `sender_public` for 32; strings
@@ -1307,7 +1305,6 @@ pub unsafe extern "C" fn kq_file_open_snapshot(
 /// `KQ_FILE_OK` when the history of the extract `extract` (a `KQTF`, as delivered in a
 /// kind-15 letter) is a prefix of the snapshot `snapshot` (`KQHS`, from a kind-17 letter),
 /// `KQ_FILE_DIVERGED` when it is not, `KQ_FILE_INVALID` when either does not decode.
-/// Added in ABI version 3.
 ///
 /// # Safety
 /// Both buffers readable for their lengths.

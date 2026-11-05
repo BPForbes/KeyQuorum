@@ -68,7 +68,6 @@ unsafe fn members_in<'a>(
         .collect()
 }
 
-/// A bridge member's own view of the bridge, enough to sign a challenge.
 struct Prover<'a> {
     uid: &'a str,
     generation: u32,
@@ -129,8 +128,6 @@ unsafe fn secrets_in(encryption_sk: *const u8, signing_sk: *const u8) -> Option<
     ))
 }
 
-/// Encodes a proof into the caller's buffer, or maps the refusal to its status.
-///
 /// # Safety
 /// `artifact_out` must be null or writable for `cap`; `artifact_len` writable.
 unsafe fn artifact_out_of(
@@ -215,7 +212,6 @@ pub unsafe extern "C" fn kq_bridge_prove(
     artifact_out_of(prover.proof(), artifact_out, cap, artifact_len)
 }
 
-/// Decodes `artifact` and judges it against `facts`.
 fn verify_status(
     facts: &BridgeFacts<'_>,
     verifier: &str,

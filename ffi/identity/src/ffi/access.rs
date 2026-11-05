@@ -1,6 +1,6 @@
 //! C export for the login / `su` / `sudo` access policy (`include/keyquorum_access.h`):
 //! `kq_access_requirement`, over `keyquorum::access::requirement`. The rule is there; this
-//! only reads the caller's strings and live bridges. Added in ABI version 4.
+//! only reads the caller's strings and live bridges.
 
 use super::input;
 #[allow(unused_imports)]

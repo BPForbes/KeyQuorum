@@ -48,25 +48,21 @@ fn panics<R>(f: impl FnOnce() -> R) -> bool {
 // One test, so the switchable hook is never raced by a parallel one.
 #[test]
 fn the_embedder_hook_supplies_entropy_and_a_failure_fails_closed() {
-    // An empty request never reaches the hook.
     set_status(0);
     let before = calls();
     crypto::fill_random(&mut []);
     assert_eq!(calls(), before);
 
-    // Status 0: the bytes come from the hook.
     let mut first = [0u8; 32];
     crypto::fill_random(&mut first);
     assert_eq!(calls(), before + 1);
     assert_ne!(first, [0u8; 32]);
 
-    // Everything built on the seam draws from it too.
     let (_, recipient_public) = keys::generate_encryption_keypair();
     let after_keygen = calls();
     let (_, _) = keys::generate_signing_keypair();
     assert!(calls() > after_keygen);
 
-    // A non-zero status panics in every entry point and never yields a buffer.
     set_status(5);
     let mut untouched = [0xA5u8; 32];
     assert!(panics(|| crypto::fill_random(&mut untouched)));
@@ -80,7 +76,6 @@ fn the_embedder_hook_supplies_entropy_and_a_failure_fails_closed() {
         b"payload"
     )));
 
-    // The hook recovers: the failure is not sticky state in the library.
     set_status(0);
     let mut again = [0u8; 16];
     crypto::fill_random(&mut again);
