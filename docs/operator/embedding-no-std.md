@@ -31,7 +31,9 @@ This works because `.cargo/config.toml` (in this repository, applying to that ta
 how to split the result of this operator!", then SIGILL) while compiling `polyval`, `poly1305`,
 `curve25519-dalek`, `sha2` and `aes` for the soft-float, no-SSE target, in debug and release. If you
 build from a copy of `ffi/identity` that does not sit under this repository's `.cargo/`, pass the same
-five flags as `RUSTFLAGS`. Opt-level, `-C target-feature` and `-C target-cpu` changes did not help;
+five flags as `RUSTFLAGS`.
+
+Cargo defines `[target.<triple>].rustflags` per triple, so the config applies to every build run inside this workspace and to the Flinstone build of the archive from its `third_party/keyquorum` submodule directory (that directory holds this `.cargo/config.toml`). A build from outside any directory holding it must pass the same five cfgs itself (`curve25519_dalek_backend="serial"`, `poly1305_force_soft`, `polyval_backend="soft"`, `sha2_backend="soft"`, `aes_backend="soft"`). Warning: a `RUSTFLAGS` environment variable overrides those config entries, it does not append to them. A build that sets `RUSTFLAGS` must include all five cfgs and must not rely on the config. Observed here: `RUSTFLAGS="-C target-cpu=generic" cargo build --no-default-features --target x86_64-unknown-none` compiled `curve25519-dalek` with `curve25519_dalek_backend="simd"` and failed with "rustc-LLVM ERROR: Do not know how to split the result of this operator!". Opt-level, `-C target-feature` and `-C target-cpu` changes did not help;
 the cfgs are the fix. Needs no `build-std` and no nightly.
 
 Checked: the archive's only undefined symbols are the four hooks (the portable backends bring no libc
