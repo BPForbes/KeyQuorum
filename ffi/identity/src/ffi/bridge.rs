@@ -80,8 +80,8 @@ struct Prover<'a> {
     label: &'a str,
     sealed: &'a [u8],
     wrap_salt: [u8; 16],
-    encryption_sk: &'a [u8; 32],
-    signing_sk: &'a [u8; 32],
+    encryption_sk: Secret,
+    signing_sk: Secret,
     challenge: &'a [u8],
 }
 
@@ -89,7 +89,7 @@ impl Prover<'_> {
     fn proof(&self) -> Result<BridgeSignature, Error> {
         let members = [MemberFact {
             label: self.label,
-            signing_public: Some(signing::public_key(self.signing_sk)),
+            signing_public: Some(signing::public_key(&self.signing_sk)),
         }];
         let facts = BridgeFacts {
             uid: self.uid,
@@ -100,7 +100,7 @@ impl Prover<'_> {
             members: &members,
         };
         let local = LocalMember {
-            encryption_public: keyquorum::keys::encryption_public_from_secret(self.encryption_sk),
+            encryption_public: keyquorum::keys::encryption_public_from_secret(&self.encryption_sk),
             holds_sealed_key: true,
         };
         let held = SealedBridgeKey {
@@ -112,8 +112,8 @@ impl Prover<'_> {
             self.label,
             &local,
             held,
-            self.encryption_sk,
-            self.signing_sk,
+            &self.encryption_sk,
+            &self.signing_sk,
             self.challenge,
         )
     }
@@ -134,7 +134,7 @@ unsafe fn secrets_in(encryption_sk: *const u8, signing_sk: *const u8) -> Option<
 
 /// # Safety
 /// `artifact_out` must be null or writable for `cap`; `artifact_len` writable.
-unsafe fn artifact_out_of(
+unsafe fn write_proof(
     proof: Result<BridgeSignature, Error>,
     artifact_out: *mut u8,
     cap: usize,
@@ -148,6 +148,59 @@ unsafe fn artifact_out_of(
         Ok(bytes) => status_of_buf(buf_out(&bytes, artifact_out, cap, artifact_len)),
         Err(_) => KQ_BRIDGE_INVALID,
     }
+}
+
+/// # Safety
+/// As [`kq_bridge_prove`], without the output arguments.
+#[allow(clippy::too_many_arguments)]
+unsafe fn prover_in<'a>(
+    uid: *const c_char,
+    generation: u32,
+    salt: *const u8,
+    bridge_public: *const u8,
+    local_label: *const c_char,
+    sealed_bridge_key: *const u8,
+    slen: usize,
+    wrap_salt: *const u8,
+    encryption_sk: *const u8,
+    signing_sk: *const u8,
+    challenge: *const u8,
+    clen: usize,
+) -> Option<Prover<'a>> {
+    let (
+        Some(uid),
+        Some(salt),
+        Some(bridge_public),
+        Some(label),
+        Some(sealed),
+        Some(wrap_salt),
+        Some((encryption_sk, signing_sk)),
+        Some(challenge),
+    ) = (
+        input(uid),
+        bytes_in::<16>(salt),
+        bytes_in::<32>(bridge_public),
+        input(local_label),
+        slice_in(sealed_bridge_key, slen),
+        bytes_in::<16>(wrap_salt),
+        secrets_in(encryption_sk, signing_sk),
+        slice_in(challenge, clen),
+    )
+    else {
+        return None;
+    };
+    Some(Prover {
+        uid,
+        generation,
+        salt,
+        bridge_public,
+        label,
+        sealed,
+        wrap_salt,
+        encryption_sk,
+        signing_sk,
+        challenge,
+    })
 }
 
 /// Signs `challenge` as bridge member `local_label`; the artifact
@@ -177,41 +230,23 @@ pub unsafe extern "C" fn kq_bridge_prove(
     cap: usize,
     artifact_len: *mut usize,
 ) -> c_int {
-    let (
-        Some(uid),
-        Some(salt),
-        Some(bridge_public),
-        Some(label),
-        Some(sealed),
-        Some(wrap_salt),
-        Some((encryption_sk, signing_sk)),
-        Some(challenge),
-    ) = (
-        input(uid),
-        bytes_in::<16>(salt),
-        bytes_in::<32>(bridge_public),
-        input(local_label),
-        slice_in(sealed_bridge_key, slen),
-        bytes_in::<16>(wrap_salt),
-        secrets_in(encryption_sk, signing_sk),
-        slice_in(challenge, clen),
-    )
-    else {
-        return KQ_BRIDGE_INVALID;
-    };
-    let prover = Prover {
+    let Some(prover) = prover_in(
         uid,
         generation,
         salt,
         bridge_public,
-        label,
-        sealed,
+        local_label,
+        sealed_bridge_key,
+        slen,
         wrap_salt,
-        encryption_sk: &encryption_sk,
-        signing_sk: &signing_sk,
+        encryption_sk,
+        signing_sk,
         challenge,
+        clen,
+    ) else {
+        return KQ_BRIDGE_INVALID;
     };
-    artifact_out_of(prover.proof(), artifact_out, cap, artifact_len)
+    write_proof(prover.proof(), artifact_out, cap, artifact_len)
 }
 
 fn verify_status(

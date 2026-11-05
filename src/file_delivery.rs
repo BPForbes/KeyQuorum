@@ -778,6 +778,37 @@ pub fn open_history_snapshot_with_key(
     })
 }
 
+struct SnapshotFields {
+    file_id: [u8; 16],
+    history_root: [u8; 32],
+    event_count: u32,
+    snapshot: Vec<u8>,
+}
+
+impl SnapshotFields {
+    fn take(data: &mut &[u8]) -> Result<Self> {
+        Ok(Self {
+            file_id: take_array(data)?,
+            history_root: take_array(data)?,
+            event_count: u32::from_be_bytes(take_array(data)?),
+            snapshot: take_len_prefixed_u32(data)?.to_vec(),
+        })
+    }
+
+    fn into_letter(self, head: LetterHead) -> SnapshotLetter {
+        SnapshotLetter {
+            delivery_id: head.delivery_id,
+            sender_label: head.sender_label,
+            recipient_label: head.recipient_label,
+            file_name: head.file_name,
+            file_id: self.file_id,
+            history_root: self.history_root,
+            event_count: self.event_count,
+            snapshot: self.snapshot,
+        }
+    }
+}
+
 fn open_history_snapshot_verified(
     recipient_secret: &[u8; 32],
     bytes: &[u8],
@@ -790,10 +821,7 @@ fn open_history_snapshot_verified(
     )?;
     let mut data = payload.as_slice();
     let head = take_head(&mut data)?;
-    let file_id: [u8; 16] = take_array(&mut data)?;
-    let history_root: [u8; 32] = take_array(&mut data)?;
-    let event_count = u32::from_be_bytes(take_array(&mut data)?);
-    let snapshot = take_len_prefixed_u32(&mut data)?.to_vec();
+    let fields = SnapshotFields::take(&mut data)?;
     let signature = take_signature(&mut data)?;
     let preimage = snapshot_preimage(
         &recipient_public,
@@ -802,22 +830,13 @@ fn open_history_snapshot_verified(
         &head.recipient_label,
         &head.return_public,
         &head.file_name,
-        &file_id,
-        &history_root,
-        event_count,
-        &snapshot,
+        &fields.file_id,
+        &fields.history_root,
+        fields.event_count,
+        &fields.snapshot,
     )?;
     verify(&head.sender_label, &preimage, &signature)?;
-    Ok(SnapshotLetter {
-        delivery_id: head.delivery_id,
-        sender_label: head.sender_label,
-        recipient_label: head.recipient_label,
-        file_name: head.file_name,
-        file_id,
-        history_root,
-        event_count,
-        snapshot,
-    })
+    Ok(fields.into_letter(head))
 }
 
 #[allow(clippy::too_many_arguments)]
