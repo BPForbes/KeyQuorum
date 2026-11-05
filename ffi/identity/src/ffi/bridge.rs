@@ -1,9 +1,10 @@
-//! C exports for a private-bridge proof without a database (`include/keyquorum_bridge.h`):
-//! `kq_bridge_prove` (a bridge member signs a challenge) and `kq_bridge_verify` (check it
-//! against the live bridge's facts the caller holds). The rules are
-//! `keyquorum::bridge_proof`, the same functions the host's `sign_message` and
-//! `verify_message` call. Whether a bridge's ends reach an actor and a scope is
-//! `kq_bridge_connects`, in `keyquorum_identity.h`.
+//! C exports for a private-bridge proof without a database
+//! (`include/keyquorum_bridge.h`): `kq_bridge_prove` (a bridge member signs a
+//! challenge) and `kq_bridge_verify` (check it against the live bridge's facts
+//! the caller holds). The rules are `keyquorum::bridge_proof`, the same
+//! functions the host's `sign_message` and `verify_message` call. Whether a
+//! bridge's ends reach an actor and a scope is `kq_bridge_connects`, in
+//! `keyquorum_identity.h`.
 
 use super::files::{buf_out, slice_in};
 use super::{bytes_in, input};
@@ -23,7 +24,8 @@ pub const KQ_BRIDGE_INVALID: c_int = -1;
 pub const KQ_BRIDGE_NO_ROOM: c_int = -3;
 /// Refused: not a member, a key or signature that does not match.
 pub const KQ_BRIDGE_REFUSED: c_int = -5;
-/// Refused: the artifact is from another generation, salt or bridge, or the bridge is gone.
+/// Refused: the artifact is from another generation, salt or bridge, or the
+/// bridge is gone.
 pub const KQ_BRIDGE_STALE: c_int = -6;
 
 const MAX_MEMBERS: usize = 256;
@@ -43,11 +45,13 @@ fn status_of_buf(rc: c_int) -> c_int {
     }
 }
 
-/// The roster the caller passed: `nmembers` labels with their 32-byte signing keys.
+/// The roster the caller passed: `nmembers` labels with their 32-byte signing
+/// keys.
 ///
 /// # Safety
-/// `member_labels` must be null or readable for `nmembers` pointers to NUL-terminated
-/// strings, and `member_signing_pubs` null or readable for `nmembers * 32` bytes.
+/// `member_labels` must be null or readable for `nmembers` pointers to
+/// NUL-terminated strings, and `member_signing_pubs` null or readable for
+/// `nmembers * 32` bytes.
 unsafe fn members_in<'a>(
     member_labels: *const *const c_char,
     member_signing_pubs: *const u8,
@@ -146,17 +150,19 @@ unsafe fn artifact_out_of(
     }
 }
 
-/// Signs `challenge` as bridge member `local_label`: unseals the member's bridge key
-/// (`sealed_bridge_key` with its `wrap_salt`) with `encryption_sk`, and signs with it and
-/// `signing_sk`. The roster facts of a prover are its own keys, so what is checked is that
-/// the sealed key opens with this encryption secret, that the secret it holds is the
-/// bridge's (`bridge_public`), and that the bridge is live. The artifact
+/// Signs `challenge` as bridge member `local_label`: unseals the member's
+/// bridge key (`sealed_bridge_key` with its `wrap_salt`) with `encryption_sk`,
+/// and signs with it and `signing_sk`. The roster facts of a prover are its
+/// own keys, so what is checked is that the sealed key opens with this
+/// encryption secret, that the secret it holds is the bridge's
+/// (`bridge_public`), and that the bridge is live. The artifact
 /// (`signing::encode_bridge_signature`) goes to `artifact_out`.
 ///
 /// # Safety
-/// `uid`, `local_label` NUL-terminated; `salt` and `wrap_salt` readable for 16 bytes;
-/// `bridge_public`, `encryption_sk`, `signing_sk` for 32; `sealed_bridge_key` for `slen`;
-/// `challenge` for `clen`; `artifact_out` null or writable for `cap`; `artifact_len` writable.
+/// `uid`, `local_label` NUL-terminated; `salt` and `wrap_salt` readable for 16
+/// bytes; `bridge_public`, `encryption_sk`, `signing_sk` for 32;
+/// `sealed_bridge_key` for `slen`; `challenge` for `clen`; `artifact_out` null
+/// or writable for `cap`; `artifact_len` writable.
 #[no_mangle]
 pub unsafe extern "C" fn kq_bridge_prove(
     uid: *const c_char,
@@ -227,18 +233,20 @@ fn verify_status(
     }
 }
 
-/// Verifies `artifact` against the live bridge `uid`, `generation`, `salt`, `bridge_public`
-/// (`destroyed` non-zero for a bridge that is gone) whose Member roster is `nmembers`
-/// labels (`member_labels`, NUL-terminated strings) with their signing keys
-/// (`member_signing_pubs`, 32 bytes each, in the same order): the artifact must be from
-/// this generation and salt, its signer and `verifier_label` must be members, and both
-/// signatures must verify over `challenge`. `KQ_BRIDGE_OK`, `KQ_BRIDGE_STALE` or
-/// `KQ_BRIDGE_REFUSED`; `KQ_BRIDGE_INVALID` for a bad argument or an undecodable artifact.
+/// Verifies `artifact` against the live bridge `uid`, `generation`, `salt`,
+/// `bridge_public` (`destroyed` non-zero for a bridge that is gone) whose
+/// Member roster is `nmembers` labels (`member_labels`, NUL-terminated
+/// strings) with their signing keys (`member_signing_pubs`, 32 bytes each, in
+/// the same order): the artifact must be from this generation and salt, its
+/// signer and `verifier_label` must be members, and both signatures must
+/// verify over `challenge`. `KQ_BRIDGE_OK`, `KQ_BRIDGE_STALE` or
+/// `KQ_BRIDGE_REFUSED`; `KQ_BRIDGE_INVALID` for a bad argument or an
+/// undecodable artifact.
 ///
 /// # Safety
-/// Strings NUL-terminated; `salt` readable for 16 bytes; `bridge_public` for 32;
-/// `member_labels` for `nmembers` pointers and `member_signing_pubs` for `nmembers * 32`;
-/// `challenge` for `clen`; `artifact` for `alen`.
+/// Strings NUL-terminated; `salt` readable for 16 bytes; `bridge_public` for
+/// 32; `member_labels` for `nmembers` pointers and `member_signing_pubs` for
+/// `nmembers * 32`; `challenge` for `clen`; `artifact` for `alen`.
 #[no_mangle]
 pub unsafe extern "C" fn kq_bridge_verify(
     uid: *const c_char,

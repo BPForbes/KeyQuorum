@@ -56,9 +56,10 @@ pub const KQ_FILE_DIVERGED: c_int = -12;
 pub const KQ_FILE_FIRST: c_int = 1;
 /// Freshness: extends everything accepted before and adds a revision.
 pub const KQ_FILE_NEWER: c_int = 2;
-/// Bumped when a signature or struct in the header changes, or functions are added
-/// (3: the `kq_error_*` exports of `keyquorum_error.h` and the kind-17 snapshot
-/// exports, `KQ_FILE_DIVERGED`; 4: `kq_slot_open`, `kq_bridge_*`, `kq_access_requirement`).
+/// Bumped when a signature or struct in the header changes, or functions are
+/// added (3: the `kq_error_*` exports of `keyquorum_error.h` and the kind-17
+/// snapshot exports, `KQ_FILE_DIVERGED`; 4: `kq_slot_open`, `kq_bridge_*`,
+/// `kq_access_requirement`).
 pub const KQ_FILE_ABI_VERSION: c_int = 4;
 
 /// A signing key the caller's registry holds for a label.
@@ -1135,7 +1136,8 @@ struct SnapshotParties<'a> {
 }
 
 /// # Safety
-/// Strings null or NUL-terminated; each key pointer null or readable for 32 bytes.
+/// Strings null or NUL-terminated; each key pointer null or readable for 32
+/// bytes.
 unsafe fn snapshot_parties_in<'a>(
     sender: *const c_char,
     sender_secret: *const u8,
@@ -1152,8 +1154,8 @@ unsafe fn snapshot_parties_in<'a>(
     })
 }
 
-/// The kind-17 letter for the first `upto_events` events of `file`; `None` when that is
-/// more events than the file holds or the letter cannot be built.
+/// The kind-17 letter for the first `upto_events` events of `file`; `None`
+/// when that is more events than the file holds or the letter cannot be built.
 fn sealed_snapshot(
     file: &TrackedFile,
     upto_events: u32,
@@ -1189,10 +1191,11 @@ fn sealed_snapshot(
     .ok()
 }
 
-/// Seals a `KQHS` (kind 17) of the first `upto_events` events of the file's history,
-/// signed by `sender` and sealed to `recipient`'s box key. `upto_events` may be 0 (the
-/// empty history) up to the number of events the file holds, else `KQ_FILE_INVALID`.
-/// The letter goes to `out`, its delivery id to `delivery_id_out` (16 bytes).
+/// Seals a `KQHS` (kind 17) of the first `upto_events` events of the file's
+/// history, signed by `sender` and sealed to `recipient`'s box key.
+/// `upto_events` may be 0 (the empty history) up to the number of events the
+/// file holds, else `KQ_FILE_INVALID`. The letter goes to `out`, its delivery
+/// id to `delivery_id_out` (16 bytes).
 ///
 /// # Safety
 /// As [`kq_file_seal_letter`], without `rev` and `trust`.
@@ -1236,8 +1239,8 @@ pub unsafe extern "C" fn kq_file_seal_snapshot(
     rc
 }
 
-/// Whether the snapshot inside `opened` decodes to the file id, root and event count its
-/// signed header states.
+/// Whether the snapshot inside `opened` decodes to the file id, root and event
+/// count its signed header states.
 fn snapshot_matches_header(opened: &file_delivery::SnapshotLetter) -> bool {
     HistorySnapshot::decode(&opened.snapshot).is_ok_and(|snapshot| {
         snapshot.file_id == opened.file_id
@@ -1246,17 +1249,18 @@ fn snapshot_matches_header(opened: &file_delivery::SnapshotLetter) -> bool {
     })
 }
 
-/// Opens a kind-17 letter with the recipient's box secret: signed by `expected_sender`
-/// under `sender_public` (the key the caller's registry holds for that label, not one
-/// the letter names), addressed to `expected_recipient`, and its snapshot decoding to
-/// the file id, history root and event count the signed header states, else
-/// `KQ_FILE_UNTRUSTED`. Writes the snapshot (`KQHS` bytes) to `snap_out`, its root to
-/// `root_out` (32 bytes) and its event count to `event_count_out`.
+/// Opens a kind-17 letter with the recipient's box secret: signed by
+/// `expected_sender` under `sender_public` (the key the caller's registry
+/// holds for that label, not one the letter names), addressed to
+/// `expected_recipient`, and its snapshot decoding to the file id, history
+/// root and event count the signed header states, else `KQ_FILE_UNTRUSTED`.
+/// Writes the snapshot (`KQHS` bytes) to `snap_out`, its root to `root_out`
+/// (32 bytes) and its event count to `event_count_out`.
 ///
 /// # Safety
-/// `letter` readable for `llen`; `box_secret` and `sender_public` for 32; strings
-/// NUL-terminated; `snap_out` null or writable for `cap`; `snap_len` writable;
-/// `root_out` writable for 32; `event_count_out` writable.
+/// `letter` readable for `llen`; `box_secret` and `sender_public` for 32;
+/// strings NUL-terminated; `snap_out` null or writable for `cap`; `snap_len`
+/// writable; `root_out` writable for 32; `event_count_out` writable.
 #[no_mangle]
 pub unsafe extern "C" fn kq_file_open_snapshot(
     letter: *const u8,
@@ -1302,9 +1306,10 @@ pub unsafe extern "C" fn kq_file_open_snapshot(
     rc
 }
 
-/// `KQ_FILE_OK` when the history of the extract `extract` (a `KQTF`, as delivered in a
-/// kind-15 letter) is a prefix of the snapshot `snapshot` (`KQHS`, from a kind-17 letter),
-/// `KQ_FILE_DIVERGED` when it is not, `KQ_FILE_INVALID` when either does not decode.
+/// `KQ_FILE_OK` when the history of the extract `extract` (a `KQTF`, as
+/// delivered in a kind-15 letter) is a prefix of the snapshot `snapshot`
+/// (`KQHS`, from a kind-17 letter), `KQ_FILE_DIVERGED` when it is not,
+/// `KQ_FILE_INVALID` when either does not decode.
 ///
 /// # Safety
 /// Both buffers readable for their lengths.

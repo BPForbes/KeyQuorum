@@ -1,11 +1,13 @@
-//! The `no_std` entropy path: without `host`, `crypto::fill_random` (and everything that
-//! draws randomness through it) calls the embedder's `kq_platform_random`. This test is
-//! the embedder: it defines that symbol with a switchable status and checks that an empty
-//! request makes no call, status 0 fills the buffer, and a non-zero status panics rather
-//! than hand back weak bytes. Run with
-//! `cargo test --no-default-features --features std --test platform_entropy`.
+//! The `no_std` entropy path: without `host`, `crypto::fill_random` (and
+//! everything that draws randomness through it) calls the embedder's
+//! `kq_platform_random`. This test is the embedder: it defines that symbol
+//! with a switchable status and checks that an empty request makes no call,
+//! status 0 fills the buffer, and a non-zero status panics rather than hand
+//! back weak bytes. Run with `cargo test --no-default-features --features std
+//! --test platform_entropy`.
 
-// With `host` the OS supplies entropy and the hook is never called: nothing to test.
+// With `host` the OS supplies entropy and the hook is never called: nothing to
+// test.
 #![cfg(not(feature = "host"))]
 
 use keyquorum::{crypto, envelope, keys};
@@ -17,7 +19,8 @@ static CALLS: AtomicUsize = AtomicUsize::new(0);
 static STATUS: AtomicU8 = AtomicU8::new(0);
 static COUNTER: AtomicU8 = AtomicU8::new(1);
 
-/// The embedder's hook. Status 0 fills the buffer with a non-constant byte sequence.
+/// The embedder's hook. Status 0 fills the buffer with a non-constant byte
+/// sequence.
 #[no_mangle]
 extern "C" fn kq_platform_random(buf: *mut u8, len: usize) -> c_int {
     CALLS.fetch_add(1, Ordering::SeqCst);

@@ -889,7 +889,8 @@ pub fn on_member_revoked(conn: &Connection, node_label: &str) -> Result<Vec<Brid
     Ok(changes)
 }
 
-/// The roster of `summary` as the facts `bridge_proof` judges: Member role only.
+/// The roster of `summary` as the facts `bridge_proof` judges: Member role
+/// only.
 fn proof_members(summary: &BridgeSummary) -> Vec<bridge_proof::MemberFact<'_>> {
     summary
         .parties
@@ -902,8 +903,8 @@ fn proof_members(summary: &BridgeSummary) -> Vec<bridge_proof::MemberFact<'_>> {
         .collect()
 }
 
-/// Whether the roster's signing key for `label` is the one this store has registered for
-/// it (a label this store does not know is not a mismatch).
+/// Whether the roster's signing key for `label` is the one this store has
+/// registered for it (a label this store does not know is not a mismatch).
 fn registry_agrees(conn: &Connection, label: &str, roster_signing: &[u8; 32]) -> Result<()> {
     match signing_public_for_label(conn, label) {
         Ok(local) if local != *roster_signing => Err(Error::IntegrityCheckFailed),
@@ -927,8 +928,8 @@ fn proof_facts<'a>(
     }
 }
 
-/// The prover's own roster entry. A non-member gets an empty one, which `prove_with`
-/// never reads because it answers `NotBridgeMember` first.
+/// The prover's own roster entry. A non-member gets an empty one, which
+/// `prove_with` never reads because it answers `NotBridgeMember` first.
 fn local_member(summary: &BridgeSummary, local_label: &str) -> bridge_proof::LocalMember {
     summary
         .parties
@@ -1867,7 +1868,8 @@ fn encode_notice(
     Ok(out)
 }
 
-/// The sealed bridge key this store holds for `local_label`, with its wrap salt.
+/// The sealed bridge key this store holds for `local_label`, with its wrap
+/// salt.
 fn load_sealed_key(
     conn: &Connection,
     uid: &str,

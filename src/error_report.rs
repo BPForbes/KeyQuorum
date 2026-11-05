@@ -29,8 +29,9 @@ pub const MAGIC: &[u8; 4] = b"KQER";
 pub const VERSION: u8 = 1;
 /// A report is a few hundred bytes; anything larger is refused unread.
 pub const MAX_ENCODED_LEN: usize = 1024;
-/// The only detail keys a report may carry: the quorum gate's counts. Each value is a
-/// decimal number of at most [`MAX_DETAIL_VALUE_LEN`] digits that fits a `u32`.
+/// The only detail keys a report may carry: the quorum gate's counts. Each
+/// value is a decimal number of at most [`MAX_DETAIL_VALUE_LEN`] digits that
+/// fits a `u32`.
 pub const DETAIL_KEYS: &[&str] = &["devices", "minimum_devices", "shares", "threshold"];
 pub const MAX_DETAIL_ENTRIES: usize = 8;
 pub const MAX_DETAIL_VALUE_LEN: usize = 16;
@@ -85,7 +86,8 @@ impl ErrorCode {
     }
 }
 
-/// The coarse reason a remote peer may see. Closed set. Append only; never renumber.
+/// The coarse reason a remote peer may see. Closed set. Append only; never
+/// renumber.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Class {
@@ -152,7 +154,8 @@ fn time_char(c: char) -> bool {
     c.is_ascii_digit() || matches!(c, '-' | ':' | '.' | 'T' | 'Z')
 }
 
-/// A detail value is a count: ASCII digits that fit a `u32`, so no word, however short, is representable.
+/// A detail value is a count: ASCII digits that fit a `u32`, so no word,
+/// however short, is representable.
 fn count_value(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_DETAIL_VALUE_LEN
@@ -161,7 +164,8 @@ fn count_value(value: &str) -> bool {
 }
 
 impl Report {
-    /// The rules a report must meet to be written or accepted: no free text anywhere.
+    /// The rules a report must meet to be written or accepted: no free text
+    /// anywhere.
     fn check(&self) -> Result<()> {
         let bounded = |text: &str, max: usize, ok: fn(char) -> bool| {
             !text.is_empty() && text.len() <= max && text.chars().all(ok)
@@ -265,7 +269,8 @@ fn decode_body(body: &[u8]) -> Result<Report> {
     Ok(report)
 }
 
-/// Parse the framing and the field rules; the signature is returned, not checked.
+/// Parse the framing and the field rules; the signature is returned, not
+/// checked.
 fn decode(bytes: &[u8]) -> Result<(Report, &[u8], [u8; 64])> {
     if bytes.len() > MAX_ENCODED_LEN || bytes.len() < MAGIC.len() + 1 + 64 {
         return Err(Error::InvalidErrorReport);
@@ -275,8 +280,9 @@ fn decode(bytes: &[u8]) -> Result<(Report, &[u8], [u8; 64])> {
     Ok((decode_body(body)?, body, signature))
 }
 
-/// Decode a sidecar and accept it only when the reporter's signature verifies and it names
-/// `expected_object_ref` (the SHA-256 of the artifact the caller actually holds).
+/// Decode a sidecar and accept it only when the reporter's signature verifies
+/// and it names `expected_object_ref` (the SHA-256 of the artifact the caller
+/// actually holds).
 pub fn verify(
     bytes: &[u8],
     reporter_public: &[u8; 32],
@@ -294,9 +300,10 @@ pub fn verify(
     Ok(report)
 }
 
-/// The history event a verified report becomes. Every detail value is derived: the class
-/// is one fixed word, the code a decimal integer, and `error_ref` the lower-case hex of
-/// the 32-byte `object_ref`, so no message text can reach history through it.
+/// The history event a verified report becomes. Every detail value is derived:
+/// the class is one fixed word, the code a decimal integer, and `error_ref`
+/// the lower-case hex of the 32-byte `object_ref`, so no message text can
+/// reach history through it.
 pub fn history_event(report: &Report) -> NewEvent {
     NewEvent {
         revision_id: None,

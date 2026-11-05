@@ -31,8 +31,9 @@ pub mod ffi;
 pub mod heritage;
 mod nostd;
 
-/// What a panic means in the kernel build: the embedder decides (Flinstone fails the
-/// check closed). A silent spin on a login path would be a denial of service.
+/// What a panic means in the kernel build: the embedder decides (Flinstone
+/// fails the check closed). A silent spin on a login path would be a denial of
+/// service.
 #[cfg(not(feature = "std"))]
 #[panic_handler]
 fn on_panic(_: &core::panic::PanicInfo) -> ! {
@@ -43,9 +44,9 @@ fn on_panic(_: &core::panic::PanicInfo) -> ! {
     unsafe { kq_platform_panic() }
 }
 
-/// The kernel's heap, supplied by the embedder: a `no_std` staticlib needs a global
-/// allocator and this crate owns none. A null return is an allocation failure (the
-/// `alloc` crate then aborts through the panic handler above).
+/// The kernel's heap, supplied by the embedder: a `no_std` staticlib needs a
+/// global allocator and this crate owns none. A null return is an allocation
+/// failure (the `alloc` crate then aborts through the panic handler above).
 #[cfg(not(feature = "std"))]
 mod platform_heap {
     use core::alloc::{GlobalAlloc, Layout};
@@ -57,8 +58,9 @@ mod platform_heap {
 
     struct PlatformHeap;
 
-    // SAFETY: `GlobalAlloc`'s contract is passed straight to the embedder's functions,
-    // which must return memory of at least `size` bytes aligned to `align`, or null.
+    // SAFETY: `GlobalAlloc`'s contract is passed straight to the embedder's
+    // functions, which must return memory of at least `size` bytes aligned to
+    // `align`, or null.
     unsafe impl GlobalAlloc for PlatformHeap {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             kq_platform_alloc(layout.size(), layout.align())

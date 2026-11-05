@@ -763,11 +763,11 @@ pub fn open_history_snapshot(
     })
 }
 
-/// [`open_history_snapshot`] for a caller with no KeyQuorum store: the sender's
-/// signature is checked against `sender_signing_public`, the key the caller's own
-/// registry holds for the label it expects (the caller compares the letter's
-/// `sender_label` with that label). Same pattern as [`open_history_letter_with_key`];
-/// both variants share one verifying body.
+/// [`open_history_snapshot`] for a caller with no KeyQuorum store: the
+/// sender's signature is checked against `sender_signing_public`, the key the
+/// caller's own registry holds for the label it expects (the caller compares
+/// the letter's `sender_label` with that label). Same pattern as
+/// [`open_history_letter_with_key`]; both variants share one verifying body.
 pub fn open_history_snapshot_with_key(
     recipient_secret: &[u8; 32],
     sender_signing_public: &[u8; 32],

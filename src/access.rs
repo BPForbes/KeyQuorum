@@ -1,36 +1,41 @@
-//! The login / `su` / `sudo` access policy as one function: what a switch from the account
-//! `current` to the account `target` demands. It is pure (no database, no clock, `no_std`)
-//! so the hosted shell, the browser lab and a freestanding kernel ask the same rule.
+//! The login / `su` / `sudo` access policy as one function: what a switch from
+//! the account `current` to the account `target` demands. It is pure (no
+//! database, no clock, `no_std`) so the hosted shell, the browser lab and a
+//! freestanding kernel ask the same rule.
 //!
 //! The rule, in the order it is applied:
 //!
 //! - the same account (no `sudo`) needs nothing;
-//! - `sudo`, or any switch to `Root`, needs the target's own slot token and password
-//!   (`KqstAndPassword`): Root's key is sealed under Root's password, so the invoker's
-//!   password cannot open it;
-//! - the same branch (the target is below or above the current account) needs the target's
-//!   password;
-//! - another branch needs the target's password plus the slot token of a member of a LIVE
-//!   private bridge that connects the two accounts (`PasswordAndBridgeKqst`), and without
-//!   such a bridge the target's own slot token and password;
+//! - `sudo`, or any switch to `Root`, needs the target's own slot token and
+//!   password (`KqstAndPassword`): Root's key is sealed under Root's password,
+//!   so the invoker's password cannot open it;
+//! - the same branch (the target is below or above the current account) needs
+//!   the target's password;
+//! - another branch needs the target's password plus the slot token of a
+//!   member of a LIVE private bridge that connects the two accounts
+//!   (`PasswordAndBridgeKqst`), and without such a bridge the target's own
+//!   slot token and password;
 //! - labels that are not well formed are refused.
 //!
-//! "Connects" is `authority::bridge_connects`, the test `private_bridge::revision_approved`
-//! applies to a bridge's members: some pair of its Member labels has one end on the actor's
-//! line and the other on the target's. Supervisors never count, so the caller passes Member
-//! labels only. The caller passes only bridges it has checked live; the proof that the
-//! presenter really is a member is `bridge_proof::prove` / `verify` (a slot token alone is
-//! only a file). Which factor is asked is this module's answer; checking it is not.
+//! "Connects" is `authority::bridge_connects`, the test
+//! `private_bridge::revision_approved` applies to a bridge's members: some
+//! pair of its Member labels has one end on the actor's line and the other on
+//! the target's. Supervisors never count, so the caller passes Member labels
+//! only. The caller passes only bridges it has checked live; the proof that
+//! the presenter really is a member is `bridge_proof::prove` / `verify` (a
+//! slot token alone is only a file). Which factor is asked is this module's
+//! answer; checking it is not.
 //!
-//! `needs_parent_grant` is the opt-in `UnlockApproval::Parent` policy: a parent's signature
-//! on top of the factor, for any switch that asks for a factor at all. Collecting that
-//! signature at login is not designed here.
+//! `needs_parent_grant` is the opt-in `UnlockApproval::Parent` policy: a
+//! parent's signature on top of the factor, for any switch that asks for a
+//! factor at all. Collecting that signature at login is not designed here.
 
 use crate::authority::{self, RevisionAuthority};
 #[allow(unused_imports)]
 use crate::nostd::*;
 
-/// What a switch demands. The numbers are the C values (`KQ_ACCESS_*`): append only, never renumber.
+/// What a switch demands. The numbers are the C values (`KQ_ACCESS_*`): append
+/// only, never renumber.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Factor {
@@ -40,13 +45,15 @@ pub enum Factor {
     Password = 1,
     /// The target's slot token (`KQST`) and password.
     KqstAndPassword = 2,
-    /// The target's password and the slot token of a member of the bridge being crossed.
+    /// The target's password and the slot token of a member of the bridge
+    /// being crossed.
     PasswordAndBridgeKqst = 3,
     /// The switch is not allowed.
     Refused = 4,
 }
 
-/// A LIVE private bridge: its Member labels only (supervisors never make a bridge connect).
+/// A LIVE private bridge: its Member labels only (supervisors never make a
+/// bridge connect).
 #[derive(Clone, Copy, Debug)]
 pub struct BridgeFact<'a> {
     pub uid: &'a str,
@@ -63,8 +70,9 @@ pub struct AccessPolicy {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Requirement {
     pub factor: Factor,
-    /// Which of the `bridges` to cross, when `factor` is `PasswordAndBridgeKqst`: the caller
-    /// asks for the slot token of one of its members. The first connecting bridge.
+    /// Which of the `bridges` to cross, when `factor` is
+    /// `PasswordAndBridgeKqst`: the caller asks for the slot token of one of
+    /// its members. The first connecting bridge.
     pub bridge_index: Option<usize>,
     pub needs_parent_grant: bool,
 }
@@ -77,7 +85,8 @@ const fn plain(factor: Factor) -> Requirement {
     }
 }
 
-/// The first bridge in which some pair of Member labels connects `current` to `target`.
+/// The first bridge in which some pair of Member labels connects `current` to
+/// `target`.
 fn first_connecting_bridge(
     bridges: &[BridgeFact<'_>],
     current: &str,
@@ -94,8 +103,8 @@ fn first_connecting_bridge(
     })
 }
 
-/// What `current` must present to become `target`. `sudo` is a switch to Root's key whoever
-/// asks. An empty label, or a malformed one, is refused.
+/// What `current` must present to become `target`. `sudo` is a switch to
+/// Root's key whoever asks. An empty label, or a malformed one, is refused.
 pub fn requirement(
     current: &str,
     target: &str,
@@ -111,7 +120,8 @@ pub fn requirement(
         return plain(Factor::None);
     }
     if sudo || target == "Root" {
-        // Well-formedness of the invoker still matters: an unknown caller is refused.
+        // Well-formedness of the invoker still matters: an unknown caller is
+        // refused.
         return match relationship {
             RevisionAuthority::Unrelated => plain(Factor::Refused),
             _ => plain(Factor::KqstAndPassword),

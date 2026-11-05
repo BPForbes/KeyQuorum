@@ -1,7 +1,8 @@
-//! C exports for `KQER` error reports (`include/keyquorum_error.h`): the static names of
-//! the closed code and class sets, signing a report, and verifying a sidecar and appending
-//! its `ErrorReported` event to a tracked file. The rules live in `keyquorum::error_report`;
-//! nothing here judges anything.
+//! C exports for `KQER` error reports (`include/keyquorum_error.h`): the
+//! static names of the closed code and class sets, signing a report, and
+//! verifying a sidecar and appending its `ErrorReported` event to a tracked
+//! file. The rules live in `keyquorum::error_report`; nothing here judges
+//! anything.
 
 use super::files::{buf_out, container_in, file_out, slice_in, KQ_FILE_INVALID};
 use super::{bytes_in, input};
@@ -11,15 +12,15 @@ use core::ffi::{c_char, c_int};
 use keyquorum::error_report::{self, Class, ErrorCode, Report};
 use zeroize::Zeroizing;
 
-/// The name of error code `code` ("Integrity", ...), a static NUL-terminated string the
-/// caller never frees, or null for a code this build does not know.
+/// The name of error code `code` ("Integrity", ...), a static NUL-terminated
+/// string the caller never frees, or null for a code this build does not know.
 #[no_mangle]
 pub extern "C" fn kq_error_name(code: u16) -> *const c_char {
     ErrorCode::name_of(code).map_or(core::ptr::null(), |name| name.as_ptr())
 }
 
-/// The fixed word of error class `class` ("integrity", ...; the `error_class` a history
-/// event records), or null for a class this build does not know.
+/// The fixed word of error class `class` ("integrity", ...; the `error_class`
+/// a history event records), or null for a class this build does not know.
 #[no_mangle]
 pub extern "C" fn kq_error_class_name(class: u8) -> *const c_char {
     Class::from_u8(class).map_or(core::ptr::null(), |class| {
@@ -37,7 +38,8 @@ pub extern "C" fn kq_error_class_name(class: u8) -> *const c_char {
     })
 }
 
-/// The optional detail pair: none when both are null, `None` when only one is usable.
+/// The optional detail pair: none when both are null, `None` when only one is
+/// usable.
 ///
 /// # Safety
 /// Each pointer must be null or a valid NUL-terminated string.
@@ -49,14 +51,16 @@ unsafe fn detail_in(key: *const c_char, value: *const c_char) -> Option<Vec<(Str
     }
 }
 
-/// Writes a signed `KQER` sidecar for a refused artifact. `object_ref` is the SHA-256 of
-/// the artifact; `actor_label` the reporter's label; `occurred_at` UTC text. `detail_key`
-/// and `detail_value` are one optional detail pair (both null for none); the key must be
-/// one of `shares`, `threshold`, `devices`, `minimum_devices`. Returns KQ_FILE_INVALID for
-/// anything `keyquorum::error_report` refuses (free text, an unknown code or class).
+/// Writes a signed `KQER` sidecar for a refused artifact. `object_ref` is the
+/// SHA-256 of the artifact; `actor_label` the reporter's label; `occurred_at`
+/// UTC text. `detail_key` and `detail_value` are one optional detail pair
+/// (both null for none); the key must be one of `shares`, `threshold`,
+/// `devices`, `minimum_devices`. Returns KQ_FILE_INVALID for anything
+/// `keyquorum::error_report` refuses (free text, an unknown code or class).
 ///
 /// # Safety
-/// Pointers as documented in the header; `signing_secret` and `object_ref` read 32 bytes.
+/// Pointers as documented in the header; `signing_secret` and `object_ref`
+/// read 32 bytes.
 #[no_mangle]
 pub unsafe extern "C" fn kq_error_sign(
     code: u16,
@@ -101,14 +105,15 @@ pub unsafe extern "C" fn kq_error_sign(
     }
 }
 
-/// Verifies a `KQER` sidecar (the reporter's signature, and that it names the package
-/// whose SHA-256 is `pkg_sha256`) and appends an `ErrorReported` event to the tracked
-/// file, writing the changed container to `out`. KQ_FILE_OK, or KQ_FILE_INVALID when the
-/// container, the sidecar, the signature or the reference does not check out (nothing is
-/// written then).
+/// Verifies a `KQER` sidecar (the reporter's signature, and that it names the
+/// package whose SHA-256 is `pkg_sha256`) and appends an `ErrorReported` event
+/// to the tracked file, writing the changed container to `out`. KQ_FILE_OK, or
+/// KQ_FILE_INVALID when the container, the sidecar, the signature or the
+/// reference does not check out (nothing is written then).
 ///
 /// # Safety
-/// Pointers as documented in the header; `reporter_public` and `pkg_sha256` read 32 bytes.
+/// Pointers as documented in the header; `reporter_public` and `pkg_sha256`
+/// read 32 bytes.
 #[no_mangle]
 pub unsafe extern "C" fn kq_error_inject(
     kqtf: *const u8,

@@ -1,6 +1,7 @@
-//! C export for the login / `su` / `sudo` access policy (`include/keyquorum_access.h`):
-//! `kq_access_requirement`, over `keyquorum::access::requirement`. The rule is there; this
-//! only reads the caller's strings and live bridges.
+//! C export for the login / `su` / `sudo` access policy
+//! (`include/keyquorum_access.h`): `kq_access_requirement`, over
+//! `keyquorum::access::requirement`. The rule is there; this only reads the
+//! caller's strings and live bridges.
 
 use super::input;
 #[allow(unused_imports)]
@@ -8,7 +9,8 @@ use crate::nostd::*;
 use core::ffi::{c_char, c_int};
 use keyquorum::access::{self, AccessPolicy, BridgeFact, Factor};
 
-/// A live private bridge, as the caller's store lists it: its uid and its Member labels.
+/// A live private bridge, as the caller's store lists it: its uid and its
+/// Member labels.
 #[repr(C)]
 pub struct KqBridge {
     pub uid: *const c_char,
@@ -21,7 +23,8 @@ pub const KQ_ACCESS_PASSWORD: c_int = Factor::Password as c_int;
 pub const KQ_ACCESS_KQST_PASSWORD: c_int = Factor::KqstAndPassword as c_int;
 pub const KQ_ACCESS_PASSWORD_BRIDGE_KQST: c_int = Factor::PasswordAndBridgeKqst as c_int;
 pub const KQ_ACCESS_REFUSED: c_int = Factor::Refused as c_int;
-/// A bad argument (null, not UTF-8, too many bridges or members). Treat as refused.
+/// A bad argument (null, not UTF-8, too many bridges or members). Treat as
+/// refused.
 pub const KQ_ACCESS_INVALID: c_int = -1;
 
 const MAX_BRIDGES: usize = 64;
@@ -54,11 +57,12 @@ unsafe fn member_labels<'a>(bridge: &KqBridge) -> Option<Vec<&'a str>> {
         .collect()
 }
 
-/// The uids and Member label lists of the caller's bridges, or `None` for a bad argument.
+/// The uids and Member label lists of the caller's bridges, or `None` for a
+/// bad argument.
 ///
 /// # Safety
-/// `live_bridges` must be null or readable for `nbridges` structs, each valid as for
-/// `member_labels`.
+/// `live_bridges` must be null or readable for `nbridges` structs, each valid
+/// as for `member_labels`.
 unsafe fn bridges_in<'a>(
     live_bridges: *const KqBridge,
     nbridges: usize,
@@ -76,19 +80,21 @@ unsafe fn bridges_in<'a>(
     Some((uids, label_lists))
 }
 
-/// What a switch from `current` to `target` demands, as one of the `KQ_ACCESS_*` factors, or
-/// `KQ_ACCESS_INVALID` for a bad argument (nothing is granted by a bad call: both outputs
-/// are set to their refusing values, -1 and 0). `sudo` non-zero asks for Root's key.
-/// `live_bridges` are the `nbridges` private bridges the caller has checked live, Member
-/// labels only. `*bridge_index_out` is the index of the bridge to cross when the factor is
-/// `KQ_ACCESS_PASSWORD_BRIDGE_KQST`, else -1; `*needs_parent_grant_out` is 1 when
-/// `parent_approval` is on and the switch asks for a factor under the same-branch or
-/// cross-branch rules (never for `NONE`, `REFUSED`, Root or `sudo`).
+/// What a switch from `current` to `target` demands, as one of the
+/// `KQ_ACCESS_*` factors, or `KQ_ACCESS_INVALID` for a bad argument (nothing
+/// is granted by a bad call: both outputs are set to their refusing values, -1
+/// and 0). `sudo` non-zero asks for Root's key. `live_bridges` are the
+/// `nbridges` private bridges the caller has checked live, Member labels only.
+/// `*bridge_index_out` is the index of the bridge to cross when the factor is
+/// `KQ_ACCESS_PASSWORD_BRIDGE_KQST`, else -1; `*needs_parent_grant_out` is 1
+/// when `parent_approval` is on and the switch asks for a factor under the
+/// same-branch or cross-branch rules (never for `NONE`, `REFUSED`, Root or
+/// `sudo`).
 ///
 /// # Safety
-/// `current` and `target` NUL-terminated; `live_bridges` readable for `nbridges` structs
-/// (null when 0), each with `members` readable for `nmembers` NUL-terminated strings;
-/// both outputs null or writable.
+/// `current` and `target` NUL-terminated; `live_bridges` readable for
+/// `nbridges` structs (null when 0), each with `members` readable for
+/// `nmembers` NUL-terminated strings; both outputs null or writable.
 #[no_mangle]
 pub unsafe extern "C" fn kq_access_requirement(
     current: *const c_char,
