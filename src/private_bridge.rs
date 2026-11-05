@@ -912,6 +912,38 @@ fn registry_agrees(conn: &Connection, label: &str, roster_signing: &[u8; 32]) ->
     }
 }
 
+fn proof_facts<'a>(
+    summary: &BridgeSummary,
+    uid: &'a str,
+    members: &'a [bridge_proof::MemberFact<'a>],
+) -> bridge_proof::BridgeFacts<'a> {
+    bridge_proof::BridgeFacts {
+        uid,
+        generation: summary.generation,
+        salt: summary.salt,
+        bridge_public: summary.public_key,
+        destroyed: summary.destroyed,
+        members,
+    }
+}
+
+/// The prover's own roster entry. A non-member gets an empty one, which `prove_with`
+/// never reads because it answers `NotBridgeMember` first.
+fn local_member(summary: &BridgeSummary, local_label: &str) -> bridge_proof::LocalMember {
+    summary
+        .parties
+        .iter()
+        .find(|p| p.label == local_label && p.role == PartyRole::Member)
+        .map(|p| bridge_proof::LocalMember {
+            encryption_public: p.encryption_public_key,
+            holds_sealed_key: p.has_sealed_key,
+        })
+        .unwrap_or(bridge_proof::LocalMember {
+            encryption_public: [0; 32],
+            holds_sealed_key: false,
+        })
+}
+
 pub fn sign_message(
     conn: &Connection,
     uid: &str,
@@ -922,27 +954,8 @@ pub fn sign_message(
 ) -> Result<BridgeSignature> {
     let summary = get(conn, uid)?;
     let members = proof_members(&summary);
-    let facts = bridge_proof::BridgeFacts {
-        uid,
-        generation: summary.generation,
-        salt: summary.salt,
-        bridge_public: summary.public_key,
-        destroyed: summary.destroyed,
-        members: &members,
-    };
-    let local = summary
-        .parties
-        .iter()
-        .find(|p| p.label == local_label && p.role == PartyRole::Member)
-        .map(|p| bridge_proof::LocalMember {
-            encryption_public: p.encryption_public_key,
-            holds_sealed_key: p.has_sealed_key,
-        })
-        // Not a member: `prove_with` answers `NotBridgeMember` before it reads this.
-        .unwrap_or(bridge_proof::LocalMember {
-            encryption_public: [0; 32],
-            holds_sealed_key: false,
-        });
+    let facts = proof_facts(&summary, uid, &members);
+    let local = local_member(&summary, local_label);
     bridge_proof::prove_with(
         &facts,
         local_label,
@@ -964,14 +977,7 @@ pub fn verify_message(
 ) -> Result<()> {
     let summary = get(conn, uid)?;
     let members = proof_members(&summary);
-    let facts = bridge_proof::BridgeFacts {
-        uid,
-        generation: summary.generation,
-        salt: summary.salt,
-        bridge_public: summary.public_key,
-        destroyed: summary.destroyed,
-        members: &members,
-    };
+    let facts = proof_facts(&summary, uid, &members);
     bridge_proof::verify_with(
         &facts,
         verifier_label,
