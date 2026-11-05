@@ -4,6 +4,7 @@
 //! nothing here judges anything. Added in ABI version 3.
 
 use super::files::{buf_out, container_in, file_out, slice_in, KQ_FILE_INVALID};
+use super::{bytes_in, input};
 #[allow(unused_imports)]
 use crate::nostd::*;
 use core::ffi::{c_char, c_int};
@@ -36,15 +37,6 @@ pub extern "C" fn kq_error_class_name(class: u8) -> *const c_char {
     })
 }
 
-/// # Safety
-/// `p` must be null or a valid NUL-terminated string.
-unsafe fn text_in<'a>(p: *const c_char) -> Option<&'a str> {
-    if p.is_null() {
-        return None;
-    }
-    core::ffi::CStr::from_ptr(p).to_str().ok()
-}
-
 /// Writes a signed `KQER` sidecar for a refused artifact. `object_ref` is the SHA-256 of
 /// the artifact; `actor_label` the reporter's label; `occurred_at` UTC text. `detail_key`
 /// and `detail_value` are one optional detail pair (both null for none); the key must be
@@ -69,17 +61,15 @@ pub unsafe extern "C" fn kq_error_sign(
     out_len: *mut usize,
 ) -> c_int {
     let (Some(object_ref), Some(secret), Some(label), Some(time)) = (
-        slice_in(object_ref, 32).and_then(|s| <[u8; 32]>::try_from(s).ok()),
-        slice_in(signing_secret, 32)
-            .and_then(|s| <[u8; 32]>::try_from(s).ok())
-            .map(Zeroizing::new),
-        text_in(actor_label),
-        text_in(occurred_at),
+        bytes_in::<32>(object_ref),
+        bytes_in::<32>(signing_secret).map(Zeroizing::new),
+        input(actor_label),
+        input(occurred_at),
     ) else {
         return KQ_FILE_INVALID;
     };
     let mut detail = Vec::new();
-    match (text_in(detail_key), text_in(detail_value)) {
+    match (input(detail_key), input(detail_value)) {
         (Some(key), Some(value)) => detail.push((key.to_string(), value.to_string())),
         _ if detail_key.is_null() && detail_value.is_null() => {}
         _ => return KQ_FILE_INVALID,
@@ -125,8 +115,8 @@ pub unsafe extern "C" fn kq_error_inject(
     let (Some(mut file), Some(sidecar), Some(public), Some(object_ref)) = (
         container_in(kqtf, klen),
         slice_in(kqer, elen),
-        slice_in(reporter_public, 32).and_then(|s| <[u8; 32]>::try_from(s).ok()),
-        slice_in(pkg_sha256, 32).and_then(|s| <[u8; 32]>::try_from(s).ok()),
+        bytes_in::<32>(reporter_public),
+        bytes_in::<32>(pkg_sha256),
     ) else {
         return KQ_FILE_INVALID;
     };
