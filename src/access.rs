@@ -85,6 +85,14 @@ const fn plain(factor: Factor) -> Requirement {
     }
 }
 
+fn granted(policy: &AccessPolicy, factor: Factor, bridge_index: Option<usize>) -> Requirement {
+    Requirement {
+        factor,
+        bridge_index,
+        needs_parent_grant: policy.parent_approval && factor != Factor::None,
+    }
+}
+
 /// The first bridge in which some pair of Member labels connects `current` to
 /// `target`.
 fn first_connecting_bridge(
@@ -127,20 +135,15 @@ pub fn requirement(
             _ => plain(Factor::KqstAndPassword),
         };
     }
-    let with_grant = |factor, bridge_index| Requirement {
-        factor,
-        bridge_index,
-        needs_parent_grant: policy.parent_approval && factor != Factor::None,
-    };
     match relationship {
         RevisionAuthority::ScopeOwner => plain(Factor::None),
         RevisionAuthority::Descendant { .. } | RevisionAuthority::Ancestor { .. } => {
-            with_grant(Factor::Password, None)
+            granted(policy, Factor::Password, None)
         }
         RevisionAuthority::CrossBranch { .. } => {
             match first_connecting_bridge(bridges, current, target) {
-                Some(i) => with_grant(Factor::PasswordAndBridgeKqst, Some(i)),
-                None => with_grant(Factor::KqstAndPassword, None),
+                Some(i) => granted(policy, Factor::PasswordAndBridgeKqst, Some(i)),
+                None => granted(policy, Factor::KqstAndPassword, None),
             }
         }
         RevisionAuthority::Unrelated => plain(Factor::Refused),
