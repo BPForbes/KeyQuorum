@@ -215,6 +215,22 @@ pub unsafe extern "C" fn kq_bridge_prove(
     artifact_out_of(prover.proof(), artifact_out, cap, artifact_len)
 }
 
+/// Decodes `artifact` and judges it against `facts`.
+fn verify_status(
+    facts: &BridgeFacts<'_>,
+    verifier: &str,
+    challenge: &[u8],
+    artifact: &[u8],
+) -> c_int {
+    let Ok(artifact) = signing::decode_bridge_signature(artifact) else {
+        return KQ_BRIDGE_INVALID;
+    };
+    match bridge_proof::verify(facts, verifier, challenge, &artifact) {
+        Ok(()) => KQ_BRIDGE_OK,
+        Err(err) => refusal(&err),
+    }
+}
+
 /// Verifies `artifact` against the live bridge `uid`, `generation`, `salt`, `bridge_public`
 /// (`destroyed` non-zero for a bridge that is gone) whose Member roster is `nmembers`
 /// labels (`member_labels`, NUL-terminated strings) with their signing keys
@@ -264,9 +280,6 @@ pub unsafe extern "C" fn kq_bridge_verify(
     let Some(members) = members_in(member_labels, member_signing_pubs, nmembers) else {
         return KQ_BRIDGE_INVALID;
     };
-    let Ok(artifact) = signing::decode_bridge_signature(artifact) else {
-        return KQ_BRIDGE_INVALID;
-    };
     let facts = BridgeFacts {
         uid,
         generation,
@@ -275,10 +288,7 @@ pub unsafe extern "C" fn kq_bridge_verify(
         destroyed: destroyed != 0,
         members: &members,
     };
-    match bridge_proof::verify(&facts, verifier, challenge, &artifact) {
-        Ok(()) => KQ_BRIDGE_OK,
-        Err(err) => refusal(&err),
-    }
+    verify_status(&facts, verifier, challenge, artifact)
 }
 
 #[cfg(test)]
