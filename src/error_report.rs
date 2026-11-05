@@ -207,7 +207,6 @@ impl Report {
     }
 }
 
-/// Encode `report` and sign it with the reporter's Ed25519 seed.
 pub fn encode_signed(report: &Report, signing_secret: &[u8; 32]) -> Result<Vec<u8>> {
     let mut out = report.body()?;
     let signature = signing::sign(signing_secret, &signing::error_report_preimage(&out));
@@ -324,7 +323,6 @@ pub fn history_event(report: &Report) -> NewEvent {
     }
 }
 
-/// Verify a sidecar and append its `ErrorReported` event to `file`.
 pub fn inject(
     file: &mut TrackedFile,
     sidecar: &[u8],

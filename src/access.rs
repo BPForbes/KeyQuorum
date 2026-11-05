@@ -28,7 +28,7 @@
 //!
 //! `needs_parent_grant` is the opt-in `UnlockApproval::Parent` policy: a
 //! parent's signature on top of the factor, for any switch that asks for a
-//! factor at all. Collecting that signature at login is not designed here.
+//! factor at all.
 
 use crate::authority::{self, RevisionAuthority};
 #[allow(unused_imports)]
@@ -60,7 +60,6 @@ pub struct BridgeFact<'a> {
     pub members: &'a [&'a str],
 }
 
-/// The custody policy that bears on a switch.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AccessPolicy {
     /// `CustodyPolicy.unlock_approval == Parent`.
@@ -93,8 +92,6 @@ fn granted(policy: &AccessPolicy, factor: Factor, bridge_index: Option<usize>) -
     }
 }
 
-/// The first bridge in which some pair of Member labels connects `current` to
-/// `target`.
 fn first_connecting_bridge(
     bridges: &[BridgeFact<'_>],
     current: &str,

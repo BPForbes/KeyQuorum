@@ -1868,8 +1868,6 @@ fn encode_notice(
     Ok(out)
 }
 
-/// The sealed bridge key this store holds for `local_label`, with its wrap
-/// salt.
 fn load_sealed_key(
     conn: &Connection,
     uid: &str,

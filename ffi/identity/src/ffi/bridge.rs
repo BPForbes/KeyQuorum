@@ -150,13 +150,9 @@ unsafe fn artifact_out_of(
     }
 }
 
-/// Signs `challenge` as bridge member `local_label`: unseals the member's
-/// bridge key (`sealed_bridge_key` with its `wrap_salt`) with `encryption_sk`,
-/// and signs with it and `signing_sk`. The roster facts of a prover are its
-/// own keys, so what is checked is that the sealed key opens with this
-/// encryption secret, that the secret it holds is the bridge's
-/// (`bridge_public`), and that the bridge is live. The artifact
-/// (`signing::encode_bridge_signature`) goes to `artifact_out`.
+/// Signs `challenge` as bridge member `local_label`; the artifact
+/// (`signing::encode_bridge_signature`) goes to `artifact_out`. See
+/// `keyquorum_bridge.h`.
 ///
 /// # Safety
 /// `uid`, `local_label` NUL-terminated; `salt` and `wrap_salt` readable for 16
@@ -233,15 +229,10 @@ fn verify_status(
     }
 }
 
-/// Verifies `artifact` against the live bridge `uid`, `generation`, `salt`,
-/// `bridge_public` (`destroyed` non-zero for a bridge that is gone) whose
-/// Member roster is `nmembers` labels (`member_labels`, NUL-terminated
-/// strings) with their signing keys (`member_signing_pubs`, 32 bytes each, in
-/// the same order): the artifact must be from this generation and salt, its
-/// signer and `verifier_label` must be members, and both signatures must
-/// verify over `challenge`. `KQ_BRIDGE_OK`, `KQ_BRIDGE_STALE` or
-/// `KQ_BRIDGE_REFUSED`; `KQ_BRIDGE_INVALID` for a bad argument or an
-/// undecodable artifact.
+/// Verifies `artifact` against the live bridge facts the caller passes
+/// (`destroyed` non-zero for a bridge that is gone; the roster is `nmembers`
+/// labels with 32-byte signing keys in the same order). See
+/// `keyquorum_bridge.h`.
 ///
 /// # Safety
 /// Strings NUL-terminated; `salt` readable for 16 bytes; `bridge_public` for

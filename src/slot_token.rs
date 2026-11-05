@@ -33,8 +33,6 @@ pub struct SlotSecrets {
     pub signing_public: [u8; 32],
 }
 
-/// Wrap a slot's secrets under `passphrase`, sealed to `device_id`: the bytes of a
-/// `token.kqst` file.
 pub fn seal_token(
     label: &str,
     device_id: &[u8; DEVICE_ID_LEN],

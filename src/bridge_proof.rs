@@ -33,7 +33,6 @@ pub struct MemberFact<'a> {
     pub signing_public: Option<[u8; 32]>,
 }
 
-/// What the live bridge is, as the caller's store knows it.
 #[derive(Clone, Copy, Debug)]
 pub struct BridgeFacts<'a> {
     pub uid: &'a str,
@@ -44,7 +43,6 @@ pub struct BridgeFacts<'a> {
     pub members: &'a [MemberFact<'a>],
 }
 
-/// What the prover's own store says about the local member.
 #[derive(Clone, Copy, Debug)]
 pub struct LocalMember {
     /// The X25519 public key the roster holds for the local member.
@@ -53,8 +51,6 @@ pub struct LocalMember {
     pub holds_sealed_key: bool,
 }
 
-/// The sealed bridge key a local member holds, and the wrap salt stored with
-/// it.
 pub struct SealedBridgeKey {
     pub sealed: Vec<u8>,
     pub wrap_salt: [u8; SALT_LEN],
@@ -82,8 +78,6 @@ pub fn unseal_bridge_secret(
     Ok(sk)
 }
 
-/// Seal the bridge's secret key to a member's X25519 public key, with the wrap
-/// salt in front: what [`unseal_bridge_secret`] opens.
 pub fn seal_bridge_secret(
     recipient_pub: &[u8; 32],
     wrap_salt: &[u8; SALT_LEN],
@@ -108,8 +102,7 @@ fn member<'a>(facts: &'a BridgeFacts<'_>, label: &str) -> Option<&'a MemberFact<
 /// supplied instead of read from a table. `local_registry_check` is the
 /// caller's extra check of the roster key against its own registry
 /// (`private_bridge` compares with the registered key for the label), called
-/// with the label and the roster key; `load_sealed` fetches the sealed key at
-/// the point the original function read it.
+/// with the label and the roster key.
 #[allow(clippy::too_many_arguments)]
 pub fn prove_with(
     facts: &BridgeFacts<'_>,
@@ -153,7 +146,6 @@ pub fn prove_with(
     )
 }
 
-/// [`prove_with`] for a caller whose store has no further registry to consult.
 pub fn prove(
     facts: &BridgeFacts<'_>,
     local_label: &str,
@@ -204,8 +196,6 @@ pub fn verify_with(
     signing::verify_bridge_signature(artifact, &facts.bridge_public, &roster_signing, challenge)
 }
 
-/// [`verify_with`] for a caller whose store has no further registry to
-/// consult.
 pub fn verify(
     facts: &BridgeFacts<'_>,
     verifier_label: &str,

@@ -128,9 +128,8 @@ pub(crate) fn os_rng() -> PlatformRng {
     PlatformRng
 }
 
-/// A fresh salt from the operating system's random source. Drawn directly into
-/// the array, with no zero-filled buffer, so a scanner cannot mistake the
-/// buffer's initial value for a hard-coded salt.
+/// Drawn directly into the array, with no zero-filled buffer, so a scanner
+/// cannot mistake the buffer's initial value for a hard-coded salt.
 pub fn random_salt() -> [u8; SALT_LEN] {
     os_rng().random()
 }

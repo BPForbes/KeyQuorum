@@ -1191,11 +1191,9 @@ fn sealed_snapshot(
     .ok()
 }
 
-/// Seals a `KQHS` (kind 17) of the first `upto_events` events of the file's
-/// history, signed by `sender` and sealed to `recipient`'s box key.
-/// `upto_events` may be 0 (the empty history) up to the number of events the
-/// file holds, else `KQ_FILE_INVALID`. The letter goes to `out`, its delivery
-/// id to `delivery_id_out` (16 bytes).
+/// Seals a kind-17 snapshot letter of the first `upto_events` events (see
+/// `keyquorum_files.h`). The letter goes to `out`, its delivery id to
+/// `delivery_id_out` (16 bytes).
 ///
 /// # Safety
 /// As [`kq_file_seal_letter`], without `rev` and `trust`.
@@ -1239,8 +1237,6 @@ pub unsafe extern "C" fn kq_file_seal_snapshot(
     rc
 }
 
-/// Whether the snapshot inside `opened` decodes to the file id, root and event
-/// count its signed header states.
 fn snapshot_matches_header(opened: &file_delivery::SnapshotLetter) -> bool {
     HistorySnapshot::decode(&opened.snapshot).is_ok_and(|snapshot| {
         snapshot.file_id == opened.file_id
@@ -1249,13 +1245,9 @@ fn snapshot_matches_header(opened: &file_delivery::SnapshotLetter) -> bool {
     })
 }
 
-/// Opens a kind-17 letter with the recipient's box secret: signed by
-/// `expected_sender` under `sender_public` (the key the caller's registry
-/// holds for that label, not one the letter names), addressed to
-/// `expected_recipient`, and its snapshot decoding to the file id, history
-/// root and event count the signed header states, else `KQ_FILE_UNTRUSTED`.
-/// Writes the snapshot (`KQHS` bytes) to `snap_out`, its root to `root_out`
-/// (32 bytes) and its event count to `event_count_out`.
+/// Opens a kind-17 letter (see `keyquorum_files.h`). Writes the snapshot to
+/// `snap_out`, its root to `root_out` (32 bytes) and its event count to
+/// `event_count_out`.
 ///
 /// # Safety
 /// `letter` readable for `llen`; `box_secret` and `sender_public` for 32;
@@ -1306,10 +1298,8 @@ pub unsafe extern "C" fn kq_file_open_snapshot(
     rc
 }
 
-/// `KQ_FILE_OK` when the history of the extract `extract` (a `KQTF`, as
-/// delivered in a kind-15 letter) is a prefix of the snapshot `snapshot`
-/// (`KQHS`, from a kind-17 letter), `KQ_FILE_DIVERGED` when it is not,
-/// `KQ_FILE_INVALID` when either does not decode.
+/// `KQ_FILE_OK` when `extract`'s history is a prefix of `snapshot` (see
+/// `keyquorum_files.h`).
 ///
 /// # Safety
 /// Both buffers readable for their lengths.

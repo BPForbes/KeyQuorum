@@ -80,10 +80,10 @@ unsafe fn bridges_in<'a>(
     Some((uids, label_lists))
 }
 
-/// What a switch from `current` to `target` demands, as one of the
-/// `KQ_ACCESS_*` factors, or `KQ_ACCESS_INVALID` for a bad argument (nothing
-/// is granted by a bad call: both outputs are set to their refusing values, -1
-/// and 0). `sudo` non-zero asks for Root's key. `live_bridges` are the
+/// The `KQ_ACCESS_*` factor a switch from `current` to `target` demands, or
+/// `KQ_ACCESS_INVALID` for a bad argument (nothing is granted by a bad call:
+/// both outputs are set to their refusing values, -1 and 0). `sudo` non-zero
+/// asks for Root's key. `live_bridges` are the
 /// `nbridges` private bridges the caller has checked live, Member labels only.
 /// `*bridge_index_out` is the index of the bridge to cross when the factor is
 /// `KQ_ACCESS_PASSWORD_BRIDGE_KQST`, else -1; `*needs_parent_grant_out` is 1

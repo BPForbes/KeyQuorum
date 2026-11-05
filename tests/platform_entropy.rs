@@ -17,7 +17,6 @@ static CALLS: AtomicUsize = AtomicUsize::new(0);
 static STATUS: AtomicU8 = AtomicU8::new(0);
 static COUNTER: AtomicU8 = AtomicU8::new(1);
 
-/// The embedder's hook. Status 0 fills the buffer with a non-constant byte sequence.
 #[no_mangle]
 extern "C" fn kq_platform_random(buf: *mut u8, len: usize) -> c_int {
     CALLS.fetch_add(1, Ordering::SeqCst);
