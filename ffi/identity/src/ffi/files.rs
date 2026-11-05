@@ -1126,6 +1126,70 @@ pub unsafe extern "C" fn kq_file_open_letter(
     rc
 }
 
+/// The sender and recipient of a snapshot letter, as the caller passed them.
+struct SnapshotParties<'a> {
+    sender: &'a str,
+    sender_secret: Zeroizing<[u8; 32]>,
+    sender_box_public: [u8; 32],
+    recipient: &'a str,
+    recipient_box_public: [u8; 32],
+}
+
+/// # Safety
+/// Strings null or NUL-terminated; each key pointer null or readable for 32 bytes.
+unsafe fn snapshot_parties_in<'a>(
+    sender: *const c_char,
+    sender_secret: *const u8,
+    sender_box_public: *const u8,
+    recipient: *const c_char,
+    recipient_box_public: *const u8,
+) -> Option<SnapshotParties<'a>> {
+    Some(SnapshotParties {
+        sender: input(sender)?,
+        sender_secret: bytes_in::<32>(sender_secret).map(Zeroizing::new)?,
+        sender_box_public: bytes_in::<32>(sender_box_public)?,
+        recipient: input(recipient)?,
+        recipient_box_public: bytes_in::<32>(recipient_box_public)?,
+    })
+}
+
+/// The kind-17 letter for the first `upto_events` events of `file`; `None` when that is
+/// more events than the file holds or the letter cannot be built.
+fn sealed_snapshot(
+    file: &TrackedFile,
+    upto_events: u32,
+    parties: &SnapshotParties<'_>,
+) -> Option<([u8; 16], Vec<u8>)> {
+    let count = upto_events as usize;
+    if count > file.events().len() {
+        return None;
+    }
+    let events = file.events()[..count].to_vec();
+    let history_root = match events.last() {
+        Some(last) => last.event_hash,
+        None => genesis_hash(&file.file_id),
+    };
+    let snapshot = HistorySnapshot {
+        file_id: file.file_id,
+        history_root,
+        events,
+    };
+    let encoded = snapshot.encode().ok()?;
+    file_delivery::seal_history_snapshot(&file_delivery::OutgoingSnapshot {
+        sender_label: parties.sender,
+        sender_signing_secret: &parties.sender_secret,
+        sender_encryption_public: &parties.sender_box_public,
+        recipient_label: parties.recipient,
+        recipient_encryption_public: &parties.recipient_box_public,
+        file_name: &file.logical_name,
+        file_id: file.file_id,
+        history_root,
+        event_count: upto_events,
+        snapshot: &encoded,
+    })
+    .ok()
+}
+
 /// Seals a `KQHS` (kind 17) of the first `upto_events` events of the file's history,
 /// signed by `sender` and sealed to `recipient`'s box key. `upto_events` may be 0 (the
 /// empty history) up to the number of events the file holds, else `KQ_FILE_INVALID`.
@@ -1149,54 +1213,22 @@ pub unsafe extern "C" fn kq_file_seal_snapshot(
     out_len: *mut usize,
     delivery_id_out: *mut u8,
 ) -> c_int {
-    let (
-        Some(file),
-        Some(sender),
-        Some(sender_secret),
-        Some(sender_box_public),
-        Some(recipient),
-        Some(recipient_box_public),
-    ) = (
+    let (Some(file), Some(parties)) = (
         container_in(c, clen),
-        input(sender),
-        bytes_in::<32>(sender_secret).map(Zeroizing::new),
-        bytes_in::<32>(sender_box_public),
-        input(recipient),
-        bytes_in::<32>(recipient_box_public),
-    )
-    else {
+        snapshot_parties_in(
+            sender,
+            sender_secret,
+            sender_box_public,
+            recipient,
+            recipient_box_public,
+        ),
+    ) else {
         return KQ_FILE_INVALID;
     };
-    let count = upto_events as usize;
-    if delivery_id_out.is_null() || count > file.events().len() {
+    if delivery_id_out.is_null() {
         return KQ_FILE_INVALID;
     }
-    let events = file.events()[..count].to_vec();
-    let history_root = match events.last() {
-        Some(last) => last.event_hash,
-        None => genesis_hash(&file.file_id),
-    };
-    let snapshot = HistorySnapshot {
-        file_id: file.file_id,
-        history_root,
-        events,
-    };
-    let Ok(encoded) = snapshot.encode() else {
-        return KQ_FILE_INVALID;
-    };
-    let sealed = file_delivery::seal_history_snapshot(&file_delivery::OutgoingSnapshot {
-        sender_label: sender,
-        sender_signing_secret: &sender_secret,
-        sender_encryption_public: &sender_box_public,
-        recipient_label: recipient,
-        recipient_encryption_public: &recipient_box_public,
-        file_name: &file.logical_name,
-        file_id: file.file_id,
-        history_root,
-        event_count: upto_events,
-        snapshot: &encoded,
-    });
-    let Ok((delivery_id, bytes)) = sealed else {
+    let Some((delivery_id, bytes)) = sealed_snapshot(&file, upto_events, &parties) else {
         return KQ_FILE_INVALID;
     };
     let rc = buf_out(&bytes, out, cap, out_len);
@@ -1204,6 +1236,16 @@ pub unsafe extern "C" fn kq_file_seal_snapshot(
         bytes_out(&delivery_id, delivery_id_out);
     }
     rc
+}
+
+/// Whether the snapshot inside `opened` decodes to the file id, root and event count its
+/// signed header states.
+fn snapshot_matches_header(opened: &file_delivery::SnapshotLetter) -> bool {
+    HistorySnapshot::decode(&opened.snapshot).is_ok_and(|snapshot| {
+        snapshot.file_id == opened.file_id
+            && snapshot.history_root == opened.history_root
+            && snapshot.events.len() == opened.event_count as usize
+    })
 }
 
 /// Opens a kind-17 letter with the recipient's box secret: signed by `expected_sender`
@@ -1251,13 +1293,7 @@ pub unsafe extern "C" fn kq_file_open_snapshot(
     if opened.sender_label != sender || opened.recipient_label != recipient {
         return KQ_FILE_UNTRUSTED;
     }
-    let Ok(snapshot) = HistorySnapshot::decode(&opened.snapshot) else {
-        return KQ_FILE_UNTRUSTED;
-    };
-    if snapshot.file_id != opened.file_id
-        || snapshot.history_root != opened.history_root
-        || snapshot.events.len() != opened.event_count as usize
-    {
+    if !snapshot_matches_header(&opened) {
         return KQ_FILE_UNTRUSTED;
     }
     let rc = buf_out(&opened.snapshot, snap_out, cap, snap_len);
