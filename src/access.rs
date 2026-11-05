@@ -77,6 +77,23 @@ const fn plain(factor: Factor) -> Requirement {
     }
 }
 
+/// The first bridge in which some pair of Member labels connects `current` to `target`.
+fn first_connecting_bridge(
+    bridges: &[BridgeFact<'_>],
+    current: &str,
+    target: &str,
+) -> Option<usize> {
+    bridges.iter().position(|bridge| {
+        bridge.members.iter().enumerate().any(|(i, x)| {
+            bridge
+                .members
+                .iter()
+                .skip(i + 1)
+                .any(|y| authority::bridge_connects(x, y, current, target))
+        })
+    })
+}
+
 /// What `current` must present to become `target`. `sudo` is a switch to Root's key whoever
 /// asks. An empty label, or a malformed one, is refused.
 pub fn requirement(
@@ -89,40 +106,29 @@ pub fn requirement(
     if current.is_empty() || target.is_empty() {
         return plain(Factor::Refused);
     }
+    let relationship = authority::relationship(current, target);
+    if !sudo && current == target && relationship == RevisionAuthority::ScopeOwner {
+        return plain(Factor::None);
+    }
+    if sudo || target == "Root" {
+        // Well-formedness of the invoker still matters: an unknown caller is refused.
+        return match relationship {
+            RevisionAuthority::Unrelated => plain(Factor::Refused),
+            _ => plain(Factor::KqstAndPassword),
+        };
+    }
     let with_grant = |factor, bridge_index| Requirement {
         factor,
         bridge_index,
         needs_parent_grant: policy.parent_approval && factor != Factor::None,
     };
-    if !sudo
-        && current == target
-        && authority::relationship(current, target) == RevisionAuthority::ScopeOwner
-    {
-        return plain(Factor::None);
-    }
-    if sudo || target == "Root" {
-        // Well-formedness of the invoker still matters: an unknown caller is refused.
-        return match authority::relationship(current, target) {
-            RevisionAuthority::Unrelated => plain(Factor::Refused),
-            _ => plain(Factor::KqstAndPassword),
-        };
-    }
-    match authority::relationship(current, target) {
+    match relationship {
         RevisionAuthority::ScopeOwner => plain(Factor::None),
         RevisionAuthority::Descendant { .. } | RevisionAuthority::Ancestor { .. } => {
             with_grant(Factor::Password, None)
         }
         RevisionAuthority::CrossBranch { .. } => {
-            let hit = bridges.iter().position(|bridge| {
-                bridge.members.iter().enumerate().any(|(i, x)| {
-                    bridge
-                        .members
-                        .iter()
-                        .skip(i + 1)
-                        .any(|y| authority::bridge_connects(x, y, current, target))
-                })
-            });
-            match hit {
+            match first_connecting_bridge(bridges, current, target) {
                 Some(i) => with_grant(Factor::PasswordAndBridgeKqst, Some(i)),
                 None => with_grant(Factor::KqstAndPassword, None),
             }
