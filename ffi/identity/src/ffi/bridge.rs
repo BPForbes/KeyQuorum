@@ -12,7 +12,7 @@ use crate::nostd::*;
 use core::ffi::{c_char, c_int};
 use keyquorum::bridge_proof::{self, BridgeFacts, LocalMember, MemberFact, SealedBridgeKey};
 use keyquorum::error::Error;
-use keyquorum::signing;
+use keyquorum::signing::{self, BridgeSignature};
 use zeroize::Zeroizing;
 
 /// The proof was produced, or verified.
@@ -40,6 +40,112 @@ fn status_of_buf(rc: c_int) -> c_int {
         0 => KQ_BRIDGE_OK,
         -3 => KQ_BRIDGE_NO_ROOM,
         _ => KQ_BRIDGE_INVALID,
+    }
+}
+
+/// The roster the caller passed: `nmembers` labels with their 32-byte signing keys.
+///
+/// # Safety
+/// `member_labels` must be null or readable for `nmembers` pointers to NUL-terminated
+/// strings, and `member_signing_pubs` null or readable for `nmembers * 32` bytes.
+unsafe fn members_in<'a>(
+    member_labels: *const *const c_char,
+    member_signing_pubs: *const u8,
+    nmembers: usize,
+) -> Option<Vec<MemberFact<'a>>> {
+    if nmembers > MAX_MEMBERS
+        || (nmembers > 0 && (member_labels.is_null() || member_signing_pubs.is_null()))
+    {
+        return None;
+    }
+    (0..nmembers)
+        .map(|n| {
+            Some(MemberFact {
+                label: input(*member_labels.add(n))?,
+                signing_public: Some(bytes_in::<32>(member_signing_pubs.add(n * 32))?),
+            })
+        })
+        .collect()
+}
+
+/// A bridge member's own view of the bridge, enough to sign a challenge.
+struct Prover<'a> {
+    uid: &'a str,
+    generation: u32,
+    salt: [u8; 16],
+    bridge_public: [u8; 32],
+    label: &'a str,
+    sealed: &'a [u8],
+    wrap_salt: [u8; 16],
+    encryption_sk: &'a [u8; 32],
+    signing_sk: &'a [u8; 32],
+    challenge: &'a [u8],
+}
+
+impl Prover<'_> {
+    fn proof(&self) -> Result<BridgeSignature, Error> {
+        let members = [MemberFact {
+            label: self.label,
+            signing_public: Some(signing::public_key(self.signing_sk)),
+        }];
+        let facts = BridgeFacts {
+            uid: self.uid,
+            generation: self.generation,
+            salt: self.salt,
+            bridge_public: self.bridge_public,
+            destroyed: false,
+            members: &members,
+        };
+        let local = LocalMember {
+            encryption_public: keyquorum::keys::encryption_public_from_secret(self.encryption_sk),
+            holds_sealed_key: true,
+        };
+        let held = SealedBridgeKey {
+            sealed: self.sealed.to_vec(),
+            wrap_salt: self.wrap_salt,
+        };
+        bridge_proof::prove(
+            &facts,
+            self.label,
+            &local,
+            held,
+            self.encryption_sk,
+            self.signing_sk,
+            self.challenge,
+        )
+    }
+}
+
+type Secret = Zeroizing<[u8; 32]>;
+
+/// The prover's two 32-byte secrets, zeroized on drop.
+///
+/// # Safety
+/// Each pointer must be null or readable for 32 bytes.
+unsafe fn secrets_in(encryption_sk: *const u8, signing_sk: *const u8) -> Option<(Secret, Secret)> {
+    Some((
+        bytes_in::<32>(encryption_sk).map(Zeroizing::new)?,
+        bytes_in::<32>(signing_sk).map(Zeroizing::new)?,
+    ))
+}
+
+/// Encodes a proof into the caller's buffer, or maps the refusal to its status.
+///
+/// # Safety
+/// `artifact_out` must be null or writable for `cap`; `artifact_len` writable.
+unsafe fn artifact_out_of(
+    proof: Result<BridgeSignature, Error>,
+    artifact_out: *mut u8,
+    cap: usize,
+    artifact_len: *mut usize,
+) -> c_int {
+    let proof = match proof {
+        Ok(proof) => proof,
+        Err(err) => return refusal(&err),
+    };
+    match signing::encode_bridge_signature(&proof) {
+        Ok(bytes) => status_of_buf(buf_out(&bytes, artifact_out, cap, artifact_len)),
+        Err(_) => KQ_BRIDGE_INVALID,
     }
 }
 
@@ -79,8 +185,7 @@ pub unsafe extern "C" fn kq_bridge_prove(
         Some(label),
         Some(sealed),
         Some(wrap_salt),
-        Some(encryption_sk),
-        Some(signing_sk),
+        Some((encryption_sk, signing_sk)),
         Some(challenge),
     ) = (
         input(uid),
@@ -89,49 +194,25 @@ pub unsafe extern "C" fn kq_bridge_prove(
         input(local_label),
         slice_in(sealed_bridge_key, slen),
         bytes_in::<16>(wrap_salt),
-        bytes_in::<32>(encryption_sk).map(Zeroizing::new),
-        bytes_in::<32>(signing_sk).map(Zeroizing::new),
+        secrets_in(encryption_sk, signing_sk),
         slice_in(challenge, clen),
     )
     else {
         return KQ_BRIDGE_INVALID;
     };
-    let members = [MemberFact {
-        label,
-        signing_public: Some(signing::public_key(&signing_sk)),
-    }];
-    let facts = BridgeFacts {
+    let prover = Prover {
         uid,
         generation,
         salt,
         bridge_public,
-        destroyed: false,
-        members: &members,
-    };
-    let local = LocalMember {
-        encryption_public: keyquorum::keys::encryption_public_from_secret(&encryption_sk),
-        holds_sealed_key: true,
-    };
-    let held = SealedBridgeKey {
-        sealed: sealed.to_vec(),
-        wrap_salt,
-    };
-    let proof = match bridge_proof::prove(
-        &facts,
         label,
-        &local,
-        held,
-        &encryption_sk,
-        &signing_sk,
+        sealed,
+        wrap_salt,
+        encryption_sk: &encryption_sk,
+        signing_sk: &signing_sk,
         challenge,
-    ) {
-        Ok(proof) => proof,
-        Err(err) => return refusal(&err),
     };
-    match signing::encode_bridge_signature(&proof) {
-        Ok(bytes) => status_of_buf(buf_out(&bytes, artifact_out, cap, artifact_len)),
-        Err(_) => KQ_BRIDGE_INVALID,
-    }
+    artifact_out_of(prover.proof(), artifact_out, cap, artifact_len)
 }
 
 /// Verifies `artifact` against the live bridge `uid`, `generation`, `salt`, `bridge_public`
@@ -180,24 +261,9 @@ pub unsafe extern "C" fn kq_bridge_verify(
     else {
         return KQ_BRIDGE_INVALID;
     };
-    if nmembers > MAX_MEMBERS
-        || (nmembers > 0 && (member_labels.is_null() || member_signing_pubs.is_null()))
-    {
+    let Some(members) = members_in(member_labels, member_signing_pubs, nmembers) else {
         return KQ_BRIDGE_INVALID;
-    }
-    let mut members = Vec::new();
-    for n in 0..nmembers {
-        let (Some(label), Some(public)) = (
-            input(*member_labels.add(n)),
-            bytes_in::<32>(member_signing_pubs.add(n * 32)),
-        ) else {
-            return KQ_BRIDGE_INVALID;
-        };
-        members.push(MemberFact {
-            label,
-            signing_public: Some(public),
-        });
-    }
+    };
     let Ok(artifact) = signing::decode_bridge_signature(artifact) else {
         return KQ_BRIDGE_INVALID;
     };
