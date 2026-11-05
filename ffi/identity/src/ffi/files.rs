@@ -58,8 +58,8 @@ pub const KQ_FILE_FIRST: c_int = 1;
 pub const KQ_FILE_NEWER: c_int = 2;
 /// Bumped when a signature or struct in the header changes, or functions are added
 /// (3: the `kq_error_*` exports of `keyquorum_error.h` and the kind-17 snapshot
-/// exports, `KQ_FILE_DIVERGED`).
-pub const KQ_FILE_ABI_VERSION: c_int = 3;
+/// exports, `KQ_FILE_DIVERGED`; 4: `kq_slot_open`, `kq_bridge_*`, `kq_access_requirement`).
+pub const KQ_FILE_ABI_VERSION: c_int = 4;
 
 /// A signing key the caller's registry holds for a label.
 #[repr(C)]

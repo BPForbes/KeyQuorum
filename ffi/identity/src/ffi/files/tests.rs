@@ -160,7 +160,7 @@ fn event_and_outcome_names_cross_the_boundary() {
 #[test]
 fn abi_version_and_label_identity_match_the_library() {
     assert_eq!(kq_file_abi_version(), KQ_FILE_ABI_VERSION);
-    assert_eq!(KQ_FILE_ABI_VERSION, 3);
+    assert_eq!(KQ_FILE_ABI_VERSION, 4);
     assert_eq!(KQ_FILE_DIVERGED, -12);
     let mut id = [0u8; 16];
     let label = s("Root.Mya");

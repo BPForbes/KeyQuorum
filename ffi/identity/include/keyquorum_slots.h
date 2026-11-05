@@ -1,7 +1,7 @@
 /*
  * keyquorum_slots.h - C ABI for opening a slot token (KQST) with only its passphrase
  * and the facts the caller's own registry holds (ffi/identity, the same
- * libkeyquorum_identity.a as keyquorum_identity.h). Return codes are the
+ * libkeyquorum_identity.a as keyquorum_identity.h). Added in KQ_FILE_ABI_VERSION 4. Return codes are the
  * KQ_ACCOUNT_* codes of keyquorum_identity.h.
  *
  * A KQST holds one identity's secret keys wrapped under a passphrase and sealed to

@@ -1,6 +1,8 @@
 /*
  * keyquorum_bridge.h - C ABI for a private-bridge proof without a database
  * (ffi/identity, the same libkeyquorum_identity.a as keyquorum_identity.h).
+ * Added in KQ_FILE_ABI_VERSION 4. The KQ_BRIDGE_* codes below are proof statuses; the factor
+ * a login demands (KQ_ACCESS_*, which of them needs a bridge proof) is keyquorum_access.h.
  *
  * A private bridge is a roster of member accounts, each with a personal signing key
  * and a sealed copy of the bridge's secret key. To cross it a member proves who they
