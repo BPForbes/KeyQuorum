@@ -156,13 +156,12 @@ pub unsafe extern "C" fn kq_heritage_relation(a: *const c_char, b: *const c_char
     }
 }
 
-/// `1` when a bridge between `end_a` and `end_b` connects `actor` to `scope`:
-/// one end holds `actor` or an ancestor of it, and the other end sits on the
-/// scope's line (the scope, an ancestor of it, or a node inside it); `0`
-/// otherwise, and for a null or non-UTF-8 argument. Judges only the shape of
-/// the hierarchy (`keyquorum::authority::bridge_connects`): that the bridge
-/// exists and is live is the caller's check (`kq_bridge_verify`). A single
-/// hop; two bridges do not chain.
+/// `1` when a bridge between `end_a` and `end_b` connects `actor` to `scope`: one end holds
+/// `actor` or an ancestor of it, and the other end sits on the scope's line (the scope, an
+/// ancestor of it, or a node inside it); `0` otherwise, and for a null or non-UTF-8 argument.
+/// Judges only the shape of the hierarchy (`keyquorum::authority::bridge_connects`): that
+/// the bridge exists and is live is the caller's check (`kq_bridge_verify`). A single hop;
+/// two bridges do not chain.
 ///
 /// # Safety
 /// Every argument must be null or a valid NUL-terminated string.

@@ -77,10 +77,10 @@ pub enum HistoryEventType {
     LetterReceived = 46,
     /// A held letter was opened and its slot released.
     LetterOpened = 47,
-    /// An error report was recorded against this history (outcome `Failure` or
-    /// `Denied`). Detail keys: `error_class`, `error_code`, `error_ref` (what
-    /// each may hold is listed beside `SAFE_DETAIL_KEYS`). Nothing here checks
-    /// the report: whoever appends the event verifies it first.
+    /// An error report was recorded against this history (outcome `Failure` or `Denied`).
+    /// Detail keys: `error_class`, `error_code`, `error_ref` (what each may hold is
+    /// listed beside `SAFE_DETAIL_KEYS`). Nothing here checks the report: whoever
+    /// appends the event verifies it first.
     ErrorReported = 48,
 }
 

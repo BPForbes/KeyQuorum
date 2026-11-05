@@ -322,9 +322,8 @@ pub fn provider_recovery_preimage(context: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-/// What a reporter signs over a `KQER` error report (`error_report`): every
-/// byte of the report before its signature. Domain-separated from every other
-/// preimage.
+/// What a reporter signs over a `KQER` error report (`error_report`): every byte of the
+/// report before its signature. Domain-separated from every other preimage.
 pub fn error_report_preimage(body: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(ERROR_REPORT_DOMAIN);

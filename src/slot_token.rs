@@ -33,8 +33,8 @@ pub struct SlotSecrets {
     pub signing_public: [u8; 32],
 }
 
-/// Wrap a slot's secrets under `passphrase`, sealed to `device_id`: the bytes
-/// of a `token.kqst` file.
+/// Wrap a slot's secrets under `passphrase`, sealed to `device_id`: the bytes of a
+/// `token.kqst` file.
 pub fn seal_token(
     label: &str,
     device_id: &[u8; DEVICE_ID_LEN],
@@ -61,10 +61,10 @@ pub fn seal_token(
     Ok(bytes)
 }
 
-/// Open a token: the passphrase must be right (`InvalidPassword` otherwise),
-/// and the label and device id inside must be the expected ones and the public
-/// keys derived from the secrets the expected ones (`InvalidSlot` otherwise).
-/// The one rule `device::open_slot_in` and the C export share.
+/// Open a token: the passphrase must be right (`InvalidPassword` otherwise), and the label
+/// and device id inside must be the expected ones and the public keys derived from the
+/// secrets the expected ones (`InvalidSlot` otherwise). The one rule `device::open_slot_in`
+/// and the C export share.
 pub fn open_slot_token(
     token: &[u8],
     label: &str,

@@ -1,7 +1,6 @@
-//! C export for opening a slot token (`KQST`) with only its passphrase and the
-//! facts the caller's own registry holds (`include/keyquorum_slots.h`). The
-//! rule is `keyquorum::slot_token::open_slot_token`, the same function
-//! `keyquorum-device` uses.
+//! C export for opening a slot token (`KQST`) with only its passphrase and the facts the
+//! caller's own registry holds (`include/keyquorum_slots.h`). The rule is
+//! `keyquorum::slot_token::open_slot_token`, the same function `keyquorum-device` uses.
 
 use super::{
     bytes_in, bytes_out, input, KQ_ACCOUNT_INVALID, KQ_ACCOUNT_OK, KQ_ACCOUNT_WRONG_PASSWORD,
@@ -12,20 +11,17 @@ use core::ffi::{c_char, c_int};
 use keyquorum::error::Error;
 use keyquorum::slot_token;
 
-/// Opens the token `kqst` (`klen` bytes) for slot `label` with `passphrase`,
-/// expecting the device id and the signing and encryption public keys
-/// `expected_*` (from the caller's registry, never from the token). Writes the
-/// signing secret to `signing_secret_out` and the encryption secret to
-/// `encryption_secret_out` (32 bytes each; the caller wipes them).
+/// Opens the token `kqst` (`klen` bytes) for slot `label` with `passphrase`, expecting the
+/// device id and the signing and encryption public keys `expected_*` (from the caller's
+/// registry, never from the token). Writes the signing secret to `signing_secret_out` and
+/// the encryption secret to `encryption_secret_out` (32 bytes each; the caller wipes them).
 /// `KQ_ACCOUNT_OK`; `KQ_ACCOUNT_WRONG_PASSWORD` for a wrong passphrase;
-/// `KQ_ACCOUNT_INVALID` for anything else (a malformed token, or a label,
-/// device id or public key that does not match). Nothing is written unless it
-/// returns OK.
+/// `KQ_ACCOUNT_INVALID` for anything else (a malformed token, or a label, device id or
+/// public key that does not match). Nothing is written unless it returns OK.
 ///
 /// # Safety
-/// `kqst` readable for `klen`; `label` and `passphrase` NUL-terminated;
-/// `expected_device_id` readable for 16 bytes, the other `expected_*` and the
-/// `*_out` for 32.
+/// `kqst` readable for `klen`; `label` and `passphrase` NUL-terminated; `expected_device_id`
+/// readable for 16 bytes, the other `expected_*` and the `*_out` for 32.
 #[no_mangle]
 pub unsafe extern "C" fn kq_slot_open(
     kqst: *const u8,

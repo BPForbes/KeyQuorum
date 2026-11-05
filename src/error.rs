@@ -202,8 +202,8 @@ pub enum Error {
     /// committed (a lost commit response). Nothing may be undone or repeated
     /// on a guess. No backend raises it today; `host keys` already handles it.
     StoreCommitUnknown,
-    /// A `KQER` error report is malformed, oversized, carries free text or an
-    /// unlisted detail key, or is not a version this build reads.
+    /// A `KQER` error report is malformed, oversized, carries free text or an unlisted
+    /// detail key, or is not a version this build reads.
     InvalidErrorReport,
 }
 
@@ -551,8 +551,7 @@ impl fmt::Display for Error {
     }
 }
 
-// `core::error::Error` is the trait `std::error::Error` re-exports, so one
-// impl serves both.
+// `core::error::Error` is the trait `std::error::Error` re-exports, so one impl serves both.
 impl core::error::Error for Error {}
 
 #[cfg(feature = "host")]
