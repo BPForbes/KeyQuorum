@@ -821,8 +821,8 @@ Each seeded person has `use` and `device bind` run for their own slot (re-run fo
 by the artifact's SHA-256 (a `KQPB` cannot carry it in place). It has its own magic and version and uses
 `envelope`'s length-prefixed codec; `signing::error_report_preimage` owns the signature domain. It holds no free
 text: `ErrorCode` and `Class` are closed append-only sets, `object_ref` is a SHA-256, the label and time are
-charset-checked and `detail` takes only `shares`, `threshold`, `devices`, `minimum_devices` with short word
-values. `verify` checks the signature and that the report names the artifact the caller holds; `inject`
+charset-checked and `detail` takes only `shares`, `threshold`, `devices`, `minimum_devices` with decimal
+count values (digits that fit a `u32`, never words). `verify` checks the signature and that the report names the artifact the caller holds; `inject`
 appends a history event `ErrorReported` (48) whose details are derived (`error_class` a fixed word, `error_code`
 a decimal, `error_ref` the hex of `object_ref`), never copied from the report. The C side is
 `ffi/identity/src/ffi/error.rs` and `include/keyquorum_error.h` (`kq_error_name`, `kq_error_class_name`,

@@ -8,8 +8,8 @@
 //!
 //! Nothing in a report is free text. The code and class are closed sets, `object_ref` is
 //! a SHA-256 of the failed artifact (never its content), the reporter's label and the
-//! time are charset-checked, and `detail` takes only the count and policy words listed
-//! in [`DETAIL_KEYS`] with short alphanumeric values. A report is a claim by its signer:
+//! time are charset-checked, and `detail` takes only the counts listed in
+//! [`DETAIL_KEYS`], each a bounded decimal number, never text. A report is a claim by its signer:
 //! [`verify`] proves who made it and which artifact it names, and [`inject`] then records
 //! it in a tracked file's history as an `ErrorReported` event. It decides no trust.
 //!
@@ -29,8 +29,8 @@ pub const MAGIC: &[u8; 4] = b"KQER";
 pub const VERSION: u8 = 1;
 /// A report is a few hundred bytes; anything larger is refused unread.
 pub const MAX_ENCODED_LEN: usize = 1024;
-/// The only detail keys a report may carry: counts and policy words, as the quorum gate
-/// records them. Values are at most [`MAX_DETAIL_VALUE_LEN`] characters of `[a-z0-9_-]`.
+/// The only detail keys a report may carry: the quorum gate's counts. Each value is a
+/// decimal number of at most [`MAX_DETAIL_VALUE_LEN`] digits that fits a `u32`.
 pub const DETAIL_KEYS: &[&str] = &["devices", "minimum_devices", "shares", "threshold"];
 pub const MAX_DETAIL_ENTRIES: usize = 8;
 pub const MAX_DETAIL_VALUE_LEN: usize = 16;
@@ -152,8 +152,12 @@ fn time_char(c: char) -> bool {
     c.is_ascii_digit() || matches!(c, '-' | ':' | '.' | 'T' | 'Z')
 }
 
-fn word_char(c: char) -> bool {
-    c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-')
+/// A detail value is a count: ASCII digits that fit a `u32`, so no word, however short, is representable.
+fn count_value(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_DETAIL_VALUE_LEN
+        && value.bytes().all(|b| b.is_ascii_digit())
+        && value.parse::<u32>().is_ok()
 }
 
 impl Report {
@@ -170,7 +174,7 @@ impl Report {
         }
         for (n, (key, value)) in self.detail.iter().enumerate() {
             if !DETAIL_KEYS.contains(&key.as_str())
-                || !bounded(value, MAX_DETAIL_VALUE_LEN, word_char)
+                || !count_value(value)
                 || self.detail[..n].iter().any(|(earlier, _)| earlier == key)
             {
                 return Err(Error::InvalidErrorReport);

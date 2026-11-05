@@ -44,7 +44,7 @@ const char *kq_error_class_name(uint8_t class_code);
  * ([A-Za-z0-9._-], at most 64), occurred_at UTC text such as
  * "2026-11-03T10:00:00Z". detail_key and detail_value are one optional pair,
  * both NULL for none: the key one of shares, threshold, devices,
- * minimum_devices, the value at most 16 characters of [a-z0-9_-].
+ * minimum_devices, the value a decimal count of at most 16 digits.
  * KQ_FILE_INVALID for anything else (free text, an unknown code or class). */
 int kq_error_sign(uint16_t code, uint8_t class_code, uint8_t step,
                   const unsigned char object_ref[32],

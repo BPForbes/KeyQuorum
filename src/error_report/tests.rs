@@ -99,6 +99,29 @@ fn free_text_and_unlisted_keys_cannot_be_written() {
     assert!(
         write(|r| r.detail = vec![("shares".into(), "a sentence with spaces".into())]).is_err()
     );
+    let write_detail = |pair: (&str, &str)| {
+        let mut r = report(artifact_ref());
+        r.detail = vec![(pair.0.to_string(), pair.1.to_string())];
+        encode_signed(&r, &secret)
+    };
+    // Short text without spaces passes a charset check but is not a count.
+    for text in [
+        "access_denied",
+        "secret",
+        "-1",
+        "1e3",
+        "0x10",
+        "4294967296",
+        "99999999999999999",
+    ] {
+        assert!(
+            write_detail(("shares", text)).is_err(),
+            "a non-count detail value was accepted"
+        );
+    }
+    for count in ["0", "2", "4294967295"] {
+        assert!(write_detail(("threshold", count)).is_ok());
+    }
     assert!(write(
         |r| r.detail = vec![("shares".into(), "1".into()), ("shares".into(), "2".into())]
     )
