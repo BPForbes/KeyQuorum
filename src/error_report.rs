@@ -217,33 +217,38 @@ fn text(bytes: &[u8]) -> Result<String> {
         .map_err(|_| Error::InvalidErrorReport)
 }
 
-/// Parse the framing and the field rules; the signature is returned, not checked.
-fn decode(bytes: &[u8]) -> Result<(Report, &[u8], [u8; 64])> {
-    if bytes.len() > MAX_ENCODED_LEN || bytes.len() < MAGIC.len() + 1 + 64 {
+fn bad<T>(_: T) -> Error {
+    Error::InvalidErrorReport
+}
+
+fn take_header(data: &mut &[u8]) -> Result<(ErrorCode, Class, u8, [u8; 32])> {
+    if take_array::<4>(data).map_err(bad)? != *MAGIC || take_u8(data).map_err(bad)? != VERSION {
         return Err(Error::InvalidErrorReport);
     }
-    let (body, sig) = bytes.split_at(bytes.len() - 64);
-    let signature: [u8; 64] = sig.try_into().map_err(|_| Error::InvalidErrorReport)?;
+    let code = ErrorCode::from_u16(u16::from_be_bytes(take_array(data).map_err(bad)?))?;
+    let class = Class::from_u8(take_u8(data).map_err(bad)?)?;
+    let step = take_u8(data).map_err(bad)?;
+    let object_ref: [u8; 32] = take_array(data).map_err(bad)?;
+    Ok((code, class, step, object_ref))
+}
+
+fn take_detail(data: &mut &[u8], count: usize) -> Result<Vec<(String, String)>> {
+    let mut detail = Vec::new();
+    for _ in 0..count.min(MAX_DETAIL_ENTRIES + 1) {
+        let key = text(take_len_prefixed(data).map_err(bad)?)?;
+        let value = text(take_len_prefixed(data).map_err(bad)?)?;
+        detail.push((key, value));
+    }
+    Ok(detail)
+}
+
+fn decode_body(body: &[u8]) -> Result<Report> {
     let mut data = body;
-    let bad = |_| Error::InvalidErrorReport;
-    if take_array::<4>(&mut data).map_err(bad)? != *MAGIC
-        || take_u8(&mut data).map_err(bad)? != VERSION
-    {
-        return Err(Error::InvalidErrorReport);
-    }
-    let code = ErrorCode::from_u16(u16::from_be_bytes(take_array(&mut data).map_err(bad)?))?;
-    let class = Class::from_u8(take_u8(&mut data).map_err(bad)?)?;
-    let step = take_u8(&mut data).map_err(bad)?;
-    let object_ref: [u8; 32] = take_array(&mut data).map_err(bad)?;
+    let (code, class, step, object_ref) = take_header(&mut data)?;
     let actor_label = text(take_len_prefixed(&mut data).map_err(bad)?)?;
     let occurred_at = text(take_len_prefixed(&mut data).map_err(bad)?)?;
     let count = usize::from(take_u8(&mut data).map_err(bad)?);
-    let mut detail = Vec::new();
-    for _ in 0..count.min(MAX_DETAIL_ENTRIES + 1) {
-        let key = text(take_len_prefixed(&mut data).map_err(bad)?)?;
-        let value = text(take_len_prefixed(&mut data).map_err(bad)?)?;
-        detail.push((key, value));
-    }
+    let detail = take_detail(&mut data, count)?;
     if !data.is_empty() || detail.len() != count {
         return Err(Error::InvalidErrorReport);
     }
@@ -257,7 +262,17 @@ fn decode(bytes: &[u8]) -> Result<(Report, &[u8], [u8; 64])> {
         detail,
     };
     report.check()?;
-    Ok((report, body, signature))
+    Ok(report)
+}
+
+/// Parse the framing and the field rules; the signature is returned, not checked.
+fn decode(bytes: &[u8]) -> Result<(Report, &[u8], [u8; 64])> {
+    if bytes.len() > MAX_ENCODED_LEN || bytes.len() < MAGIC.len() + 1 + 64 {
+        return Err(Error::InvalidErrorReport);
+    }
+    let (body, sig) = bytes.split_at(bytes.len() - 64);
+    let signature: [u8; 64] = sig.try_into().map_err(bad)?;
+    Ok((decode_body(body)?, body, signature))
 }
 
 /// Decode a sidecar and accept it only when the reporter's signature verifies and it names
