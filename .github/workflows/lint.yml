@@ -53,6 +53,10 @@ jobs:
       # The no_std entropy path: the test is the embedder's `kq_platform_random`.
       - name: test (no default features, embedder entropy hook)
         run: cargo test --locked --no-default-features --features std --test platform_entropy
+      # Pure modules on wasm32 without `host` (KQ-01); the Lab step below
+      # still builds with `--features lab` and does not cover this path.
+      - name: clippy (no default features, wasm32)
+        run: cargo clippy --locked --lib --no-default-features --target wasm32-unknown-unknown -- -D warnings
       # The browser Lab builds the library for wasm32 with `lab` (never
       # `provider`); lints that only fire there are checked too.
       - name: clippy (Lab, wasm32)

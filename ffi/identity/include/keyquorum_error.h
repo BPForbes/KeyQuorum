@@ -8,10 +8,11 @@
  * refused or failed, written next to it as a sidecar named by the artifact's
  * SHA-256. It holds no free text: a code and a class from closed sets, the
  * artifact's SHA-256, the reporter's label, a UTC time and optionally one
- * count or policy word (shares, threshold, devices, minimum_devices). A report
- * is a claim by its signer: kq_error_inject checks the signature and that it
- * names the artifact the caller holds, then records an ErrorReported event
- * (history event 48) in the tracked file. It decides no trust.
+ * count as ASCII digits that fit a u32 (shares, threshold, devices,
+ * minimum_devices). A report is a claim by its signer: kq_error_inject checks
+ * the signature and that it names the artifact the caller holds, then records
+ * an ErrorReported event (history event 48) in the tracked file. It decides
+ * no trust.
  *
  * Keep in step with ffi/identity/src/ffi/error.rs.
  */
