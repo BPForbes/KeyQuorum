@@ -132,6 +132,38 @@ fn free_text_and_unlisted_keys_cannot_be_written() {
 }
 
 #[test]
+fn verify_rejects_correctly_signed_malformed_bodies() {
+    // Bypass encode_signed's check so acceptance-side Report::check in
+    // decode_body is what refuses free text and unlisted keys.
+    let (secret, public) = keys::generate_signing_keypair();
+    let sign_raw = |detail_key: &str, detail_value: &str| {
+        let mut body = Vec::new();
+        body.extend_from_slice(MAGIC);
+        body.push(VERSION);
+        body.extend_from_slice(&(ErrorCode::Integrity as u16).to_be_bytes());
+        body.push(Class::Integrity as u8);
+        body.push(3);
+        body.extend_from_slice(&artifact_ref());
+        crate::envelope::push_len_prefixed(&mut body, b"Root.Flinstone.Bob").unwrap();
+        crate::envelope::push_len_prefixed(&mut body, b"2026-11-03T10:00:00Z").unwrap();
+        body.push(1);
+        crate::envelope::push_len_prefixed(&mut body, detail_key.as_bytes()).unwrap();
+        crate::envelope::push_len_prefixed(&mut body, detail_value.as_bytes()).unwrap();
+        let signature =
+            crate::signing::sign(&secret, &crate::signing::error_report_preimage(&body));
+        body.extend_from_slice(&signature);
+        body
+    };
+    assert!(verify(&sign_raw("message", "1"), &public, &artifact_ref()).is_err());
+    assert!(verify(
+        &sign_raw("shares", "a sentence with spaces"),
+        &public,
+        &artifact_ref()
+    )
+    .is_err());
+}
+
+#[test]
 fn an_injected_report_lands_in_history_as_derived_values_only() {
     let (bytes, public) = signed();
     let mut file = TrackedFile::new(FILE, "sales-report.xlsx");

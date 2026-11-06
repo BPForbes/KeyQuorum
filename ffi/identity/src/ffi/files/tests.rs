@@ -969,6 +969,37 @@ fn a_history_snapshot_letter_opens_store_free_and_covers_the_extract() {
         },
         KQ_FILE_DIVERGED
     );
+    // An empty container with a different file id isolates the id check:
+    // its empty event prefix and own genesis would otherwise look like a
+    // prefix of any later history if the id comparison were removed.
+    let other_id = [0xABu8; 16];
+    let empty_other = {
+        let name = s("other.txt");
+        let owner = s("Root.Mya");
+        let (rc, c) = collect(|out, cap, len| unsafe {
+            kq_file_new(
+                other_id.as_ptr(),
+                name.as_ptr(),
+                owner.as_ptr(),
+                out,
+                cap,
+                len,
+            )
+        });
+        assert_eq!(rc, KQ_FILE_OK, "kq_file_new other id");
+        c
+    };
+    assert_eq!(
+        unsafe {
+            kq_file_snapshot_covers(
+                empty_other.as_ptr(),
+                empty_other.len(),
+                snapshot.as_ptr(),
+                snapshot.len(),
+            )
+        },
+        KQ_FILE_DIVERGED
+    );
     // Garbage on either side is invalid, not a verdict.
     assert_eq!(
         unsafe { kq_file_snapshot_covers(extract.as_ptr(), extract.len(), [0u8; 4].as_ptr(), 4) },
@@ -1015,6 +1046,38 @@ fn a_history_snapshot_letter_opens_store_free_and_covers_the_extract() {
     assert_eq!(
         open_snapshot(
             &tampered,
+            &steve.box_secret,
+            &mya,
+            &steve,
+            &mya.signing_public
+        )
+        .0,
+        KQ_FILE_UNTRUSTED
+    );
+    // A validly signed letter whose sealed KQHS disagrees with the signed
+    // header fields is UNTRUSTED (not INVALID): the consistency check must
+    // not be skipped after signature verification.
+    let file = TrackedFile::decode(&c).unwrap();
+    let snap = file.history_snapshot();
+    let snap_bytes = snap.encode().unwrap();
+    let mut wrong_id = file.file_id;
+    wrong_id[0] ^= 0xff;
+    let (_, mismatched) = file_delivery::seal_history_snapshot(&file_delivery::OutgoingSnapshot {
+        sender_label: mya.label.to_str().unwrap(),
+        sender_signing_secret: &mya.signing_secret,
+        sender_encryption_public: &mya.box_public,
+        recipient_label: steve.label.to_str().unwrap(),
+        recipient_encryption_public: &steve.box_public,
+        file_name: "plan.txt",
+        file_id: wrong_id,
+        history_root: snap.history_root,
+        event_count: snap.events.len() as u32,
+        snapshot: &snap_bytes,
+    })
+    .unwrap();
+    assert_eq!(
+        open_snapshot(
+            &mismatched,
             &steve.box_secret,
             &mya,
             &steve,

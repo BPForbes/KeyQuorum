@@ -3,7 +3,8 @@
 //! `keyquorum::access::requirement`. The rule is there; this only reads the
 //! caller's strings and live bridges.
 
-use super::input;
+use super::input_bounded;
+use crate::heritage::KEY_ID_MAX;
 #[allow(unused_imports)]
 use crate::nostd::*;
 use core::ffi::{c_char, c_int};
@@ -45,15 +46,17 @@ unsafe fn refuse(bridge_index_out: *mut c_int, needs_parent_grant_out: *mut c_in
 }
 
 /// One bridge's Member labels, borrowed from the caller's strings.
+/// Each label is bounded to [`KEY_ID_MAX`] bytes before UTF-8 conversion.
 ///
 /// # Safety
-/// `bridge.members` must be null or readable for `bridge.nmembers` pointers.
+/// `bridge.members` must be null or readable for `bridge.nmembers` pointers,
+/// each null or readable until a NUL or for `KEY_ID_MAX + 1` bytes.
 unsafe fn member_labels<'a>(bridge: &KqBridge) -> Option<Vec<&'a str>> {
     if bridge.nmembers > MAX_MEMBERS || (bridge.nmembers > 0 && bridge.members.is_null()) {
         return None;
     }
     (0..bridge.nmembers)
-        .map(|m| input(*bridge.members.add(m)))
+        .map(|m| input_bounded(*bridge.members.add(m), KEY_ID_MAX))
         .collect()
 }
 
@@ -74,7 +77,7 @@ unsafe fn bridges_in<'a>(
     let mut label_lists = Vec::new();
     for n in 0..nbridges {
         let bridge = &*live_bridges.add(n);
-        uids.push(input(bridge.uid)?);
+        uids.push(input_bounded(bridge.uid, KEY_ID_MAX)?);
         label_lists.push(member_labels(bridge)?);
     }
     Some((uids, label_lists))
@@ -106,7 +109,10 @@ pub unsafe extern "C" fn kq_access_requirement(
     bridge_index_out: *mut c_int,
     needs_parent_grant_out: *mut c_int,
 ) -> c_int {
-    let (Some(current), Some(target)) = (input(current), input(target)) else {
+    let (Some(current), Some(target)) = (
+        input_bounded(current, KEY_ID_MAX),
+        input_bounded(target, KEY_ID_MAX),
+    ) else {
         return refuse(bridge_index_out, needs_parent_grant_out);
     };
     let Some((uids, label_lists)) = bridges_in(live_bridges, nbridges) else {

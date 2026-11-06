@@ -196,5 +196,45 @@ fn a_bad_argument_is_invalid_and_grants_nothing() {
         )
     };
     assert_eq!(rc, KQ_ACCESS_INVALID);
+    // 256 valid members are accepted; 257 are refused at the FFI bound.
+    let label = s("Root.Bob");
+    let members_256: Vec<*const c_char> = (0..256).map(|_| label.as_ptr()).collect();
+    let ok_roster = [KqBridge {
+        uid: current.as_ptr(),
+        members: members_256.as_ptr(),
+        nmembers: 256,
+    }];
+    let rc = unsafe {
+        kq_access_requirement(
+            current.as_ptr(),
+            target.as_ptr(),
+            0,
+            ok_roster.as_ptr(),
+            1,
+            0,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        )
+    };
+    assert_ne!(rc, KQ_ACCESS_INVALID);
+    let members_257: Vec<*const c_char> = (0..257).map(|_| label.as_ptr()).collect();
+    let over = [KqBridge {
+        uid: current.as_ptr(),
+        members: members_257.as_ptr(),
+        nmembers: 257,
+    }];
+    let rc = unsafe {
+        kq_access_requirement(
+            current.as_ptr(),
+            target.as_ptr(),
+            0,
+            over.as_ptr(),
+            1,
+            0,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        )
+    };
+    assert_eq!(rc, KQ_ACCESS_INVALID);
     let _ = none;
 }

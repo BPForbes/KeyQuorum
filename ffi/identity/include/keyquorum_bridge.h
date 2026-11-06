@@ -11,8 +11,9 @@
  * bridge secret and the member's own signing key from caller-supplied facts (it does
  * not establish that those facts are a trusted live roster), and kq_bridge_verify
  * checks the artifact against the live bridge's facts the caller holds. A copied
- * token without its passphrase cannot produce a proof. Only a local member, whose
- * sealed bridge key this store holds, can prove.
+ * token without its passphrase cannot produce a proof. Only a caller who supplies
+ * a local member's sealed bridge key can produce an artifact; trusted roster
+ * membership is established only when kq_bridge_verify checks it.
  *
  * Liveness is in the facts: kq_bridge_verify refuses an artifact from another
  * generation, salt or bridge, a destroyed bridge, a signer or verifier that is not a

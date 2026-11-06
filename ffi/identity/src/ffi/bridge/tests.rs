@@ -114,6 +114,20 @@ fn a_member_proves_and_the_live_bridge_verifies_it_end_to_end() {
 }
 
 #[test]
+fn a_non_first_roster_member_proves_and_verifies() {
+    // Signing as the second roster entry detects a regression that always
+    // picks the first public key.
+    let (a, s, b) = (person("M.A.1"), person("M.S.1"), bridge());
+    let challenge = crypto::random_key();
+    let (rc, artifact) = prove(&b, &s, &s, &*challenge);
+    assert_eq!(rc, KQ_BRIDGE_OK);
+    assert_eq!(
+        verify(&b, GENERATION, 0, &[&a, &s], &a, &*challenge, &artifact),
+        KQ_BRIDGE_OK
+    );
+}
+
+#[test]
 fn a_stale_destroyed_or_foreign_proof_is_refused() {
     let (a, s, x, b) = (person("M.A.1"), person("M.S.1"), person("M.X.1"), bridge());
     let challenge = crypto::random_key();

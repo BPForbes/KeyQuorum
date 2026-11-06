@@ -91,7 +91,9 @@ fn a_wrong_signer_or_package_or_tampered_sidecar_writes_nothing() {
     let report = sidecar(&secret, &PKG);
     let tf = container();
     let inject = |report: &[u8], public: &[u8; 32], pkg: &[u8; 32]| {
-        let mut out = vec![0u8; 4096];
+        // Sentinel fill: a rejected inject must leave every out byte untouched.
+        let mut out = vec![0xA5u8; 4096];
+        let before = out.clone();
         let mut len = 7usize;
         let status = unsafe {
             kq_error_inject(
@@ -106,6 +108,7 @@ fn a_wrong_signer_or_package_or_tampered_sidecar_writes_nothing() {
                 &mut len,
             )
         };
+        assert_eq!(out, before, "rejected inject must not write the buffer");
         (status, len)
     };
     assert_eq!(inject(&report, &stranger, &PKG), (KQ_FILE_INVALID, 7));

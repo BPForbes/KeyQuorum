@@ -51,6 +51,13 @@ pub unsafe extern "C" fn kq_slot_open(
     if signing_secret_out.is_null() || encryption_secret_out.is_null() {
         return KQ_ACCOUNT_INVALID;
     }
+    // Overlapping 32-byte outs would let the second write clobber the first
+    // while still returning OK.
+    let sign_addr = signing_secret_out as usize;
+    let enc_addr = encryption_secret_out as usize;
+    if sign_addr < enc_addr.wrapping_add(32) && enc_addr < sign_addr.wrapping_add(32) {
+        return KQ_ACCOUNT_INVALID;
+    }
     match slot_token::open_slot_token(token, label, passphrase, &device, &signing, &encryption) {
         Ok(secrets) => {
             bytes_out(&*secrets.signing_secret, signing_secret_out);
