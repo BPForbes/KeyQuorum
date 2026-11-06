@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_secrets::{other_passphrase, passphrase};
+use crate::test_secrets::{empty_passphrase, other_passphrase, passphrase};
 
 const DEVICE: [u8; DEVICE_ID_LEN] = [3; DEVICE_ID_LEN];
 
@@ -126,8 +126,9 @@ fn tokens_are_salted_so_two_seals_differ() {
 fn an_empty_passphrase_cannot_seal_a_token() {
     let (e, _) = keys::generate_encryption_keypair();
     let (s, _) = keys::generate_signing_keypair();
+    let empty = empty_passphrase();
     assert!(matches!(
-        seal_token("Root.Bob", &DEVICE, &e, &s, ""),
+        seal_token("Root.Bob", &DEVICE, &e, &s, &empty),
         Err(Error::InvalidPassword)
     ));
 }
