@@ -149,3 +149,15 @@ fn an_oversized_token_is_refused_before_decryption() {
         Err(Error::InvalidDevice)
     ));
 }
+
+#[test]
+fn a_token_of_the_largest_encodable_size_still_opens() {
+    // A u16::MAX-byte label fills the layout exactly, so the size guard must
+    // accept MAX_TOKEN_LEN; only a token above it is refused.
+    let pass = passphrase();
+    let label = "a".repeat(u16::MAX as usize);
+    let slot = slot(&label, &pass);
+    assert_eq!(slot.token.len(), MAX_TOKEN_LEN);
+    let secrets = open(&slot, &label, &pass).unwrap();
+    assert_eq!(secrets.label, label);
+}

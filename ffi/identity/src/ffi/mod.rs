@@ -44,12 +44,14 @@ unsafe fn input_bounded<'a>(p: *const c_char, max: usize) -> Option<&'a str> {
     if p.is_null() {
         return None;
     }
-    let bytes = core::slice::from_raw_parts(p.cast::<u8>(), max.saturating_add(1));
-    let nul = bytes.iter().position(|&b| b == 0)?;
-    if nul == 0 || nul > max {
+    let p = p.cast::<u8>();
+    // Scan byte by byte: a slice over `max + 1` bytes would reach past a
+    // shorter string's allocation even when its NUL comes first.
+    let len = (0..=max).find(|&i| *p.add(i) == 0)?;
+    if len == 0 {
         return None;
     }
-    core::str::from_utf8(&bytes[..nul]).ok()
+    core::str::from_utf8(core::slice::from_raw_parts(p, len)).ok()
 }
 
 /// Writes `value` and a terminator into `out` when it fits.

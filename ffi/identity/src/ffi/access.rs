@@ -46,17 +46,18 @@ unsafe fn refuse(bridge_index_out: *mut c_int, needs_parent_grant_out: *mut c_in
 }
 
 /// One bridge's Member labels, borrowed from the caller's strings.
-/// Each label is bounded to [`KEY_ID_MAX`] bytes before UTF-8 conversion.
+/// Each label must be shorter than [`KEY_ID_MAX`] bytes, the limit `heritage`
+/// applies to every key id; the check runs before UTF-8 conversion.
 ///
 /// # Safety
 /// `bridge.members` must be null or readable for `bridge.nmembers` pointers,
-/// each null or readable until a NUL or for `KEY_ID_MAX + 1` bytes.
+/// each null or readable until a NUL or for `KEY_ID_MAX` bytes.
 unsafe fn member_labels<'a>(bridge: &KqBridge) -> Option<Vec<&'a str>> {
     if bridge.nmembers > MAX_MEMBERS || (bridge.nmembers > 0 && bridge.members.is_null()) {
         return None;
     }
     (0..bridge.nmembers)
-        .map(|m| input_bounded(*bridge.members.add(m), KEY_ID_MAX))
+        .map(|m| input_bounded(*bridge.members.add(m), KEY_ID_MAX - 1))
         .collect()
 }
 
