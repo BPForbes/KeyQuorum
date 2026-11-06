@@ -23,6 +23,11 @@ use zeroize::Zeroizing;
 const TOKEN_MAGIC: &[u8; 4] = b"KQST";
 const TOKEN_VERSION: u8 = 2;
 pub const DEVICE_ID_LEN: usize = 16;
+/// Largest token the layout can encode: header, GCM tag, a `u16`-prefixed label
+/// and the two 32-byte secrets. Anything larger is impossible and is refused
+/// before Argon2 or decryption.
+const MAX_TOKEN_LEN: usize =
+    4 + 1 + SALT_LEN + NONCE_LEN + 16 + 2 + (u16::MAX as usize) + DEVICE_ID_LEN + 32 + 32;
 
 /// Secrets unwrapped from one slot. Dropped values are zeroized.
 pub struct SlotSecrets {
@@ -40,6 +45,11 @@ pub fn seal_token(
     signing_secret: &[u8; 32],
     passphrase: &str,
 ) -> Result<Vec<u8>> {
+    // Same empty-passphrase refusal as `device` / the CLI: the store-free path
+    // must not seal identity secrets under an empty passphrase.
+    if passphrase.is_empty() {
+        return Err(Error::InvalidPassword);
+    }
     let plain = Zeroizing::new(encode_token_plain(
         label,
         device_id,
@@ -94,7 +104,10 @@ pub fn open_slot_token(
 }
 
 fn decrypt_token(bytes: &[u8], passphrase: &str) -> Result<Zeroizing<Vec<u8>>> {
-    if bytes.len() < 4 + 1 + SALT_LEN + NONCE_LEN + 16 || &bytes[..4] != TOKEN_MAGIC {
+    if bytes.len() < 4 + 1 + SALT_LEN + NONCE_LEN + 16
+        || bytes.len() > MAX_TOKEN_LEN
+        || &bytes[..4] != TOKEN_MAGIC
+    {
         return Err(Error::InvalidDevice);
     }
     let mut data = &bytes[4..];

@@ -34,6 +34,24 @@ unsafe fn input<'a>(p: *const c_char) -> Option<&'a str> {
     CStr::from_ptr(p).to_str().ok()
 }
 
+/// Like [`input`], but refuses a string longer than `max` bytes (no terminator
+/// within `max + 1` bytes, or empty). Limits how far a freestanding call may
+/// scan or allocate for a C string.
+///
+/// # Safety
+/// `p` must be null, or readable until a NUL or for `max + 1` bytes.
+unsafe fn input_bounded<'a>(p: *const c_char, max: usize) -> Option<&'a str> {
+    if p.is_null() {
+        return None;
+    }
+    let bytes = core::slice::from_raw_parts(p.cast::<u8>(), max.saturating_add(1));
+    let nul = bytes.iter().position(|&b| b == 0)?;
+    if nul == 0 || nul > max {
+        return None;
+    }
+    core::str::from_utf8(&bytes[..nul]).ok()
+}
+
 /// Writes `value` and a terminator into `out` when it fits.
 ///
 /// # Safety

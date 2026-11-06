@@ -7,7 +7,7 @@
  * `target` demands. The rule is keyquorum::access::requirement, so the hosted
  * shell, the browser lab and a freestanding kernel cannot differ:
  *
- *   same account                        KQ_ACCESS_NONE
+ *   same account, without sudo          KQ_ACCESS_NONE
  *   sudo, or the target is "Root"       KQ_ACCESS_KQST_PASSWORD (Root's own token + password)
  *   same branch (above or below)        KQ_ACCESS_PASSWORD (the target's)
  *   another branch, a live private

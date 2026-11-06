@@ -35,8 +35,8 @@ pub const MAX_ENCODED_LEN: usize = 1024;
 pub const DETAIL_KEYS: &[&str] = &["devices", "minimum_devices", "shares", "threshold"];
 pub const MAX_DETAIL_ENTRIES: usize = 8;
 pub const MAX_DETAIL_VALUE_LEN: usize = 16;
-const MAX_LABEL_LEN: usize = 64;
-const MAX_TIME_LEN: usize = 32;
+pub const MAX_LABEL_LEN: usize = 64;
+pub const MAX_TIME_LEN: usize = 32;
 
 /// Closed set. Append only; never renumber.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -8,10 +8,11 @@
  * and a sealed copy of the bridge's secret key. To cross it a member proves who they
  * are: the caller issues a fresh challenge, the member opens their slot token
  * (kq_slot_open, keyquorum_slots.h), kq_bridge_prove signs the challenge with the
- * bridge secret and the member's own signing key, and kq_bridge_verify checks the
- * artifact against the live bridge's facts the caller holds. A copied token without
- * its passphrase cannot produce a proof. Only a local member, whose sealed bridge key
- * this store holds, can prove.
+ * bridge secret and the member's own signing key from caller-supplied facts (it does
+ * not establish that those facts are a trusted live roster), and kq_bridge_verify
+ * checks the artifact against the live bridge's facts the caller holds. A copied
+ * token without its passphrase cannot produce a proof. Only a local member, whose
+ * sealed bridge key this store holds, can prove.
  *
  * Liveness is in the facts: kq_bridge_verify refuses an artifact from another
  * generation, salt or bridge, a destroyed bridge, a signer or verifier that is not a

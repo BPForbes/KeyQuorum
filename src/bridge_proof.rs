@@ -56,6 +56,10 @@ pub struct SealedBridgeKey {
     pub wrap_salt: [u8; SALT_LEN],
 }
 
+/// Byte length of [`seal_bridge_secret`]: wrap salt + bridge secret, then the
+/// `crypto_box` seal overhead. Anything else is refused before decrypt.
+pub const SEALED_BRIDGE_KEY_LEN: usize = SALT_LEN + 32 + crypto_box::SEALBYTES;
+
 /// Open a member's sealed bridge key with their X25519 secret: the plaintext
 /// is the wrap salt followed by the bridge's secret key, and the salt must be
 /// the stored one.
@@ -64,6 +68,9 @@ pub fn unseal_bridge_secret(
     wrap_salt: &[u8; SALT_LEN],
     encryption_sk: &[u8; 32],
 ) -> Result<Zeroizing<[u8; 32]>> {
+    if sealed.len() != SEALED_BRIDGE_KEY_LEN {
+        return Err(Error::IntegrityCheckFailed);
+    }
     let secret_key = crypto_box::SecretKey::from(*encryption_sk);
     let plain = Zeroizing::new(
         secret_key

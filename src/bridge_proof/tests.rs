@@ -41,7 +41,18 @@ fn bridge() -> Bridge {
 fn sealed_for(bridge: &Bridge, member: &Person) -> SealedBridgeKey {
     let wrap_salt = crypto::random_salt();
     let sealed = seal_bridge_secret(&member.encryption_public, &wrap_salt, &bridge.secret).unwrap();
+    assert_eq!(sealed.len(), SEALED_BRIDGE_KEY_LEN);
     SealedBridgeKey { sealed, wrap_salt }
+}
+
+#[test]
+fn sealing_refuses_a_weak_recipient_public_key() {
+    let bridge = bridge();
+    let wrap_salt = crypto::random_salt();
+    assert!(matches!(
+        seal_bridge_secret(&[0u8; 32], &wrap_salt, &bridge.secret),
+        Err(Error::InvalidPublicKey)
+    ));
 }
 
 fn roster<'a>(people: &[&'a Person]) -> Vec<MemberFact<'a>> {

@@ -118,4 +118,33 @@ fn tokens_are_salted_so_two_seals_differ() {
     let a = seal_token("Root.Bob", &DEVICE, &e, &s, &pass).unwrap();
     let b = seal_token("Root.Bob", &DEVICE, &e, &s, &pass).unwrap();
     assert_ne!(a, b);
+    // Salt sits after magic(4) + version(1); a nonce-only change must not pass.
+    assert_ne!(&a[5..5 + SALT_LEN], &b[5..5 + SALT_LEN]);
+}
+
+#[test]
+fn an_empty_passphrase_cannot_seal_a_token() {
+    let (e, _) = keys::generate_encryption_keypair();
+    let (s, _) = keys::generate_signing_keypair();
+    assert!(matches!(
+        seal_token("Root.Bob", &DEVICE, &e, &s, ""),
+        Err(Error::InvalidPassword)
+    ));
+}
+
+#[test]
+fn an_oversized_token_is_refused_before_decryption() {
+    let pass = passphrase();
+    let slot = slot("Root.Bob", &pass);
+    let mut huge = slot.token.clone();
+    huge.resize(MAX_TOKEN_LEN + 1, 0);
+    let huge = Slot {
+        token: huge,
+        encryption_public: slot.encryption_public,
+        signing_public: slot.signing_public,
+    };
+    assert!(matches!(
+        open(&huge, "Root.Bob", &pass),
+        Err(Error::InvalidDevice)
+    ));
 }

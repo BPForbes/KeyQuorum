@@ -5,11 +5,13 @@
 //! anything.
 
 use super::files::{buf_out, container_in, file_out, slice_in, KQ_FILE_INVALID};
-use super::{bytes_in, input};
+use super::{bytes_in, input_bounded};
 #[allow(unused_imports)]
 use crate::nostd::*;
 use core::ffi::{c_char, c_int};
-use keyquorum::error_report::{self, Class, ErrorCode, Report};
+use keyquorum::error_report::{
+    self, Class, ErrorCode, Report, DETAIL_KEYS, MAX_DETAIL_VALUE_LEN, MAX_LABEL_LEN, MAX_TIME_LEN,
+};
 use zeroize::Zeroizing;
 
 /// The name of error code `code` ("Integrity", ...), a static NUL-terminated
@@ -39,13 +41,24 @@ pub extern "C" fn kq_error_class_name(class: u8) -> *const c_char {
 }
 
 /// The optional detail pair: none when both are null, `None` when only one is
-/// usable.
+/// usable. Lengths and characters are checked before owned copies so a long or
+/// free-text C string is refused without allocating the report body.
 ///
 /// # Safety
-/// Each pointer must be null or a valid NUL-terminated string.
+/// Each pointer must be null or readable until a NUL / for the detail bounds.
 unsafe fn detail_in(key: *const c_char, value: *const c_char) -> Option<Vec<(String, String)>> {
-    match (input(key), input(value)) {
-        (Some(key), Some(value)) => Some(vec![(key.to_string(), value.to_string())]),
+    match (
+        input_bounded(key, DETAIL_KEYS.iter().map(|k| k.len()).max().unwrap_or(0)),
+        input_bounded(value, MAX_DETAIL_VALUE_LEN),
+    ) {
+        (Some(key), Some(value))
+            if DETAIL_KEYS.contains(&key)
+                && !value.is_empty()
+                && value.bytes().all(|b| b.is_ascii_digit())
+                && value.parse::<u32>().is_ok() =>
+        {
+            Some(vec![(key.to_string(), value.to_string())])
+        }
         _ if key.is_null() && value.is_null() => Some(Vec::new()),
         _ => None,
     }
@@ -79,11 +92,22 @@ pub unsafe extern "C" fn kq_error_sign(
     let (Some(object_ref), Some(secret), Some(label), Some(time)) = (
         bytes_in::<32>(object_ref),
         bytes_in::<32>(signing_secret).map(Zeroizing::new),
-        input(actor_label),
-        input(occurred_at),
+        input_bounded(actor_label, MAX_LABEL_LEN),
+        input_bounded(occurred_at, MAX_TIME_LEN),
     ) else {
         return KQ_FILE_INVALID;
     };
+    if label.is_empty()
+        || !label
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        || time.is_empty()
+        || !time
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '-' | ':' | '.' | 'T' | 'Z'))
+    {
+        return KQ_FILE_INVALID;
+    }
     let Some(detail) = detail_in(detail_key, detail_value) else {
         return KQ_FILE_INVALID;
     };

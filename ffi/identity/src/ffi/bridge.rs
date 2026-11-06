@@ -103,6 +103,9 @@ impl Prover<'_> {
             encryption_public: keyquorum::keys::encryption_public_from_secret(&self.encryption_sk),
             holds_sealed_key: true,
         };
+        if self.sealed.len() != bridge_proof::SEALED_BRIDGE_KEY_LEN {
+            return Err(Error::IntegrityCheckFailed);
+        }
         let held = SealedBridgeKey {
             sealed: self.sealed.to_vec(),
             wrap_salt: self.wrap_salt,

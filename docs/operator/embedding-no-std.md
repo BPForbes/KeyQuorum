@@ -5,8 +5,8 @@ Not customer-facing. This is what an embedder with no operating system needs to 
 which turns KeyQuorum's `host` feature off too).
 
 Build: `cargo build --release --no-default-features --target <bare-metal target>` in
-`ffi/identity`. Checked in CI on `thumbv7em-none-eabi` (clippy) and by hand for the
-archive.
+`ffi/identity`. CI runs release clippy for `thumbv7em-none-eabi` and builds the
+release archive for `x86_64-unknown-none`; the thumb archive was also built by hand.
 
 ## What the embedder must define
 
