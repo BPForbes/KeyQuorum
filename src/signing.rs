@@ -10,6 +10,8 @@ use crate::envelope::{
     hash_len_prefixed, push_len_prefixed, take_array, take_len_prefixed, take_n, take_u8, utf8,
 };
 use crate::error::{Error, Result};
+#[allow(unused_imports)]
+use crate::nostd::*;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 
@@ -28,6 +30,7 @@ const RELAY_API_KEY_ISSUE_DOMAIN: &[u8] = b"KQ-RELAY-API-KEY-ISSUE-v1";
 const RELAY_BACKUP_DOMAIN: &[u8] = b"KQ-RELAY-BACKUP-v1";
 const RELAY_SETUP_MANIFEST_DOMAIN: &[u8] = b"KQ-RELAY-SETUP-MANIFEST-v1";
 const PROVIDER_RECOVERY_DOMAIN: &[u8] = b"KQ-PROVIDER-RECOVERY-v1";
+const ERROR_REPORT_DOMAIN: &[u8] = b"KQ-ERROR-REPORT-v1";
 const ACCOUNT_BRIDGE_DOMAIN: &[u8] = b"KQ-ACCOUNT-BRIDGE-v1";
 
 /// Verifies `signature` over `message` under `public_key`. Uses
@@ -319,6 +322,15 @@ pub fn provider_recovery_preimage(context: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+/// What a reporter signs over a `KQER` error report (`error_report`): every byte of the
+/// report before its signature. Domain-separated from every other preimage.
+pub fn error_report_preimage(body: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(ERROR_REPORT_DOMAIN);
+    hasher.update(body);
+    hasher.finalize().into()
+}
+
 /// What a relay signs over a database backup's manifest (`relay::backup`): the
 /// manifest body exactly as written, which names every chunk by its SHA-256.
 /// Domain-separated from every other preimage.
@@ -503,6 +515,6 @@ pub fn decode_bridge_signature(bytes: &[u8]) -> Result<BridgeSignature> {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "host"))]
 #[path = "signing/tests.rs"]
 mod tests;

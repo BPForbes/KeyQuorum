@@ -17,16 +17,19 @@
 //! co-signature after opening it and checks the delivery is complete.
 
 use super::{bytes_in, bytes_out, input};
+#[allow(unused_imports)]
+use crate::nostd::*;
+use core::ffi::{c_char, c_int};
 use keyquorum::file_delivery::{self, Freshness, OutgoingHistory};
 use keyquorum::file_history::{
-    self, current_revision, delivery_readiness, latest_trusted_revision_where, proof_descriptor,
-    select_shareable_revision, supervisor_permits, BridgeEvidence, DeliveryReadiness, EventDetails,
-    FilePolicy, GenerationEvidence, HistoryEvent, HistoryEventType, HistoryOutcome, ImportContext,
-    NewEvent, NewRevision, ProofKind, TrackedFile, TrustContext,
+    self, current_revision, delivery_readiness, genesis_hash, latest_trusted_revision_where,
+    proof_descriptor, select_shareable_revision, supervisor_permits, BridgeEvidence,
+    DeliveryReadiness, EventDetails, FilePolicy, GenerationEvidence, HistoryEvent,
+    HistoryEventType, HistoryOutcome, HistorySnapshot, ImportContext, NewEvent, NewRevision,
+    ProofKind, TrackedFile, TrustContext,
 };
 use keyquorum::signing;
 use sha2::{Digest, Sha256};
-use std::ffi::{c_char, c_int};
 use zeroize::Zeroizing;
 
 /// The call succeeded (and, for a readiness check, the delivery may fire).
@@ -47,12 +50,17 @@ pub const KQ_FILE_REPLAYED: c_int = -8;
 pub const KQ_FILE_NO_REVISION: c_int = -10;
 /// A delivery holds fewer valid signatures than it needs.
 pub const KQ_FILE_BELOW_THRESHOLD: c_int = -11;
+/// A history extract is not a prefix of the snapshot it was sent with.
+pub const KQ_FILE_DIVERGED: c_int = -12;
 /// Freshness: nothing from this file was accepted before.
 pub const KQ_FILE_FIRST: c_int = 1;
 /// Freshness: extends everything accepted before and adds a revision.
 pub const KQ_FILE_NEWER: c_int = 2;
-/// Bumped when a signature or struct in the header changes.
-pub const KQ_FILE_ABI_VERSION: c_int = 2;
+/// Bumped when a signature or struct in the header changes, or functions are
+/// added (3: the `kq_error_*` exports of `keyquorum_error.h` and the kind-17
+/// snapshot exports, `KQ_FILE_DIVERGED`; 4: `kq_slot_open`, `kq_bridge_*`,
+/// `kq_access_requirement`).
+pub const KQ_FILE_ABI_VERSION: c_int = 4;
 
 /// A signing key the caller's registry holds for a label.
 #[repr(C)]
@@ -134,16 +142,16 @@ unsafe fn trust_in(trust: *const KqFileTrust) -> Option<TableTrust> {
 
 /// # Safety
 /// `p` must be null or readable for `len` bytes.
-unsafe fn slice_in<'a>(p: *const u8, len: usize) -> Option<&'a [u8]> {
+pub(crate) unsafe fn slice_in<'a>(p: *const u8, len: usize) -> Option<&'a [u8]> {
     if p.is_null() {
         return (len == 0).then_some(&[][..]);
     }
-    Some(std::slice::from_raw_parts(p, len))
+    Some(core::slice::from_raw_parts(p, len))
 }
 
 /// # Safety
 /// `p` must be null or readable for `len` bytes.
-unsafe fn container_in(p: *const u8, len: usize) -> Option<TrackedFile> {
+pub(crate) unsafe fn container_in(p: *const u8, len: usize) -> Option<TrackedFile> {
     TrackedFile::decode(slice_in(p, len)?).ok()
 }
 
@@ -152,7 +160,7 @@ unsafe fn container_in(p: *const u8, len: usize) -> Option<TrackedFile> {
 /// # Safety
 /// `out` must be null or writable for `cap` bytes; `out_len` must be null or
 /// writable.
-unsafe fn buf_out(value: &[u8], out: *mut u8, cap: usize, out_len: *mut usize) -> c_int {
+pub(crate) unsafe fn buf_out(value: &[u8], out: *mut u8, cap: usize, out_len: *mut usize) -> c_int {
     if out_len.is_null() {
         return KQ_FILE_INVALID;
     }
@@ -160,13 +168,18 @@ unsafe fn buf_out(value: &[u8], out: *mut u8, cap: usize, out_len: *mut usize) -
     if out.is_null() || cap < value.len() {
         return KQ_FILE_NO_ROOM;
     }
-    std::ptr::copy_nonoverlapping(value.as_ptr(), out, value.len());
+    core::ptr::copy_nonoverlapping(value.as_ptr(), out, value.len());
     KQ_FILE_OK
 }
 
 /// # Safety
 /// As [`buf_out`].
-unsafe fn file_out(file: &TrackedFile, out: *mut u8, cap: usize, out_len: *mut usize) -> c_int {
+pub(crate) unsafe fn file_out(
+    file: &TrackedFile,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+) -> c_int {
     match file.encode() {
         Ok(bytes) => buf_out(&bytes, out, cap, out_len),
         Err(_) => KQ_FILE_INVALID,
@@ -227,7 +240,7 @@ pub extern "C" fn kq_file_abi_version() -> c_int {
 /// build does not know. Added in ABI version 2.
 #[no_mangle]
 pub extern "C" fn kq_file_event_name(code: u8) -> *const c_char {
-    file_history::HistoryEventType::name_of(code).map_or(std::ptr::null(), |n| n.as_ptr())
+    file_history::HistoryEventType::name_of(code).map_or(core::ptr::null(), |n| n.as_ptr())
 }
 
 /// The name of history outcome `code` ("Success", ...), a static NUL-terminated
@@ -235,7 +248,7 @@ pub extern "C" fn kq_file_event_name(code: u8) -> *const c_char {
 /// Added in ABI version 2.
 #[no_mangle]
 pub extern "C" fn kq_file_outcome_name(code: u8) -> *const c_char {
-    file_history::HistoryOutcome::name_of(code).map_or(std::ptr::null(), |n| n.as_ptr())
+    file_history::HistoryOutcome::name_of(code).map_or(core::ptr::null(), |n| n.as_ptr())
 }
 
 /// Writes the 16-byte identity of `label` into `id_out`.
@@ -942,7 +955,7 @@ pub unsafe extern "C" fn kq_file_select_read(
     let accepted: &[[u8; 32]] = if naccepted == 0 {
         &[]
     } else {
-        std::slice::from_raw_parts(accepted, naccepted)
+        core::slice::from_raw_parts(accepted, naccepted)
     };
     let Some(policy) = policy_of(&file) else {
         return KQ_FILE_INVALID;
@@ -1114,6 +1127,202 @@ pub unsafe extern "C" fn kq_file_open_letter(
     rc
 }
 
+struct SnapshotParties<'a> {
+    sender: &'a str,
+    sender_secret: Zeroizing<[u8; 32]>,
+    sender_box_public: [u8; 32],
+    recipient: &'a str,
+    recipient_box_public: [u8; 32],
+}
+
+/// # Safety
+/// Strings null or NUL-terminated; each key pointer null or readable for 32
+/// bytes.
+unsafe fn snapshot_parties_in<'a>(
+    sender: *const c_char,
+    sender_secret: *const u8,
+    sender_box_public: *const u8,
+    recipient: *const c_char,
+    recipient_box_public: *const u8,
+) -> Option<SnapshotParties<'a>> {
+    Some(SnapshotParties {
+        sender: input(sender)?,
+        sender_secret: bytes_in::<32>(sender_secret).map(Zeroizing::new)?,
+        sender_box_public: bytes_in::<32>(sender_box_public)?,
+        recipient: input(recipient)?,
+        recipient_box_public: bytes_in::<32>(recipient_box_public)?,
+    })
+}
+
+/// The kind-17 letter for the first `upto_events` events of `file`; `None`
+/// when that is more events than the file holds or the letter cannot be built.
+fn sealed_snapshot(
+    file: &TrackedFile,
+    upto_events: u32,
+    parties: &SnapshotParties<'_>,
+) -> Option<([u8; 16], Vec<u8>)> {
+    let count = upto_events as usize;
+    if count > file.events().len() {
+        return None;
+    }
+    let events = file.events()[..count].to_vec();
+    let history_root = match events.last() {
+        Some(last) => last.event_hash,
+        None => genesis_hash(&file.file_id),
+    };
+    let snapshot = HistorySnapshot {
+        file_id: file.file_id,
+        history_root,
+        events,
+    };
+    let encoded = snapshot.encode().ok()?;
+    file_delivery::seal_history_snapshot(&file_delivery::OutgoingSnapshot {
+        sender_label: parties.sender,
+        sender_signing_secret: &parties.sender_secret,
+        sender_encryption_public: &parties.sender_box_public,
+        recipient_label: parties.recipient,
+        recipient_encryption_public: &parties.recipient_box_public,
+        file_name: &file.logical_name,
+        file_id: file.file_id,
+        history_root,
+        event_count: upto_events,
+        snapshot: &encoded,
+    })
+    .ok()
+}
+
+/// Seals a kind-17 snapshot letter of the first `upto_events` events (see
+/// `keyquorum_files.h`). The letter goes to `out`, its delivery id to
+/// `delivery_id_out` (16 bytes).
+///
+/// # Safety
+/// As [`kq_file_seal_letter`], without `rev` and `trust`.
+#[no_mangle]
+pub unsafe extern "C" fn kq_file_seal_snapshot(
+    c: *const u8,
+    clen: usize,
+    upto_events: u32,
+    sender: *const c_char,
+    sender_secret: *const u8,
+    sender_box_public: *const u8,
+    recipient: *const c_char,
+    recipient_box_public: *const u8,
+    out: *mut u8,
+    cap: usize,
+    out_len: *mut usize,
+    delivery_id_out: *mut u8,
+) -> c_int {
+    let (Some(file), Some(parties)) = (
+        container_in(c, clen),
+        snapshot_parties_in(
+            sender,
+            sender_secret,
+            sender_box_public,
+            recipient,
+            recipient_box_public,
+        ),
+    ) else {
+        return KQ_FILE_INVALID;
+    };
+    if delivery_id_out.is_null() {
+        return KQ_FILE_INVALID;
+    }
+    let Some((delivery_id, bytes)) = sealed_snapshot(&file, upto_events, &parties) else {
+        return KQ_FILE_INVALID;
+    };
+    let rc = buf_out(&bytes, out, cap, out_len);
+    if rc == KQ_FILE_OK {
+        bytes_out(&delivery_id, delivery_id_out);
+    }
+    rc
+}
+
+fn snapshot_matches_header(opened: &file_delivery::SnapshotLetter) -> bool {
+    HistorySnapshot::decode(&opened.snapshot).is_ok_and(|snapshot| {
+        snapshot.file_id == opened.file_id
+            && snapshot.history_root == opened.history_root
+            && snapshot.events.len() == opened.event_count as usize
+    })
+}
+
+/// Opens a kind-17 letter (see `keyquorum_files.h`). Writes the snapshot to
+/// `snap_out`, its root to `root_out` (32 bytes) and its event count to
+/// `event_count_out`.
+///
+/// # Safety
+/// `letter` readable for `llen`; `box_secret` and `sender_public` for 32;
+/// strings NUL-terminated; `snap_out` null or writable for `cap`; `snap_len`
+/// writable; `root_out` writable for 32; `event_count_out` writable.
+#[no_mangle]
+pub unsafe extern "C" fn kq_file_open_snapshot(
+    letter: *const u8,
+    llen: usize,
+    box_secret: *const u8,
+    expected_sender: *const c_char,
+    expected_recipient: *const c_char,
+    sender_public: *const u8,
+    snap_out: *mut u8,
+    cap: usize,
+    snap_len: *mut usize,
+    root_out: *mut u8,
+    event_count_out: *mut u32,
+) -> c_int {
+    let (Some(letter), Some(box_secret), Some(sender), Some(recipient), Some(sender_public)) = (
+        slice_in(letter, llen),
+        bytes_in::<32>(box_secret).map(Zeroizing::new),
+        input(expected_sender),
+        input(expected_recipient),
+        bytes_in::<32>(sender_public),
+    ) else {
+        return KQ_FILE_INVALID;
+    };
+    if root_out.is_null() || event_count_out.is_null() {
+        return KQ_FILE_INVALID;
+    }
+    let Ok(opened) =
+        file_delivery::open_history_snapshot_with_key(&box_secret, &sender_public, letter)
+    else {
+        return KQ_FILE_UNTRUSTED;
+    };
+    if opened.sender_label != sender || opened.recipient_label != recipient {
+        return KQ_FILE_UNTRUSTED;
+    }
+    if !snapshot_matches_header(&opened) {
+        return KQ_FILE_UNTRUSTED;
+    }
+    let rc = buf_out(&opened.snapshot, snap_out, cap, snap_len);
+    if rc == KQ_FILE_OK {
+        bytes_out(&opened.history_root, root_out);
+        *event_count_out = opened.event_count;
+    }
+    rc
+}
+
+/// `KQ_FILE_OK` when `extract`'s history is a prefix of `snapshot` (see
+/// `keyquorum_files.h`).
+///
+/// # Safety
+/// Both buffers readable for their lengths.
+#[no_mangle]
+pub unsafe extern "C" fn kq_file_snapshot_covers(
+    extract: *const u8,
+    elen: usize,
+    snapshot: *const u8,
+    slen: usize,
+) -> c_int {
+    let (Some(file), Some(bytes)) = (container_in(extract, elen), slice_in(snapshot, slen)) else {
+        return KQ_FILE_INVALID;
+    };
+    let Ok(full) = HistorySnapshot::decode(bytes) else {
+        return KQ_FILE_INVALID;
+    };
+    if file.history_snapshot().is_prefix_of_snapshot(&full) {
+        KQ_FILE_OK
+    } else {
+        KQ_FILE_DIVERGED
+    }
+}
+
 /// Judges `rev` with history `root` against the `nseen` (revision, root)
 /// pairs, 64 bytes each, the caller accepted before for this file. `rev`
 /// must be a revision of `c` and `root` its history root, else
@@ -1151,8 +1360,8 @@ pub unsafe extern "C" fn kq_file_freshness(
         .map(|i| {
             let pair = &*seen.add(i);
             (
-                std::array::from_fn(|j| pair[j]),
-                std::array::from_fn(|j| pair[32 + j]),
+                core::array::from_fn(|j| pair[j]),
+                core::array::from_fn(|j| pair[32 + j]),
             )
         })
         .collect();

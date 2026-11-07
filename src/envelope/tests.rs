@@ -1,7 +1,7 @@
 use super::*;
 
 fn keypair() -> (crypto_box::SecretKey, [u8; 32]) {
-    let secret = crypto_box::SecretKey::generate(&mut rand_core::OsRng);
+    let secret = crypto_box::SecretKey::generate(&mut crate::crypto::os_rng());
     let public = *secret.public_key().as_bytes();
     (secret, public)
 }

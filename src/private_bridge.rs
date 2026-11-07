@@ -29,6 +29,7 @@
 //! command can be retried either way. Library [`create`] still plans and
 //! commits in one call for in-process tests.
 
+use crate::bridge_proof;
 use crate::crypto::{random_salt, SALT_LEN};
 use crate::envelope::{
     hash_len_prefixed, hash_u16_count, is_weak_x25519_public_key, push_len_prefixed, take_array,
@@ -888,6 +889,62 @@ pub fn on_member_revoked(conn: &Connection, node_label: &str) -> Result<Vec<Brid
     Ok(changes)
 }
 
+/// The roster of `summary` as the facts `bridge_proof` judges: Member role
+/// only.
+fn proof_members(summary: &BridgeSummary) -> Vec<bridge_proof::MemberFact<'_>> {
+    summary
+        .parties
+        .iter()
+        .filter(|p| p.role == PartyRole::Member)
+        .map(|p| bridge_proof::MemberFact {
+            label: &p.label,
+            signing_public: p.signing_public_key,
+        })
+        .collect()
+}
+
+/// Whether the roster's signing key for `label` is the one this store has
+/// registered for it (a label this store does not know is not a mismatch).
+fn registry_agrees(conn: &Connection, label: &str, roster_signing: &[u8; 32]) -> Result<()> {
+    match signing_public_for_label(conn, label) {
+        Ok(local) if local != *roster_signing => Err(Error::IntegrityCheckFailed),
+        Ok(_) | Err(Error::NodeNotFound) => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+fn proof_facts<'a>(
+    summary: &BridgeSummary,
+    uid: &'a str,
+    members: &'a [bridge_proof::MemberFact<'a>],
+) -> bridge_proof::BridgeFacts<'a> {
+    bridge_proof::BridgeFacts {
+        uid,
+        generation: summary.generation,
+        salt: summary.salt,
+        bridge_public: summary.public_key,
+        destroyed: summary.destroyed,
+        members,
+    }
+}
+
+/// The prover's own roster entry. A non-member gets an empty one, which
+/// `prove_with` never reads because it answers `NotBridgeMember` first.
+fn local_member(summary: &BridgeSummary, local_label: &str) -> bridge_proof::LocalMember {
+    summary
+        .parties
+        .iter()
+        .find(|p| p.label == local_label && p.role == PartyRole::Member)
+        .map(|p| bridge_proof::LocalMember {
+            encryption_public: p.encryption_public_key,
+            holds_sealed_key: p.has_sealed_key,
+        })
+        .unwrap_or(bridge_proof::LocalMember {
+            encryption_public: [0; 32],
+            holds_sealed_key: false,
+        })
+}
+
 pub fn sign_message(
     conn: &Connection,
     uid: &str,
@@ -897,41 +954,18 @@ pub fn sign_message(
     message: &[u8],
 ) -> Result<BridgeSignature> {
     let summary = get(conn, uid)?;
-    if summary.destroyed {
-        return Err(Error::BridgeDestroyed);
-    }
-    let member = summary
-        .parties
-        .iter()
-        .find(|p| p.label == local_label && p.role == PartyRole::Member)
-        .ok_or(Error::NotBridgeMember)?;
-    if !member.has_sealed_key {
-        return Err(Error::SealedKeyNotHeld);
-    }
-    if keys::encryption_public_from_secret(encryption_sk) != member.encryption_public_key {
-        return Err(Error::IntegrityCheckFailed);
-    }
-    let roster_signing = member.signing_public_key.ok_or(Error::InvalidBridge)?;
-    let provided_signing = SigningKey::from_bytes(signing_sk)
-        .verifying_key()
-        .to_bytes();
-    if provided_signing != roster_signing {
-        return Err(Error::IntegrityCheckFailed);
-    }
-    match signing_public_for_label(conn, local_label) {
-        Ok(local) if local != roster_signing => return Err(Error::IntegrityCheckFailed),
-        Ok(_) | Err(Error::NodeNotFound) => {}
-        Err(err) => return Err(err),
-    }
-    let bridge_sk = unseal_local_secret(conn, uid, local_label, encryption_sk)?;
-    signing::sign_with_bridge(
-        uid,
-        summary.generation,
-        &summary.salt,
+    let members = proof_members(&summary);
+    let facts = proof_facts(&summary, uid, &members);
+    let local = local_member(&summary, local_label);
+    bridge_proof::prove_with(
+        &facts,
         local_label,
-        &bridge_sk,
+        &local,
+        encryption_sk,
         signing_sk,
         message,
+        |label, roster_signing| registry_agrees(conn, label, roster_signing),
+        || load_sealed_key(conn, uid, local_label),
     )
 }
 
@@ -943,34 +977,15 @@ pub fn verify_message(
     artifact: &BridgeSignature,
 ) -> Result<()> {
     let summary = get(conn, uid)?;
-    if summary.destroyed {
-        return Err(Error::BridgeDestroyed);
-    }
-    if artifact.uid != uid || artifact.generation != summary.generation {
-        return Err(Error::BridgeGenerationMismatch);
-    }
-    if artifact.bridge_salt != summary.salt {
-        return Err(Error::BridgeGenerationMismatch);
-    }
-    let signer = summary
-        .parties
-        .iter()
-        .find(|p| p.role == PartyRole::Member && p.label == artifact.signer_label)
-        .ok_or(Error::NotBridgeMember)?;
-    let verifier_ok = summary
-        .parties
-        .iter()
-        .any(|p| p.role == PartyRole::Member && p.label == verifier_label);
-    if !verifier_ok {
-        return Err(Error::NotBridgeMember);
-    }
-    let roster_signing = signer.signing_public_key.ok_or(Error::InvalidBridge)?;
-    match signing_public_for_label(conn, &artifact.signer_label) {
-        Ok(local) if local != roster_signing => return Err(Error::IntegrityCheckFailed),
-        Ok(_) | Err(Error::NodeNotFound) => {}
-        Err(err) => return Err(err),
-    }
-    signing::verify_bridge_signature(artifact, &summary.public_key, &roster_signing, message)
+    let members = proof_members(&summary);
+    let facts = proof_facts(&summary, uid, &members);
+    bridge_proof::verify_with(
+        &facts,
+        verifier_label,
+        message,
+        artifact,
+        |label, roster_signing| registry_agrees(conn, label, roster_signing),
+    )
 }
 
 /// Check `artifact` against this store's copy of its bridge, as
@@ -1853,30 +1868,32 @@ fn encode_notice(
     Ok(out)
 }
 
+fn load_sealed_key(
+    conn: &Connection,
+    uid: &str,
+    local_label: &str,
+) -> Result<bridge_proof::SealedBridgeKey> {
+    let bridge_id = last_bridge_id(conn, uid)?;
+    let (wrap_salt, sealed): (Vec<u8>, Vec<u8>) = conn.query_row(
+        "SELECT wrap_salt, wrapped_secret FROM private_bridge_sealed_keys
+         WHERE bridge_id = ?1 AND node_label = ?2",
+        params![bridge_id, local_label],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok(bridge_proof::SealedBridgeKey {
+        sealed,
+        wrap_salt: vec_to_salt(&wrap_salt)?,
+    })
+}
+
 fn unseal_local_secret(
     conn: &Connection,
     uid: &str,
     local_label: &str,
     encryption_sk: &[u8; 32],
 ) -> Result<Zeroizing<[u8; 32]>> {
-    let bridge_id = last_bridge_id(conn, uid)?;
-    let (wrap_salt, wrapped): (Vec<u8>, Vec<u8>) = conn.query_row(
-        "SELECT wrap_salt, wrapped_secret FROM private_bridge_sealed_keys
-         WHERE bridge_id = ?1 AND node_label = ?2",
-        params![bridge_id, local_label],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
-    let wrap_salt = vec_to_salt(&wrap_salt)?;
-    let secret_key = crypto_box::SecretKey::from(*encryption_sk);
-    let plain = secret_key
-        .unseal(&wrapped)
-        .map_err(|_| Error::IntegrityCheckFailed)?;
-    if plain.len() != SALT_LEN + 32 || plain[..SALT_LEN] != wrap_salt {
-        return Err(Error::IntegrityCheckFailed);
-    }
-    let mut sk = Zeroizing::new([0u8; 32]);
-    sk.copy_from_slice(&plain[SALT_LEN..]);
-    Ok(sk)
+    let held = load_sealed_key(conn, uid, local_label)?;
+    bridge_proof::unseal_bridge_secret(&held.sealed, &held.wrap_salt, encryption_sk)
 }
 
 fn seal_secret(
@@ -1884,15 +1901,7 @@ fn seal_secret(
     wrap_salt: &[u8; SALT_LEN],
     secret: &[u8; 32],
 ) -> Result<Vec<u8>> {
-    if is_weak_x25519_public_key(recipient_pub) {
-        return Err(Error::InvalidPublicKey);
-    }
-    let mut plain = Vec::with_capacity(SALT_LEN + 32);
-    plain.extend_from_slice(wrap_salt);
-    plain.extend_from_slice(secret);
-    Ok(crypto_box::PublicKey::from_bytes(*recipient_pub)
-        .seal(&mut rand_core::OsRng, &plain)
-        .expect("crypto_box sealing should not fail for an in-memory secret"))
+    bridge_proof::seal_bridge_secret(recipient_pub, wrap_salt, secret)
 }
 
 #[allow(clippy::too_many_arguments)]

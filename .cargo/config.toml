@@ -1,0 +1,13 @@
+# The freestanding x86_64 target (`x86_64-unknown-none`, no SSE, soft-float ABI) crashes
+# rustc's LLVM ("Do not know how to split the result of this operator!") in the SIMD
+# backends of the crypto dependencies. These select their portable backends, which is the
+# only change: nothing here applies to any other target. See
+# docs/operator/embedding-no-std.md.
+[target.x86_64-unknown-none]
+rustflags = [
+    "--cfg", "curve25519_dalek_backend=\"serial\"",
+    "--cfg", "poly1305_force_soft",
+    "--cfg", "polyval_backend=\"soft\"",
+    "--cfg", "sha2_backend=\"soft\"",
+    "--cfg", "aes_backend=\"soft\"",
+]

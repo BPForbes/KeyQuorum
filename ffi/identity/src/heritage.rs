@@ -1,5 +1,7 @@
 //! Account heritage policy over KeyQuorum's dotted-label topology.
 
+#[allow(unused_imports)]
+use crate::nostd::*;
 use keyquorum::authority;
 
 /// The master account, and the first segment of every key id.

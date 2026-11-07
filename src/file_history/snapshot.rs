@@ -12,6 +12,8 @@ use super::container::TrackedFile;
 use super::event::{genesis_hash, verify_chain, HistoryEvent};
 use crate::envelope::take_u32;
 use crate::error::{Error, Result};
+#[allow(unused_imports)]
+use crate::nostd::*;
 
 pub const SNAPSHOT_MAGIC: &[u8; 4] = b"KQHS";
 pub const SNAPSHOT_VERSION: u8 = 1;

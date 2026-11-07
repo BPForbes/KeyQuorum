@@ -27,6 +27,8 @@ use super::policy::{
 use super::revision::{HeadRelation, NewRevision};
 use crate::authority;
 use crate::error::{Error, Result};
+#[allow(unused_imports)]
+use crate::nostd::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelectionRule {

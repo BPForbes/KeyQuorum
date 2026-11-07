@@ -7,8 +7,10 @@
 
 use crate::account;
 use crate::heritage::{self, ChildError, Relation};
+#[allow(unused_imports)]
+use crate::nostd::*;
+use core::ffi::{c_char, c_int, CStr};
 use keyquorum::signing::AccountBridgeRole;
-use std::ffi::{c_char, c_int, CStr};
 use zeroize::Zeroizing;
 
 /// The key id was written.
@@ -32,6 +34,26 @@ unsafe fn input<'a>(p: *const c_char) -> Option<&'a str> {
     CStr::from_ptr(p).to_str().ok()
 }
 
+/// Like [`input`], but refuses a string longer than `max` bytes (no terminator
+/// within `max + 1` bytes, or empty). Limits how far a freestanding call may
+/// scan or allocate for a C string.
+///
+/// # Safety
+/// `p` must be null, or readable until a NUL or for `max + 1` bytes.
+unsafe fn input_bounded<'a>(p: *const c_char, max: usize) -> Option<&'a str> {
+    if p.is_null() {
+        return None;
+    }
+    let p = p.cast::<u8>();
+    // Scan byte by byte: a slice over `max + 1` bytes would reach past a
+    // shorter string's allocation even when its NUL comes first.
+    let len = (0..=max).find(|&i| *p.add(i) == 0)?;
+    if len == 0 {
+        return None;
+    }
+    core::str::from_utf8(core::slice::from_raw_parts(p, len)).ok()
+}
+
 /// Writes `value` and a terminator into `out` when it fits.
 ///
 /// # Safety
@@ -44,7 +66,7 @@ unsafe fn output(value: &str, out: *mut c_char, cap: usize) -> c_int {
         *out = 0;
         return KQ_HERITAGE_NO_ROOM;
     }
-    std::ptr::copy_nonoverlapping(value.as_ptr(), out.cast::<u8>(), value.len());
+    core::ptr::copy_nonoverlapping(value.as_ptr(), out.cast::<u8>(), value.len());
     *out.add(value.len()) = 0;
     KQ_HERITAGE_OK
 }
@@ -154,6 +176,30 @@ pub unsafe extern "C" fn kq_heritage_relation(a: *const c_char, b: *const c_char
     }
 }
 
+/// `1` when a bridge between `end_a` and `end_b` connects `actor` to `scope`: one end holds
+/// `actor` or an ancestor of it, and the other end sits on the scope's line (the scope, an
+/// ancestor of it, or a node inside it); `0` otherwise, and for a null or non-UTF-8 argument.
+/// Judges only the shape of the hierarchy (`keyquorum::authority::bridge_connects`): that
+/// the bridge exists and is live is the caller's check (`kq_bridge_verify`). A single hop;
+/// two bridges do not chain.
+///
+/// # Safety
+/// Every argument must be null or a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn kq_bridge_connects(
+    end_a: *const c_char,
+    end_b: *const c_char,
+    actor: *const c_char,
+    scope: *const c_char,
+) -> c_int {
+    match (input(end_a), input(end_b), input(actor), input(scope)) {
+        (Some(a), Some(b), Some(actor), Some(scope)) => {
+            keyquorum::authority::bridge_connects(a, b, actor, scope) as c_int
+        }
+        _ => 0,
+    }
+}
+
 /// Writes the home directory relative to the jail root: `home` for `Root`,
 /// `home/Flinstone/Bob` for `Root.Flinstone.Bob`.
 ///
@@ -203,7 +249,7 @@ unsafe fn bytes_in<const N: usize>(p: *const u8) -> Option<[u8; N]> {
     }
     // Copied straight from the caller's bytes: no placeholder value is ever
     // created, so nothing constant can stand in for a key or nonce.
-    std::slice::from_raw_parts(p, N).try_into().ok()
+    core::slice::from_raw_parts(p, N).try_into().ok()
 }
 
 /// Writes `value` to `out`; false for null.
@@ -214,7 +260,7 @@ unsafe fn bytes_out(value: &[u8], out: *mut u8) -> bool {
     if out.is_null() {
         return false;
     }
-    std::ptr::copy_nonoverlapping(value.as_ptr(), out, value.len());
+    core::ptr::copy_nonoverlapping(value.as_ptr(), out, value.len());
     true
 }
 
@@ -338,7 +384,7 @@ pub unsafe extern "C" fn kq_account_open(
     if sealed.is_null() || secret_out.is_null() {
         return KQ_ACCOUNT_INVALID;
     }
-    let sealed = std::slice::from_raw_parts(sealed, len);
+    let sealed = core::slice::from_raw_parts(sealed, len);
     match account::open(password, sealed) {
         Ok(secret) => {
             bytes_out(&secret[..], secret_out);
@@ -413,7 +459,11 @@ pub unsafe extern "C" fn kq_account_bridge_verify(
     account::verify_bridge(role, from, to, signer, &nonce, &public, &sig) as c_int
 }
 
+pub mod access;
+pub mod bridge;
+pub mod error;
 pub mod files;
+pub mod slot;
 
 #[cfg(test)]
 #[path = "tests.rs"]

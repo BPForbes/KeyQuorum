@@ -817,6 +817,72 @@ unlocking through the same `unlock_quorum_file` as `access quorum --state 1`, so
 Each seeded person has `use` and `device bind` run for their own slot (re-run for the owner by
 `move_slot`), and the lab can run `doctor`, `use` and `device bind` for the active person.
 
+`src/error_report.rs` is `KQER` (v1, issue #170): a signed error report about one artifact, a sidecar named
+by the artifact's SHA-256 (a `KQPB` cannot carry it in place). It has its own magic and version and uses
+`envelope`'s length-prefixed codec; `signing::error_report_preimage` owns the signature domain. It holds no free
+text: `ErrorCode` and `Class` are closed append-only sets, `object_ref` is a SHA-256, the label and time are
+charset-checked and `detail` takes only `shares`, `threshold`, `devices`, `minimum_devices` with decimal
+count values (digits that fit a `u32`, never words). `verify` checks the signature and that the report names the artifact the caller holds; `inject`
+appends a history event `ErrorReported` (48) whose details are derived (`error_class` a fixed word, `error_code`
+a decimal, `error_ref` the hex of `object_ref`), never copied from the report. The C side is
+`ffi/identity/src/ffi/error.rs` and `include/keyquorum_error.h` (`kq_error_name`, `kq_error_class_name`,
+`kq_error_sign`, `kq_error_inject`; `KQ_FILE_ABI_VERSION` 3).
+
+The kind-17 snapshot letter opens without a store too: `file_delivery::open_history_snapshot_with_key` (the
+sender's key comes from the caller's registry) shares one verifying body with the host `open_history_snapshot`.
+C: `kq_file_seal_snapshot`, `kq_file_open_snapshot` and `kq_file_snapshot_covers` (extract is a prefix of the
+snapshot, else `KQ_FILE_DIVERGED` -12) in `keyquorum_files.h`, with `KQ_FILE_ABI_VERSION` 3.
+
+`src/slot_token.rs` is the store-free part of `device` (`KQST` v2): `seal_token` and `open_slot_token`
+(passphrase plus the label, device id and the two public keys the caller expects; `InvalidPassword` for a wrong
+passphrase, `InvalidSlot` for any mismatch). `device::open_slot_in` and `write_token` call it, so there is one
+rule; `device` re-exports `SlotSecrets`. In the pure set (`no_std`). C: `kq_slot_open` in
+`include/keyquorum_slots.h` (`KQ_ACCOUNT_OK`, `KQ_ACCOUNT_WRONG_PASSWORD`, `KQ_ACCOUNT_INVALID`).
+
+`src/bridge_proof.rs` is the private-bridge proof without a database: `prove_with` / `prove` (what `sign_message`
+decides: member, sealed key held, keys match the roster, the unsealed secret is this bridge's, then
+`signing::sign_with_bridge`) and `verify_with` / `verify` (what `verify_message` decides: live bridge, generation
+and salt, signer and verifier are members, roster key). `private_bridge::sign_message` and `verify_message` build
+the same `BridgeFacts` from SQLite and call them, with the registry comparison as a hook, so there is one rule;
+`seal_bridge_secret` / `unseal_bridge_secret` live there too. Pure (`no_std`). C: `kq_bridge_prove` and
+`kq_bridge_verify` in `include/keyquorum_bridge.h` (`KQ_BRIDGE_OK`, `INVALID`, `NO_ROOM`, `REFUSED`, `STALE`; the
+caller passes the sealed bridge key and its wrap salt, and the live bridge's facts), and `kq_bridge_connects`
+(`authority::bridge_connects`, the shape of the hierarchy only) in `keyquorum_identity.h`.
+
+`src/access.rs` is the login / `su` / `sudo` access policy (issue #165), pure (`no_std`): `requirement(current,
+target, sudo, bridges, policy)` returns the `Factor` to demand (`None`, `Password`, `KqstAndPassword`,
+`PasswordAndBridgeKqst`, `Refused`; append only), the first live bridge to cross, and whether a parent grant is
+needed. It reuses `authority::relationship` and `authority::bridge_connects` (some pair of a live bridge's Member
+labels connects the two accounts, as `private_bridge::revision_approved` applies it) and decides nothing else:
+opening the token is `slot_token`, proving bridge membership is `bridge_proof`. C: `kq_access_requirement` in
+`include/keyquorum_access.h` (`KQ_ACCESS_*` factors; `KQ_BRIDGE_*` in `keyquorum_bridge.h` are proof statuses, a
+separate namespace). `KQ_FILE_ABI_VERSION` is 4 (4 added `kq_slot_open`, `kq_bridge_*`, `kq_access_requirement`).
+
+The `host` Cargo feature (on by default; the enabled dependency features are the same as before it
+existed) is the whole hosted crate: SQLite, the CLI, the relay, files and the network, with `std`.
+`cargo build --no-default-features` builds only the pure modules as `no_std` + `alloc` (`signing`,
+`crypto`, `envelope`, `error`, `keys`' key generation and parsing, `authority`'s label rules and
+preimages, `file_history` and `file_delivery`'s sealing, verification and `*_with_key` openers); each
+database-bound function inside them is `#[cfg(feature = "host")]`, and `file_history::index`, `device`,
+`private_bridge`, `quorum` and the rest are host-only (`src/lib.rs`). `Error::Db` needs `host` and
+`Error::Io` needs `std`. Randomness has one seam, `crypto::fill_random` (and `crypto::PlatformRng`,
+the RNG object for `blahaj`, `ed25519-dalek` and `crypto_box`), and every module draws from it: the
+operating system with `host`, otherwise the embedder's C function
+`int kq_platform_random(uint8_t *buf, size_t len)` (0 is success; a non-zero return panics, so the
+call fails closed; `tests/platform_entropy.rs` is the embedder in a test). `ffi/identity` has a `std`
+feature (default, `keyquorum/host`); without it the archive is `no_std` and leaves four symbols for the
+embedder, declared in `include/keyquorum_identity.h`: `kq_platform_random`, `kq_platform_alloc`,
+`kq_platform_free` and `kq_platform_panic` (never returns); `docs/operator/embedding-no-std.md` says
+how to link it. `src/nostd.rs` is the allocation prelude the pure modules import. Pure modules use
+`BTreeMap`/`BTreeSet`, never `HashMap`/`HashSet`, and `core`/`alloc` paths; their unit tests need the
+database and run under `host` only. `blahaj` is `host`-only because it forces `rand`'s `thread_rng`
+(and so `getrandom`), which has no bare-metal backend. Checked: `cargo build --no-default-features`
+(also for `thumbv7em-none-eabi`, `wasm32-unknown-unknown` and `x86_64-unknown-none`). The last needs the portable
+crypto backends, which `.cargo/config.toml` selects for that target only (`curve25519_dalek_backend="serial"`,
+`poly1305_force_soft`, `polyval_backend="soft"`, `sha2_backend="soft"`, `aes_backend="soft"`): rustc's LLVM
+crashes on the SIMD backends without SSE. Cargo defines `[target.<triple>].rustflags` per triple, so the config applies to builds run inside this workspace and to the Flinstone build of the archive from its `third_party/keyquorum` submodule directory; a build from outside any directory holding this `.cargo/config.toml` must pass the same five cfgs itself. A `RUSTFLAGS` environment variable overrides those config entries, it does not append to them: a build that sets `RUSTFLAGS` must include all five cfgs and must not rely on the config. The `ffi/identity` release staticlib links with the four embedder
+hooks alone (`docs/operator/embedding-no-std.md`).
+
 ## Working conventions
 
 - Keep changes minimal and scoped to what's requested — don't scaffold unrelated
@@ -1002,7 +1068,7 @@ Report a finding, with the rule as its Source, for any of these:
 This repo also carries `AGENTS.md` (Codex and other agent tooling) and `.cursorrules`
 (Cursor). Keep guidance consistent across these files when updating one.
 
-- Legacy checks: tests of deprecated verbs (`deliver`, `file receive|ack`, `relay pull` spellings) sit behind the `legacy-tests` feature and the `legacy` workflow (`.github/workflows/legacy.yml`), whose single job is skipped by default and run on the `legacy` PR label or a manual dispatch. `--all-features` includes them; the everyday CI gate is the `Native KeyQuorum tests` job in `.github/workflows/deploy-lab.yml`, which calls the parallel test groups of `.github/workflows/tests.yml` (lab, cli, file_history, relay+provider+db, and everything else, so a new module needs no workflow edit) with `--features provider,lab,tui`; its `test` job is the one stable check, and the lab build and the Pages publish follow it. The Worker has its own stable check, `workers` (`.github/workflows/workers.yml`: it builds the Worker, validates the Terraform and gates the staging and production deploys), beside `test` and `codeql gate`. There is no separate compile workflow: those groups and the lint job build every target. The legacy run uses the same groups with `--all-features`.
+- Legacy checks: tests of deprecated verbs (`deliver`, `file receive|ack`, `relay pull` spellings) sit behind the `legacy-tests` feature and the `legacy` workflow (`.github/workflows/legacy.yml`), whose jobs are skipped by default and run on the `legacy` PR label or a manual dispatch: the grouped nextest runs (one process per test) and the literal `cargo test --locked --all-targets --all-features` (one shared process per test binary, the command the working conventions require). `--all-features` includes them; the everyday CI gate is the `Native KeyQuorum tests` job in `.github/workflows/deploy-lab.yml`, which calls the parallel test groups of `.github/workflows/tests.yml` (lab, cli, file_history, relay+provider+db, and everything else, so a new module needs no workflow edit) with `--features provider,lab,tui`; its `test` job is the one stable check, and the lab build and the Pages publish follow it. The Worker has its own stable check, `workers` (`.github/workflows/workers.yml`: it builds the Worker, validates the Terraform and gates the staging and production deploys), beside `test` and `codeql gate`. There is no separate compile workflow: those groups and the lint job build every target. The legacy run uses the same groups with `--all-features`.
 - Security checks: `.github/workflows/security.yml` runs `cargo audit`, `cargo deny --locked check` (policy in `deny.toml`), `gitleaks` over the full history (allowlist in `.gitleaks.toml`, which passes only the published Lab demo passphrases, lockfile checksums and one owner-approved false positive, the console preview's public Access audience tag, pinned to its commit, file, rule and value), `npm audit` for `lab/` and `workers/` and CodeQL (security-and-quality suite from `.github/codeql/codeql-config.yml`, for Rust, the Lab's TypeScript, the Worker's JavaScript and the workflows; `.github/scripts/codeql_report.py` prints each finding as source, source quote, quoted lines, SOC 2 criterion and fix, and the `codeql gate` check fails on a high or critical finding in shipped code), on every PR, on `main` and weekly; `.github/workflows/sbom.yml` keeps CycloneDX SBOMs as artifacts. A new dependency must satisfy `deny.toml` (add a licence only after checking it). Dependabot covers Actions, Cargo (`/`, `/ffi/identity`), npm (`/lab`, `/workers`) and Terraform, and `.github/workflows/dependabot-auto-merge.yml` squash-merges a Dependabot PR of any ecosystem once every check run and commit status on its head commit has passed (pinned with `--match-head-commit`, so a later push is never merged unchecked); a red or unfinished check, or the `do-not-merge` label, leaves it for a person. The merge token has `workflows: write`, because GitHub refuses a token without that permission to merge a pull request that edits a file under `.github/workflows/`, even when every check is success, skipped, or neutral. Version updates in each ecosystem directory share one pull request (`groups`, `patterns: "*"`, major included). Dependabot adds a later update to that open pull request instead of opening another. Security updates stay their own pull requests. A group does not cross `directory` entries, so the root crate and `/ffi/identity` remain two pull requests, and so do `/lab` and `/workers`. When `cargo audit` fails on a Dependabot cargo branch, `.github/workflows/dependabot-security-fix.yml` moves each flagged crate to the newest version its dependents allow and then to the newest release its advisories call patched (raising a direct dependency's `Cargo.toml` requirement, a new major included, or pinning a transitive one with `cargo update --precise` when its dependents accept it), commits `Cargo.toml` and `Cargo.lock` only if the audit improves, re-dispatches the PR's checks and comments what changed and which crate holds back what remains; it covers both `Cargo.lock` and `ffi/identity/Cargo.lock`, and it also runs daily on `main`, committing a fix to the bot-owned branch `security/rustsec-readjust` (main plus one commit) and opening or updating one pull request from it, so a new advisory never waits for a Dependabot bump; it never merges, never adds an advisory ignore and honours the dated exceptions in `deny.toml` (mirrored in `.cargo/audit.toml`). The same job refreshes a lockfile the other workspace left stale: a `/ffi/identity` update rewrites that lockfile and, through the path dependency, the root `Cargo.toml`, but not the root `Cargo.lock`, and a root update leaves `ffi/identity/Cargo.lock`; either makes every `--locked` check fail, so when `cargo metadata --locked` fails for that reason it rewrites only the stale lockfile (`cargo metadata`, which does not float the other packages) and commits it even when `cargo audit` is clean. Vulnerabilities are reported privately as `SECURITY.md` describes.
 - SOC 2: `docs/soc2-controls.md` maps each Trust Services Criterion to the control in this repository, its evidence (test or workflow) and what the operator must still provide (TLS termination, rate limiting, backups, log retention). Update it with any change to a control it names.
 - Review rules: the "Review guidelines (strict, SOC 2)" section above is also loaded by CodeRabbit (`.coderabbit.yaml` points its per-path checks at it and runs a "SOC 2 evidence" pre-merge check) and by Codex review. Change the rules in all three agent files together, and keep `.coderabbit.yaml` consistent with them.

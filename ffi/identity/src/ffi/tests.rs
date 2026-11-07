@@ -220,3 +220,34 @@ fn account_calls_refuse_null_pointers() {
         );
     }
 }
+
+#[test]
+fn bounded_input_reads_an_exactly_sized_short_string() {
+    // The CString allocation ends at its NUL. The scan must stop there, so
+    // a read of `max + 1` bytes (past the allocation) is never made.
+    let root = c("Root");
+    assert_eq!(unsafe { input_bounded(root.as_ptr(), 64) }, Some("Root"));
+}
+
+#[test]
+fn bounded_input_accepts_up_to_max_bytes_and_refuses_longer() {
+    let at_max = c("abcd");
+    let over = c("abcde");
+    unsafe {
+        assert_eq!(input_bounded(at_max.as_ptr(), 4), Some("abcd"));
+        assert_eq!(input_bounded(over.as_ptr(), 4), None);
+    }
+}
+
+#[test]
+fn bounded_input_refuses_empty_missing_terminator_and_bad_utf8() {
+    let empty = c("");
+    let bad = [0xffu8, 0];
+    // Four bytes, no NUL: the scan covers indices 0..=3 and then gives up.
+    let unterminated = [b'a'; 4];
+    unsafe {
+        assert_eq!(input_bounded(empty.as_ptr(), 4), None);
+        assert_eq!(input_bounded(bad.as_ptr().cast(), 4), None);
+        assert_eq!(input_bounded(unterminated.as_ptr().cast(), 3), None);
+    }
+}

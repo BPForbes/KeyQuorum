@@ -20,13 +20,17 @@
 //! key the letter carries. The message is shown to the holder and never
 //! recorded in a history.
 
-use super::{open_kind, push_head, take_accepted, take_head, take_signature, verify_signed_by};
-use crate::envelope::{
-    self, hash_len_prefixed, push_len_prefixed, push_len_prefixed_u32, take_array,
-    take_len_prefixed, take_len_prefixed_u32, take_u8, utf8, PACKAGE,
-};
+use super::push_head;
+#[cfg(feature = "host")]
+use super::{open_kind, take_accepted, take_head, take_signature, verify_signed_by};
+use crate::envelope::{self, hash_len_prefixed, push_len_prefixed, push_len_prefixed_u32, PACKAGE};
+#[cfg(feature = "host")]
+use crate::envelope::{take_array, take_len_prefixed, take_len_prefixed_u32, take_u8, utf8};
 use crate::error::{Error, Result};
+#[allow(unused_imports)]
+use crate::nostd::*;
 use crate::signing;
+#[cfg(feature = "host")]
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 
@@ -159,6 +163,7 @@ pub fn seal_request(outgoing: &OutgoingRequest<'_>) -> Result<SealedRequest> {
 
 /// Unseal a request and check the requester's signature against the signing
 /// key `conn` has registered for that label.
+#[cfg(feature = "host")]
 pub fn open_request(
     conn: &Connection,
     holder_secret: &[u8; 32],
@@ -236,6 +241,7 @@ pub fn seal_request_answer(
 
 /// Unseal with the requester's encryption secret and check the holder's
 /// signature against the signing key `conn` has registered for that label.
+#[cfg(feature = "host")]
 pub fn open_request_answer(
     conn: &Connection,
     requester_secret: &[u8; 32],
@@ -305,6 +311,6 @@ fn answer_preimage(answer: &RequestAnswer, return_public: &[u8; 32]) -> Result<[
     Ok(hasher.finalize().into())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "host"))]
 #[path = "request/tests.rs"]
 mod tests;

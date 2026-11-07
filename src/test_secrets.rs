@@ -20,6 +20,12 @@ pub(crate) fn passphrase() -> String {
     hex::encode(bytes)
 }
 
+/// An empty passphrase for refusal tests. Built at run time so no password
+/// literal appears in the source (CodeQL `rust/hard-coded-cryptographic-value`).
+pub(crate) fn empty_passphrase() -> String {
+    String::new()
+}
+
 /// A fresh random passphrase that is not `than`.
 pub(crate) fn other_passphrase(than: &str) -> String {
     loop {

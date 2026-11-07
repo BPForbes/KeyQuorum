@@ -11,6 +11,8 @@ use super::codec::{
 };
 use crate::envelope::{push_len_prefixed, take_len_prefixed};
 use crate::error::{Error, Result};
+#[allow(unused_imports)]
+use crate::nostd::*;
 use sha2::{Digest, Sha256};
 
 const HISTORY_DOMAIN: &[u8] = b"KQ-FILE-HISTORY-v1";
@@ -75,12 +77,19 @@ pub enum HistoryEventType {
     LetterReceived = 46,
     /// A held letter was opened and its slot released.
     LetterOpened = 47,
+    /// An error report was recorded against this history (outcome `Failure` or `Denied`).
+    /// Detail keys: `error_class`, `error_code`, `error_ref` (what each may hold is
+    /// listed beside `SAFE_DETAIL_KEYS`). Nothing here checks the report: whoever
+    /// appends the event verifies it first.
+    ErrorReported = 48,
 }
 
 impl HistoryEventType {
     /// Which group of activity this event belongs to, for a reader that
     /// filters a history: `file`, `revision`, `security`, `sharing` or
     /// `conflict`. Presentation only; it is not part of the wire format.
+    /// `ErrorReported` is `sharing`: a report is about a delivery that failed after it
+    /// was handed over.
     pub fn category(self) -> &'static str {
         use HistoryEventType as E;
         match self {
@@ -120,7 +129,8 @@ impl HistoryEventType {
             | E::LetterDropped
             | E::LetterRefused
             | E::LetterReceived
-            | E::LetterOpened => "sharing",
+            | E::LetterOpened
+            | E::ErrorReported => "sharing",
             E::AutoMergeBlocked
             | E::AutoMergeRequiresHuman
             | E::HistoryForkDetected
@@ -138,7 +148,7 @@ impl HistoryEventType {
     /// that prints a history (`kq_file_event_name`). Presentation only, not
     /// part of the wire format; the exhaustive match keeps it in step with
     /// the enum.
-    pub fn name_c(self) -> &'static std::ffi::CStr {
+    pub fn name_c(self) -> &'static core::ffi::CStr {
         match self {
             Self::TrackingStarted => c"TrackingStarted",
             Self::EditCheckedIn => c"EditCheckedIn",
@@ -187,12 +197,13 @@ impl HistoryEventType {
             Self::LetterRefused => c"LetterRefused",
             Self::LetterReceived => c"LetterReceived",
             Self::LetterOpened => c"LetterOpened",
+            Self::ErrorReported => c"ErrorReported",
         }
     }
 
     /// `name_c` for a stored code, or `None` for a code this build does not
     /// know (a history written by a newer build).
-    pub fn name_of(code: u8) -> Option<&'static std::ffi::CStr> {
+    pub fn name_of(code: u8) -> Option<&'static core::ffi::CStr> {
         Self::from_u8(code).ok().map(Self::name_c)
     }
 
@@ -245,6 +256,7 @@ impl HistoryEventType {
             45 => Self::LetterRefused,
             46 => Self::LetterReceived,
             47 => Self::LetterOpened,
+            48 => Self::ErrorReported,
             _ => return Err(Error::InvalidTrackedFile),
         })
     }
@@ -263,7 +275,7 @@ pub enum HistoryOutcome {
 impl HistoryOutcome {
     /// The variant's name as a static NUL-terminated string
     /// (`kq_file_outcome_name`); presentation only.
-    pub fn name_c(self) -> &'static std::ffi::CStr {
+    pub fn name_c(self) -> &'static core::ffi::CStr {
         match self {
             Self::Success => c"Success",
             Self::Failure => c"Failure",
@@ -273,7 +285,7 @@ impl HistoryOutcome {
     }
 
     /// `name_c` for a stored code, or `None` for one this build does not know.
-    pub fn name_of(code: u8) -> Option<&'static std::ffi::CStr> {
+    pub fn name_of(code: u8) -> Option<&'static core::ffi::CStr> {
         Self::from_u8(code).ok().map(Self::name_c)
     }
 
@@ -298,6 +310,12 @@ pub struct EventDetails(Vec<(String, String)>);
 /// carries is safe to keep: ids, labels, counts, outcomes and policy words,
 /// never a share, token, PIN, password, key or plaintext. Appending any
 /// other key is refused; histories decoded from elsewhere are not re-judged.
+///
+/// The error-report keys carry only these values: `error_class` one fixed word from a
+/// closed set (never message text), `error_code` a decimal integer, `error_ref` an
+/// opaque identifier of the failed artifact (lower-case hex of its SHA-256, never its
+/// content and never an error string). `signing_mode` is `own` or `assembled`; it is
+/// reserved for a signing producer and nothing in this crate writes it yet.
 pub const SAFE_DETAIL_KEYS: &[&str] = &[
     "action",
     "answers",
@@ -315,6 +333,9 @@ pub const SAFE_DETAIL_KEYS: &[&str] = &[
     "decision",
     "delivery_id",
     "devices",
+    "error_class",
+    "error_code",
+    "error_ref",
     "expires_at",
     "fallback_reason",
     "for_actor",
@@ -353,6 +374,7 @@ pub const SAFE_DETAIL_KEYS: &[&str] = &[
     "share",
     "shareable",
     "shares",
+    "signing_mode",
     "slot",
     "state",
     "threshold",

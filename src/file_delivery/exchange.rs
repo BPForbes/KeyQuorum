@@ -36,6 +36,8 @@
 use crate::envelope;
 use crate::error::{Error, Result};
 use crate::file_history::{HistoryEvent, HistoryEventType, HistoryOutcome, TrackedFile};
+#[allow(unused_imports)]
+use crate::nostd::*;
 
 /// One step of the exchange, named by the letter kind that carries it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -220,6 +222,6 @@ pub fn require_step(
     Err(Error::ExchangeOutOfOrder(missing))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "host"))]
 #[path = "exchange/tests.rs"]
 mod tests;

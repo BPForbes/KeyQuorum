@@ -4,6 +4,8 @@
 
 use crate::envelope::{push_len_prefixed, take_array, take_len_prefixed, take_u8, utf8};
 use crate::error::{Error, Result};
+#[allow(unused_imports)]
+use crate::nostd::*;
 
 pub(super) fn bad<T>(result: Result<T>) -> Result<T> {
     result.map_err(|_| Error::InvalidTrackedFile)

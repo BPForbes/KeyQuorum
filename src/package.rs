@@ -464,7 +464,7 @@ pub fn issue_client_package(
         return Err(Error::InvalidKqpkg);
     }
     let mut id = [0u8; 16];
-    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut id);
+    rand_core::RngCore::fill_bytes(&mut crate::crypto::os_rng(), &mut id);
     let expires_at = issued_at + valid_days * 86_400;
     let certificate = certificate_component(identity);
     let certificate_hash = setup_manifest::hash_of(&certificate.bytes);
@@ -531,7 +531,7 @@ fn issue(
     valid_days: u64,
 ) -> Result<Vec<u8>> {
     let mut id = [0u8; 16];
-    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut id);
+    rand_core::RngCore::fill_bytes(&mut crate::crypto::os_rng(), &mut id);
     issue_with_id(identity, purpose, id, components, issued_at, valid_days)
 }
 

@@ -16,6 +16,8 @@ use super::event::{EventDetails, HistoryEventType, HistoryOutcome, NewEvent};
 use super::revision::{HeadRelation, MergeBase, NewRevision};
 use super::verify::verify_structure;
 use crate::error::{Error, Result};
+#[allow(unused_imports)]
+use crate::nostd::*;
 
 /// Largest diff table (in cells) the line matcher will build.
 const MAX_DIFF_CELLS: usize = 4_000_000;
@@ -393,9 +395,9 @@ impl TrackedFile {
         };
         let base_bytes = payload(&base).ok_or(Error::InvalidTrackedFile)?;
         let (Ok(b), Ok(l), Ok(r)) = (
-            std::str::from_utf8(base_bytes),
-            std::str::from_utf8(left_bytes),
-            std::str::from_utf8(right_bytes),
+            core::str::from_utf8(base_bytes),
+            core::str::from_utf8(left_bytes),
+            core::str::from_utf8(right_bytes),
         ) else {
             return Ok(AutoMerge::stop(
                 O::UnsupportedContent,

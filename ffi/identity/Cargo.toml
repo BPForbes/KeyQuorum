@@ -13,9 +13,27 @@ description = "C-callable account heritage (key ids, homes, relations) and accou
 name = "keyquorum_identity"
 crate-type = ["staticlib", "rlib"]
 
+[features]
+# `std` is the hosted build (the shell, and the tests): KeyQuorum's `host` feature, and so
+# the operating system's random source. Without it the crate is `no_std` + `alloc` for the
+# freestanding kernel image, and the embedder supplies `kq_platform_random` (entropy) and
+# `kq_platform_panic` (what a panic means).
+default = ["std"]
+std = ["keyquorum/host"]
+
 [dependencies]
-# The label topology, signing and crypto modules are used. The default feature
-# set stays off so the default KeyQuorum build is unchanged.
+# The label topology, signing and crypto modules are used. KeyQuorum's default feature
+# set (`host`: SQLite, the CLI, the relay) stays off: only the pure modules are linked.
 keyquorum = { path = "../..", default-features = false }
-sha2 = "0.11"
-zeroize = "1"
+sha2 = { version = "0.11", default-features = false }
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
+
+# There is no unwinder in the kernel and a panic must never unwind through C.
+# This profile applies to every release build of this crate, the hosted (`std`)
+# staticlib included: it is built for size (`opt-level = "s"`) with LTO, and a panic
+# aborts the process instead of unwinding.
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+codegen-units = 1

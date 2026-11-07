@@ -15,6 +15,8 @@ use super::revision::FileRevision;
 use crate::authority::{self, RevisionAuthority};
 use crate::envelope::push_len_prefixed;
 use crate::error::{Error, Result};
+#[allow(unused_imports)]
+use crate::nostd::*;
 use crate::signing;
 use sha2::{Digest, Sha256};
 
@@ -411,7 +413,7 @@ pub fn evaluate_revision_trust(
     let Some(first) = candidates.next() else {
         return Ok(Pending(R::MissingContentSignature));
     };
-    let content = std::iter::once(first)
+    let content = core::iter::once(first)
         .chain(candidates)
         .find(|proof| proof_verifies(revision, proof, ctx));
     let Some(content) = content else {
