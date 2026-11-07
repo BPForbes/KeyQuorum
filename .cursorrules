@@ -852,7 +852,7 @@ needed. It reuses `authority::relationship` and `authority::bridge_connects` (so
 labels connects the two accounts, as `private_bridge::revision_approved` applies it) and decides nothing else:
 opening the token is `slot_token`, proving bridge membership is `bridge_proof`. C: `kq_access_requirement` in
 `include/keyquorum_access.h` (`KQ_ACCESS_*` factors; `KQ_BRIDGE_*` in `keyquorum_bridge.h` are proof statuses, a
-separate namespace). `KQ_FILE_ABI_VERSION` is 4 (4 added `kq_slot_open`, `kq_bridge_*`, `kq_access_requirement`).
+separate namespace). `KQ_FILE_ABI_VERSION` is 5 (4 added `kq_slot_open`, `kq_bridge_*`, `kq_access_requirement`; 5 added `kq_file_head_author`).
 
 The `host` Cargo feature (on by default; the enabled dependency features are the same as before it
 existed) is the whole hosted crate: SQLite, the CLI, the relay, files and the network, with `std`.
