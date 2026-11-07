@@ -51,11 +51,11 @@ size of an image that uses every export is not measured.
 `compiler-builtins` (with its `mem` feature) or the kernel's libc. `nm -u libkeyquorum_identity.a`
 lists the full set; the four hooks above are the only `kq_` names.
 
-## What the archive exports (ABI version 4)
+## What the archive exports (ABI version 5)
 
-`kq_file_abi_version()` returns 4. Headers in `ffi/identity/include/`:
+`kq_file_abi_version()` returns 5. Headers in `ffi/identity/include/`:
 `keyquorum_identity.h` (heritage, account keys, `kq_bridge_connects`), `keyquorum_files.h` (tracked files,
-co-signed delivery, kind-15 and kind-17 letters), `keyquorum_error.h` (`KQER` reports), `keyquorum_slots.h`
+the head revision and its author (`kq_file_head_author`), co-signed delivery, kind-15 and kind-17 letters), `keyquorum_error.h` (`KQER` reports), `keyquorum_slots.h`
 (`kq_slot_open`), `keyquorum_bridge.h` (`kq_bridge_prove`, `kq_bridge_verify`) and `keyquorum_access.h`
 (`kq_access_requirement`: which factor a switch demands). Every export is a pure function over what the caller
 passes in; none touches a file, a database or the network.
