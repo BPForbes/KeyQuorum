@@ -623,8 +623,13 @@ fn a_small_buffer_reports_the_size_needed_and_writes_nothing() {
 #[test]
 fn the_head_author_is_named_and_a_fork_has_none() {
     let mya = account("Root.Mya");
-    let base = new_file("Root.Mya");
-    let (base, _) = check_in(&base, &mya, T1, b"v1");
+    let empty = new_file("Root.Mya");
+    let (rc, _) = collect(|out, cap, len| unsafe {
+        kq_file_head_author(empty.as_ptr(), empty.len(), out, cap, len)
+    });
+    assert_eq!(rc, KQ_FILE_NO_REVISION);
+
+    let (base, _) = check_in(&empty, &mya, T1, b"v1");
     let (rc, author) = collect(|out, cap, len| unsafe {
         kq_file_head_author(base.as_ptr(), base.len(), out, cap, len)
     });
