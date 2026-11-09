@@ -47,7 +47,7 @@ extern "C" {
 #define KQ_FILE_FIRST            1
 #define KQ_FILE_NEWER            2
 
-#define KQ_FILE_ABI_VERSION      5
+#define KQ_FILE_ABI_VERSION      4
 #define KQ_FILE_ID_LEN          16u
 #define KQ_FILE_REV_LEN         32u
 #define KQ_FILE_DELIVERY_ID_LEN 16u
@@ -95,11 +95,6 @@ int kq_file_check_in(const unsigned char *c, size_t clen, const char *author,
                      size_t *out_len, unsigned char rev_out[32]);
 int kq_file_verify(const unsigned char *c, size_t clen, unsigned char root_out[32]);
 int kq_file_head(const unsigned char *c, size_t clen, unsigned char rev_out[32]);
-/* The author label of the head revision (its HCP label, e.g. "Root.Mya") into out.
- * KQ_FILE_FORKED with two heads (a fork has no author until it is merged),
- * KQ_FILE_NO_REVISION with none, KQ_FILE_NO_ROOM when out is too small
- * (*out_len gets the size needed). Added in ABI version 5. */
-int kq_file_head_author(const unsigned char *c, size_t clen, unsigned char *out, size_t cap, size_t *out_len);
 int kq_file_payload(const unsigned char *c, size_t clen, const unsigned char rev[32],
                     unsigned char *out, size_t cap, size_t *out_len);
 /* Only rev, its ancestors and their proofs. */

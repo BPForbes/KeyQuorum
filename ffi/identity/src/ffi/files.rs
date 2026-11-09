@@ -59,8 +59,8 @@ pub const KQ_FILE_NEWER: c_int = 2;
 /// Bumped when a signature or struct in the header changes, or functions are
 /// added (3: the `kq_error_*` exports of `keyquorum_error.h` and the kind-17
 /// snapshot exports, `KQ_FILE_DIVERGED`; 4: `kq_slot_open`, `kq_bridge_*`,
-/// `kq_access_requirement`; 5: `kq_file_head_author`).
-pub const KQ_FILE_ABI_VERSION: c_int = 5;
+/// `kq_access_requirement`).
+pub const KQ_FILE_ABI_VERSION: c_int = 4;
 
 /// A signing key the caller's registry holds for a label.
 #[repr(C)]
@@ -505,40 +505,6 @@ pub unsafe extern "C" fn kq_file_head(c: *const u8, clen: usize, rev_out: *mut u
         Some(head) if bytes_out(&head, rev_out) => KQ_FILE_OK,
         Some(_) => KQ_FILE_INVALID,
         None => KQ_FILE_FORKED,
-    }
-}
-
-/// The author label of the head revision into `out` (`buf_out` rules).
-/// `KQ_FILE_FORKED` with two heads: nobody is the author of a fork until it is
-/// merged. `KQ_FILE_NO_REVISION` with none.
-///
-/// # Safety
-/// `c` readable for `clen`; `out` null or writable for `cap`; `out_len` writable.
-#[no_mangle]
-pub unsafe extern "C" fn kq_file_head_author(
-    c: *const u8,
-    clen: usize,
-    out: *mut u8,
-    cap: usize,
-    out_len: *mut usize,
-) -> c_int {
-    let Some(file) = container_in(c, clen) else {
-        return KQ_FILE_INVALID;
-    };
-    if file.revisions().is_empty() {
-        return KQ_FILE_NO_REVISION;
-    }
-    let Some(head) = current_revision(&file) else {
-        return KQ_FILE_FORKED;
-    };
-    match file.graph().get(&head) {
-        Some(stored) => buf_out(
-            stored.revision.author_hcp_label.as_bytes(),
-            out,
-            cap,
-            out_len,
-        ),
-        None => KQ_FILE_INVALID,
     }
 }
 
