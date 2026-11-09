@@ -5,8 +5,12 @@ Not customer-facing. This is what an embedder with no operating system needs to 
 which turns KeyQuorum's `host` feature off too).
 
 Build: `cargo build --release --no-default-features --target <bare-metal target>` in
-`ffi/identity`. CI runs release clippy for `thumbv7em-none-eabi` and builds the
-release archive for `x86_64-unknown-none`; the thumb archive was also built by hand.
+`ffi/identity`. CI (`lint.yml`) checks the pure modules with
+`--no-default-features` for `thumbv7em-none-eabi`, `x86_64-unknown-none` and
+`wasm32-unknown-unknown` (clippy on the lib; the Lab step still builds wasm32
+with `--features lab` and does not cover this path). The same workflow builds
+the `ffi/identity` release archive for `x86_64-unknown-none` and release-clippy
+for `thumbv7em-none-eabi`; the thumb archive was also built by hand.
 
 ## What the embedder must define
 
