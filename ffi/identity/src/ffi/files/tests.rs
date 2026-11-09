@@ -629,6 +629,14 @@ fn the_head_author_is_named_and_a_fork_has_none() {
     });
     assert_eq!(rc, KQ_FILE_NO_REVISION);
 
+    // Bytes that are not a container are invalid, not "no revision", and name no one.
+    let garbage = [0u8; 4];
+    let (rc, named) = collect(|out, cap, len| unsafe {
+        kq_file_head_author(garbage.as_ptr(), garbage.len(), out, cap, len)
+    });
+    assert_eq!(rc, KQ_FILE_INVALID);
+    assert!(named.is_empty());
+
     let (base, _) = check_in(&empty, &mya, T1, b"v1");
     let (rc, author) = collect(|out, cap, len| unsafe {
         kq_file_head_author(base.as_ptr(), base.len(), out, cap, len)
