@@ -160,7 +160,7 @@ fn event_and_outcome_names_cross_the_boundary() {
 #[test]
 fn abi_version_and_label_identity_match_the_library() {
     assert_eq!(kq_file_abi_version(), KQ_FILE_ABI_VERSION);
-    assert_eq!(KQ_FILE_ABI_VERSION, 4);
+    assert_eq!(KQ_FILE_ABI_VERSION, 5);
     assert_eq!(KQ_FILE_DIVERGED, -12);
     let mut id = [0u8; 16];
     let label = s("Root.Mya");
@@ -618,6 +618,68 @@ fn a_small_buffer_reports_the_size_needed_and_writes_nothing() {
     assert_eq!(rc, KQ_FILE_NO_ROOM);
     assert_eq!(len, c.len());
     assert_eq!(tiny, [0u8; 4]);
+}
+
+#[test]
+fn the_head_author_is_named_and_a_fork_has_none() {
+    let mya = account("Root.Mya");
+    let empty = new_file("Root.Mya");
+    let (rc, _) = collect(|out, cap, len| unsafe {
+        kq_file_head_author(empty.as_ptr(), empty.len(), out, cap, len)
+    });
+    assert_eq!(rc, KQ_FILE_NO_REVISION);
+
+    // Bytes that are not a container are invalid, not "no revision", and name no one.
+    let garbage = [0u8; 4];
+    let (rc, named) = collect(|out, cap, len| unsafe {
+        kq_file_head_author(garbage.as_ptr(), garbage.len(), out, cap, len)
+    });
+    assert_eq!(rc, KQ_FILE_INVALID);
+    assert!(named.is_empty());
+
+    let (base, _) = check_in(&empty, &mya, T1, b"v1");
+    let (rc, author) = collect(|out, cap, len| unsafe {
+        kq_file_head_author(base.as_ptr(), base.len(), out, cap, len)
+    });
+    assert_eq!(rc, KQ_FILE_OK, "kq_file_head_author");
+    assert_eq!(author, b"Root.Mya".to_vec());
+
+    let mut tiny = [0u8; 2];
+    let mut needed = 0usize;
+    let rc = unsafe {
+        kq_file_head_author(
+            base.as_ptr(),
+            base.len(),
+            tiny.as_mut_ptr(),
+            tiny.len(),
+            &mut needed,
+        )
+    };
+    assert_eq!(rc, KQ_FILE_NO_ROOM);
+    assert_eq!(needed, "Root.Mya".len());
+    assert_eq!(tiny, [0u8; 2]);
+
+    let (left, _) = check_in(&base, &mya, T2, b"left");
+    let (right, _) = check_in(&base, &mya, T3, b"right");
+    let (actor, at) = (s("Root.Mya"), s(T3));
+    let (rc, merged) = collect(|out, cap, len| unsafe {
+        kq_file_merge(
+            left.as_ptr(),
+            left.len(),
+            right.as_ptr(),
+            right.len(),
+            actor.as_ptr(),
+            at.as_ptr(),
+            out,
+            cap,
+            len,
+        )
+    });
+    assert_eq!(rc, KQ_FILE_OK, "kq_file_merge");
+    let (rc, _) = collect(|out, cap, len| unsafe {
+        kq_file_head_author(merged.as_ptr(), merged.len(), out, cap, len)
+    });
+    assert_eq!(rc, KQ_FILE_FORKED);
 }
 
 #[test]

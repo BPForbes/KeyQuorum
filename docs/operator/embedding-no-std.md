@@ -5,8 +5,12 @@ Not customer-facing. This is what an embedder with no operating system needs to 
 which turns KeyQuorum's `host` feature off too).
 
 Build: `cargo build --release --no-default-features --target <bare-metal target>` in
-`ffi/identity`. CI runs release clippy for `thumbv7em-none-eabi` and builds the
-release archive for `x86_64-unknown-none`; the thumb archive was also built by hand.
+`ffi/identity`. CI (`lint.yml`) checks the pure modules with
+`--no-default-features` for `thumbv7em-none-eabi`, `x86_64-unknown-none` and
+`wasm32-unknown-unknown` (clippy on the lib; the Lab step still builds wasm32
+with `--features lab` and does not cover this path). The same workflow builds
+the `ffi/identity` release archive for `x86_64-unknown-none` and release-clippy
+for `thumbv7em-none-eabi`; the thumb archive was also built by hand.
 
 ## What the embedder must define
 
@@ -51,11 +55,11 @@ size of an image that uses every export is not measured.
 `compiler-builtins` (with its `mem` feature) or the kernel's libc. `nm -u libkeyquorum_identity.a`
 lists the full set; the four hooks above are the only `kq_` names.
 
-## What the archive exports (ABI version 4)
+## What the archive exports (ABI version 5)
 
-`kq_file_abi_version()` returns 4. Headers in `ffi/identity/include/`:
+`kq_file_abi_version()` returns 5. Headers in `ffi/identity/include/`:
 `keyquorum_identity.h` (heritage, account keys, `kq_bridge_connects`), `keyquorum_files.h` (tracked files,
-co-signed delivery, kind-15 and kind-17 letters), `keyquorum_error.h` (`KQER` reports), `keyquorum_slots.h`
+the head revision and its author (`kq_file_head_author`), co-signed delivery, kind-15 and kind-17 letters), `keyquorum_error.h` (`KQER` reports), `keyquorum_slots.h`
 (`kq_slot_open`), `keyquorum_bridge.h` (`kq_bridge_prove`, `kq_bridge_verify`) and `keyquorum_access.h`
 (`kq_access_requirement`: which factor a switch demands). Every export is a pure function over what the caller
 passes in; none touches a file, a database or the network.
