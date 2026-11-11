@@ -18,6 +18,8 @@ use blahaj::{Share, Sharks};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+mod tree_context;
+pub use tree_context::{SqlContext, StaticContext, StaticKey, TreeContext};
 use utoipa::ToSchema;
 use zeroize::Zeroize;
 
@@ -321,6 +323,19 @@ fn insert_allowed_bridges(conn: &Connection, node_id: i64, peers: &[String]) -> 
     Ok(())
 }
 
+/// One row of a key tree, as `from_nodes` takes it (the columns `load` reads
+/// from `key_nodes`, plus the node's allowed bridge peers).
+#[derive(Clone, Debug)]
+pub struct NodeInput {
+    pub db_id: i64,
+    pub parent_id: Option<i64>,
+    pub label: String,
+    pub threshold: Option<i64>,
+    pub hardware_key_id: Option<i64>,
+    pub is_active: bool,
+    pub allowed_bridges: Vec<String>,
+}
+
 /// Secret recovered from `raw_shares`, plus the physical devices those
 /// contributing leaves resolved to.
 pub struct PresentedReconstruction {
@@ -351,9 +366,20 @@ pub fn reconstruct_presented(
     raw_shares: &HashMap<i64, Vec<u8>>,
 ) -> Result<PresentedReconstruction> {
     let tree = KeyQuorumTree::load(conn, key_id)?;
+    reconstruct_presented_with(&tree, &SqlContext::new(conn, key_id), raw_shares)
+}
+
+/// [`reconstruct_presented`] for a tree and context the caller already
+/// holds (see [`KeyQuorumTree::from_nodes`], [`StaticContext`]). The one
+/// reconstruction rule: the SQL entry point loads and calls this.
+pub fn reconstruct_presented_with(
+    tree: &KeyQuorumTree,
+    ctx: &dyn TreeContext,
+    raw_shares: &HashMap<i64, Vec<u8>>,
+) -> Result<PresentedReconstruction> {
     let mut leaves = Vec::new();
-    let secret = tree.reconstruct_tracking(conn, key_id, raw_shares, &mut leaves)?;
-    finish_presented(conn, key_id, secret, leaves)
+    let secret = tree.reconstruct_tracking(ctx, raw_shares, &mut leaves)?;
+    finish_presented(ctx, secret, leaves)
 }
 
 /// Reconstruct only the subtree rooted at `lca_idx` (e.g. a department
@@ -366,18 +392,17 @@ pub fn reconstruct_from_lca(
 ) -> Result<Vec<u8>> {
     let tree = KeyQuorumTree::load(conn, key_id)?;
     let mut leaves = Vec::new();
-    let secret =
-        tree.reconstruct_up_to_root_tracking(conn, key_id, lca_idx, raw_shares, &mut leaves)?;
-    Ok(finish_presented(conn, key_id, secret, leaves)?.secret)
+    let ctx = SqlContext::new(conn, key_id);
+    let secret = tree.reconstruct_up_to_root_tracking(&ctx, lca_idx, raw_shares, &mut leaves)?;
+    Ok(finish_presented(&ctx, secret, leaves)?.secret)
 }
 
 fn finish_presented(
-    conn: &Connection,
-    key_id: i64,
+    ctx: &dyn TreeContext,
     secret: Vec<u8>,
     leaves: Vec<crate::device::UsedLeaf>,
 ) -> Result<PresentedReconstruction> {
-    let devices = match crate::device::enforce_devices(conn, key_id, &leaves) {
+    let devices = match crate::device::enforce_devices_with(ctx, &leaves) {
         Ok(devices) => devices,
         Err(err) => {
             let mut secret = secret;
@@ -422,41 +447,6 @@ impl KeyQuorumTree {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         drop(stmt);
 
-        if rows.is_empty() {
-            return Err(Error::NodeNotFound);
-        }
-
-        let mut db_id_to_index = HashMap::with_capacity(rows.len());
-        let mut id_to_index = HashMap::with_capacity(rows.len());
-        let mut nodes = Vec::with_capacity(rows.len());
-
-        for (i, (db_id, _, label, threshold, hardware_key_id, is_active)) in rows.iter().enumerate()
-        {
-            if id_to_index.insert(label.clone(), i).is_some() {
-                return Err(Error::DuplicateNodeLabel);
-            }
-            db_id_to_index.insert(*db_id, i);
-            nodes.push(KeyNode {
-                db_id: *db_id,
-                id: label.clone(),
-                parent_idx: None,
-                children_indices: Vec::new(),
-                threshold: threshold.map(|t| t as usize),
-                is_active: *is_active != 0,
-                hardware_key_id: *hardware_key_id,
-                allowed_bridges: HashSet::new(),
-            });
-        }
-
-        for (i, (db_id, parent_id, _, _, _, _)) in rows.iter().enumerate() {
-            if let Some(parent_id) = parent_id {
-                let parent_idx = *db_id_to_index.get(parent_id).ok_or(Error::NodeNotFound)?;
-                nodes[i].parent_idx = Some(parent_idx);
-                nodes[parent_idx].children_indices.push(i);
-            }
-            let _ = db_id;
-        }
-
         let mut bridge_stmt = conn.prepare(
             "SELECT n.id, b.peer_label
              FROM key_node_bridges b
@@ -468,9 +458,66 @@ impl KeyQuorumTree {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         drop(bridge_stmt);
 
+        let mut inputs: Vec<NodeInput> = rows
+            .into_iter()
+            .map(
+                |(db_id, parent_id, label, threshold, hardware_key_id, is_active)| NodeInput {
+                    db_id,
+                    parent_id,
+                    label,
+                    threshold,
+                    hardware_key_id,
+                    is_active: is_active != 0,
+                    allowed_bridges: Vec::new(),
+                },
+            )
+            .collect();
         for (db_id, peer) in bridges {
-            let idx = *db_id_to_index.get(&db_id).ok_or(Error::NodeNotFound)?;
-            nodes[idx].allowed_bridges.insert(peer);
+            let input = inputs
+                .iter_mut()
+                .find(|input| input.db_id == db_id)
+                .ok_or(Error::NodeNotFound)?;
+            input.allowed_bridges.push(peer);
+        }
+        Self::from_nodes(&inputs)
+    }
+
+    /// Build the arena from plain rows, with no database. `load` reads its
+    /// rows and calls this, so the checks are one set: at least one node,
+    /// unique labels, every parent present, and a root (a node with no
+    /// parent). Nodes are indexed in the order given (`load` orders by id).
+    pub fn from_nodes(inputs: &[NodeInput]) -> Result<Self> {
+        if inputs.is_empty() {
+            return Err(Error::NodeNotFound);
+        }
+
+        let mut db_id_to_index = HashMap::with_capacity(inputs.len());
+        let mut id_to_index = HashMap::with_capacity(inputs.len());
+        let mut nodes = Vec::with_capacity(inputs.len());
+
+        for (i, input) in inputs.iter().enumerate() {
+            if id_to_index.insert(input.label.clone(), i).is_some() {
+                return Err(Error::DuplicateNodeLabel);
+            }
+            db_id_to_index.insert(input.db_id, i);
+            nodes.push(KeyNode {
+                db_id: input.db_id,
+                id: input.label.clone(),
+                parent_idx: None,
+                children_indices: Vec::new(),
+                threshold: input.threshold.map(|t| t as usize),
+                is_active: input.is_active,
+                hardware_key_id: input.hardware_key_id,
+                allowed_bridges: input.allowed_bridges.iter().cloned().collect(),
+            });
+        }
+
+        for (i, input) in inputs.iter().enumerate() {
+            if let Some(parent_id) = input.parent_id {
+                let parent_idx = *db_id_to_index.get(&parent_id).ok_or(Error::NodeNotFound)?;
+                nodes[i].parent_idx = Some(parent_idx);
+                nodes[parent_idx].children_indices.push(i);
+            }
         }
 
         let root_index = nodes
@@ -547,12 +594,11 @@ impl KeyQuorumTree {
 
     pub(crate) fn reconstruct_tracking(
         &self,
-        conn: &Connection,
-        key_id: i64,
+        ctx: &dyn TreeContext,
         raw_shares: &HashMap<i64, Vec<u8>>,
         used: &mut Vec<crate::device::UsedLeaf>,
     ) -> Result<Vec<u8>> {
-        self.reconstruct_node(self.root_index, raw_shares, used, Some((conn, key_id)))
+        self.reconstruct_node(self.root_index, raw_shares, used, Some(ctx))
     }
 
     #[allow(dead_code)]
@@ -577,13 +623,12 @@ impl KeyQuorumTree {
 
     pub(crate) fn reconstruct_up_to_root_tracking(
         &self,
-        conn: &Connection,
-        key_id: i64,
+        ctx: &dyn TreeContext,
         from_idx: usize,
         raw_shares: &HashMap<i64, Vec<u8>>,
         used: &mut Vec<crate::device::UsedLeaf>,
     ) -> Result<Vec<u8>> {
-        self.reconstruct_up_to_root_tracking_inner(from_idx, raw_shares, used, Some((conn, key_id)))
+        self.reconstruct_up_to_root_tracking_inner(from_idx, raw_shares, used, Some(ctx))
     }
 
     fn reconstruct_up_to_root_tracking_inner(
@@ -591,7 +636,7 @@ impl KeyQuorumTree {
         from_idx: usize,
         raw_shares: &HashMap<i64, Vec<u8>>,
         used: &mut Vec<crate::device::UsedLeaf>,
-        policy: Option<(&Connection, i64)>,
+        policy: Option<&dyn TreeContext>,
     ) -> Result<Vec<u8>> {
         let mut start_used = Vec::new();
         let mut value = self.reconstruct_node(from_idx, raw_shares, &mut start_used, policy)?;
@@ -644,15 +689,15 @@ impl KeyQuorumTree {
         idx: usize,
         raw_shares: &HashMap<i64, Vec<u8>>,
         used: &mut Vec<crate::device::UsedLeaf>,
-        policy: Option<(&Connection, i64)>,
+        policy: Option<&dyn TreeContext>,
     ) -> Result<Vec<u8>> {
         let node = self.nodes.get(idx).ok_or(Error::NodeNotFound)?;
         if !node.is_active {
             return Err(Error::QuorumNotMet);
         }
         if let Some(hardware_key_id) = node.hardware_key_id {
-            if let Some((conn, _)) = policy {
-                if crate::device::leaf_is_ghost(conn, hardware_key_id)? {
+            if let Some(ctx) = policy {
+                if ctx.is_ghost(hardware_key_id)? {
                     return Err(Error::GhostDenied);
                 }
             }
@@ -704,19 +749,18 @@ struct ResolvedChild {
 /// A short combination is kept only as a fallback; the root check still
 /// applies the minimum to the leaves that were actually used.
 fn select_child_subset(
-    policy: Option<(&Connection, i64)>,
+    policy: Option<&dyn TreeContext>,
     threshold: usize,
     mut children: Vec<ResolvedChild>,
 ) -> Result<(Vec<Share>, Vec<crate::device::UsedLeaf>)> {
     if threshold == 0 || children.len() < threshold {
         return Err(Error::QuorumNotMet);
     }
-    let Some((conn, key_id)) = policy else {
+    let Some(ctx) = policy else {
         children.truncate(threshold);
         return Ok(flatten_children(children));
     };
-    let minimum =
-        usize::from(crate::device::custody_policy(conn, key_id)?.minimum_physical_devices);
+    let minimum = usize::from(ctx.policy()?.minimum_physical_devices);
     let mut indexes: Vec<usize> = (0..threshold).collect();
     let child_count = children.len();
     let mut examined = 0u32;
@@ -732,7 +776,7 @@ fn select_child_subset(
         for &index in &indexes {
             leaves.extend(children[index].leaves.iter().cloned());
         }
-        match crate::device::classify_devices(conn, key_id, &leaves) {
+        match crate::device::classify_devices_with(ctx, &leaves) {
             Ok(groups) if groups.len() >= minimum => {
                 return Ok(take_indexed(&mut children, &indexes));
             }

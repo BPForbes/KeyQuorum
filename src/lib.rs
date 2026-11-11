@@ -47,6 +47,8 @@ pub mod slot_token;
 #[cfg(feature = "host")]
 pub mod api_key_delivery;
 #[cfg(feature = "host")]
+pub mod assembly;
+#[cfg(feature = "host")]
 pub mod bridge_command;
 #[cfg(feature = "host")]
 pub mod cli;

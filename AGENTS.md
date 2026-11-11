@@ -856,7 +856,20 @@ needed. It reuses `authority::relationship` and `authority::bridge_connects` (so
 labels connects the two accounts, as `private_bridge::revision_approved` applies it) and decides nothing else:
 opening the token is `slot_token`, proving bridge membership is `bridge_proof`. C: `kq_access_requirement` in
 `include/keyquorum_access.h` (`KQ_ACCESS_*` factors; `KQ_BRIDGE_*` in `keyquorum_bridge.h` are proof statuses, a
-separate namespace). `KQ_FILE_ABI_VERSION` is 5 (4 added `kq_slot_open`, `kq_bridge_*`, `kq_access_requirement`; 5 added `kq_file_head_author`).
+separate namespace). `KQ_FILE_ABI_VERSION` is 6 (4 added `kq_slot_open`, `kq_bridge_*`, `kq_access_requirement`; 5 added `kq_file_head_author`; 6 added `kq_assembly_*`).
+
+`src/assembly.rs` (issue #161, host-only) is store-free parent-key assembly: a parent account's 32-byte signing seed split among its
+children (M.A.1 and M.A.2 assemble M.A), one `blahaj` share sealed (`crypto_box`) to each child's X25519 key. `assembly_threshold` fixes the
+threshold from the holder count (1, 2, then `(2x + 1) / 3`; none for 0 or over 255), never a choice. `split_parent_key` deals and seals;
+`assemble_parent_key` takes plain facts (each unlocked child's label, box secret and device id, `minimum_devices`), counts a child once,
+requires the threshold from at least that many distinct devices (`pss::require_distinct_nonzero_xs` on the x-coordinates) and accepts the
+recovered seed only if `signing::public_key` of it equals the parent's public key the caller's registry holds (`IntegrityCheckFailed`
+otherwise: sealed shares are anonymous, so this is what stops a planted share). Every intermediate is `Zeroizing`. `reissue_assembly` deals a
+rotated seed at the generation one past the old (a re-split of the old seed would leave a revoked child's share valid). `Assembly` is `KQAS` v1
+(own magic, not a sealed envelope, `envelope`'s length-prefixed codec). A 1-of-1 assembly gives the one child the whole seed (`blahaj` accepts
+threshold 1; tested). Key-tree reconstruction has a store-free variant (issue #161 Part 1, host-only): `key_tree::TreeContext` names the three facts it reads (is a leaf a ghost, which device a key sits on, the custody policy); `SqlContext` answers them through `device::leaf_is_ghost`, `device_for_key` and `custody_policy`, `StaticContext` from plain data; `KeyQuorumTree::from_nodes(&[NodeInput])` is the arena `load` builds (`load` reads its rows and calls it, so the checks are one set); `reconstruct_presented_with(tree, ctx, raw_shares)` is the one rule and the original `reconstruct_presented(conn, key_id, raw_shares)` is a thin wrapper over it (`key_tree/equivalence.rs` pins that both paths agree). It adds no rule and is not `no_std`, since `blahaj` is host-only.
+C: `kq_assembly_threshold`, `kq_assembly_split`, `kq_assembly_generation`, `kq_assembly_assemble` in `include/keyquorum_assembly.h`
+(`KQ_ASSEMBLY_*`), exported by the hosted (`std`) archive only, since `blahaj` is not in the freestanding build.
 
 The `host` Cargo feature (on by default; the enabled dependency features are the same as before it
 existed) is the whole hosted crate: SQLite, the CLI, the relay, files and the network, with `std`.
