@@ -377,3 +377,51 @@ fn bounds_and_damaged_assemblies_are_invalid() {
     );
     assert_eq!(seed_out, [0; 32]);
 }
+
+#[test]
+fn the_largest_record_the_producer_emits_is_accepted_at_the_boundary() {
+    // 255 holders with 255-byte labels: the longest record split_parent_key can encode.
+    let ch: Vec<Child> = (0..255)
+        .map(|i| {
+            let (secret, public) = keys::generate_encryption_keypair();
+            Child {
+                label: CString::new(format!("{i:0>255}")).unwrap(),
+                public,
+                secret: *secret,
+                device: [1; 16],
+            }
+        })
+        .collect();
+    let labels: Vec<*const c_char> = ch.iter().map(|c| c.label.as_ptr()).collect();
+    let publics: Vec<[u8; 32]> = ch.iter().map(|c| c.public).collect();
+    let s = seed();
+    let mut out = vec![0u8; MAX_ASSEMBLY_BYTES + 1024];
+    let mut len = 0usize;
+    let rc = unsafe {
+        kq_assembly_split(
+            s.as_ptr(),
+            3,
+            labels.as_ptr(),
+            publics.as_ptr(),
+            ch.len(),
+            out.as_mut_ptr(),
+            out.len(),
+            &mut len,
+        )
+    };
+    assert_eq!(rc, KQ_ASSEMBLY_OK);
+    // header 11 + 255 * (label 2+255, sealed 2+33+48)
+    assert_eq!(len, 11 + 255 * (2 + 255 + 2 + 33 + 48));
+    assert_eq!(len, MAX_ASSEMBLY_BYTES);
+    let mut generation = 0;
+    assert_eq!(
+        unsafe { kq_assembly_generation(out.as_ptr(), len, &mut generation) },
+        KQ_ASSEMBLY_OK
+    );
+    assert_eq!(generation, 3);
+    // one byte more is refused
+    assert_eq!(
+        unsafe { kq_assembly_generation(out.as_ptr(), len + 1, &mut generation) },
+        KQ_ASSEMBLY_INVALID
+    );
+}

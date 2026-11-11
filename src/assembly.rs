@@ -168,7 +168,8 @@ pub fn split_parent_key(
 /// Assembles the parent's seed from the children unlocked now.
 ///
 /// Each unlocked child's own share is opened with its secret (a share sealed to
-/// another child, or one that does not open, is skipped). The threshold must be
+/// another child, one that does not open, or one whose x-coordinate is zero or
+/// already held is skipped). The threshold must be
 /// met by shares from distinct x-coordinates, and the children that supplied
 /// them must sit on at least `minimum_devices` distinct physical devices (0 or 1
 /// puts no extra rule). The recovered seed is accepted only if it derives
@@ -188,10 +189,13 @@ pub fn assemble_parent_key(
     }
     let mut raws: Vec<Zeroizing<Vec<u8>>> = Vec::new();
     let mut labels: BTreeSet<&str> = BTreeSet::new();
+    let mut xs_seen: BTreeSet<u8> = BTreeSet::new();
     let mut devices: BTreeSet<[u8; DEVICE_ID_LEN]> = BTreeSet::new();
     for child in unlocked {
-        if !labels.insert(child.label) {
-            continue; // a child counts once
+        // A child counts once, but only once its share has opened: an entry that fails (a wrong
+        // secret) must not shadow a later entry for the same child that opens.
+        if labels.contains(child.label) {
+            continue;
         }
         let Some(held) = assembly
             .shares
@@ -208,9 +212,13 @@ pub fn assemble_parent_key(
             continue;
         };
         let raw = Zeroizing::new(raw);
-        if raw.len() != RAW_SHARE_LEN {
+        // A share with a zero or an already-held x-coordinate is damaged or planted (sealing is
+        // anonymous): it is left out, so it cannot reject a group whose other shares are good. The
+        // recovered seed is still checked against the parent's public key below.
+        if raw.len() != RAW_SHARE_LEN || raw[0] == 0 || !xs_seen.insert(raw[0]) {
             continue;
         }
+        labels.insert(child.label);
         raws.push(raw);
         devices.insert(child.device_id);
     }

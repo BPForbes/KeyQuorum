@@ -195,9 +195,27 @@ fn a_reissue_deals_the_next_generation_and_the_old_shares_no_longer_assemble() {
         *assemble_parent_key(&b, &two, 0, &signing::public_key(&new_seed)).unwrap(),
         new_seed
     );
-    // the revoked child's old share is not the new key
-    let old = unlocked(&[&ch[0], &ch[2]]);
-    assert!(assemble_parent_key(&b, &old, 0, &signing::public_key(&old_seed)).is_err());
+    // The revoked child's OLD share, beside a surviving child's NEW share, assembles neither
+    // key: the old share is worthless after the reseed. (Handing the old assembly's own shares
+    // back still gives the old seed, which is why the parent's key itself had to rotate.)
+    let mixed = Assembly {
+        threshold: b.threshold,
+        generation: b.generation,
+        shares: vec![b.shares[0].clone(), a.shares[2].clone()],
+    };
+    let pair = unlocked(&[&ch[0], &ch[2]]);
+    assert!(matches!(
+        assemble_parent_key(&mixed, &pair, 0, &signing::public_key(&new_seed)),
+        Err(Error::IntegrityCheckFailed)
+    ));
+    assert!(matches!(
+        assemble_parent_key(&mixed, &pair, 0, &signing::public_key(&old_seed)),
+        Err(Error::IntegrityCheckFailed)
+    ));
+    assert_eq!(
+        *assemble_parent_key(&a, &pair, 0, &signing::public_key(&old_seed)).unwrap(),
+        old_seed
+    );
     assert!(reissue_assembly(
         &Assembly {
             generation: u32::MAX,
@@ -243,4 +261,64 @@ fn the_encoding_round_trips_and_refuses_damage() {
     let mut bad_threshold = bytes.clone();
     bad_threshold[9] = 3; // 3 holders need 2
     assert!(Assembly::decode(&bad_threshold).is_err());
+}
+
+#[test]
+fn a_failed_entry_does_not_shadow_a_later_entry_for_the_same_child() {
+    let seed = bytes32();
+    let public = signing::public_key(&seed);
+    let ch = kids(2);
+    let a = split_parent_key(&seed, &holders(&ch), 1).unwrap().unwrap();
+    let wrong_secret = bytes32();
+    let list = [
+        UnlockedChild {
+            label: &ch[0].label,
+            encryption_secret: &wrong_secret,
+            device_id: ch[0].device,
+        },
+        UnlockedChild {
+            label: &ch[0].label,
+            encryption_secret: &ch[0].secret,
+            device_id: ch[0].device,
+        },
+        UnlockedChild {
+            label: &ch[1].label,
+            encryption_secret: &ch[1].secret,
+            device_id: ch[1].device,
+        },
+    ];
+    assert_eq!(*assemble_parent_key(&a, &list, 2, &public).unwrap(), seed);
+}
+
+#[test]
+fn an_extra_share_with_a_held_coordinate_does_not_reject_a_good_group() {
+    let seed = bytes32();
+    let public = signing::public_key(&seed);
+    let ch = kids(3); // threshold 2
+    let a = split_parent_key(&seed, &holders(&ch), 1).unwrap().unwrap();
+    // A share sealed to the third child that carries the first child's x-coordinate.
+    let other = split_parent_key(&bytes32(), &holders(&ch), 1)
+        .unwrap()
+        .unwrap();
+    let raw = Zeroizing::new(
+        crypto_box::SecretKey::from(ch[0].secret)
+            .unseal(&other.shares[0].sealed)
+            .unwrap(),
+    );
+    let mut planted = a.clone();
+    planted.shares[2].sealed = crypto_box::PublicKey::from_bytes(ch[2].public)
+        .seal(&mut crate::crypto::os_rng(), &raw)
+        .unwrap();
+    let all = unlocked(&[&ch[0], &ch[1], &ch[2]]);
+    assert_eq!(
+        *assemble_parent_key(&planted, &all, 2, &public).unwrap(),
+        seed
+    );
+    // With only the planted share and one good one the coordinates are distinct, so the group
+    // recovers a wrong seed, and the public-key check refuses it.
+    let two = unlocked(&[&ch[1], &ch[2]]);
+    assert!(matches!(
+        assemble_parent_key(&planted, &two, 0, &public),
+        Err(Error::IntegrityCheckFailed)
+    ));
 }

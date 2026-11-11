@@ -32,8 +32,8 @@ pub const KQ_ASSEMBLY_MISMATCH: c_int = -6;
 pub const KQ_ASSEMBLY_NONE: c_int = 1;
 
 /// Largest assembly accepted from a caller: 255 holders, each a label and a sealed
-/// share, with headroom for the header.
-const MAX_ASSEMBLY_BYTES: usize = 8 + MAX_HOLDERS * (2 + MAX_LABEL_LEN + 2 + 33 + 48);
+/// share, plus the 11-byte KQAS header (magic 4, version 1, generation 4, threshold 1, count 1).
+const MAX_ASSEMBLY_BYTES: usize = 11 + MAX_HOLDERS * (2 + MAX_LABEL_LEN + 2 + 33 + 48);
 
 fn overlaps(a: *const u8, alen: usize, b: *const u8, blen: usize) -> bool {
     let (a, b) = (a as usize, b as usize);
