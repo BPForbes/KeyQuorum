@@ -863,7 +863,7 @@ recovered seed only if `signing::public_key` of it equals the parent's public ke
 otherwise: sealed shares are anonymous, so this is what stops a planted share). Every intermediate is `Zeroizing`. `reissue_assembly` deals a
 rotated seed at the generation one past the old (a re-split of the old seed would leave a revoked child's share valid). `Assembly` is `KQAS` v1
 (own magic, not a sealed envelope, `envelope`'s length-prefixed codec). A 1-of-1 assembly gives the one child the whole seed (`blahaj` accepts
-threshold 1; tested). The key tree's database-bound reconstruction is untouched (the `TreeContext` refactor of issue #161 Part 1 is not done).
+threshold 1; tested). Key-tree reconstruction has a store-free variant (issue #161 Part 1, host-only): `key_tree::TreeContext` names the three facts it reads (is a leaf a ghost, which device a key sits on, the custody policy); `SqlContext` answers them through `device::leaf_is_ghost`, `device_for_key` and `custody_policy`, `StaticContext` from plain data; `KeyQuorumTree::from_nodes(&[NodeInput])` is the arena `load` builds (`load` reads its rows and calls it, so the checks are one set); `reconstruct_presented_with(tree, ctx, raw_shares)` is the one rule and the original `reconstruct_presented(conn, key_id, raw_shares)` is a thin wrapper over it (`key_tree/equivalence.rs` pins that both paths agree). It adds no rule and is not `no_std`, since `blahaj` is host-only.
 C: `kq_assembly_threshold`, `kq_assembly_split`, `kq_assembly_generation`, `kq_assembly_assemble` in `include/keyquorum_assembly.h`
 (`KQ_ASSEMBLY_*`), exported by the hosted (`std`) archive only, since `blahaj` is not in the freestanding build.
 
