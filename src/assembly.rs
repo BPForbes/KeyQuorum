@@ -108,13 +108,18 @@ pub const fn assembly_threshold(holders: usize) -> Option<usize> {
     }
 }
 
+/// Holders must be distinct people: a repeated label is refused, and so is a repeated
+/// encryption key, because one secret would open both shares and let a single holder
+/// stand in for two children.
 fn check_holders(children: &[ChildHolder<'_>]) -> Result<()> {
     let mut seen = BTreeSet::new();
+    let mut keys = BTreeSet::new();
     for child in children {
         if child.label.is_empty()
             || child.label.len() > MAX_LABEL_LEN
             || is_weak_x25519_public_key(&child.encryption_public)
             || !seen.insert(child.label)
+            || !keys.insert(child.encryption_public)
         {
             return Err(Error::InvalidQuorumThreshold);
         }

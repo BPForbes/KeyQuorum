@@ -425,3 +425,12 @@ fn the_largest_record_the_producer_emits_is_accepted_at_the_boundary() {
         KQ_ASSEMBLY_INVALID
     );
 }
+
+#[test]
+fn two_holders_on_one_encryption_key_are_refused() {
+    let mut ch = children(2);
+    ch[1].public = ch[0].public;
+    let (rc, out) = split(&seed(), 1, &ch);
+    assert_eq!(rc, KQ_ASSEMBLY_INVALID);
+    assert!(out.is_empty());
+}

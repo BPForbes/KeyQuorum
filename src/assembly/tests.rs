@@ -236,6 +236,13 @@ fn the_holders_are_checked() {
     let mut weak = holders(&ch);
     weak[0].encryption_public = [0u8; 32];
     assert!(split_parent_key(&bytes32(), &weak, 1).is_err());
+    // Two labels on one encryption key: one secret would open both shares.
+    let mut same_key = holders(&ch);
+    same_key[1].encryption_public = same_key[0].encryption_public;
+    assert!(matches!(
+        split_parent_key(&bytes32(), &same_key, 1),
+        Err(Error::InvalidQuorumThreshold)
+    ));
     let many: Vec<Child> = (0..256).map(|i| child(&format!("M.A.{i}"), 1)).collect();
     assert!(split_parent_key(&bytes32(), &holders(&many), 1).is_err());
 }
