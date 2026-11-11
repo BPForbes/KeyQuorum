@@ -18,6 +18,7 @@
 
 use crate::envelope::{push_len_prefixed, take_array, take_len_prefixed, take_u8, utf8};
 use crate::error::{Error, Result};
+use crate::key_tree::{SqlContext, TreeContext};
 use crate::keys::{self, KeyType};
 use crate::signing;
 use crate::slot_token;
@@ -533,8 +534,16 @@ pub fn enforce_devices(
     key_id: i64,
     used: &[UsedLeaf],
 ) -> Result<Vec<PresentedDevice>> {
-    let groups = classify_devices(conn, key_id, used)?;
-    let policy = custody_policy(conn, key_id)?;
+    enforce_devices_with(&SqlContext::new(conn, key_id), used)
+}
+
+/// [`enforce_devices`] over any [`TreeContext`].
+pub(crate) fn enforce_devices_with(
+    ctx: &dyn TreeContext,
+    used: &[UsedLeaf],
+) -> Result<Vec<PresentedDevice>> {
+    let groups = classify_devices_with(ctx, used)?;
+    let policy = ctx.policy()?;
     if groups.len() < usize::from(policy.minimum_physical_devices) {
         return Err(Error::PhysicalDevicesNotMet);
     }
@@ -543,22 +552,20 @@ pub fn enforce_devices(
 
 /// Device groups for `used`, including the hardware-mode custody check.
 /// Does not apply `minimum_physical_devices`.
-pub(crate) fn classify_devices(
-    conn: &Connection,
-    key_id: i64,
+pub(crate) fn classify_devices_with(
+    ctx: &dyn TreeContext,
     used: &[UsedLeaf],
 ) -> Result<Vec<PresentedDevice>> {
     if used.is_empty() {
         return Err(Error::QuorumNotMet);
     }
-    let policy = custody_policy(conn, key_id)?;
+    let policy = ctx.policy()?;
     let mut groups: Vec<PresentedDevice> = Vec::new();
     for leaf in used {
-        if leaf_is_ghost(conn, leaf.hardware_key_id)? {
+        if ctx.is_ghost(leaf.hardware_key_id)? {
             return Err(Error::GhostDenied);
         }
-        let key = keys::get_key(conn, leaf.hardware_key_id)?;
-        let (device_id, slot_label) = device_for_key(conn, &key)?;
+        let (device_id, slot_label) = ctx.device_of(leaf.hardware_key_id)?;
         if let Some(group) = groups.iter_mut().find(|group| group.device_id == device_id) {
             if !group.hardware_key_ids.contains(&leaf.hardware_key_id) {
                 group.hardware_key_ids.push(leaf.hardware_key_id);
@@ -667,7 +674,7 @@ impl UnlockApproval {
     }
 }
 
-fn device_for_key(
+pub(crate) fn device_for_key(
     conn: &Connection,
     key: &keys::HardwareKey,
 ) -> Result<([u8; DEVICE_ID_LEN], Option<String>)> {
