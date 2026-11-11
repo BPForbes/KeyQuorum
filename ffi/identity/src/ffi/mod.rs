@@ -460,6 +460,9 @@ pub unsafe extern "C" fn kq_account_bridge_verify(
 }
 
 pub mod access;
+// Needs `blahaj`, which the freestanding build does not link.
+#[cfg(feature = "std")]
+pub mod assembly;
 pub mod bridge;
 pub mod error;
 pub mod files;

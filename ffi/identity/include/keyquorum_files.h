@@ -47,7 +47,7 @@ extern "C" {
 #define KQ_FILE_FIRST            1
 #define KQ_FILE_NEWER            2
 
-#define KQ_FILE_ABI_VERSION      5
+#define KQ_FILE_ABI_VERSION      6
 #define KQ_FILE_ID_LEN          16u
 #define KQ_FILE_REV_LEN         32u
 #define KQ_FILE_DELIVERY_ID_LEN 16u
