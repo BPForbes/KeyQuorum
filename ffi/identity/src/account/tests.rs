@@ -214,3 +214,199 @@ fn bridges_join_only_different_branches_with_valid_labels() {
     )
     .is_some());
 }
+
+#[test]
+fn a_sudo_is_co_signed_by_the_invoker_and_the_authority() {
+    let (invoker_secret, invoker_public) = generate();
+    let (root_secret, root_public) = generate();
+    let n = nonce();
+    let action = b"sudo -i";
+    let mine = sign_sudo(
+        SudoCosignRole::Invoker,
+        "Root.Flinstone",
+        "Root",
+        action,
+        &n,
+        &invoker_secret,
+    )
+    .unwrap();
+    let root = sign_sudo(
+        SudoCosignRole::Authority,
+        "Root.Flinstone",
+        "Root",
+        action,
+        &n,
+        &root_secret,
+    )
+    .unwrap();
+    assert!(verify_sudo(
+        "Root.Flinstone",
+        "Root",
+        action,
+        &n,
+        &invoker_public,
+        &mine,
+        &root_public,
+        &root
+    ));
+    // Either half alone, or the two swapped, never verifies.
+    assert!(!verify_sudo(
+        "Root.Flinstone",
+        "Root",
+        action,
+        &n,
+        &invoker_public,
+        &mine,
+        &root_public,
+        &mine
+    ));
+    assert!(!verify_sudo(
+        "Root.Flinstone",
+        "Root",
+        action,
+        &n,
+        &root_public,
+        &root,
+        &invoker_public,
+        &mine
+    ));
+    // Bound to its action, nonce and accounts.
+    assert!(!verify_sudo(
+        "Root.Flinstone",
+        "Root",
+        b"sudo",
+        &n,
+        &invoker_public,
+        &mine,
+        &root_public,
+        &root
+    ));
+    assert!(!verify_sudo(
+        "Root.Flinstone",
+        "Root",
+        action,
+        &nonce(),
+        &invoker_public,
+        &mine,
+        &root_public,
+        &root
+    ));
+    assert!(!verify_sudo(
+        "Root.Other",
+        "Root",
+        action,
+        &n,
+        &invoker_public,
+        &mine,
+        &root_public,
+        &root
+    ));
+}
+
+#[test]
+fn a_sudo_by_two_accounts_needs_two_keys() {
+    // A registry that maps the invoker and its ancestor to one key gets no co-signature:
+    // that key's holder could sign both halves alone.
+    let (secret, public) = generate();
+    let n = nonce();
+    let action = b"sudo";
+    let sign = |role| sign_sudo(role, "Root.Flinstone", "Root", action, &n, &secret).unwrap();
+    let mine = sign(SudoCosignRole::Invoker);
+    let root = sign(SudoCosignRole::Authority);
+    assert!(!verify_sudo(
+        "Root.Flinstone",
+        "Root",
+        action,
+        &n,
+        &public,
+        &mine,
+        &public,
+        &root
+    ));
+    // An account elevating to itself signs both halves with its one key.
+    let mine = sign_sudo(SudoCosignRole::Invoker, "Root", "Root", action, &n, &secret).unwrap();
+    let root = sign_sudo(
+        SudoCosignRole::Authority,
+        "Root",
+        "Root",
+        action,
+        &n,
+        &secret,
+    )
+    .unwrap();
+    assert!(verify_sudo(
+        "Root", "Root", action, &n, &public, &mine, &public, &root
+    ));
+}
+
+#[test]
+fn a_sudo_authority_must_be_the_invoker_or_an_ancestor() {
+    let (secret, _) = generate();
+    let n = nonce();
+    for (invoker, authority) in [
+        ("Root", "Root.Flinstone"),
+        ("Root.Flinstone", "Root.Other"),
+        ("Root.Flinstone", "bad label"),
+    ] {
+        assert!(!sudo_signer_may_sign(
+            SudoCosignRole::Authority,
+            invoker,
+            authority,
+            authority
+        ));
+        assert!(sign_sudo(
+            SudoCosignRole::Invoker,
+            invoker,
+            authority,
+            b"sudo",
+            &n,
+            &secret
+        )
+        .is_none());
+    }
+    assert!(sudo_signer_may_sign(
+        SudoCosignRole::Authority,
+        "Root.Flinstone.Bob",
+        "Root",
+        "Root"
+    ));
+    assert!(!sudo_signer_may_sign(
+        SudoCosignRole::Authority,
+        "Root.Flinstone.Bob",
+        "Root",
+        "Root.Flinstone.Bob"
+    ));
+    assert!(!sudo_signer_may_sign(
+        SudoCosignRole::Invoker,
+        "Root.Flinstone.Bob",
+        "Root",
+        "Root"
+    ));
+}
+
+#[test]
+fn a_sudo_action_must_be_present_and_bounded() {
+    let (secret, _) = generate();
+    let n = nonce();
+    let long = vec![b'x'; SUDO_ACTION_MAX + 1];
+    for action in [&b""[..], &long[..]] {
+        assert!(sign_sudo(
+            SudoCosignRole::Invoker,
+            "Root.Flinstone",
+            "Root",
+            action,
+            &n,
+            &secret
+        )
+        .is_none());
+    }
+    assert!(sign_sudo(
+        SudoCosignRole::Invoker,
+        "Root.Flinstone",
+        "Root",
+        &long[..SUDO_ACTION_MAX],
+        &n,
+        &secret
+    )
+    .is_some());
+}

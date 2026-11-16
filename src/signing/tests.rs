@@ -373,3 +373,108 @@ fn account_bridge_labels_are_length_prefixed() {
         .unwrap();
     assert_ne!(a, b);
 }
+
+#[test]
+fn sudo_cosign_preimage_binds_every_field() {
+    let nonce = bridge_nonce();
+    let mut other_nonce = nonce;
+    other_nonce[0] ^= 1;
+    let p = |role, invoker, authority, signer, action: &[u8], nonce: &[u8; 16]| {
+        sudo_cosign_preimage(role, invoker, authority, signer, action, nonce).unwrap()
+    };
+    let base = p(
+        SudoCosignRole::Invoker,
+        "Root.Flinstone",
+        "Root",
+        "Root.Flinstone",
+        b"sudo -i",
+        &nonce,
+    );
+    let variants = [
+        p(
+            SudoCosignRole::Authority,
+            "Root.Flinstone",
+            "Root",
+            "Root.Flinstone",
+            b"sudo -i",
+            &nonce,
+        ),
+        p(
+            SudoCosignRole::Invoker,
+            "Root.Other",
+            "Root",
+            "Root.Flinstone",
+            b"sudo -i",
+            &nonce,
+        ),
+        p(
+            SudoCosignRole::Invoker,
+            "Root.Flinstone",
+            "Root.Flinstone",
+            "Root.Flinstone",
+            b"sudo -i",
+            &nonce,
+        ),
+        p(
+            SudoCosignRole::Invoker,
+            "Root.Flinstone",
+            "Root",
+            "Root",
+            b"sudo -i",
+            &nonce,
+        ),
+        p(
+            SudoCosignRole::Invoker,
+            "Root.Flinstone",
+            "Root",
+            "Root.Flinstone",
+            b"sudo",
+            &nonce,
+        ),
+        p(
+            SudoCosignRole::Invoker,
+            "Root.Flinstone",
+            "Root",
+            "Root.Flinstone",
+            b"sudo -i",
+            &other_nonce,
+        ),
+    ];
+    for variant in variants {
+        assert_ne!(variant, base);
+    }
+    // Not interchangeable with a bridge signature by the same signer.
+    let bridge = account_bridge_preimage(
+        AccountBridgeRole::Request,
+        "Root.Flinstone",
+        "Root",
+        "Root.Flinstone",
+        &nonce,
+    )
+    .unwrap();
+    assert_ne!(bridge, base);
+}
+
+#[test]
+fn sudo_cosign_fields_are_length_prefixed() {
+    let nonce = bridge_nonce();
+    let a = sudo_cosign_preimage(
+        SudoCosignRole::Invoker,
+        "Root.A",
+        "Root",
+        "Root.A",
+        b"x",
+        &nonce,
+    )
+    .unwrap();
+    let b = sudo_cosign_preimage(
+        SudoCosignRole::Invoker,
+        "Root.",
+        "ARoot",
+        "Root.A",
+        b"x",
+        &nonce,
+    )
+    .unwrap();
+    assert_ne!(a, b);
+}

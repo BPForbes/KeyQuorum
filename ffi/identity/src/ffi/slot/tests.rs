@@ -128,3 +128,126 @@ fn null_arguments_are_invalid() {
     };
     assert_eq!(rc, KQ_ACCOUNT_INVALID);
 }
+
+fn seal(
+    label: &CString,
+    passphrase: &CString,
+    signing_secret: &[u8; 32],
+    encryption_secret: &[u8; 32],
+    cap: usize,
+) -> (c_int, Vec<u8>, usize, [u8; 32], [u8; 32]) {
+    let mut token = vec![0u8; cap];
+    let mut len = 0usize;
+    let (mut signing_public, mut encryption_public) = ([0u8; 32], [0u8; 32]);
+    let rc = unsafe {
+        kq_slot_seal(
+            label.as_ptr(),
+            passphrase.as_ptr(),
+            DEVICE.as_ptr(),
+            signing_secret.as_ptr(),
+            encryption_secret.as_ptr(),
+            token.as_mut_ptr(),
+            token.len(),
+            &mut len,
+            signing_public.as_mut_ptr(),
+            encryption_public.as_mut_ptr(),
+        )
+    };
+    token.truncate(len.min(cap));
+    (rc, token, len, signing_public, encryption_public)
+}
+
+#[test]
+fn a_sealed_token_opens_to_the_same_keys() {
+    let f = fixture();
+    let label = CString::new("Root.Flinstone").unwrap();
+    let need = slot_token_len("Root.Flinstone".len());
+    let (rc, token, len, signing_public, encryption_public) = seal(
+        &label,
+        &f.passphrase,
+        &f.signing_secret,
+        &f.encryption_secret,
+        need,
+    );
+    assert_eq!(rc, KQ_ACCOUNT_OK);
+    assert_eq!(len, need);
+    // The account keeps its keys: the public keys are the ones it already had.
+    assert_eq!(signing_public, f.signing_public);
+    assert_eq!(encryption_public, f.encryption_public);
+    let sealed = Fixture {
+        token,
+        label,
+        passphrase: f.passphrase.clone(),
+        signing_public,
+        encryption_public,
+        signing_secret: f.signing_secret,
+        encryption_secret: f.encryption_secret,
+    };
+    let (rc, signing_out, encryption_out) = open(&sealed, &f.passphrase, &DEVICE);
+    assert_eq!(rc, KQ_ACCOUNT_OK);
+    assert_eq!(signing_out, f.signing_secret);
+    assert_eq!(encryption_out, f.encryption_secret);
+    // Another device id, or another passphrase, does not open it.
+    assert_eq!(open(&sealed, &f.passphrase, &[1; 16]).0, KQ_ACCOUNT_INVALID);
+    assert_eq!(
+        open(&sealed, &fixture().passphrase, &DEVICE).0,
+        KQ_ACCOUNT_WRONG_PASSWORD
+    );
+}
+
+#[test]
+fn seal_reports_the_size_it_needs_and_refuses_bad_input() {
+    let f = fixture();
+    let label = CString::new("Root.Flinstone").unwrap();
+    let need = slot_token_len("Root.Flinstone".len());
+    let (rc, _, len, signing_public, _) = seal(
+        &label,
+        &f.passphrase,
+        &f.signing_secret,
+        &f.encryption_secret,
+        need - 1,
+    );
+    assert_eq!(rc, KQ_ACCOUNT_NO_ROOM);
+    assert_eq!(len, need);
+    assert_eq!(signing_public, [0; 32]);
+    let empty = CString::new("").unwrap();
+    assert_eq!(
+        seal(
+            &label,
+            &empty,
+            &f.signing_secret,
+            &f.encryption_secret,
+            need
+        )
+        .0,
+        KQ_ACCOUNT_INVALID
+    );
+    let bad = CString::new("Flinstone.Bob").unwrap();
+    assert_eq!(
+        seal(
+            &bad,
+            &f.passphrase,
+            &f.signing_secret,
+            &f.encryption_secret,
+            need
+        )
+        .0,
+        KQ_ACCOUNT_INVALID
+    );
+    let mut len = 0usize;
+    let rc = unsafe {
+        kq_slot_seal(
+            label.as_ptr(),
+            f.passphrase.as_ptr(),
+            DEVICE.as_ptr(),
+            core::ptr::null(),
+            f.encryption_secret.as_ptr(),
+            [0u8; 256].as_mut_ptr(),
+            256,
+            &mut len,
+            [0u8; 32].as_mut_ptr(),
+            [0u8; 32].as_mut_ptr(),
+        )
+    };
+    assert_eq!(rc, KQ_ACCOUNT_INVALID);
+}

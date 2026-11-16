@@ -10,7 +10,7 @@ use crate::heritage::{self, ChildError, Relation};
 #[allow(unused_imports)]
 use crate::nostd::*;
 use core::ffi::{c_char, c_int, CStr};
-use keyquorum::signing::AccountBridgeRole;
+use keyquorum::signing::{AccountBridgeRole, SudoCosignRole};
 use zeroize::Zeroizing;
 
 /// The key id was written.
@@ -230,6 +230,31 @@ pub const KQ_ACCOUNT_WRONG_PASSWORD: c_int = -4;
 pub const KQ_ACCOUNT_BRIDGE_REQUEST: c_int = 1;
 /// Bridge signature role: the account (or an ancestor of it) that accepts.
 pub const KQ_ACCOUNT_BRIDGE_ACCEPT: c_int = 2;
+
+/// Co-signed elevation role: the account that asked to elevate.
+pub const KQ_SUDO_INVOKER: c_int = 1;
+/// Co-signed elevation role: the authority it elevates under (the master account).
+pub const KQ_SUDO_AUTHORITY: c_int = 2;
+
+fn sudo_role(role: c_int) -> Option<SudoCosignRole> {
+    match role {
+        KQ_SUDO_INVOKER => Some(SudoCosignRole::Invoker),
+        KQ_SUDO_AUTHORITY => Some(SudoCosignRole::Authority),
+        _ => None,
+    }
+}
+
+/// Reads `len` bytes from `p` as an elevation's action; `None` for null, empty or
+/// longer than [`account::SUDO_ACTION_MAX`] (checked before the slice is made).
+///
+/// # Safety
+/// `p` must be null or readable for `len` bytes.
+unsafe fn action_in<'a>(p: *const u8, len: usize) -> Option<&'a [u8]> {
+    if p.is_null() || len == 0 || len > account::SUDO_ACTION_MAX {
+        return None;
+    }
+    Some(core::slice::from_raw_parts(p, len))
+}
 
 fn bridge_role(role: c_int) -> Option<AccountBridgeRole> {
     match role {
@@ -457,6 +482,99 @@ pub unsafe extern "C" fn kq_account_bridge_verify(
         return 0;
     };
     account::verify_bridge(role, from, to, signer, &nonce, &public, &sig) as c_int
+}
+
+/// Signs one half of the elevation (`sudo`) by `invoker` under `authority` for the
+/// `action_len`-byte `action`, identified by the 16-byte `nonce`, with the 32-byte
+/// `secret` (the invoker's own key for `KQ_SUDO_INVOKER`, the authority's for
+/// `KQ_SUDO_AUTHORITY`); writes the 64-byte signature into `sig_out`.
+/// `KQ_ACCOUNT_INVALID` when `authority` is not `invoker` or an ancestor of it, a label
+/// is invalid, or `action` is empty or longer than `KQ_SUDO_ACTION_MAX`.
+///
+/// # Safety
+/// The labels must be null or valid NUL-terminated strings; `action` must be null or
+/// readable for `action_len` bytes, `nonce` for 16 and `secret` for 32; `sig_out` must be
+/// null or writable for 64 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn kq_sudo_sign(
+    role: c_int,
+    invoker: *const c_char,
+    authority: *const c_char,
+    action: *const u8,
+    action_len: usize,
+    nonce: *const u8,
+    secret: *const u8,
+    sig_out: *mut u8,
+) -> c_int {
+    let (Some(role), Some(invoker), Some(authority), Some(action), Some(nonce), Some(secret)) = (
+        sudo_role(role),
+        input(invoker),
+        input(authority),
+        action_in(action, action_len),
+        bytes_in::<16>(nonce),
+        bytes_in::<32>(secret).map(Zeroizing::new),
+    ) else {
+        return KQ_ACCOUNT_INVALID;
+    };
+    match account::sign_sudo(role, invoker, authority, action, &nonce, &secret) {
+        Some(sig) if bytes_out(&sig, sig_out) => KQ_ACCOUNT_OK,
+        _ => KQ_ACCOUNT_INVALID,
+    }
+}
+
+/// 1 when the elevation by `invoker` under `authority` for `action` and `nonce` is
+/// co-signed: `invoker_sig` verifies under `invoker_public` and `authority_sig` under
+/// `authority_public` (both from the caller's own registry); 0 otherwise, including one
+/// half alone and any invalid input.
+///
+/// # Safety
+/// The labels must be null or valid NUL-terminated strings; `action` must be null or
+/// readable for `action_len` bytes, `nonce` for 16, the public keys for 32 and the
+/// signatures for 64.
+#[no_mangle]
+pub unsafe extern "C" fn kq_sudo_verify(
+    invoker: *const c_char,
+    authority: *const c_char,
+    action: *const u8,
+    action_len: usize,
+    nonce: *const u8,
+    invoker_public: *const u8,
+    invoker_sig: *const u8,
+    authority_public: *const u8,
+    authority_sig: *const u8,
+) -> c_int {
+    let (
+        Some(invoker),
+        Some(authority),
+        Some(action),
+        Some(nonce),
+        Some(invoker_public),
+        Some(invoker_sig),
+        Some(authority_public),
+        Some(authority_sig),
+    ) = (
+        input(invoker),
+        input(authority),
+        action_in(action, action_len),
+        bytes_in::<16>(nonce),
+        bytes_in::<32>(invoker_public),
+        bytes_in::<64>(invoker_sig),
+        bytes_in::<32>(authority_public),
+        bytes_in::<64>(authority_sig),
+    )
+    else {
+        return 0;
+    };
+    account::verify_sudo(
+        invoker,
+        authority,
+        action,
+        &nonce,
+        &invoker_public,
+        &invoker_sig,
+        &authority_public,
+        &authority_sig,
+    ) as c_int
 }
 
 pub mod access;

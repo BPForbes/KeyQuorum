@@ -32,6 +32,7 @@ const RELAY_SETUP_MANIFEST_DOMAIN: &[u8] = b"KQ-RELAY-SETUP-MANIFEST-v1";
 const PROVIDER_RECOVERY_DOMAIN: &[u8] = b"KQ-PROVIDER-RECOVERY-v1";
 const ERROR_REPORT_DOMAIN: &[u8] = b"KQ-ERROR-REPORT-v1";
 const ACCOUNT_BRIDGE_DOMAIN: &[u8] = b"KQ-ACCOUNT-BRIDGE-v1";
+const SUDO_COSIGN_DOMAIN: &[u8] = b"KQ-SUDO-COSIGN-v1";
 
 /// Verifies `signature` over `message` under `public_key`. Uses
 /// `verify_strict` rather than `verify` — it rejects the non-canonical
@@ -88,6 +89,42 @@ pub fn account_bridge_preimage(
     hash_len_prefixed(&mut hasher, to.as_bytes())?;
     hash_len_prefixed(&mut hasher, signer.as_bytes())?;
     hasher.update(bridge_nonce);
+    Ok(hasher.finalize().into())
+}
+
+/// Which signature of a co-signed elevation (`sudo`) a signature stands for. Wire codes:
+/// they feed [`sudo_cosign_preimage`], so they are appended, never renumbered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SudoCosignRole {
+    /// The account that asked to elevate signs with its own key.
+    Invoker = 1,
+    /// The authority it elevates under (the master account, or another ancestor of the
+    /// invoker) signs with its key.
+    Authority = 2,
+}
+
+/// What each side of a co-signed elevation signs: `invoker` asked to run `action` with
+/// the rights of `authority`, `signer` is the label whose key signs this half and
+/// `nonce` is the elevation's random id, so a signature for one elevation never stands
+/// for another, nor for the other half of the same one. `action` is the caller's own
+/// description of what is authorised (at most `u16::MAX` bytes).
+pub fn sudo_cosign_preimage(
+    role: SudoCosignRole,
+    invoker: &str,
+    authority: &str,
+    signer: &str,
+    action: &[u8],
+    nonce: &[u8; 16],
+) -> Result<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    hasher.update(SUDO_COSIGN_DOMAIN);
+    hasher.update([role as u8]);
+    hash_len_prefixed(&mut hasher, invoker.as_bytes())?;
+    hash_len_prefixed(&mut hasher, authority.as_bytes())?;
+    hash_len_prefixed(&mut hasher, signer.as_bytes())?;
+    hash_len_prefixed(&mut hasher, action)?;
+    hasher.update(nonce);
     Ok(hasher.finalize().into())
 }
 
