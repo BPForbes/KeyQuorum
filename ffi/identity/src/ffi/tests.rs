@@ -251,3 +251,157 @@ fn bounded_input_refuses_empty_missing_terminator_and_bad_utf8() {
         assert_eq!(input_bounded(unterminated.as_ptr().cast(), 3), None);
     }
 }
+
+fn keypair() -> ([u8; 32], [u8; 32]) {
+    let (mut secret, mut public) = ([0u8; 32], [0u8; 32]);
+    assert_eq!(
+        unsafe { kq_account_keygen(secret.as_mut_ptr(), public.as_mut_ptr()) },
+        KQ_ACCOUNT_OK
+    );
+    (secret, public)
+}
+
+unsafe fn sudo_sign(
+    role: c_int,
+    invoker: &CString,
+    authority: &CString,
+    action: &[u8],
+    nonce: &[u8; 16],
+    secret: &[u8; 32],
+) -> (c_int, [u8; 64]) {
+    let mut sig = [0u8; 64];
+    let rc = kq_sudo_sign(
+        role,
+        invoker.as_ptr(),
+        authority.as_ptr(),
+        action.as_ptr(),
+        action.len(),
+        nonce.as_ptr(),
+        secret.as_ptr(),
+        sig.as_mut_ptr(),
+    );
+    (rc, sig)
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn sudo_verify(
+    invoker: &CString,
+    authority: &CString,
+    action: &[u8],
+    nonce: &[u8; 16],
+    invoker_public: &[u8; 32],
+    invoker_sig: &[u8; 64],
+    authority_public: &[u8; 32],
+    authority_sig: &[u8; 64],
+) -> c_int {
+    kq_sudo_verify(
+        invoker.as_ptr(),
+        authority.as_ptr(),
+        action.as_ptr(),
+        action.len(),
+        nonce.as_ptr(),
+        invoker_public.as_ptr(),
+        invoker_sig.as_ptr(),
+        authority_public.as_ptr(),
+        authority_sig.as_ptr(),
+    )
+}
+
+#[test]
+fn sudo_is_co_signed_through_the_c_abi() {
+    let (mine, mine_public) = keypair();
+    let (root, root_public) = keypair();
+    let nonce: [u8; 16] = keyquorum::crypto::random_salt();
+    let (invoker, authority) = (c("Root.Flinstone"), c("Root"));
+    let action = b"sudo -i";
+    unsafe {
+        let (rc, mine_sig) =
+            sudo_sign(KQ_SUDO_INVOKER, &invoker, &authority, action, &nonce, &mine);
+        assert_eq!(rc, KQ_ACCOUNT_OK);
+        let (rc, root_sig) = sudo_sign(
+            KQ_SUDO_AUTHORITY,
+            &invoker,
+            &authority,
+            action,
+            &nonce,
+            &root,
+        );
+        assert_eq!(rc, KQ_ACCOUNT_OK);
+        assert_eq!(
+            sudo_verify(
+                &invoker,
+                &authority,
+                action,
+                &nonce,
+                &mine_public,
+                &mine_sig,
+                &root_public,
+                &root_sig
+            ),
+            1
+        );
+        // The invoker's key cannot stand in for the authority's.
+        let (rc, forged) = sudo_sign(
+            KQ_SUDO_AUTHORITY,
+            &invoker,
+            &authority,
+            action,
+            &nonce,
+            &mine,
+        );
+        assert_eq!(rc, KQ_ACCOUNT_OK);
+        assert_eq!(
+            sudo_verify(
+                &invoker,
+                &authority,
+                action,
+                &nonce,
+                &mine_public,
+                &mine_sig,
+                &root_public,
+                &forged
+            ),
+            0
+        );
+        // An unknown role, an authority that is not an ancestor, and an empty action.
+        assert_eq!(
+            sudo_sign(3, &invoker, &authority, action, &nonce, &mine).0,
+            KQ_ACCOUNT_INVALID
+        );
+        assert_eq!(
+            sudo_sign(KQ_SUDO_INVOKER, &authority, &invoker, action, &nonce, &mine).0,
+            KQ_ACCOUNT_INVALID
+        );
+        assert_eq!(
+            sudo_sign(KQ_SUDO_INVOKER, &invoker, &authority, b"", &nonce, &mine).0,
+            KQ_ACCOUNT_INVALID
+        );
+        assert_eq!(
+            kq_sudo_sign(
+                KQ_SUDO_INVOKER,
+                invoker.as_ptr(),
+                authority.as_ptr(),
+                action.as_ptr(),
+                account::SUDO_ACTION_MAX + 1,
+                nonce.as_ptr(),
+                mine.as_ptr(),
+                [0u8; 64].as_mut_ptr(),
+            ),
+            KQ_ACCOUNT_INVALID
+        );
+        assert_eq!(
+            kq_sudo_verify(
+                invoker.as_ptr(),
+                authority.as_ptr(),
+                core::ptr::null(),
+                action.len(),
+                nonce.as_ptr(),
+                mine_public.as_ptr(),
+                mine_sig.as_ptr(),
+                root_public.as_ptr(),
+                root_sig.as_ptr(),
+            ),
+            0
+        );
+    }
+}

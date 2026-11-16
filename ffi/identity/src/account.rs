@@ -1,6 +1,6 @@
 //! Account keys for Flinstone: one Ed25519 signing key per account, kept
-//! sealed under the account's password, and the bridge signatures made with
-//! it.
+//! sealed under the account's password, and the bridge and co-signed
+//! elevation (`sudo`) signatures made with it.
 //!
 //! The primitives are KeyQuorum's own: Argon2id and AES-256-GCM from
 //! [`keyquorum::crypto`], Ed25519 and the domain-separated bridge preimage
@@ -16,7 +16,7 @@ use crate::heritage::{self, Relation};
 #[allow(unused_imports)]
 use crate::nostd::*;
 use keyquorum::crypto::{self, NONCE_LEN, SALT_LEN};
-use keyquorum::signing::{self, AccountBridgeRole};
+use keyquorum::signing::{self, AccountBridgeRole, SudoCosignRole};
 use zeroize::Zeroizing;
 
 const MAGIC: &[u8; 4] = b"KQAK";
@@ -154,6 +154,98 @@ pub fn verify_bridge(
         Ok(digest) => signing::verify_signature(public, &digest, signature).is_ok(),
         Err(_) => false,
     }
+}
+
+/// Longest action a co-signed elevation may describe, in bytes.
+pub const SUDO_ACTION_MAX: usize = 4096;
+
+/// Whether `signer` may sign this half of an elevation by `invoker` under `authority`:
+/// all three are valid key ids, `authority` is `invoker` or an ancestor of it (an
+/// account never elevates under a sibling or a descendant), and the invoker's half is
+/// signed by `invoker`, the authority's by `authority`.
+pub fn sudo_signer_may_sign(
+    role: SudoCosignRole,
+    invoker: &str,
+    authority: &str,
+    signer: &str,
+) -> bool {
+    if !heritage::key_valid(invoker)
+        || !heritage::key_valid(authority)
+        || !heritage::key_valid(signer)
+        || !heritage::is_ancestor_or_self(authority, invoker)
+    {
+        return false;
+    }
+    match role {
+        SudoCosignRole::Invoker => signer == invoker,
+        SudoCosignRole::Authority => signer == authority,
+    }
+}
+
+fn sudo_digest(
+    role: SudoCosignRole,
+    invoker: &str,
+    authority: &str,
+    action: &[u8],
+    nonce: &[u8; 16],
+) -> Option<[u8; 32]> {
+    if action.is_empty() || action.len() > SUDO_ACTION_MAX {
+        return None;
+    }
+    let signer = match role {
+        SudoCosignRole::Invoker => invoker,
+        SudoCosignRole::Authority => authority,
+    };
+    if !sudo_signer_may_sign(role, invoker, authority, signer) {
+        return None;
+    }
+    signing::sudo_cosign_preimage(role, invoker, authority, signer, action, nonce).ok()
+}
+
+/// Signs one half of the elevation by `invoker` under `authority` for `action`,
+/// identified by `nonce`, with `secret` (the invoker's key for [`SudoCosignRole::Invoker`],
+/// the authority's for [`SudoCosignRole::Authority`]). `None` when the elevation is not
+/// allowed ([`sudo_signer_may_sign`]) or `action` is empty or longer than
+/// [`SUDO_ACTION_MAX`].
+pub fn sign_sudo(
+    role: SudoCosignRole,
+    invoker: &str,
+    authority: &str,
+    action: &[u8],
+    nonce: &[u8; 16],
+    secret: &[u8; SECRET_LEN],
+) -> Option<[u8; 64]> {
+    let digest = sudo_digest(role, invoker, authority, action, nonce)?;
+    Some(signing::sign(secret, &digest))
+}
+
+/// Whether an elevation is co-signed: `invoker_signature` is the invoker's, under
+/// `invoker_public`, and `authority_signature` the authority's, under `authority_public`,
+/// both for the same `action` and `nonce`. Both must verify; one alone never does. The
+/// public keys come from the caller's own registry, never from the request.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_sudo(
+    invoker: &str,
+    authority: &str,
+    action: &[u8],
+    nonce: &[u8; 16],
+    invoker_public: &[u8; 32],
+    invoker_signature: &[u8; 64],
+    authority_public: &[u8; 32],
+    authority_signature: &[u8; 64],
+) -> bool {
+    let half = |role, public: &[u8; 32], signature: &[u8; 64]| match sudo_digest(
+        role, invoker, authority, action, nonce,
+    ) {
+        Some(digest) => signing::verify_signature(public, &digest, signature).is_ok(),
+        None => false,
+    };
+    half(SudoCosignRole::Invoker, invoker_public, invoker_signature)
+        && half(
+            SudoCosignRole::Authority,
+            authority_public,
+            authority_signature,
+        )
 }
 
 #[cfg(test)]

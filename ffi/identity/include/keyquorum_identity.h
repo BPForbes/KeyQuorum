@@ -88,6 +88,33 @@ int kq_account_bridge_verify(int role, const char *from, const char *to, const c
                              const unsigned char *sig);
 
 /*
+ * Co-signed elevation (sudo), added in KQ_FILE_ABI_VERSION 7. An account
+ * (invoker) asks to run an action with the rights of an authority, which must be
+ * the invoker or an ancestor of it (the master account Root for a sudo). Each
+ * signs the same request with its own key: the invoker as KQ_SUDO_INVOKER, the
+ * authority as KQ_SUDO_AUTHORITY, under a domain-separated preimage of the role,
+ * both key ids, the signer, the action (1 to KQ_SUDO_ACTION_MAX bytes, the
+ * caller's own description) and a fresh 16-byte nonce. kq_sudo_verify returns 1
+ * only when both halves verify under the public keys the caller's own registry
+ * holds; one half alone, or a half signed by the wrong key, returns 0. sign
+ * returns KQ_ACCOUNT_INVALID for a role, label or action it refuses.
+ */
+#define KQ_SUDO_INVOKER            1
+#define KQ_SUDO_AUTHORITY          2
+#define KQ_SUDO_ACTION_MAX         4096u
+
+int kq_sudo_sign(int role, const char *invoker, const char *authority,
+                 const unsigned char *action, size_t action_len,
+                 const unsigned char nonce[16], const unsigned char secret[32],
+                 unsigned char sig_out[64]);
+int kq_sudo_verify(const char *invoker, const char *authority,
+                   const unsigned char *action, size_t action_len,
+                   const unsigned char nonce[16],
+                   const unsigned char invoker_public[32], const unsigned char invoker_sig[64],
+                   const unsigned char authority_public[32],
+                   const unsigned char authority_sig[64]);
+
+/*
  * Embedder must provide (freestanding build, `--no-default-features`)
  *
  * Without the "std" feature libkeyquorum_identity.a leaves exactly these four
