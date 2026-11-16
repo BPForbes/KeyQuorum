@@ -838,9 +838,9 @@ snapshot, else `KQ_FILE_DIVERGED` -12) in `keyquorum_files.h`, with `KQ_FILE_ABI
 passphrase, `InvalidSlot` for any mismatch). `device::open_slot_in` and `write_token` call it, so there is one
 rule; `device` re-exports `SlotSecrets`. In the pure set (`no_std`). C: `kq_slot_open` in
 `include/keyquorum_slots.h` (`KQ_ACCOUNT_OK`, `KQ_ACCOUNT_WRONG_PASSWORD`, `KQ_ACCOUNT_INVALID`), and
-`kq_slot_provision`, which makes a token (a fresh signing and encryption key for a valid key id, sealed with
-`seal_token` to the caller's device id) and returns its two public keys for the caller's registry, so an
-embedder enrols an account without the CLI. A co-signed elevation (`sudo`) is
+`kq_slot_seal`, which seals an account's own signing and encryption secrets (a valid key id) with `seal_token`
+to the caller's device id and returns the two derived public keys for the caller's registry, so an embedder
+enrols an account without the CLI and without changing its keys. A co-signed elevation (`sudo`) is
 `signing::sudo_cosign_preimage` (`KQ-SUDO-COSIGN-v1`, `SudoCosignRole` Invoker 1 / Authority 2, append
 only): the invoker and an authority that is it or an ancestor of it (`Root` for a sudo) each sign the same
 role-tagged request (both key ids, the signer, the action, a nonce); `ffi/identity`'s `account::sign_sudo` /
@@ -863,7 +863,7 @@ needed. It reuses `authority::relationship` and `authority::bridge_connects` (so
 labels connects the two accounts, as `private_bridge::revision_approved` applies it) and decides nothing else:
 opening the token is `slot_token`, proving bridge membership is `bridge_proof`. C: `kq_access_requirement` in
 `include/keyquorum_access.h` (`KQ_ACCESS_*` factors; `KQ_BRIDGE_*` in `keyquorum_bridge.h` are proof statuses, a
-separate namespace). `KQ_FILE_ABI_VERSION` is 7 (4 added `kq_slot_open`, `kq_bridge_*`, `kq_access_requirement`; 5 added `kq_file_head_author`; 6 added `kq_assembly_*`; 7 added `kq_sudo_sign`, `kq_sudo_verify` and `kq_slot_provision`).
+separate namespace). `KQ_FILE_ABI_VERSION` is 7 (4 added `kq_slot_open`, `kq_bridge_*`, `kq_access_requirement`; 5 added `kq_file_head_author`; 6 added `kq_assembly_*`; 7 added `kq_sudo_sign`, `kq_sudo_verify` and `kq_slot_seal`).
 
 `src/assembly.rs` (issue #161, host-only) is store-free parent-key assembly: a parent account's 32-byte signing seed split among its
 children (M.A.1 and M.A.2 assemble M.A), one `blahaj` share sealed (`crypto_box`) to each child's X25519 key. `assembly_threshold` fixes the

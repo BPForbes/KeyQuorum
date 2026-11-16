@@ -61,7 +61,7 @@ pub const KQ_FILE_NEWER: c_int = 2;
 /// snapshot exports, `KQ_FILE_DIVERGED`; 4: `kq_slot_open`, `kq_bridge_*`,
 /// `kq_access_requirement`; 5: `kq_file_head_author`; 6: `kq_assembly_*` of
 /// `keyquorum_assembly.h`, in the hosted build only; 7: `kq_sudo_sign`,
-/// `kq_sudo_verify` and `kq_slot_provision`).
+/// `kq_sudo_verify` and `kq_slot_seal`).
 pub const KQ_FILE_ABI_VERSION: c_int = 7;
 
 /// A signing key the caller's registry holds for a label.

@@ -1,4 +1,4 @@
-//! C exports for making a slot token (`KQST`) and opening one with only its passphrase and
+//! C exports for sealing a slot token (`KQST`) and opening one with only its passphrase and
 //! the facts the caller's own registry holds (`include/keyquorum_slots.h`). The rules are
 //! `keyquorum::slot_token::seal_token` and `open_slot_token`, the same functions
 //! `keyquorum-device` uses.
@@ -12,7 +12,8 @@ use crate::heritage;
 use crate::nostd::*;
 use core::ffi::{c_char, c_int};
 use keyquorum::error::Error;
-use keyquorum::{keys, slot_token};
+use keyquorum::{keys, signing, slot_token};
+use zeroize::Zeroizing;
 
 /// Opens the token `kqst` (`klen` bytes) for slot `label` with `passphrase`, expecting the
 /// device id and the signing and encryption public keys `expected_*` (from the caller's
@@ -72,9 +73,9 @@ pub unsafe extern "C" fn kq_slot_open(
     }
 }
 
-/// Size of the token `kq_slot_provision` makes for a label of `label_len` bytes: the
-/// header (magic, version, salt, nonce), the GCM tag and the sealed body (a `u16`-prefixed
-/// label, the device id and the two 32-byte secrets).
+/// Size of the token `kq_slot_seal` makes for a label of `label_len` bytes: the header
+/// (magic, version, salt, nonce), the GCM tag and the sealed body (a `u16`-prefixed label,
+/// the device id and the two 32-byte secrets).
 pub const fn slot_token_len(label_len: usize) -> usize {
     4 + 1
         + keyquorum::crypto::SALT_LEN
@@ -87,34 +88,42 @@ pub const fn slot_token_len(label_len: usize) -> usize {
         + 32
 }
 
-/// Makes a new identity for the account `label` (a valid key id) on the device
-/// `device_id`: a fresh Ed25519 signing key and X25519 encryption key, sealed with
-/// `passphrase` into a `KQST` token written to `token_out` (its length to `*token_len`),
-/// and the two public keys, which the caller records in its own registry and later
-/// passes to `kq_slot_open`. The secrets never leave the library. `KQ_ACCOUNT_NO_ROOM`
-/// when `cap` is too small (`*token_len` then holds the size needed);
-/// `KQ_ACCOUNT_INVALID` for an invalid label, an empty passphrase or a null pointer.
-/// Nothing but `*token_len` is written unless it returns OK.
+/// Seals an account's own keys into a slot token, so an embedder can give an account its
+/// `KQST` without the `keyquorum-device` CLI and without changing the account's keys: the
+/// 32-byte Ed25519 `signing_secret` and X25519 `encryption_secret` of the account `label`
+/// (a valid key id), sealed with `passphrase` to the device `device_id`, written to
+/// `token_out` (its length to `*token_len`), with the two public keys derived from the
+/// secrets, which the caller records in its own registry and later passes to
+/// `kq_slot_open`. `KQ_ACCOUNT_NO_ROOM` when `cap` is too small (`*token_len` then holds
+/// the size needed); `KQ_ACCOUNT_INVALID` for an invalid label, an empty passphrase or a
+/// null pointer. Nothing but `*token_len` is written unless it returns OK. The caller
+/// wipes the secrets it passed.
 ///
 /// # Safety
 /// `label` and `passphrase` must be null or NUL-terminated; `device_id` must be null or
-/// readable for 16 bytes; `token_out` must be null or writable for `cap` bytes;
-/// `token_len` must be null or writable; the two `*_public_out` must be null or writable
-/// for 32 bytes.
+/// readable for 16 bytes and the two secrets for 32; `token_out` must be null or writable
+/// for `cap` bytes; `token_len` must be null or writable; the two `*_public_out` must be
+/// null or writable for 32 bytes.
 #[no_mangle]
-pub unsafe extern "C" fn kq_slot_provision(
+pub unsafe extern "C" fn kq_slot_seal(
     label: *const c_char,
     passphrase: *const c_char,
     device_id: *const u8,
+    signing_secret: *const u8,
+    encryption_secret: *const u8,
     token_out: *mut u8,
     cap: usize,
     token_len: *mut usize,
     signing_public_out: *mut u8,
     encryption_public_out: *mut u8,
 ) -> c_int {
-    let (Some(label), Some(passphrase), Some(device)) =
-        (input(label), input(passphrase), bytes_in::<16>(device_id))
-    else {
+    let (Some(label), Some(passphrase), Some(device), Some(signing), Some(encryption)) = (
+        input(label),
+        input(passphrase),
+        bytes_in::<16>(device_id),
+        bytes_in::<32>(signing_secret).map(Zeroizing::new),
+        bytes_in::<32>(encryption_secret).map(Zeroizing::new),
+    ) else {
         return KQ_ACCOUNT_INVALID;
     };
     if !heritage::key_valid(label)
@@ -131,15 +140,8 @@ pub unsafe extern "C" fn kq_slot_provision(
         *token_len = need;
         return KQ_ACCOUNT_NO_ROOM;
     }
-    let (encryption_secret, encryption_public) = keys::generate_encryption_keypair();
-    let (signing_secret, signing_public) = keys::generate_signing_keypair();
-    let Ok(token) = slot_token::seal_token(
-        label,
-        &device,
-        &encryption_secret,
-        &signing_secret,
-        passphrase,
-    ) else {
+    let Ok(token) = slot_token::seal_token(label, &device, &encryption, &signing, passphrase)
+    else {
         return KQ_ACCOUNT_INVALID;
     };
     if token.len() != need {
@@ -147,8 +149,11 @@ pub unsafe extern "C" fn kq_slot_provision(
     }
     bytes_out(&token, token_out);
     *token_len = token.len();
-    bytes_out(&signing_public, signing_public_out);
-    bytes_out(&encryption_public, encryption_public_out);
+    bytes_out(&signing::public_key(&signing), signing_public_out);
+    bytes_out(
+        &keys::encryption_public_from_secret(&encryption),
+        encryption_public_out,
+    );
     KQ_ACCOUNT_OK
 }
 

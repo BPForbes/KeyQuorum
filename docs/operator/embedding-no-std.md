@@ -60,6 +60,6 @@ lists the full set; the four hooks above are the only `kq_` names.
 `kq_file_abi_version()` returns 7. Headers in `ffi/identity/include/`:
 `keyquorum_identity.h` (heritage, account keys, `kq_bridge_connects`, the co-signed elevation `kq_sudo_sign` and `kq_sudo_verify`), `keyquorum_files.h` (tracked files,
 the head revision and its author (`kq_file_head_author`), co-signed delivery, kind-15 and kind-17 letters), `keyquorum_error.h` (`KQER` reports), `keyquorum_slots.h`
-(`kq_slot_open`, and `kq_slot_provision`, which makes a token and so draws from `kq_platform_random`), `keyquorum_bridge.h` (`kq_bridge_prove`, `kq_bridge_verify`) and `keyquorum_access.h`
+(`kq_slot_open`, and `kq_slot_seal`, which seals an account's own keys into a token and so draws its salt and nonce from `kq_platform_random`), `keyquorum_bridge.h` (`kq_bridge_prove`, `kq_bridge_verify`) and `keyquorum_access.h`
 (`kq_access_requirement`: which factor a switch demands). `keyquorum_assembly.h` (`kq_assembly_*`, parent-key assembly) is exported by the hosted (`std`) archive only: it needs `blahaj`, which this freestanding build does not link, so the freestanding archive is unchanged. Every other export is a pure function over what the caller
 passes in; none touches a file, a database or the network.
