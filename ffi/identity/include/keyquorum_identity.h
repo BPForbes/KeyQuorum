@@ -96,7 +96,8 @@ int kq_account_bridge_verify(int role, const char *from, const char *to, const c
  * both key ids, the signer, the action (1 to KQ_SUDO_ACTION_MAX bytes, the
  * caller's own description) and a fresh 16-byte nonce. kq_sudo_verify returns 1
  * only when both halves verify under the public keys the caller's own registry
- * holds; one half alone, or a half signed by the wrong key, returns 0. sign
+ * holds; one half alone, or a half signed by the wrong key, returns 0, and so
+ * do two different accounts given the same public key. sign
  * returns KQ_ACCOUNT_INVALID for a role, label or action it refuses.
  */
 #define KQ_SUDO_INVOKER            1

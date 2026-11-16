@@ -222,7 +222,10 @@ pub fn sign_sudo(
 /// Whether an elevation is co-signed: `invoker_signature` is the invoker's, under
 /// `invoker_public`, and `authority_signature` the authority's, under `authority_public`,
 /// both for the same `action` and `nonce`. Both must verify; one alone never does. The
-/// public keys come from the caller's own registry, never from the request.
+/// public keys come from the caller's own registry, never from the request. When the
+/// invoker and the authority are different accounts their public keys must differ, so one
+/// key holder never supplies both halves (a registry that maps a descendant and its
+/// ancestor to the same key gets no co-signature).
 #[allow(clippy::too_many_arguments)]
 pub fn verify_sudo(
     invoker: &str,
@@ -234,6 +237,9 @@ pub fn verify_sudo(
     authority_public: &[u8; 32],
     authority_signature: &[u8; 64],
 ) -> bool {
+    if invoker != authority && invoker_public == authority_public {
+        return false;
+    }
     let half = |role, public: &[u8; 32], signature: &[u8; 64]| match sudo_digest(
         role, invoker, authority, action, nonce,
     ) {

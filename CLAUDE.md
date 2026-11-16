@@ -844,7 +844,7 @@ enrols an account without the CLI and without changing its keys. A co-signed ele
 `signing::sudo_cosign_preimage` (`KQ-SUDO-COSIGN-v1`, `SudoCosignRole` Invoker 1 / Authority 2, append
 only): the invoker and an authority that is it or an ancestor of it (`Root` for a sudo) each sign the same
 role-tagged request (both key ids, the signer, the action, a nonce); `ffi/identity`'s `account::sign_sudo` /
-`verify_sudo` (both halves must verify) are `kq_sudo_sign` / `kq_sudo_verify` in `keyquorum_identity.h`.
+`verify_sudo` (both halves must verify; distinct invoker and authority must have distinct public keys) are `kq_sudo_sign` / `kq_sudo_verify` in `keyquorum_identity.h`.
 
 `src/bridge_proof.rs` is the private-bridge proof without a database: `prove_with` / `prove` (what `sign_message`
 decides: member, sealed key held, keys match the roster, the unsealed secret is this bridge's, then

@@ -304,6 +304,42 @@ fn a_sudo_is_co_signed_by_the_invoker_and_the_authority() {
 }
 
 #[test]
+fn a_sudo_by_two_accounts_needs_two_keys() {
+    // A registry that maps the invoker and its ancestor to one key gets no co-signature:
+    // that key's holder could sign both halves alone.
+    let (secret, public) = generate();
+    let n = nonce();
+    let action = b"sudo";
+    let sign = |role| sign_sudo(role, "Root.Flinstone", "Root", action, &n, &secret).unwrap();
+    let mine = sign(SudoCosignRole::Invoker);
+    let root = sign(SudoCosignRole::Authority);
+    assert!(!verify_sudo(
+        "Root.Flinstone",
+        "Root",
+        action,
+        &n,
+        &public,
+        &mine,
+        &public,
+        &root
+    ));
+    // An account elevating to itself signs both halves with its one key.
+    let mine = sign_sudo(SudoCosignRole::Invoker, "Root", "Root", action, &n, &secret).unwrap();
+    let root = sign_sudo(
+        SudoCosignRole::Authority,
+        "Root",
+        "Root",
+        action,
+        &n,
+        &secret,
+    )
+    .unwrap();
+    assert!(verify_sudo(
+        "Root", "Root", action, &n, &public, &mine, &public, &root
+    ));
+}
+
+#[test]
 fn a_sudo_authority_must_be_the_invoker_or_an_ancestor() {
     let (secret, _) = generate();
     let n = nonce();
