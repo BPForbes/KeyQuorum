@@ -103,7 +103,7 @@ path = "src/bin/keyquorum-device.rs"
 required-features = ["host"]
 
 [dependencies]
-rusqlite = { version = "0.41", features = ["bundled"], optional = true }
+rusqlite = { version = "0.43", features = ["bundled"], optional = true }
 # The crypto dependencies are listed with `default-features = false` and only the
 # features the pure modules need, so `--no-default-features` can build for a target
 # with no operating system. The `host` feature turns the hosted defaults back on.
